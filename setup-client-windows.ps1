@@ -275,6 +275,13 @@ $mcpServers["microsoft-learn"] = @{
 $mcpConfig = @{ mcpServers = $mcpServers }
 $mcpJsonPath = Join-Path $deployDir ".mcp.json"
 $mcpConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $mcpJsonPath -Encoding UTF8
+$acl = Get-Acl $mcpJsonPath
+$acl.SetAccessRuleProtection($true, $false)
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+    "FullControl", "Allow")
+$acl.SetAccessRule($rule)
+Set-Acl -Path $mcpJsonPath -AclObject $acl
 Write-Ok "Written: $mcpJsonPath"
 
 # ---- Settings.json ----
@@ -354,7 +361,21 @@ $settingsObj = @{
             "Edit(/var/lib/aiir/**)",
             "Write(/var/lib/aiir/**)",
             "Bash(aiir approve*)",
-            "Bash(aiir reject*)"
+            "Bash(aiir reject*)",
+            "Edit(**/.claude/settings.json)",
+            "Write(**/.claude/settings.json)",
+            "Edit(**/.claude/CLAUDE.md)",
+            "Write(**/.claude/CLAUDE.md)",
+            "Edit(**/.claude/rules/**)",
+            "Write(**/.claude/rules/**)",
+            "Edit(**/.aiir/hooks/**)",
+            "Write(**/.aiir/hooks/**)",
+            "Edit(**/.aiir/active_case)",
+            "Write(**/.aiir/active_case)",
+            "Edit(**/.aiir/gateway.yaml)",
+            "Write(**/.aiir/gateway.yaml)",
+            "Edit(**/pending-reviews.json)",
+            "Write(**/pending-reviews.json)"
         )
     }
     sandbox = @{

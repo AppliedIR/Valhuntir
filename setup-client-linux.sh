@@ -317,11 +317,11 @@ info "Token: ${GATEWAY_TOKEN:0:12}..."
 # Store token securely
 mkdir -p "$HOME/.aiir" && chmod 700 "$HOME/.aiir"
 AIIR_CONFIG="$HOME/.aiir/config.yaml"
-{
-    echo "gateway_url: \"$GATEWAY_URL\""
-    echo "gateway_token: \"$GATEWAY_TOKEN\""
-} > "$AIIR_CONFIG"
-chmod 600 "$AIIR_CONFIG"
+(umask 077 && cat > "$AIIR_CONFIG" <<CONF
+gateway_url: "$GATEWAY_URL"
+gateway_token: "$GATEWAY_TOKEN"
+CONF
+)
 ok "Credentials saved to $AIIR_CONFIG"
 
 # ---- Phase 3: Examiner Identity ----
@@ -438,19 +438,19 @@ $MCP_ENTRIES
 case "$CLIENT" in
     claude-code)
         CONFIG_FILE="$DEPLOY_DIR/.mcp.json"
-        echo "$MCP_JSON" > "$CONFIG_FILE"
+        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE"
         ;;
     claude-desktop)
         CONFIG_DIR="$HOME/.config/claude"
         mkdir -p "$CONFIG_DIR"
         CONFIG_FILE="$CONFIG_DIR/claude_desktop_config.json"
-        echo "$MCP_JSON" > "$CONFIG_FILE"
+        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE"
         ;;
     *)
         CONFIG_FILE="$DEPLOY_DIR/.mcp.json"
-        echo "$MCP_JSON" > "$CONFIG_FILE"
+        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE (reference config)"
         info "Configure your LLM client using the entries in this file."
         ;;
@@ -603,7 +603,21 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "Edit(/var/lib/aiir/**)",
       "Write(/var/lib/aiir/**)",
       "Bash(aiir approve*)",
-      "Bash(aiir reject*)"
+      "Bash(aiir reject*)",
+      "Edit(**/.claude/settings.json)",
+      "Write(**/.claude/settings.json)",
+      "Edit(**/.claude/CLAUDE.md)",
+      "Write(**/.claude/CLAUDE.md)",
+      "Edit(**/.claude/rules/**)",
+      "Write(**/.claude/rules/**)",
+      "Edit(**/.aiir/hooks/**)",
+      "Write(**/.aiir/hooks/**)",
+      "Edit(**/.aiir/active_case)",
+      "Write(**/.aiir/active_case)",
+      "Edit(**/.aiir/gateway.yaml)",
+      "Write(**/.aiir/gateway.yaml)",
+      "Edit(**/pending-reviews.json)",
+      "Write(**/pending-reviews.json)"
     ]
   },
   "sandbox": {

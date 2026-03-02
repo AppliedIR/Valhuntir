@@ -210,11 +210,11 @@ ok "Joined gateway"
 
 # Store token
 mkdir -p "$HOME/.aiir" && chmod 700 "$HOME/.aiir"
-cat > "$HOME/.aiir/config.yaml" << CONF
+(umask 077 && cat > "$HOME/.aiir/config.yaml" <<CONF
 gateway_url: "$GATEWAY_URL"
 gateway_token: "$GATEWAY_TOKEN"
 CONF
-chmod 600 "$HOME/.aiir/config.yaml"
+)
 
 # =============================================================================
 # Workspace Setup
@@ -276,7 +276,7 @@ $MCP_ENTRIES
   }
 }"
 
-echo "$MCP_JSON" > "$DEPLOY_DIR/.mcp.json"
+(umask 077 && echo "$MCP_JSON" > "$DEPLOY_DIR/.mcp.json")
 ok "Written: $DEPLOY_DIR/.mcp.json"
 
 # ---- Settings.json ----
@@ -358,7 +358,21 @@ SETTINGS_CONTENT=$(cat << SETTINGS
       "Edit(/var/lib/aiir/**)",
       "Write(/var/lib/aiir/**)",
       "Bash(aiir approve*)",
-      "Bash(aiir reject*)"
+      "Bash(aiir reject*)",
+      "Edit(**/.claude/settings.json)",
+      "Write(**/.claude/settings.json)",
+      "Edit(**/.claude/CLAUDE.md)",
+      "Write(**/.claude/CLAUDE.md)",
+      "Edit(**/.claude/rules/**)",
+      "Write(**/.claude/rules/**)",
+      "Edit(**/.aiir/hooks/**)",
+      "Write(**/.aiir/hooks/**)",
+      "Edit(**/.aiir/active_case)",
+      "Write(**/.aiir/active_case)",
+      "Edit(**/.aiir/gateway.yaml)",
+      "Write(**/.aiir/gateway.yaml)",
+      "Edit(**/pending-reviews.json)",
+      "Write(**/pending-reviews.json)"
     ]
   },
   "sandbox": {
