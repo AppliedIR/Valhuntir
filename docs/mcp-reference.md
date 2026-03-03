@@ -152,9 +152,9 @@ Semantic search across 23K+ forensic knowledge records.
 
 | Tool | Description |
 |------|-------------|
-| `search` | Semantic search with filters (source, technique, platform) |
-| `list_sources` | List available knowledge sources |
-| `get_stats` | Index statistics (document count, sources) |
+| `search_knowledge` | Semantic search with filters (source, technique, platform) |
+| `list_knowledge_sources` | List available knowledge sources |
+| `get_knowledge_stats` | Index statistics (document count, sources) |
 
 Sources: Sigma rules, MITRE ATT&CK, Atomic Red Team, Splunk Security, KAPE, Velociraptor, LOLBAS, GTFOBins.
 

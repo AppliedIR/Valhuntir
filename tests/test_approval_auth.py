@@ -9,10 +9,15 @@ import yaml
 from aiir_cli.approval_auth import (
     _LOCKOUT_SECONDS,
     _MAX_PIN_ATTEMPTS,
+    _MIN_PIN_LENGTH,
     _check_lockout,
     _clear_failures,
+    _load_pin_entry,
+    _maybe_migrate,
     _recent_failure_count,
     _record_failure,
+    _validate_examiner_name,
+    get_analyst_salt,
     has_pin,
     require_confirmation,
     require_tty_confirmation,
@@ -28,113 +33,260 @@ def config_path(tmp_path):
     return tmp_path / ".aiir" / "config.yaml"
 
 
+@pytest.fixture
+def pins_dir(tmp_path, monkeypatch):
+    """Temp pins directory (replaces /var/lib/aiir/pins)."""
+    d = tmp_path / "pins"
+    d.mkdir()
+    monkeypatch.setattr("aiir_cli.approval_auth._PINS_DIR", d)
+    return d
+
+
 class TestPinSetup:
-    def test_setup_pin_creates_config(self, config_path):
+    def test_setup_pin_writes_to_pins_dir(self, config_path, pins_dir):
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "steve")
+            setup_pin(config_path, "steve", pins_dir=pins_dir)
+        pin_file = pins_dir / "steve.json"
+        assert pin_file.exists()
+        data = json.loads(pin_file.read_text())
+        assert "hash" in data
+        assert "salt" in data
+        # config.yaml should NOT have pins
+        if config_path.exists():
+            config = yaml.safe_load(config_path.read_text())
+            assert "pins" not in (config or {})
+
+    def test_setup_pin_fallback_to_config(self, config_path, tmp_path):
+        """When pins_dir doesn't exist and can't be created, falls back to config.yaml."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("file")
+        bad_pins = blocker / "pins"
+        with patch(
+            "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
+        ):
+            setup_pin(config_path, "steve", pins_dir=bad_pins)
         assert config_path.exists()
         config = yaml.safe_load(config_path.read_text())
         assert "steve" in config["pins"]
-        assert "hash" in config["pins"]["steve"]
-        assert "salt" in config["pins"]["steve"]
 
-    def test_setup_pin_verify_roundtrip(self, config_path):
+    def test_setup_pin_verify_roundtrip(self, config_path, pins_dir):
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["mypin", "mypin"]
         ):
-            setup_pin(config_path, "analyst1")
-        assert verify_pin(config_path, "analyst1", "mypin")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
+        assert verify_pin(config_path, "analyst1", "mypin", pins_dir=pins_dir)
 
-    def test_wrong_pin_fails(self, config_path):
+    def test_wrong_pin_fails(self, config_path, pins_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt", side_effect=["correct", "correct"]
+            "aiir_cli.approval_auth.getpass_prompt",
+            side_effect=["correct", "correct"],
         ):
-            setup_pin(config_path, "analyst1")
-        assert not verify_pin(config_path, "analyst1", "wrong")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
+        assert not verify_pin(config_path, "analyst1", "wrong", pins_dir=pins_dir)
 
-    def test_has_pin_false_when_no_config(self, config_path):
-        assert not has_pin(config_path, "analyst1")
+    def test_has_pin_false_when_no_config(self, config_path, pins_dir):
+        assert not has_pin(config_path, "analyst1", pins_dir=pins_dir)
 
-    def test_has_pin_true_after_setup(self, config_path):
+    def test_has_pin_true_after_setup(self, config_path, pins_dir):
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "analyst1")
-        assert has_pin(config_path, "analyst1")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
+        assert has_pin(config_path, "analyst1", pins_dir=pins_dir)
 
-    def test_setup_pin_mismatch_exits(self, config_path):
+    def test_setup_pin_mismatch_exits(self, config_path, pins_dir):
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["pin1", "pin2"]
         ):
             with pytest.raises(SystemExit):
-                setup_pin(config_path, "analyst1")
+                setup_pin(config_path, "analyst1", pins_dir=pins_dir)
 
-    def test_setup_pin_empty_exits(self, config_path):
+    def test_setup_pin_empty_exits(self, config_path, pins_dir):
         with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["", ""]):
             with pytest.raises(SystemExit):
-                setup_pin(config_path, "analyst1")
+                setup_pin(config_path, "analyst1", pins_dir=pins_dir)
 
-    def test_setup_pin_preserves_existing_config(self, config_path):
+    def test_setup_pin_too_short_exits(self, config_path, pins_dir):
+        """PIN shorter than _MIN_PIN_LENGTH is rejected."""
+        short = "x" * (_MIN_PIN_LENGTH - 1)
+        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=[short, short]):
+            with pytest.raises(SystemExit):
+                setup_pin(config_path, "analyst1", pins_dir=pins_dir)
+
+    def test_setup_pin_exact_min_length_ok(self, config_path, pins_dir):
+        """PIN exactly at _MIN_PIN_LENGTH is accepted."""
+        pin = "x" * _MIN_PIN_LENGTH
+        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=[pin, pin]):
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
+        assert has_pin(config_path, "analyst1", pins_dir=pins_dir)
+
+    def test_setup_pin_preserves_existing_config(self, config_path, pins_dir):
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, "w") as f:
-            yaml.dump({"analyst": "steve"}, f)
+            yaml.dump({"examiner": "steve"}, f)
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "steve")
+            setup_pin(config_path, "steve", pins_dir=pins_dir)
         config = yaml.safe_load(config_path.read_text())
-        assert config["analyst"] == "steve"
-        assert "steve" in config["pins"]
+        assert config["examiner"] == "steve"
+        # PIN should be in pins_dir, not config
+        assert "pins" not in config
+
+    def test_pin_file_permissions(self, config_path, pins_dir):
+        """PIN file has 0o600 permissions."""
+        with patch(
+            "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
+        ):
+            setup_pin(config_path, "steve", pins_dir=pins_dir)
+        pin_file = pins_dir / "steve.json"
+        assert (pin_file.stat().st_mode & 0o777) == 0o600
+
+
+class TestPinMigration:
+    def test_migrate_from_config_to_pins_dir(self, config_path, pins_dir):
+        """PIN in config.yaml is auto-migrated to pins_dir."""
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"hash": "abc123", "salt": "def456"}
+        with open(config_path, "w") as f:
+            yaml.dump({"pins": {"alice": entry}}, f)
+        _maybe_migrate(config_path, pins_dir, "alice")
+        # New location should have the entry
+        loaded = _load_pin_entry(pins_dir, "alice")
+        assert loaded is not None
+        assert loaded["hash"] == "abc123"
+        assert loaded["salt"] == "def456"
+        # Old location should be stripped
+        config = yaml.safe_load(config_path.read_text())
+        assert "pins" not in (config or {})
+
+    def test_migrate_noop_if_already_migrated(self, config_path, pins_dir):
+        """Migration is a no-op if the new location already has the entry."""
+        (pins_dir / "alice.json").write_text(json.dumps({"hash": "new", "salt": "new"}))
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w") as f:
+            yaml.dump({"pins": {"alice": {"hash": "old", "salt": "old"}}}, f)
+        _maybe_migrate(config_path, pins_dir, "alice")
+        # New location keeps its value (not overwritten)
+        loaded = _load_pin_entry(pins_dir, "alice")
+        assert loaded["hash"] == "new"
+
+    def test_migrate_preserves_other_analysts(self, config_path, pins_dir):
+        """Migrating one analyst doesn't affect others in config.yaml."""
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w") as f:
+            yaml.dump(
+                {
+                    "pins": {
+                        "alice": {"hash": "a", "salt": "a"},
+                        "bob": {"hash": "b", "salt": "b"},
+                    }
+                },
+                f,
+            )
+        _maybe_migrate(config_path, pins_dir, "alice")
+        config = yaml.safe_load(config_path.read_text())
+        assert "bob" in config["pins"]
+        assert "alice" not in config["pins"]
+
+    def test_has_pin_with_legacy_config(self, config_path, pins_dir):
+        """has_pin finds PIN in legacy config.yaml when pins_dir is empty."""
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w") as f:
+            yaml.dump({"pins": {"alice": {"hash": "abc", "salt": "def"}}}, f)
+        # After has_pin, migration should have happened
+        assert has_pin(config_path, "alice", pins_dir=pins_dir)
+        # Verify it was migrated
+        assert _load_pin_entry(pins_dir, "alice") is not None
+
+
+class TestExaminerNameValidation:
+    def test_reject_path_traversal_dotdot(self):
+        with pytest.raises(ValueError, match="Invalid examiner name"):
+            _validate_examiner_name("../etc/passwd")
+
+    def test_reject_forward_slash(self):
+        with pytest.raises(ValueError, match="Invalid examiner name"):
+            _validate_examiner_name("alice/bob")
+
+    def test_reject_backslash(self):
+        with pytest.raises(ValueError, match="Invalid examiner name"):
+            _validate_examiner_name("alice\\bob")
+
+    def test_accept_normal_names(self):
+        _validate_examiner_name("alice")
+        _validate_examiner_name("bob-smith")
+        _validate_examiner_name("analyst1")
 
 
 class TestPinReset:
-    def test_reset_pin_requires_current(self, config_path):
-        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["old", "old"]):
-            setup_pin(config_path, "analyst1")
+    def test_reset_pin_requires_current(self, config_path, pins_dir):
+        with patch(
+            "aiir_cli.approval_auth.getpass_prompt", side_effect=["oldpin", "oldpin"]
+        ):
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         # Wrong current PIN
         with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["wrong"]):
             with pytest.raises(SystemExit):
-                reset_pin(config_path, "analyst1")
+                reset_pin(config_path, "analyst1", pins_dir=pins_dir)
 
-    def test_reset_pin_success(self, config_path):
-        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["old", "old"]):
-            setup_pin(config_path, "analyst1")
+    def test_reset_pin_success(self, config_path, pins_dir):
+        with patch(
+            "aiir_cli.approval_auth.getpass_prompt", side_effect=["oldpin", "oldpin"]
+        ):
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         # Correct current, then new PIN twice
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt", side_effect=["old", "new", "new"]
+            "aiir_cli.approval_auth.getpass_prompt",
+            side_effect=["oldpin", "newpin", "newpin"],
         ):
-            reset_pin(config_path, "analyst1")
-        assert verify_pin(config_path, "analyst1", "new")
-        assert not verify_pin(config_path, "analyst1", "old")
+            reset_pin(config_path, "analyst1", pins_dir=pins_dir)
+        assert verify_pin(config_path, "analyst1", "newpin", pins_dir=pins_dir)
+        assert not verify_pin(config_path, "analyst1", "oldpin", pins_dir=pins_dir)
 
-    def test_reset_no_pin_exits(self, config_path):
+    def test_reset_no_pin_exits(self, config_path, pins_dir):
         with pytest.raises(SystemExit):
-            reset_pin(config_path, "analyst1")
+            reset_pin(config_path, "analyst1", pins_dir=pins_dir)
 
 
-class TestRequireConfirmation:
-    def test_pin_mode_correct(self, config_path):
+class TestGetAnalystSalt:
+    def test_salt_from_pins_dir(self, config_path, pins_dir):
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "analyst1")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
+        salt = get_analyst_salt(config_path, "analyst1", pins_dir=pins_dir)
+        assert isinstance(salt, bytes)
+        assert len(salt) == 32
+
+    def test_salt_missing_raises(self, config_path, pins_dir):
+        with pytest.raises(ValueError, match="No salt found"):
+            get_analyst_salt(config_path, "nobody", pins_dir=pins_dir)
+
+
+class TestRequireConfirmation:
+    def test_pin_mode_correct(self, config_path, pins_dir):
+        with patch(
+            "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
+        ):
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
             mode, pin = require_confirmation(config_path, "analyst1")
         assert mode == "pin"
         assert pin == "1234"
 
-    def test_pin_mode_wrong_exits(self, config_path):
+    def test_pin_mode_wrong_exits(self, config_path, pins_dir):
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "analyst1")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         with patch("aiir_cli.approval_auth.getpass_prompt", return_value="wrong"):
             with pytest.raises(SystemExit):
                 require_confirmation(config_path, "analyst1")
 
-    def test_no_pin_configured_exits(self, config_path, capsys):
+    def test_no_pin_configured_exits(self, config_path, pins_dir, capsys):
         """require_confirmation with no PIN configured exits with setup instructions."""
         with pytest.raises(SystemExit):
             require_confirmation(config_path, "analyst1")
@@ -232,23 +384,25 @@ class TestPinLockout:
             _record_failure("analyst1")
         _check_lockout("analyst1")  # Should not raise
 
-    def test_require_confirmation_records_failure_on_wrong_pin(self, config_path):
+    def test_require_confirmation_records_failure_on_wrong_pin(
+        self, config_path, pins_dir
+    ):
         """require_confirmation records failure on wrong PIN."""
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "analyst1")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         with patch("aiir_cli.approval_auth.getpass_prompt", return_value="wrong"):
             with pytest.raises(SystemExit):
                 require_confirmation(config_path, "analyst1")
         assert _recent_failure_count("analyst1") == 1
 
-    def test_require_confirmation_clears_on_success(self, config_path):
+    def test_require_confirmation_clears_on_success(self, config_path, pins_dir):
         """require_confirmation clears failures on correct PIN."""
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "analyst1")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         _record_failure("analyst1")
         assert _recent_failure_count("analyst1") == 1
         with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
@@ -257,12 +411,12 @@ class TestPinLockout:
         assert pin == "1234"
         assert _recent_failure_count("analyst1") == 0
 
-    def test_lockout_blocks_require_confirmation(self, config_path):
+    def test_lockout_blocks_require_confirmation(self, config_path, pins_dir):
         """Locked-out analyst cannot even attempt PIN entry."""
         with patch(
             "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
         ):
-            setup_pin(config_path, "analyst1")
+            setup_pin(config_path, "analyst1", pins_dir=pins_dir)
         for _ in range(_MAX_PIN_ATTEMPTS):
             _record_failure("analyst1")
         with pytest.raises(SystemExit):
@@ -290,14 +444,3 @@ class TestPinLockout:
         _record_failure("analyst1")
         assert isolate_lockout_file.exists()
         assert (isolate_lockout_file.stat().st_mode & 0o777) == 0o600
-
-
-class TestPinConfigFilePermissions:
-    def test_pin_config_file_permissions(self, config_path):
-        """After setup_pin, config file has permissions 0o600."""
-        with patch(
-            "aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]
-        ):
-            setup_pin(config_path, "steve")
-        assert config_path.exists()
-        assert (config_path.stat().st_mode & 0o777) == 0o600

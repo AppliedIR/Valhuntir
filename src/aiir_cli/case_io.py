@@ -542,7 +542,7 @@ def _merge_items(
             else:
                 skipped += 1
 
-    _atomic_write(local_file, json.dumps(local, indent=2, default=str))
+    _protected_write(local_file, json.dumps(local, indent=2, default=str))
     return {
         "added": added,
         "updated": updated,

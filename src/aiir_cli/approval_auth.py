@@ -3,6 +3,11 @@
 PIN uses getpass (reads from /dev/tty, no echo) to block
 both AI-via-Bash AND expect-style terminal automation.
 A PIN must be configured before approvals are allowed.
+
+PIN hashes are stored in /var/lib/aiir/pins/{examiner}.json
+(0o600, directory 0o700) — protected by Read/Edit/Write deny
+rules so the LLM cannot access the hash material. Auto-migration
+from the legacy config.yaml location happens on first use.
 """
 
 from __future__ import annotations
@@ -30,6 +35,80 @@ PBKDF2_ITERATIONS = 600_000
 _MAX_PIN_ATTEMPTS = 3
 _LOCKOUT_SECONDS = 900  # 15 minutes
 _LOCKOUT_FILE = Path.home() / ".aiir" / ".pin_lockout"
+_MIN_PIN_LENGTH = 4
+_PINS_DIR = Path("/var/lib/aiir/pins")
+
+
+def _validate_examiner_name(analyst: str) -> None:
+    """Reject examiner names containing path traversal characters."""
+    if ".." in analyst or "/" in analyst or "\\" in analyst:
+        raise ValueError(f"Invalid examiner name: {analyst!r}")
+
+
+def _pin_file(pins_dir: Path, analyst: str) -> Path:
+    """Return the per-examiner PIN file path."""
+    _validate_examiner_name(analyst)
+    return pins_dir / f"{analyst}.json"
+
+
+def _load_pin_entry(pins_dir: Path, analyst: str) -> dict | None:
+    """Load PIN entry from per-examiner JSON file. Returns None if missing."""
+    path = _pin_file(pins_dir, analyst)
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and "hash" in data and "salt" in data:
+            return data
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def _save_pin_entry(pins_dir: Path, analyst: str, entry: dict) -> None:
+    """Write PIN entry atomically with 0o600 permissions."""
+    _validate_examiner_name(analyst)
+    pins_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = _pin_file(pins_dir, analyst)
+    fd, tmp_path = tempfile.mkstemp(dir=str(pins_dir), suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(entry, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _maybe_migrate(config_path: Path, pins_dir: Path, analyst: str) -> None:
+    """Auto-migrate PIN from config.yaml to per-examiner file.
+
+    1. If new location already has the file → no-op.
+    2. If old config.yaml has pins.{analyst} → copy to new, strip from old.
+    3. If new location write fails → silently continue using old.
+    """
+    if _load_pin_entry(pins_dir, analyst) is not None:
+        return
+    config = _load_config(config_path)
+    pins = config.get("pins", {})
+    entry = pins.get(analyst)
+    if not entry or "hash" not in entry or "salt" not in entry:
+        return
+    try:
+        _save_pin_entry(
+            pins_dir, analyst, {"hash": entry["hash"], "salt": entry["salt"]}
+        )
+    except OSError:
+        return  # New location not writable — keep using old
+    # Strip from config.yaml
+    del config["pins"][analyst]
+    if not config["pins"]:
+        del config["pins"]
+    _save_config(config_path, config)
 
 
 def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | None]:
@@ -85,18 +164,30 @@ def require_tty_confirmation(prompt: str) -> bool:
         tty.close()
 
 
-def has_pin(config_path: Path, analyst: str) -> bool:
-    """Check if analyst has a PIN configured."""
+def has_pin(config_path: Path, analyst: str, *, pins_dir: Path | None = None) -> bool:
+    """Check if analyst has a PIN configured (new location, fallback old)."""
+    pins_dir = pins_dir or _PINS_DIR
+    _maybe_migrate(config_path, pins_dir, analyst)
+    if _load_pin_entry(pins_dir, analyst) is not None:
+        return True
+    # Fallback: legacy config.yaml
     config = _load_config(config_path)
     pins = config.get("pins", {})
     return analyst in pins and "hash" in pins[analyst] and "salt" in pins[analyst]
 
 
-def verify_pin(config_path: Path, analyst: str, pin: str) -> bool:
-    """Verify a PIN against stored hash."""
-    config = _load_config(config_path)
-    pins = config.get("pins", {})
-    entry = pins.get(analyst)
+def verify_pin(
+    config_path: Path, analyst: str, pin: str, *, pins_dir: Path | None = None
+) -> bool:
+    """Verify a PIN against stored hash (new location, fallback old)."""
+    pins_dir = pins_dir or _PINS_DIR
+    _maybe_migrate(config_path, pins_dir, analyst)
+    entry = _load_pin_entry(pins_dir, analyst)
+    if entry is None:
+        # Fallback: legacy config.yaml
+        config = _load_config(config_path)
+        pins = config.get("pins", {})
+        entry = pins.get(analyst)
     if not entry:
         return False
     try:
@@ -110,14 +201,18 @@ def verify_pin(config_path: Path, analyst: str, pin: str) -> bool:
     return secrets.compare_digest(computed, stored_hash)
 
 
-def setup_pin(config_path: Path, analyst: str) -> str:
+def setup_pin(config_path: Path, analyst: str, *, pins_dir: Path | None = None) -> str:
     """Set up a new PIN for the analyst. Prompts twice to confirm.
 
     Returns the raw PIN string (needed for HMAC re-signing during rotation).
     """
+    pins_dir = pins_dir or _PINS_DIR
     pin1 = getpass_prompt("Enter new PIN: ")
     if not pin1:
         print("PIN cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+    if len(pin1) < _MIN_PIN_LENGTH:
+        print(f"PIN must be at least {_MIN_PIN_LENGTH} characters.", file=sys.stderr)
         sys.exit(1)
     pin2 = getpass_prompt("Confirm new PIN: ")
     if pin1 != pin2:
@@ -129,24 +224,41 @@ def setup_pin(config_path: Path, analyst: str) -> str:
         "sha256", pin1.encode(), salt, PBKDF2_ITERATIONS
     ).hex()
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config = _load_config(config_path)
-    if "pins" not in config:
-        config["pins"] = {}
-    config["pins"][analyst] = {"hash": pin_hash, "salt": salt.hex()}
+    entry = {"hash": pin_hash, "salt": salt.hex()}
 
-    _save_config(config_path, config)
+    # Try new location first
+    try:
+        _save_pin_entry(pins_dir, analyst, entry)
+    except OSError:
+        # Fall back to config.yaml if /var/lib/aiir/pins not writable
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config = _load_config(config_path)
+        if "pins" not in config:
+            config["pins"] = {}
+        config["pins"][analyst] = entry
+        _save_config(config_path, config)
+        print(f"PIN configured for analyst '{analyst}'.")
+        return pin1
+
+    # Strip old location if present
+    config = _load_config(config_path)
+    if "pins" in config and analyst in config["pins"]:
+        del config["pins"][analyst]
+        if not config["pins"]:
+            del config["pins"]
+        _save_config(config_path, config)
+
     print(f"PIN configured for analyst '{analyst}'.")
     return pin1
 
 
-def reset_pin(config_path: Path, analyst: str) -> None:
+def reset_pin(config_path: Path, analyst: str, *, pins_dir: Path | None = None) -> None:
     """Reset PIN. Requires current PIN first.
 
     After changing the PIN, re-signs all verification ledger entries
     for this analyst with the new key.
     """
-    if not has_pin(config_path, analyst):
+    if not has_pin(config_path, analyst, pins_dir=pins_dir):
         print(
             f"No PIN configured for analyst '{analyst}'. Use --setup-pin first.",
             file=sys.stderr,
@@ -154,17 +266,26 @@ def reset_pin(config_path: Path, analyst: str) -> None:
         sys.exit(1)
 
     current = getpass_prompt("Enter current PIN: ")
-    if not verify_pin(config_path, analyst, current):
+    if not verify_pin(config_path, analyst, current, pins_dir=pins_dir):
         print("Incorrect current PIN.", file=sys.stderr)
+        print(
+            "\nIf you have forgotten your PIN, you can force a reset by removing\n"
+            "the PIN file and setting up a new one:\n"
+            f"\n  rm /var/lib/aiir/pins/{analyst}.json"
+            "\n  aiir config --setup-pin\n"
+            "\nThis will invalidate HMAC signatures on previously approved findings.\n"
+            "The findings themselves are preserved — only the integrity proof is lost.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Read old salt before setup_pin overwrites it
-    old_salt = get_analyst_salt(config_path, analyst)
+    old_salt = get_analyst_salt(config_path, analyst, pins_dir=pins_dir)
 
-    new_pin = setup_pin(config_path, analyst)
+    new_pin = setup_pin(config_path, analyst, pins_dir=pins_dir)
 
     # Re-HMAC verification ledger entries with new key
-    new_salt = get_analyst_salt(config_path, analyst)
+    new_salt = get_analyst_salt(config_path, analyst, pins_dir=pins_dir)
     try:
         from aiir_cli.verification import (
             VERIFICATION_DIR,
@@ -195,11 +316,18 @@ def reset_pin(config_path: Path, analyst: str) -> None:
         print(f"  Warning: could not re-sign ledger entries: {e}", file=sys.stderr)
 
 
-def get_analyst_salt(config_path: Path, analyst: str) -> bytes:
-    """Get the analyst's PBKDF2 salt from config. Raises ValueError if missing."""
-    config = _load_config(config_path)
-    pins = config.get("pins", {})
-    entry = pins.get(analyst)
+def get_analyst_salt(
+    config_path: Path, analyst: str, *, pins_dir: Path | None = None
+) -> bytes:
+    """Get the analyst's PBKDF2 salt. Raises ValueError if missing."""
+    pins_dir = pins_dir or _PINS_DIR
+    _maybe_migrate(config_path, pins_dir, analyst)
+    entry = _load_pin_entry(pins_dir, analyst)
+    if entry is None:
+        # Fallback: legacy config.yaml
+        config = _load_config(config_path)
+        pins = config.get("pins", {})
+        entry = pins.get(analyst)
     if not entry or "salt" not in entry:
         raise ValueError(f"No salt found for analyst '{analyst}'")
     return bytes.fromhex(entry["salt"])

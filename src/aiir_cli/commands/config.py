@@ -25,7 +25,16 @@ def cmd_config(args, identity: dict) -> None:
     if args.show:
         if config_path.exists():
             try:
-                print(config_path.read_text())
+                content = config_path.read_text()
+                # Redact legacy PIN material during transition
+                try:
+                    config = yaml.safe_load(content)
+                    if isinstance(config, dict) and "pins" in config:
+                        config["pins"] = {k: "***REDACTED***" for k in config["pins"]}
+                        content = yaml.dump(config, default_flow_style=False)
+                except yaml.YAMLError:
+                    pass
+                print(content)
             except OSError as e:
                 print(f"Failed to read configuration file: {e}", file=sys.stderr)
         else:

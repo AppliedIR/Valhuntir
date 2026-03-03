@@ -616,6 +616,10 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "Write(**/.aiir/active_case)",
       "Edit(**/.aiir/gateway.yaml)",
       "Write(**/.aiir/gateway.yaml)",
+      "Edit(**/.aiir/config.yaml)",
+      "Write(**/.aiir/config.yaml)",
+      "Edit(**/.aiir/.pin_lockout)",
+      "Write(**/.aiir/.pin_lockout)",
       "Edit(**/pending-reviews.json)",
       "Write(**/pending-reviews.json)"
     ]
