@@ -698,7 +698,9 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
 
     # Rejection reason
     if action == "REJECT":
-        reason = delta_entry.get("reason", "")
+        reason = delta_entry.get("rejection_reason", "") or delta_entry.get(
+            "reason", ""
+        )
         print(f"  {_RED}Reason: {reason or '(no reason given)'}{_RESET}")
 
     # TODO details
@@ -942,7 +944,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             skipped.append((item_id, "not found"))
             continue
 
-        reason = entry.get("reason", "")
+        reason = entry.get("rejection_reason", "") or entry.get("reason", "")
         item["status"] = "REJECTED"
         item["rejected_at"] = now
         item["rejected_by"] = identity["examiner"]
