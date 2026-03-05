@@ -109,10 +109,10 @@ def _approve_specific(
     interpretation: str | None = None,
 ) -> None:
     """Approve specific finding/event IDs with optional modifications."""
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
     to_approve = []
 
     for item_id in ids:
@@ -201,10 +201,10 @@ def _interactive_review(
     timeline_only: bool = False,
 ) -> None:
     """Review each DRAFT item with full per-item options."""
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
 
     drafts = (
         [] if timeline_only else [f for f in findings if f.get("status") == "DRAFT"]
@@ -504,10 +504,11 @@ def _apply_edit(item: dict, identity: dict) -> None:
             "interpretation",
             "confidence",
             "confidence_justification",
+            "context",
             "type",
         ):
-            if key in item:
-                editable[key] = item[key]
+            if key in item or key == "context":
+                editable[key] = item.get(key, "")
     else:
         # Timeline event
         for key in ("timestamp", "description", "source"):
@@ -685,6 +686,7 @@ _DELTA_EDITABLE_FIELDS = {
     "confidence_justification",
     "mitre_ids",
     "iocs",
+    "context",
 }
 
 _RED = "\033[31m"
@@ -874,10 +876,10 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         pass
 
     # Load case data — all items, not just DRAFTs
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
 
     # Build lookup by ID
     item_by_id: dict[str, dict] = {}
@@ -1025,6 +1027,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             identity,
             mode=mode,
             content_hash=item.get("content_hash", ""),
+            stale_at_approval=item_id in stale_warnings,
         ):
             log_failures.append(item_id)
     for entry in rejections:

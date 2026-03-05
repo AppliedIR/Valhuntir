@@ -244,6 +244,7 @@ def write_approval_log(
     reason: str = "",
     mode: str = "interactive",
     content_hash: str = "",
+    stale_at_approval: bool = False,
 ) -> bool:
     """Write approval/rejection record to approvals.jsonl. Returns True on success."""
     log_file = case_dir / "approvals.jsonl"
@@ -262,6 +263,8 @@ def write_approval_log(
         entry["reason"] = reason
     if content_hash:
         entry["content_hash"] = content_hash
+    if stale_at_approval:
+        entry["stale_at_approval"] = True
     try:
         if log_file.exists():
             os.chmod(log_file, 0o644)

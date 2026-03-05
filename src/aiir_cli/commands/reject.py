@@ -43,10 +43,10 @@ def cmd_reject(args, identity: dict) -> None:
         )
         sys.exit(1)
 
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
     to_reject = []
 
     for item_id in args.ids:
@@ -120,10 +120,10 @@ def cmd_reject(args, identity: dict) -> None:
 
 def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> None:
     """Walk through DRAFT items, prompting to reject or skip each."""
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
 
     drafts = [f for f in findings if f.get("status") == "DRAFT"]
     draft_events = [t for t in timeline if t.get("status") == "DRAFT"]
