@@ -1270,9 +1270,14 @@ def _uninstall_project() -> None:
     if claude_dir.is_dir():
         settings_file = claude_dir / "settings.json"
         hooks_dir = claude_dir / "hooks"
-        hook_file = hooks_dir / "forensic-audit.sh"
-        if hook_file.is_file():
-            claude_files_to_remove.append(hook_file)
+        for hook_name in ("forensic-audit.sh", "pre-bash-guard.sh"):
+            hook_file = hooks_dir / hook_name
+            if hook_file.is_file():
+                claude_files_to_remove.append(hook_file)
+        commands_dir = claude_dir / "commands"
+        welcome_file = commands_dir / "welcome.md"
+        if welcome_file.is_file():
+            claude_files_to_remove.append(welcome_file)
         if settings_file.is_file():
             claude_files_to_remove.append(settings_file)
 
@@ -1306,10 +1311,13 @@ def _uninstall_project() -> None:
                 _remove_forensic_settings(p)
             else:
                 p.unlink()
-        # Clean up empty hooks dir
+        # Clean up empty hooks and commands dirs
         hooks_dir = claude_dir / "hooks"
         if hooks_dir.is_dir() and not any(hooks_dir.iterdir()):
             hooks_dir.rmdir()
+        commands_dir = claude_dir / "commands"
+        if commands_dir.is_dir() and not any(commands_dir.iterdir()):
+            commands_dir.rmdir()
         print("  Removed.")
     else:
         print("  Skipped.")

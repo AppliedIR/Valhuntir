@@ -130,6 +130,34 @@ if $UNINSTALL; then
         ok "Config files removed. $DEPLOY_DIR/cases/ preserved."
     fi
 
+    # Clean shell profile (AIIR_EXAMINER + marker)
+    SHELL_RC=""
+    if [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc";
+    elif [[ -f "$HOME/.zshrc" ]]; then SHELL_RC="$HOME/.zshrc"; fi
+
+    if [[ -n "$SHELL_RC" ]] && grep -q "AIIR" "$SHELL_RC" 2>/dev/null; then
+        sed -i '' '/# AIIR Platform/d' "$SHELL_RC"
+        sed -i '' '/AIIR_EXAMINER/d' "$SHELL_RC"
+        sed -i '' '/# aiir-path/d' "$SHELL_RC"
+        sed -i '' '\|\.aiir/venv/bin|d' "$SHELL_RC"
+        sed -i '' '/register-python-argcomplete aiir/d' "$SHELL_RC"
+        ok "Removed AIIR lines from $SHELL_RC"
+    fi
+
+    # Remove empty ~/.aiir/ directory
+    rmdir "$HOME/.aiir" 2>/dev/null || true
+
+    # Claude Desktop config
+    CLAUDE_DESKTOP_CFG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+    if [[ -f "$CLAUDE_DESKTOP_CFG" ]]; then
+        echo ""
+        echo "  Claude Desktop config: $CLAUDE_DESKTOP_CFG"
+        if prompt_yn_strict "  Remove Claude Desktop config?"; then
+            rm -f "$CLAUDE_DESKTOP_CFG"
+            ok "Removed $CLAUDE_DESKTOP_CFG"
+        fi
+    fi
+
     echo ""
     echo "Uninstall complete."
     exit 0
