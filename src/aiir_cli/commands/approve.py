@@ -27,6 +27,7 @@ import yaml
 
 from aiir_cli.approval_auth import require_confirmation
 from aiir_cli.case_io import (
+    check_case_file_integrity,
     compute_content_hash,
     find_draft_item,
     get_case_dir,
@@ -110,6 +111,8 @@ def _approve_specific(
     """Approve specific finding/event IDs with optional modifications."""
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    check_case_file_integrity(case_dir, "findings.json")
+    check_case_file_integrity(case_dir, "timeline.json")
     to_approve = []
 
     for item_id in ids:
@@ -149,27 +152,44 @@ def _approve_specific(
         item["status"] = "APPROVED"
         item["approved_at"] = now
         item["approved_by"] = identity["examiner"]
-        write_approval_log(
+        item["modified_at"] = now
+
+    # Step 1: Persist primary data FIRST
+    try:
+        save_findings(case_dir, findings)
+        save_timeline(case_dir, timeline)
+    except OSError as e:
+        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
+        print(
+            "No changes were committed. Retry after fixing the issue.", file=sys.stderr
+        )
+        sys.exit(1)
+
+    # Step 2: Audit log (best-effort, warn on failure)
+    log_failures = []
+    for item in to_approve:
+        if not write_approval_log(
             case_dir,
             item["id"],
             "APPROVED",
             identity,
             mode=mode,
-            content_hash=new_hash,
-        )
+            content_hash=item["content_hash"],
+        ):
+            log_failures.append(item["id"])
 
-    # Write HMAC verification ledger entries
-    _write_verification_entries(case_dir, to_approve, identity, config_path, pin, now)
+    # Step 3: HMAC ledger (warn on failure)
+    hmac_failures = _write_verification_entries(
+        case_dir, to_approve, identity, config_path, pin, now
+    )
 
-    # Update modified_at on approve
-    for item in to_approve:
-        item["modified_at"] = now
-
-    # Save back (findings and timeline are already the loaded lists with mutations)
-    save_findings(case_dir, findings)
-    save_timeline(case_dir, timeline)
     approved_ids = [item["id"] for item in to_approve]
     print(f"Approved: {', '.join(approved_ids)}")
+    if log_failures:
+        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
+    if hmac_failures:
+        print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
+        print("  Re-run 'aiir approve' on these items to generate HMAC entries.")
 
 
 def _interactive_review(
@@ -183,6 +203,8 @@ def _interactive_review(
     """Review each DRAFT item with full per-item options."""
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    check_case_file_integrity(case_dir, "findings.json")
+    check_case_file_integrity(case_dir, "timeline.json")
 
     drafts = (
         [] if timeline_only else [f for f in findings if f.get("status") == "DRAFT"]
@@ -290,7 +312,7 @@ def _interactive_review(
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # Apply approvals
+    # Apply approvals (in-memory)
     for item in all_items:
         if item["id"] in approvals:
             staging_hash = item.get("content_hash", "")
@@ -304,22 +326,8 @@ def _interactive_review(
             item["status"] = "APPROVED"
             item["approved_at"] = now
             item["approved_by"] = identity["examiner"]
-            write_approval_log(
-                case_dir,
-                item["id"],
-                "APPROVED",
-                identity,
-                mode=mode,
-                content_hash=new_hash,
-            )
 
-    # Write HMAC verification ledger entries for approved items
-    approved_items = [item for item in all_items if item["id"] in approvals]
-    _write_verification_entries(
-        case_dir, approved_items, identity, config_path, pin, now
-    )
-
-    # Apply rejections
+    # Apply rejections (in-memory)
     for item in all_items:
         disp = dispositions.get(item["id"])
         if disp and disp[0] == "reject":
@@ -329,24 +337,63 @@ def _interactive_review(
             item["rejected_by"] = identity["examiner"]
             if reason:
                 item["rejection_reason"] = reason
-            write_approval_log(
-                case_dir, item["id"], "REJECTED", identity, reason=reason, mode=mode
-            )
 
     # Update modified_at on changed items
     for item in all_items:
         if item["id"] in approvals or item["id"] in rejections:
             item["modified_at"] = now
 
-    # Save back (findings and timeline are already the loaded lists with mutations)
-    save_findings(case_dir, findings)
-    save_timeline(case_dir, timeline)
+    # Step 1: Persist primary data FIRST
+    try:
+        save_findings(case_dir, findings)
+        save_timeline(case_dir, timeline)
+    except OSError as e:
+        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
+        print(
+            "No changes were committed. Retry after fixing the issue.", file=sys.stderr
+        )
+        sys.exit(1)
 
-    # Create TODOs
+    # Step 2: Approval log (best-effort, collect failures)
+    log_failures = []
+    for item in all_items:
+        if item["id"] in approvals and not write_approval_log(
+            case_dir,
+            item["id"],
+            "APPROVED",
+            identity,
+            mode=mode,
+            content_hash=item["content_hash"],
+        ):
+            log_failures.append(item["id"])
+    for item in all_items:
+        disp = dispositions.get(item["id"])
+        if disp and disp[0] == "reject":
+            reason = disp[1] or ""
+            if not write_approval_log(
+                case_dir, item["id"], "REJECTED", identity, reason=reason, mode=mode
+            ):
+                log_failures.append(item["id"])
+
+    # Step 3: HMAC ledger (warn on failure)
+    approved_items = [item for item in all_items if item["id"] in approvals]
+    hmac_failures = _write_verification_entries(
+        case_dir, approved_items, identity, config_path, pin, now
+    )
+
+    # Step 4: TODOs (best-effort)
     if todos_to_create:
-        _create_todos(case_dir, todos_to_create, identity)
+        try:
+            _create_todos(case_dir, todos_to_create, identity)
+        except OSError as e:
+            print(f"  WARNING: Failed to create TODOs: {e}", file=sys.stderr)
 
     print(f"Committed {len(approvals) + len(rejections)} disposition(s).")
+    if log_failures:
+        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
+    if hmac_failures:
+        print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
+        print("  Re-run 'aiir approve' on these items to generate HMAC entries.")
 
 
 def _write_verification_entries(
@@ -356,10 +403,10 @@ def _write_verification_entries(
     config_path: Path,
     pin: str | None,
     now: str,
-) -> None:
-    """Write HMAC verification ledger entries for approved items."""
+) -> list[str]:
+    """Write HMAC verification ledger entries. Returns list of failed item IDs."""
     if not pin:
-        return  # No PIN available (shouldn't happen, but guard)
+        return []  # No PIN — HMAC not applicable, not a failure
 
     try:
         from aiir_cli.approval_auth import get_analyst_salt
@@ -369,12 +416,12 @@ def _write_verification_entries(
             write_ledger_entry,
         )
     except ImportError:
-        return  # verification module not installed
+        return [item.get("id", "") for item in items]
 
     try:
         salt = get_analyst_salt(config_path, identity["examiner"])
     except (ValueError, OSError):
-        return  # salt not available
+        return [item.get("id", "") for item in items]
 
     derived_key = derive_hmac_key(pin, salt)
 
@@ -392,6 +439,7 @@ def _write_verification_entries(
     if not case_id:
         case_id = case_dir.name
 
+    failures: list[str] = []
     for item in items:
         item_id = item.get("id", "")
         item_type = "timeline" if item_id.startswith("T-") else "finding"
@@ -409,10 +457,9 @@ def _write_verification_entries(
         try:
             write_ledger_entry(case_id, entry)
         except OSError:
-            print(
-                "WARNING: HMAC verification ledger unavailable — was setup-sift.sh run?",
-                file=sys.stderr,
-            )
+            failures.append(item_id)
+
+    return failures
 
 
 def _prompt_choice() -> str:
@@ -747,13 +794,30 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
 def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
     """Apply pending dashboard reviews from pending-reviews.json."""
     delta_path = case_dir / "pending-reviews.json"
+    processing_path = case_dir / "pending-reviews.processing"
+
+    # Recovery: handle orphaned .processing from crashed session
+    if processing_path.exists():
+        if delta_path.exists():
+            # Both exist: .processing is stale, delta is newer (user saved again)
+            print(
+                "Found stale .processing file from previous session. "
+                "Removing (newer pending-reviews.json exists)."
+            )
+            processing_path.unlink()
+        else:
+            # Only .processing: crashed mid-apply. Restore for re-review.
+            print(
+                "Found unfinished review from previous session. "
+                "Restoring for re-review."
+            )
+            processing_path.rename(delta_path)
 
     if not delta_path.exists():
         print("No pending dashboard reviews.")
         return
 
     # Atomically rename to .processing (TOCTOU mitigation)
-    processing_path = case_dir / "pending-reviews.processing"
     try:
         delta_path.rename(processing_path)
     except OSError as e:
@@ -812,6 +876,8 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
     # Load case data — all items, not just DRAFTs
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    check_case_file_integrity(case_dir, "findings.json")
+    check_case_file_integrity(case_dir, "timeline.json")
 
     # Build lookup by ID
     item_by_id: dict[str, dict] = {}
@@ -869,7 +935,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
     mode, pin = require_confirmation(config_path, identity["examiner"])
     now = datetime.now(timezone.utc).isoformat()
 
-    # Process approvals
+    # Process approvals (in-memory)
     skipped = []
     approved_ids = []
     for entry in approvals:
@@ -919,23 +985,9 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         item["approved_at"] = now
         item["approved_by"] = identity["examiner"]
         item["modified_at"] = now
-        write_approval_log(
-            case_dir,
-            item_id,
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=new_hash,
-        )
         approved_ids.append(item_id)
 
-    # HMAC verification entries for approved items
-    approved_items = [item_by_id[aid] for aid in approved_ids if aid in item_by_id]
-    _write_verification_entries(
-        case_dir, approved_items, identity, config_path, pin, now
-    )
-
-    # Process rejections
+    # Process rejections (in-memory)
     rejected_ids = []
     for entry in rejections:
         item_id = entry.get("id", "")
@@ -951,12 +1003,46 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         if reason:
             item["rejection_reason"] = reason
         item["modified_at"] = now
-        write_approval_log(
-            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-        )
         rejected_ids.append(item_id)
 
-    # Process TODOs
+    # Step 1: Persist primary data FIRST
+    try:
+        save_findings(case_dir, findings)
+        save_timeline(case_dir, timeline)
+    except OSError as e:
+        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
+        print("The .processing file has been preserved for retry.", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 2: Approval log (best-effort, collect failures)
+    log_failures = []
+    for item_id in approved_ids:
+        item = item_by_id.get(item_id)
+        if item and not write_approval_log(
+            case_dir,
+            item_id,
+            "APPROVED",
+            identity,
+            mode=mode,
+            content_hash=item.get("content_hash", ""),
+        ):
+            log_failures.append(item_id)
+    for entry in rejections:
+        item_id = entry.get("id", "")
+        if item_id in rejected_ids:
+            reason = entry.get("rejection_reason", "") or entry.get("reason", "")
+            if not write_approval_log(
+                case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
+            ):
+                log_failures.append(item_id)
+
+    # Step 3: HMAC ledger (warn on failure)
+    approved_items = [item_by_id[aid] for aid in approved_ids if aid in item_by_id]
+    hmac_failures = _write_verification_entries(
+        case_dir, approved_items, identity, config_path, pin, now
+    )
+
+    # Step 4: TODOs (best-effort)
     if todos:
         todos_to_create = []
         for entry in todos:
@@ -970,14 +1056,19 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
                     "related_findings": [entry.get("id", "")],
                 }
             )
-        _create_todos(case_dir, todos_to_create, identity)
+        try:
+            _create_todos(case_dir, todos_to_create, identity)
+        except OSError as e:
+            print(f"  WARNING: Failed to create TODOs: {e}", file=sys.stderr)
 
-    # Save
-    save_findings(case_dir, findings)
-    save_timeline(case_dir, timeline)
-
-    # Clean up
-    processing_path.unlink(missing_ok=True)
+    # Step 5: Cleanup .processing
+    try:
+        processing_path.unlink(missing_ok=True)
+    except OSError:
+        print(
+            "WARNING: Could not remove .processing file. Remove manually.",
+            file=sys.stderr,
+        )
 
     # Report
     if skipped:
@@ -992,3 +1083,8 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         f"\nApplied: {len(approved_ids)} approved, {len(rejected_ids)} rejected, "
         f"{len(todos)} TODO(s)."
     )
+    if log_failures:
+        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
+    if hmac_failures:
+        print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
+        print("  Re-run 'aiir approve' on these items to generate HMAC entries.")

@@ -150,6 +150,29 @@ def load_case_meta(case_dir: Path) -> dict:
 # --- Data I/O (case root) ---
 
 
+def check_case_file_integrity(case_dir: Path, filename: str) -> None:
+    """Abort if a case data file exists with content but fails to parse."""
+    path = case_dir / filename
+    if not path.exists():
+        return
+    try:
+        raw = path.read_text().strip()
+    except OSError as e:
+        print(f"ERROR: Cannot read {filename}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not raw or raw == "[]":
+        return
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(
+            f"ERROR: {filename} is corrupt and cannot be parsed: {e}",
+            file=sys.stderr,
+        )
+        print("Verify file integrity before proceeding.", file=sys.stderr)
+        sys.exit(1)
+
+
 def load_findings(case_dir: Path) -> list[dict]:
     """Load findings from case root findings.json."""
     findings_file = case_dir / "findings.json"
@@ -221,8 +244,8 @@ def write_approval_log(
     reason: str = "",
     mode: str = "interactive",
     content_hash: str = "",
-) -> None:
-    """Write approval/rejection record to approvals.jsonl."""
+) -> bool:
+    """Write approval/rejection record to approvals.jsonl. Returns True on success."""
     log_file = case_dir / "approvals.jsonl"
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -251,10 +274,12 @@ def write_approval_log(
             os.fsync(f.fileno())
     except OSError:
         print(f"WARNING: Failed to write approval log: {log_file}", file=sys.stderr)
+        return False
     try:
         os.chmod(log_file, 0o444)
     except OSError:
         pass
+    return True
 
 
 def load_approval_log(case_dir: Path) -> list[dict]:

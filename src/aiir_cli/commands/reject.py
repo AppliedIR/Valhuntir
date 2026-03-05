@@ -11,6 +11,7 @@ from pathlib import Path
 
 from aiir_cli.approval_auth import require_confirmation
 from aiir_cli.case_io import (
+    check_case_file_integrity,
     find_draft_item,
     get_case_dir,
     load_findings,
@@ -44,6 +45,8 @@ def cmd_reject(args, identity: dict) -> None:
 
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    check_case_file_integrity(case_dir, "findings.json")
+    check_case_file_integrity(case_dir, "timeline.json")
     to_reject = []
 
     for item_id in args.ids:
@@ -82,24 +85,45 @@ def cmd_reject(args, identity: dict) -> None:
         item["modified_at"] = now
         if reason:
             item["rejection_reason"] = reason
-        write_approval_log(
-            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-        )
         rejected.append(item_id)
 
-    save_findings(case_dir, findings)
-    save_timeline(case_dir, timeline)
+    if not rejected:
+        print("No items rejected.")
+        return
+
+    # Step 1: Persist primary data FIRST
+    try:
+        save_findings(case_dir, findings)
+        save_timeline(case_dir, timeline)
+    except OSError as e:
+        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
+        print(
+            "No changes were committed. Retry after fixing the issue.", file=sys.stderr
+        )
+        sys.exit(1)
+
+    # Step 2: Audit log (best-effort)
+    log_failures = []
+    for item_id in rejected:
+        if not write_approval_log(
+            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
+        ):
+            log_failures.append(item_id)
 
     msg = f"Rejected: {', '.join(rejected)}"
     if reason:
         msg += f" — reason: {reason}"
     print(msg)
+    if log_failures:
+        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
 
 
 def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> None:
     """Walk through DRAFT items, prompting to reject or skip each."""
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    check_case_file_integrity(case_dir, "findings.json")
+    check_case_file_integrity(case_dir, "timeline.json")
 
     drafts = [f for f in findings if f.get("status") == "DRAFT"]
     draft_events = [t for t in timeline if t.get("status") == "DRAFT"]
@@ -161,15 +185,34 @@ def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> No
         item["modified_at"] = now
         if reason:
             item["rejection_reason"] = reason
-        write_approval_log(
-            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-        )
         rejected.append(item_id)
 
-    save_findings(case_dir, findings)
-    save_timeline(case_dir, timeline)
+    if not rejected:
+        print("\nNo items rejected (all stale).")
+        return
+
+    # Step 1: Persist primary data FIRST
+    try:
+        save_findings(case_dir, findings)
+        save_timeline(case_dir, timeline)
+    except OSError as e:
+        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
+        print(
+            "No changes were committed. Retry after fixing the issue.", file=sys.stderr
+        )
+        sys.exit(1)
+
+    # Step 2: Audit log (best-effort)
+    log_failures = []
+    for item_id, reason in to_reject:
+        if item_id in rejected and not write_approval_log(
+            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
+        ):
+            log_failures.append(item_id)
 
     print(f"\nRejected {len(rejected)} item(s): {', '.join(rejected)}")
+    if log_failures:
+        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
 
 
 def _display_item(item: dict) -> None:
