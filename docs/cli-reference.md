@@ -84,7 +84,7 @@ Open the case review dashboard in the default browser.
 aiir dashboard
 ```
 
-The dashboard displays all findings for the active case with inline editing for confidence, justification, observation, interpretation, MITRE IDs, and IOCs. Edits are saved to `pending-reviews.json` in the case directory. Run `aiir approve --review` to apply pending edits.
+The dashboard is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `aiir approve --review` applies pending edits from the CLI.
 
 ## Review
 

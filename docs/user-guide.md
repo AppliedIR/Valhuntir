@@ -170,13 +170,13 @@ aiir reject F-alice-004 --reason "Insufficient evidence, timestamp inconsistency
 
 ### Dashboard Review
 
-The case-dashboard provides a web-based interface for reviewing findings. Open it with:
+The case dashboard is the primary review interface. Open it with:
 
 ```bash
 aiir dashboard
 ```
 
-The dashboard displays all findings with inline editing for:
+The dashboard displays all findings and timeline events with inline editing for:
 
 - **Confidence** — select HIGH / MEDIUM / LOW / SPECULATIVE
 - **Justification** — explain the confidence level
@@ -187,13 +187,15 @@ The dashboard displays all findings with inline editing for:
 
 Findings that include `artifacts` (source files, extraction commands, raw content) display them in the Evidence section. Findings without artifacts fall back to showing `supporting_commands`.
 
-Edits are saved to `pending-reviews.json` in the case directory. To apply them:
+Review, approve, reject, and commit findings directly in the browser using the Commit button (Shift+C). The dashboard uses challenge-response authentication — the password never leaves the browser. Both the dashboard and the CLI produce identical HMAC-signed approval records.
+
+Alternatively, edits can be applied from the CLI:
 
 ```bash
 aiir approve --review
 ```
 
-This applies all pending edits, recomputes content hashes, and updates HMAC signatures. The `pending-reviews.json` file is removed after successful application.
+This applies pending edits saved in `pending-reviews.json`, recomputes content hashes, and updates HMAC signatures.
 
 ## Report Generation
 

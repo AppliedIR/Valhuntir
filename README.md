@@ -121,7 +121,7 @@ Full AIIR is **LLM client agnostic** — connect any MCP-compatible client throu
 
 ## Platform Architecture
 
-The LLM client and the aiir CLI are the two human-facing tools. The aiir CLI always runs on the SIFT workstation — it requires direct filesystem access to the case directory. When the LLM client runs on a separate machine (Path 2), the examiner must have SSH access to SIFT for all CLI operations (approve, review, report, etc.).
+The LLM client, the case dashboard, and the aiir CLI are the three human-facing interfaces. The **case dashboard** is a browser-based review interface served by the gateway — examiners review, edit, approve, reject, and commit findings entirely in the browser with challenge-response authentication. The **aiir CLI** runs on the SIFT workstation for case management, evidence handling, and verification. When the LLM client runs on a separate machine (Path 2), the examiner accesses the dashboard through the gateway (HTTPS) and only needs SSH for CLI-exclusive operations (case init, evidence register, unlock, exec, verify).
 
 ### Core Component Map
 
@@ -129,7 +129,8 @@ The LLM client and the aiir CLI are the two human-facing tools. The aiir CLI alw
 graph TB
     subgraph analyst ["Analyst Machine (Path 2)"]
         CC["LLM Client<br/>(human interface)"]
-        SSH["SSH Session<br/>(human interface)"]
+        BR["Browser<br/>(dashboard)"]
+        SSH["SSH Session<br/>(setup only)"]
     end
 
     subgraph sift ["SIFT Workstation"]
@@ -173,18 +174,22 @@ graph TB
 
     CC -->|"streamable-http"| GW
     CC -->|"streamable-http"| WAPI
+    BR -->|"HTTPS"| GW
     SSH -.->|"SSH"| CLI
     WM -->|"SMB"| CASE
     style SSH fill:#e0e0e0,stroke:#999,color:#333
+    style BR fill:#e8f5e9,stroke:#4caf50,color:#333
 ```
 
-In Path 1 (co-located), the LLM client also runs on SIFT and no SSH is needed. In Path 2, the examiner SSHs into SIFT for all CLI operations.
+In Path 1 (co-located), everything runs on SIFT — no SSH or remote access needed. In Path 2, the examiner reviews and commits findings through the dashboard in their browser. SSH is only needed for CLI-exclusive operations (case init, evidence register, unlock, exec, verify).
 
 ### Human-in-the-Loop Workflow
 
 All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them via the `aiir` CLI or the web dashboard. Approvals require a password to prevent AI from overriding human review.
 
-![Dashboard](docs/images/dashboard.png)
+![Dashboard — Findings](docs/images/dashboard.png)
+
+![Dashboard — Timeline](docs/images/timeline.png)
 
 ```mermaid
 sequenceDiagram
@@ -200,18 +205,24 @@ sequenceDiagram
     alt CLI review
         Human->>Case: aiir approve (interactive review)
         Human-->>Case: Edit, add note, or approve as-is
+        Human->>Case: APPROVED or REJECTED
     else Dashboard review
+        Dash->>Case: Review, edit, approve/reject in browser
+        Dash->>Case: Commit (Shift+C, challenge-response auth)
+        Note over Dash: Password never leaves browser
+        Dash->>Case: APPROVED or REJECTED + HMAC signed
+    else Dashboard + CLI review
         Dash->>Case: Edit findings in browser
         Note over Case: pending-reviews.json
         Human->>Case: aiir approve --review
+        Human->>Case: APPROVED or REJECTED
     end
-    Human->>Case: APPROVED or REJECTED
 
     Note over Case: Only APPROVED items<br/>appear in reports
     Human->>Case: aiir report --full
 ```
 
-The **dashboard** provides a visual interface for reviewing findings with inline editing — examiners can modify confidence, justification, observation, interpretation, MITRE IDs, and IOCs directly in the browser. Edits are saved to `pending-reviews.json` and applied as a batch with `aiir approve --review`, which recomputes content hashes and HMAC signatures.
+The **case dashboard** is the primary review interface. Examiners review findings and timeline events, edit fields (confidence, justification, observation, interpretation, MITRE IDs, IOCs), approve or reject items, and commit decisions — all in the browser. The Commit button (Shift+C) uses challenge-response authentication: the browser derives a PBKDF2 key from the examiner's password and proves knowledge via HMAC — the password never leaves the browser. Alternatively, `aiir approve --review` applies dashboard edits from the CLI.
 
 ### Where Things Run
 
@@ -225,9 +236,9 @@ The **dashboard** provides a visual interface for reviewing findings with inline
 | forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more |
 | windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation |
 | opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (10 tools) |
-| case-dashboard | SIFT | (via gateway) | Web-based finding review and triage UI |
+| case-dashboard | SIFT | (via gateway) | Browser-based review, approval, and commit interface. Primary review UI — no SSH needed. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (7 tools) |
-| aiir CLI | SIFT | -- | Human-only: approve/reject findings, review cases, manage evidence. Remote examiners access via SSH. |
+| aiir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via dashboard. Remote examiners need SSH only for CLI-exclusive operations. |
 | forensic-knowledge | anywhere | -- | Shared YAML data package (tools, artifacts, discipline) |
 
 The gateway exposes each backend as a separate MCP endpoint. Clients can connect to the aggregate endpoint or to individual backends:
@@ -248,7 +259,7 @@ http://localhost:4508/mcp/opencti-mcp
 Two primary deployment paths:
 
 - **Path 1 — Co-located.** LLM client runs directly on the SIFT workstation. No TLS or token auth needed. All forensic controls apply (sandbox, audit hooks, password gate). Simplest setup — single machine, one installer.
-- **Path 2 — Remote orchestrator.** LLM client runs on a separate machine (laptop, desktop). Connects to the gateway over the network with TLS and bearer token authentication. The examiner must have SSH access to SIFT for CLI operations (approve, reject, evidence unlock, execute). Run `setup-sift.sh --remote` to generate TLS certificates and bind the gateway to all interfaces. MCP-only clients (Claude Desktop, LibreChat) are well suited for this path — they can only reach SIFT through audited MCP tools.
+- **Path 2 — Remote orchestrator.** LLM client runs on a separate machine (laptop, desktop). Connects to the gateway over the network with TLS and bearer token authentication. The examiner reviews and commits findings through the case dashboard in their browser (also served by the gateway). SSH is only needed for CLI-exclusive operations: case init, evidence register, evidence unlock, and exec. Run `setup-sift.sh --remote` to generate TLS certificates and bind the gateway to all interfaces. MCP-only clients (Claude Desktop, LibreChat) are well suited for this path — they can only reach SIFT through audited MCP tools, and the dashboard handles all review needs.
 
 #### Solo Analyst on SIFT (Path 1)
 
@@ -330,7 +341,8 @@ graph LR
 graph LR
     subgraph analyst ["Analyst Machine"]
         CC["LLM Client<br/>(human interface)"]
-        SSH["SSH Session<br/>(human interface)"]
+        BR["Browser<br/>(dashboard)"]
+        SSH["SSH Session<br/>(setup only)"]
     end
 
     subgraph sift ["SIFT Workstation"]
@@ -388,9 +400,11 @@ graph LR
     CC -->|"HTTPS"| ML
     CC -->|"HTTPS"| ZE
     OC -->|"HTTP(S)"| OCTI
+    BR -->|"HTTPS"| GW
     SSH -.->|"SSH"| CLI
     WM -->|"SMB"| CASE
     style SSH fill:#e0e0e0,stroke:#999,color:#333
+    style BR fill:#e8f5e9,stroke:#4caf50,color:#333
 ```
 
 #### Multi-Examiner Team
@@ -589,7 +603,7 @@ The remaining commands can also be performed through MCP tools (case-mcp, forens
 aiir dashboard                                           # Open case review dashboard in browser
 ```
 
-Opens the case-dashboard web UI for the active case. The dashboard displays all findings with inline editing for confidence, justification, observation, interpretation, MITRE IDs, and IOCs. Edits are saved to `pending-reviews.json` in the case directory. Run `aiir approve --review` to apply pending edits.
+Opens the case-dashboard web UI for the active case. The dashboard is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `aiir approve --review` applies pending edits from the CLI.
 
 #### case
 
