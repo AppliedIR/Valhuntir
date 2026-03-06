@@ -1,6 +1,6 @@
 """Reject staged findings and timeline events.
 
-Every rejection requires human confirmation via /dev/tty (or PIN).
+Every rejection requires human confirmation via /dev/tty (or password).
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def cmd_reject(args, identity: dict) -> None:
     if reason:
         print(f"  Reason: {reason}")
 
-    mode, _pin = require_confirmation(config_path, identity["examiner"])
+    mode, _password = require_confirmation(config_path, identity["examiner"])
 
     # Reload from disk to preserve any concurrent MCP writes
     reject_ids = [item["id"] for item in to_reject]
@@ -135,7 +135,7 @@ def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> No
 
     print(f"Reviewing {len(all_items)} DRAFT item(s) for rejection...\n")
 
-    mode, _pin = require_confirmation(config_path, identity["examiner"])
+    mode, _password = require_confirmation(config_path, identity["examiner"])
 
     to_reject: list[tuple[str, str]] = []  # (id, reason)
 

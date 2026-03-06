@@ -1,7 +1,7 @@
 """AIIR CLI entry point.
 
 Human-only actions that the LLM orchestrator cannot bypass:
-- approve/reject findings and timeline events (/dev/tty + optional PIN)
+- approve/reject findings and timeline events (/dev/tty + password)
 - evidence management (lock/unlock)
 - forensic command execution with audit
 - analyst identity configuration
@@ -327,12 +327,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--show", action="store_true", help="Show current configuration"
     )
     p_config.add_argument(
-        "--setup-pin", action="store_true", help="Set approval PIN for current examiner"
+        "--setup-password",
+        action="store_true",
+        help="Set approval password for current examiner",
     )
     p_config.add_argument(
-        "--reset-pin",
+        "--reset-password",
         action="store_true",
-        help="Reset approval PIN (requires current PIN)",
+        help="Reset approval password (requires current password)",
     )
 
     # report

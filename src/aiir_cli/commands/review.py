@@ -292,10 +292,10 @@ def _show_findings_verify(
     if unverified:
         print("WARNING: Some findings have status changes without approval records.")
 
-    # --- Ledger reconciliation (no PIN needed) ---
+    # --- Ledger reconciliation (no password needed) ---
     _show_ledger_reconciliation(case_dir)
 
-    # --- HMAC verification (requires PIN) ---
+    # --- HMAC verification (requires password) ---
     _show_hmac_verification(case_dir, identity=identity, mine_only=mine_only)
 
 
@@ -349,7 +349,7 @@ def _show_ledger_reconciliation(case_dir: Path) -> None:
 
     if alerts:
         print(
-            f"\n{alerts} alert(s) found. Run 'aiir review --findings --verify' with PIN for full HMAC check."
+            f"\n{alerts} alert(s) found. Run 'aiir review --findings --verify' with password for full HMAC check."
         )
 
 
@@ -358,7 +358,7 @@ def _show_hmac_verification(
     identity: dict | None = None,
     mine_only: bool = False,
 ) -> None:
-    """Perform full HMAC verification with PIN prompt."""
+    """Perform full HMAC verification with password prompt."""
     try:
         from aiir_cli.approval_auth import get_analyst_salt, getpass_prompt
         from aiir_cli.verification import read_ledger, verify_items
@@ -383,15 +383,15 @@ def _show_hmac_verification(
     if mine_only and identity:
         examiners = [e for e in examiners if e == identity.get("examiner")]
 
-    print("\nHMAC Verification (PIN required)")
+    print("\nHMAC Verification (password required)")
     print(f"Examiners with ledger entries: {', '.join(examiners)}")
 
     for examiner in examiners:
         try:
             print(f"\n  Verifying entries for examiner '{examiner}':")
-            pin = getpass_prompt(f"  Enter PIN for '{examiner}': ")
+            password = getpass_prompt(f"  Enter password for '{examiner}': ")
             salt = get_analyst_salt(config_path, examiner)
-            results = verify_items(case_id, pin, salt, examiner)
+            results = verify_items(case_id, password, salt, examiner)
 
             confirmed = sum(1 for r in results if r["verified"])
             failed = sum(1 for r in results if not r["verified"])

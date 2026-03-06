@@ -1,4 +1,4 @@
-"""Tests for approve and reject commands (hardened with mandatory PIN)."""
+"""Tests for approve and reject commands (hardened with mandatory password)."""
 
 import json
 from argparse import Namespace
@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from aiir_cli.approval_auth import setup_pin
+from aiir_cli.approval_auth import setup_password
 from aiir_cli.case_io import (
     load_approval_log,
     load_findings,
@@ -59,17 +59,20 @@ def config_path(tmp_path):
 
 
 @pytest.fixture
-def pin_config(config_path):
-    """Set up a PIN for analyst1 and return config_path."""
-    with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["1234", "1234"]):
-        setup_pin(config_path, "analyst1")
+def pw_config(config_path):
+    """Set up a password for analyst1 and return config_path."""
+    with patch(
+        "aiir_cli.approval_auth.getpass_prompt",
+        side_effect=["testpass1", "testpass1"],
+    ):
+        setup_password(config_path, "analyst1")
     return config_path
 
 
 @pytest.fixture(autouse=True)
 def isolate_lockout_file(tmp_path, monkeypatch):
     """Point lockout file to temp dir to avoid cross-test contamination."""
-    lockout = tmp_path / ".pin_lockout"
+    lockout = tmp_path / ".password_lockout"
     monkeypatch.setattr("aiir_cli.approval_auth._LOCKOUT_FILE", lockout)
     yield lockout
     if lockout.exists():
@@ -116,63 +119,63 @@ def staged_timeline(case_dir):
 
 
 class TestApproveSpecific:
-    def test_approve_finding(self, case_dir, identity, staged_finding, pin_config):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
-            _approve_specific(case_dir, ["F-tester-001"], identity, pin_config)
+    def test_approve_finding(self, case_dir, identity, staged_finding, pw_config):
+        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+            _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "APPROVED"
         assert findings[0]["approved_by"] == "analyst1"
 
     def test_approve_timeline_event(
-        self, case_dir, identity, staged_timeline, pin_config
+        self, case_dir, identity, staged_timeline, pw_config
     ):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
-            _approve_specific(case_dir, ["T-tester-001"], identity, pin_config)
+        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+            _approve_specific(case_dir, ["T-tester-001"], identity, pw_config)
         timeline = load_timeline(case_dir)
         assert timeline[0]["status"] == "APPROVED"
 
     def test_approve_nonexistent_id(
-        self, case_dir, identity, staged_finding, capsys, pin_config
+        self, case_dir, identity, staged_finding, capsys, pw_config
     ):
-        _approve_specific(case_dir, ["F-999"], identity, pin_config)
+        _approve_specific(case_dir, ["F-999"], identity, pw_config)
         captured = capsys.readouterr()
         assert "not found or not DRAFT" in captured.err
 
     def test_approve_already_approved(
-        self, case_dir, identity, staged_finding, pin_config
+        self, case_dir, identity, staged_finding, pw_config
     ):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
-            _approve_specific(case_dir, ["F-tester-001"], identity, pin_config)
-        _approve_specific(case_dir, ["F-tester-001"], identity, pin_config)
+        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+            _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
+        _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "APPROVED"
 
-    def test_approval_log_written(self, case_dir, identity, staged_finding, pin_config):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
-            _approve_specific(case_dir, ["F-tester-001"], identity, pin_config)
+    def test_approval_log_written(self, case_dir, identity, staged_finding, pw_config):
+        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+            _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         log = load_approval_log(case_dir)
         assert len(log) == 1
         assert log[0]["item_id"] == "F-tester-001"
         assert log[0]["action"] == "APPROVED"
         assert log[0]["examiner"] == "analyst1"
-        assert log[0]["mode"] == "pin"
+        assert log[0]["mode"] == "password"
 
-    def test_no_pin_configured_exits(
+    def test_no_password_configured_exits(
         self, case_dir, identity, staged_finding, config_path, capsys
     ):
-        """Approval without PIN configured exits with setup instructions."""
+        """Approval without password configured exits with setup instructions."""
         with pytest.raises(SystemExit):
             _approve_specific(case_dir, ["F-tester-001"], identity, config_path)
         captured = capsys.readouterr()
-        assert "No approval PIN configured" in captured.err
+        assert "No approval password configured" in captured.err
 
-    def test_approve_with_note(self, case_dir, identity, staged_finding, pin_config):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
+    def test_approve_with_note(self, case_dir, identity, staged_finding, pw_config):
+        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(
                 case_dir,
                 ["F-tester-001"],
                 identity,
-                pin_config,
+                pw_config,
                 note="Correct finding, classify as generic.",
             )
         findings = load_findings(case_dir)
@@ -184,14 +187,14 @@ class TestApproveSpecific:
         )
 
     def test_approve_with_interpretation_override(
-        self, case_dir, identity, staged_finding, pin_config
+        self, case_dir, identity, staged_finding, pw_config
     ):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
+        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(
                 case_dir,
                 ["F-tester-001"],
                 identity,
-                pin_config,
+                pw_config,
                 interpretation="Process masquerading confirmed",
             )
         findings = load_findings(case_dir)
@@ -224,7 +227,7 @@ class TestApproveInteractive:
         assert "No staged items" in captured.out
 
     def test_interactive_approve_all(
-        self, case_dir, identity, staged_finding, pin_config, capsys
+        self, case_dir, identity, staged_finding, pw_config, capsys
     ):
         args = Namespace(
             ids=[],
@@ -239,17 +242,19 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["a"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "APPROVED"
 
     def test_interactive_note(
-        self, case_dir, identity, staged_finding, pin_config, capsys
+        self, case_dir, identity, staged_finding, pw_config, capsys
     ):
         args = Namespace(
             ids=[],
@@ -264,10 +269,12 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["n", "Good finding"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         findings = load_findings(case_dir)
@@ -275,7 +282,7 @@ class TestApproveInteractive:
         assert findings[0]["examiner_notes"][0]["note"] == "Good finding"
 
     def test_interactive_reject(
-        self, case_dir, identity, staged_finding, pin_config, capsys
+        self, case_dir, identity, staged_finding, pw_config, capsys
     ):
         args = Namespace(
             ids=[],
@@ -290,10 +297,12 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["r", "Bad evidence"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         findings = load_findings(case_dir)
@@ -301,7 +310,7 @@ class TestApproveInteractive:
         assert findings[0]["rejection_reason"] == "Bad evidence"
 
     def test_interactive_skip(
-        self, case_dir, identity, staged_finding, pin_config, capsys
+        self, case_dir, identity, staged_finding, pw_config, capsys
     ):
         args = Namespace(
             ids=[],
@@ -316,17 +325,19 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["s"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "DRAFT"
 
     def test_interactive_todo(
-        self, case_dir, identity, staged_finding, pin_config, capsys
+        self, case_dir, identity, staged_finding, pw_config, capsys
     ):
         args = Namespace(
             ids=[],
@@ -340,13 +351,16 @@ class TestApproveInteractive:
             timeline_only=False,
         )
         with patch(
-            "builtins.input", side_effect=["t", "Verify with net logs", "jane", "high"]
+            "builtins.input",
+            side_effect=["t", "Verify with net logs", "jane", "high"],
         ):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         # Finding stays DRAFT
@@ -360,7 +374,13 @@ class TestApproveInteractive:
         assert todos[0]["related_findings"] == ["F-tester-001"]
 
     def test_by_filter(
-        self, case_dir, identity, staged_finding, staged_timeline, pin_config, capsys
+        self,
+        case_dir,
+        identity,
+        staged_finding,
+        staged_timeline,
+        pw_config,
+        capsys,
     ):
         """Filter by creator — only jane's items shown."""
         args = Namespace(
@@ -376,10 +396,12 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["a"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         # Only T-tester-001 (by jane) approved, F-tester-001 (by steve) stays DRAFT
@@ -389,7 +411,13 @@ class TestApproveInteractive:
         assert timeline[0]["status"] == "APPROVED"
 
     def test_findings_only(
-        self, case_dir, identity, staged_finding, staged_timeline, pin_config, capsys
+        self,
+        case_dir,
+        identity,
+        staged_finding,
+        staged_timeline,
+        pw_config,
+        capsys,
     ):
         args = Namespace(
             ids=[],
@@ -404,10 +432,12 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["a"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home", return_value=case_dir.parent
+                "aiir_cli.commands.approve.Path.home",
+                return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
         findings = load_findings(case_dir)
@@ -417,7 +447,7 @@ class TestApproveInteractive:
 
 
 class TestReject:
-    def test_reject_finding(self, case_dir, identity, staged_finding, pin_config):
+    def test_reject_finding(self, case_dir, identity, staged_finding, pw_config):
         args = Namespace(
             ids=["F-tester-001"],
             reason="Insufficient evidence",
@@ -425,7 +455,10 @@ class TestReject:
             analyst=None,
         )
         with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
-            with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
+            with patch(
+                "aiir_cli.approval_auth.getpass_prompt",
+                return_value="testpass1",
+            ):
                 cmd_reject(args, identity)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "REJECTED"
@@ -433,20 +466,23 @@ class TestReject:
         assert findings[0]["rejected_by"] == "analyst1"
         assert isinstance(findings[0]["rejected_by"], str)
 
-    def test_reject_writes_log(self, case_dir, identity, staged_finding, pin_config):
+    def test_reject_writes_log(self, case_dir, identity, staged_finding, pw_config):
         args = Namespace(
             ids=["F-tester-001"], reason="Bad data", case=None, analyst=None
         )
         with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
-            with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
+            with patch(
+                "aiir_cli.approval_auth.getpass_prompt",
+                return_value="testpass1",
+            ):
                 cmd_reject(args, identity)
         log = load_approval_log(case_dir)
         assert log[0]["action"] == "REJECTED"
         assert log[0]["reason"] == "Bad data"
-        assert log[0]["mode"] == "pin"
+        assert log[0]["mode"] == "password"
 
     def test_reject_nonexistent(
-        self, case_dir, identity, staged_finding, capsys, pin_config
+        self, case_dir, identity, staged_finding, capsys, pw_config
     ):
         args = Namespace(ids=["F-999"], reason="nope", case=None, analyst=None)
         with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
@@ -454,10 +490,13 @@ class TestReject:
         captured = capsys.readouterr()
         assert "not found or not DRAFT" in captured.err
 
-    def test_reject_no_reason(self, case_dir, identity, staged_finding, pin_config):
+    def test_reject_no_reason(self, case_dir, identity, staged_finding, pw_config):
         args = Namespace(ids=["F-tester-001"], reason="", case=None, analyst=None)
         with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
-            with patch("aiir_cli.approval_auth.getpass_prompt", return_value="1234"):
+            with patch(
+                "aiir_cli.approval_auth.getpass_prompt",
+                return_value="testpass1",
+            ):
                 cmd_reject(args, identity)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "REJECTED"
@@ -465,7 +504,7 @@ class TestReject:
         assert "reason" not in log[0]
 
     def test_reject_preserves_concurrent_finding(
-        self, case_dir, identity, staged_finding, pin_config
+        self, case_dir, identity, staged_finding, pw_config
     ):
         """A finding added between display and confirmation survives rejection."""
         original_confirm = __import__(
@@ -494,7 +533,8 @@ class TestReject:
                 side_effect=confirm_and_add_finding,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt", return_value="1234"
+                    "aiir_cli.approval_auth.getpass_prompt",
+                    return_value="testpass1",
                 ):
                     cmd_reject(args, identity)
 

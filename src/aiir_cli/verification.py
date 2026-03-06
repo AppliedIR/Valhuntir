@@ -5,8 +5,8 @@ This path is outside any user's home directory and is unreachable by the
 Claude Code sandbox from any CWD.
 
 Each entry records an HMAC-SHA256 over the description text, keyed by
-PBKDF2(PIN, salt). The LLM cannot forge entries because it does not know
-the PIN-derived key.
+PBKDF2(password, salt). The LLM cannot forge entries because it does not know
+the password-derived key.
 """
 
 from __future__ import annotations
@@ -30,9 +30,9 @@ def _validate_case_id(case_id: str) -> None:
         raise ValueError(f"Invalid case ID (path traversal characters): {case_id}")
 
 
-def derive_hmac_key(pin: str, salt: bytes) -> bytes:
-    """PBKDF2-derive HMAC key from PIN + salt."""
-    return hashlib.pbkdf2_hmac("sha256", pin.encode(), salt, PBKDF2_ITERATIONS)
+def derive_hmac_key(password: str, salt: bytes) -> bytes:
+    """PBKDF2-derive HMAC key from password + salt."""
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
 
 
 def compute_hmac(derived_key: bytes, description: str) -> str:
@@ -75,9 +75,9 @@ def copy_ledger_to_case(case_id: str, case_dir: Path) -> None:
         shutil.copy2(src, case_dir / "verification.jsonl")
 
 
-def verify_items(case_id: str, pin: str, salt: bytes, examiner: str) -> list[dict]:
+def verify_items(case_id: str, password: str, salt: bytes, examiner: str) -> list[dict]:
     """Verify HMAC for all items belonging to examiner."""
-    derived_key = derive_hmac_key(pin, salt)
+    derived_key = derive_hmac_key(password, salt)
     entries = read_ledger(case_id)
     results = []
     for entry in entries:
@@ -98,15 +98,15 @@ def verify_items(case_id: str, pin: str, salt: bytes, examiner: str) -> list[dic
 def rehmac_entries(
     case_id: str,
     examiner: str,
-    old_pin: str,
+    old_password: str,
     old_salt: bytes,
-    new_pin: str,
+    new_password: str,
     new_salt: bytes,
     *,
     old_key: bytes | None = None,
     new_key: bytes | None = None,
 ) -> int:
-    """Re-HMAC all entries for examiner after PIN rotation. Returns count.
+    """Re-HMAC all entries for examiner after password rotation. Returns count.
 
     Pass pre-derived old_key/new_key to avoid redundant PBKDF2 derivation
     when calling in a loop across multiple ledger files.
@@ -117,9 +117,9 @@ def rehmac_entries(
         return 0
 
     if old_key is None:
-        old_key = derive_hmac_key(old_pin, old_salt)
+        old_key = derive_hmac_key(old_password, old_salt)
     if new_key is None:
-        new_key = derive_hmac_key(new_pin, new_salt)
+        new_key = derive_hmac_key(new_password, new_salt)
 
     entries = read_ledger(case_id)
     count = 0

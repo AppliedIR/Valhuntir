@@ -27,14 +27,14 @@ def case_dir(tmp_path):
 
 @pytest.fixture()
 def config_path(tmp_path):
-    """Create a config with PIN salt for test analyst."""
+    """Create a config with password salt for test analyst."""
     import hashlib
     import secrets
 
     cfg_path = tmp_path / "config.yaml"
     salt = secrets.token_bytes(32)
-    pin_hash = hashlib.pbkdf2_hmac("sha256", b"testpin", salt, 600_000).hex()
-    config = {"pins": {"alice": {"hash": pin_hash, "salt": salt.hex()}}}
+    pw_hash = hashlib.pbkdf2_hmac("sha256", b"testpassword", salt, 600_000).hex()
+    config = {"passwords": {"alice": {"hash": pw_hash, "salt": salt.hex()}}}
     cfg_path.write_text(yaml.dump(config))
     return cfg_path
 
@@ -56,7 +56,7 @@ def test_approve_writes_ledger_entry(case_dir, config_path, tmp_path):
         items,
         identity,
         config_path,
-        pin="testpin",
+        password="testpassword",
         now="2026-02-26T00:00:00Z",
     )
 
@@ -105,7 +105,7 @@ def test_approve_timeline_type_field(case_dir, config_path, tmp_path):
         items,
         identity,
         config_path,
-        pin="testpin",
+        password="testpassword",
         now="2026-02-26T00:00:00Z",
     )
 
@@ -141,7 +141,7 @@ def test_interactive_approve_writes_ledger(case_dir, config_path, tmp_path):
         items,
         identity,
         config_path,
-        pin="testpin",
+        password="testpassword",
         now="2026-02-26T00:00:00Z",
     )
 
@@ -159,8 +159,8 @@ def test_interactive_approve_writes_ledger(case_dir, config_path, tmp_path):
         assert entry["approved_by"] == "alice"
 
 
-def test_no_pin_skips_ledger(case_dir, config_path, tmp_path):
-    """When pin is None, no ledger entries are written."""
+def test_no_password_skips_ledger(case_dir, config_path, tmp_path):
+    """When password is None, no ledger entries are written."""
     items = [
         {
             "id": "F-alice-20260226-001",
@@ -172,7 +172,12 @@ def test_no_pin_skips_ledger(case_dir, config_path, tmp_path):
     identity = {"examiner": "alice"}
 
     _write_verification_entries(
-        case_dir, items, identity, config_path, pin=None, now="2026-02-26T00:00:00Z"
+        case_dir,
+        items,
+        identity,
+        config_path,
+        password=None,
+        now="2026-02-26T00:00:00Z",
     )
 
     entries = read_ledger("INC-2026-TEST")

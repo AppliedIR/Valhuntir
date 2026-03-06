@@ -26,11 +26,13 @@ def identity():
 
 
 class FakeArgs:
-    def __init__(self, examiner=None, show=False, setup_pin=False, reset_pin=False):
+    def __init__(
+        self, examiner=None, show=False, setup_password=False, reset_password=False
+    ):
         self.examiner = examiner
         self.show = show
-        self.setup_pin = setup_pin
-        self.reset_pin = reset_pin
+        self.setup_password = setup_password
+        self.reset_password = reset_password
 
 
 class TestConfig:

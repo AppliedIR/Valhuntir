@@ -7,30 +7,32 @@ from pathlib import Path
 
 import yaml
 
-from aiir_cli.approval_auth import reset_pin, setup_pin
+from aiir_cli.approval_auth import reset_password, setup_password
 
 
 def cmd_config(args, identity: dict) -> None:
     """Configure AIIR settings."""
     config_path = Path.home() / ".aiir" / "config.yaml"
 
-    if getattr(args, "setup_pin", False):
-        setup_pin(config_path, identity["examiner"])
+    if getattr(args, "setup_password", False):
+        setup_password(config_path, identity["examiner"])
         return
 
-    if getattr(args, "reset_pin", False):
-        reset_pin(config_path, identity["examiner"])
+    if getattr(args, "reset_password", False):
+        reset_password(config_path, identity["examiner"])
         return
 
     if args.show:
         if config_path.exists():
             try:
                 content = config_path.read_text()
-                # Redact legacy PIN material during transition
+                # Redact legacy password/PIN material during transition
                 try:
                     config = yaml.safe_load(content)
-                    if isinstance(config, dict) and "pins" in config:
-                        config["pins"] = {k: "***REDACTED***" for k in config["pins"]}
+                    if isinstance(config, dict):
+                        for key in ("passwords", "pins"):
+                            if key in config:
+                                config[key] = {k: "***REDACTED***" for k in config[key]}
                         content = yaml.dump(config, default_flow_style=False)
                 except yaml.YAMLError:
                     pass
@@ -88,5 +90,5 @@ def cmd_config(args, identity: dict) -> None:
         return
 
     print(
-        "Use --examiner <name> to set identity, --show to view config, --setup-pin to configure PIN."
+        "Use --examiner <name> to set identity, --show to view config, --setup-password to configure password."
     )

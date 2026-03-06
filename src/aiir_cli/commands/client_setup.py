@@ -85,8 +85,8 @@ _FORENSIC_DENY_RULES = {
     "Write(**/.aiir/gateway.yaml)",
     "Edit(**/.aiir/config.yaml)",
     "Write(**/.aiir/config.yaml)",
-    "Edit(**/.aiir/.pin_lockout)",
-    "Write(**/.aiir/.pin_lockout)",
+    "Edit(**/.aiir/.password_lockout)",
+    "Write(**/.aiir/.password_lockout)",
     # Sync with template (was in settings.json but missing here)
     "Edit(**/pending-reviews.json)",
     "Write(**/pending-reviews.json)",

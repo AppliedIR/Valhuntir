@@ -1,6 +1,6 @@
 """Approve staged findings and timeline events.
 
-Every approval requires PIN confirmation via /dev/tty.
+Every approval requires password confirmation via /dev/tty.
 This blocks AI-via-Bash from approving without human involvement.
 
 Interactive review options per item:
@@ -137,7 +137,7 @@ def _approve_specific(
             _apply_note(item, note, identity)
 
     print(f"\n{len(to_approve)} item(s) to approve.")
-    mode, pin = require_confirmation(config_path, identity["examiner"])
+    mode, password = require_confirmation(config_path, identity["examiner"])
 
     now = datetime.now(timezone.utc).isoformat()
     for item in to_approve:
@@ -180,7 +180,7 @@ def _approve_specific(
 
     # Step 3: HMAC ledger (warn on failure)
     hmac_failures = _write_verification_entries(
-        case_dir, to_approve, identity, config_path, pin, now
+        case_dir, to_approve, identity, config_path, password, now
     )
 
     approved_ids = [item["id"] for item in to_approve]
@@ -224,8 +224,8 @@ def _interactive_review(
 
     print(f"Reviewing {len(all_items)} DRAFT item(s)...\n")
 
-    # Authenticate before review so examiner doesn't lose work on PIN failure
-    mode, pin = require_confirmation(config_path, identity["examiner"])
+    # Authenticate before review so examiner doesn't lose work on password failure
+    mode, password = require_confirmation(config_path, identity["examiner"])
 
     # Collect dispositions
     dispositions: dict[str, tuple] = {}  # id -> (action, extra_data)
@@ -378,7 +378,7 @@ def _interactive_review(
     # Step 3: HMAC ledger (warn on failure)
     approved_items = [item for item in all_items if item["id"] in approvals]
     hmac_failures = _write_verification_entries(
-        case_dir, approved_items, identity, config_path, pin, now
+        case_dir, approved_items, identity, config_path, password, now
     )
 
     # Step 4: TODOs (best-effort)
@@ -401,12 +401,12 @@ def _write_verification_entries(
     items: list[dict],
     identity: dict,
     config_path: Path,
-    pin: str | None,
+    password: str | None,
     now: str,
 ) -> list[str]:
     """Write HMAC verification ledger entries. Returns list of failed item IDs."""
-    if not pin:
-        return []  # No PIN — HMAC not applicable, not a failure
+    if not password:
+        return []  # No password — HMAC not applicable, not a failure
 
     try:
         from aiir_cli.approval_auth import get_analyst_salt
@@ -423,7 +423,7 @@ def _write_verification_entries(
     except (ValueError, OSError):
         return [item.get("id", "") for item in items]
 
-    derived_key = derive_hmac_key(pin, salt)
+    derived_key = derive_hmac_key(password, salt)
 
     # Resolve case_id from CASE.yaml
     case_id = ""
@@ -946,8 +946,8 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         print("Nothing to apply.")
         return
 
-    # PIN confirmation
-    mode, pin = require_confirmation(config_path, identity["examiner"])
+    # Password confirmation
+    mode, password = require_confirmation(config_path, identity["examiner"])
     now = datetime.now(timezone.utc).isoformat()
 
     # Process approvals (in-memory)
@@ -1109,7 +1109,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
     # Step 3: HMAC ledger (warn on failure)
     approved_items = [item_by_id[aid] for aid in approved_ids if aid in item_by_id]
     hmac_failures = _write_verification_entries(
-        case_dir, approved_items, identity, config_path, pin, now
+        case_dir, approved_items, identity, config_path, password, now
     )
 
     # Step 4: TODOs (best-effort)

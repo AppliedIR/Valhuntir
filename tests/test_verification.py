@@ -28,7 +28,7 @@ def test_derive_hmac_key():
     assert key1 == key2
     assert len(key1) == 32  # SHA-256 output
 
-    # Different PIN -> different key
+    # Different password -> different key
     key3 = derive_hmac_key("5678", b"salt")
     assert key3 != key1
 
@@ -64,11 +64,11 @@ def test_write_and_read_ledger(tmp_path):
     assert entries[0]["content_snapshot"] == "Test finding"
 
 
-def test_verify_items_correct_pin(tmp_path):
-    """Correct PIN produces CONFIRMED results."""
-    pin = "mypin"
+def test_verify_items_correct_password(tmp_path):
+    """Correct password produces CONFIRMED results."""
+    password = "mypassword"
     salt = b"mysalt"
-    key = derive_hmac_key(pin, salt)
+    key = derive_hmac_key(password, salt)
     desc = "Suspicious process found"
 
     entry = {
@@ -82,18 +82,18 @@ def test_verify_items_correct_pin(tmp_path):
     }
     write_ledger_entry("INC-2026-001", entry)
 
-    results = verify_items("INC-2026-001", pin, salt, "alice")
+    results = verify_items("INC-2026-001", password, salt, "alice")
     assert len(results) == 1
     assert results[0]["verified"] is True
     assert results[0]["finding_id"] == "F-001"
 
 
-def test_verify_items_wrong_pin(tmp_path):
-    """Wrong PIN produces unverified results."""
-    correct_pin = "correct"
-    wrong_pin = "wrong"
+def test_verify_items_wrong_password(tmp_path):
+    """Wrong password produces unverified results."""
+    correct_password = "correct1"
+    wrong_password = "wrongpwd"
     salt = b"mysalt"
-    key = derive_hmac_key(correct_pin, salt)
+    key = derive_hmac_key(correct_password, salt)
     desc = "Suspicious process"
 
     entry = {
@@ -107,16 +107,16 @@ def test_verify_items_wrong_pin(tmp_path):
     }
     write_ledger_entry("INC-2026-001", entry)
 
-    results = verify_items("INC-2026-001", wrong_pin, salt, "alice")
+    results = verify_items("INC-2026-001", wrong_password, salt, "alice")
     assert len(results) == 1
     assert results[0]["verified"] is False
 
 
 def test_verify_items_tampered_description(tmp_path):
     """HMAC fails if description was changed after signing."""
-    pin = "mypin"
+    password = "mypassword"
     salt = b"mysalt"
-    key = derive_hmac_key(pin, salt)
+    key = derive_hmac_key(password, salt)
     original_desc = "Original description"
     tampered_desc = "Tampered description"
 
@@ -131,7 +131,7 @@ def test_verify_items_tampered_description(tmp_path):
     }
     write_ledger_entry("INC-2026-001", entry)
 
-    results = verify_items("INC-2026-001", pin, salt, "alice")
+    results = verify_items("INC-2026-001", password, salt, "alice")
     assert len(results) == 1
     assert results[0]["verified"] is False
 
@@ -158,10 +158,10 @@ def test_copy_ledger_to_case(tmp_path):
 
 def test_rehmac_entries(tmp_path):
     """Entries are re-signed with new key."""
-    old_pin, old_salt = "oldpin", b"oldsalt"
-    new_pin, new_salt = "newpin", b"newsalt"
+    old_password, old_salt = "oldpasswd", b"oldsalt"
+    new_password, new_salt = "newpasswd", b"newsalt"
 
-    old_key = derive_hmac_key(old_pin, old_salt)
+    old_key = derive_hmac_key(old_password, old_salt)
     desc = "Finding description"
 
     entry = {
@@ -176,17 +176,17 @@ def test_rehmac_entries(tmp_path):
     write_ledger_entry("INC-2026-001", entry)
 
     count = rehmac_entries(
-        "INC-2026-001", "alice", old_pin, old_salt, new_pin, new_salt
+        "INC-2026-001", "alice", old_password, old_salt, new_password, new_salt
     )
     assert count == 1
 
     # Verify with new key
-    results = verify_items("INC-2026-001", new_pin, new_salt, "alice")
+    results = verify_items("INC-2026-001", new_password, new_salt, "alice")
     assert len(results) == 1
     assert results[0]["verified"] is True
 
     # Old key should no longer work
-    results_old = verify_items("INC-2026-001", old_pin, old_salt, "alice")
+    results_old = verify_items("INC-2026-001", old_password, old_salt, "alice")
     assert results_old[0]["verified"] is False
 
 
