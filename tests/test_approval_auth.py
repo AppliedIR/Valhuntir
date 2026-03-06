@@ -60,13 +60,18 @@ class TestPasswordSetup:
             assert "passwords" not in (config or {})
 
     def test_setup_password_fails_when_dir_not_writable(self, config_path, tmp_path):
-        """When passwords_dir can't be written, exits with clear error instead of falling back."""
+        """When passwords_dir can't be created, exits with clear error instead of falling back."""
         blocker = tmp_path / "blocker"
         blocker.write_text("file")
         bad_passwords = blocker / "passwords"
-        with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
+        # Mock subprocess so sudo doesn't actually run in tests
+        failed = MagicMock(returncode=1, stderr="mock")
+        with (
+            patch("aiir_cli.approval_auth.subprocess.run", return_value=failed),
+            patch(
+                "aiir_cli.approval_auth.getpass_prompt",
+                side_effect=["mypasswd1", "mypasswd1"],
+            ),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 setup_password(config_path, "steve", passwords_dir=bad_passwords)

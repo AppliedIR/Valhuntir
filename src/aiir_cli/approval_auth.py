@@ -12,10 +12,12 @@ from the legacy config.yaml location happens on first use.
 
 from __future__ import annotations
 
+import getpass as getpass_mod
 import hashlib
 import json
 import os
 import secrets
+import subprocess
 import sys
 import tempfile
 import time
@@ -132,6 +134,41 @@ def _maybe_migrate(config_path: Path, passwords_dir: Path, analyst: str) -> None
     _save_config(config_path, config)
 
 
+def _ensure_passwords_dir(passwords_dir: Path) -> None:
+    """Ensure the passwords directory exists, creating with sudo if needed."""
+    if passwords_dir.is_dir():
+        return
+    # Try normal mkdir first (works if parent is user-owned)
+    try:
+        passwords_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return
+    except OSError:
+        pass
+    # Parent is root-owned — use sudo.
+    # Safety: passwords_dir is always _PASSWORDS_DIR (hardcoded constant).
+    # This is NOT safe for arbitrary user input — do not generalize.
+    user = getpass_mod.getuser()
+    print(f"Creating {passwords_dir}/ (requires sudo)...")
+    result = subprocess.run(
+        [
+            "sudo",
+            "sh",
+            "-c",
+            f"mkdir -p {passwords_dir} && chown {user}:{user} {passwords_dir} && chmod 700 {passwords_dir}",
+        ],
+        timeout=30,
+    )
+    if result.returncode != 0:
+        print(
+            f"Could not create {passwords_dir}/. Create it manually:\n"
+            f"  sudo mkdir -p {passwords_dir} && "
+            f"sudo chown $USER:$USER {passwords_dir} && "
+            f"sudo chmod 700 {passwords_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | None]:
     """Require password confirmation. Returns (mode, password).
 
@@ -243,6 +280,7 @@ def setup_password(
     passwords_dir = passwords_dir or _PASSWORDS_DIR
     _maybe_migrate_pin_dir()
     _maybe_migrate(config_path, passwords_dir, analyst)
+    _ensure_passwords_dir(passwords_dir)
     pw1 = getpass_prompt("Enter new password: ")
     if not pw1:
         print("Password cannot be empty.", file=sys.stderr)
@@ -263,18 +301,7 @@ def setup_password(
 
     entry = {"hash": pw_hash, "salt": salt.hex()}
 
-    try:
-        _save_password_entry(passwords_dir, analyst, entry)
-    except OSError:
-        print(
-            f"\nCannot write to {passwords_dir}/\n\n"
-            f"  Run:  sudo mkdir -p {passwords_dir} && "
-            f"sudo chown $USER:$USER {passwords_dir} && "
-            f"sudo chmod 700 {passwords_dir}\n\n"
-            f"  Then re-run:  aiir config --setup-password",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    _save_password_entry(passwords_dir, analyst, entry)
 
     # Strip old location if present
     config = _load_config(config_path)

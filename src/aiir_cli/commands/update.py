@@ -73,7 +73,8 @@ def _ensure_password_dir() -> None:
             return
         print(f"failed ({result.stderr.strip()})")
 
-    # Create fresh directory
+    # Create fresh directory.
+    # Safety: passwords_dir is a hardcoded constant, not user input.
     import getpass
 
     user = getpass.getuser()
