@@ -191,10 +191,6 @@ In Path 1 (co-located), everything runs on SIFT — no remote access needed. In 
 
 All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the case dashboard (browser) or the aiir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings.
 
-![Dashboard — Findings](docs/images/dashboard.png)
-
-![Dashboard — Timeline](docs/images/timeline.png)
-
 ```mermaid
 sequenceDiagram
     participant AI as LLM + MCP Tools
@@ -213,6 +209,10 @@ sequenceDiagram
 ```
 
 The **case dashboard** is the primary review interface. Examiners review findings and timeline events, edit fields (confidence, justification, observation, interpretation, MITRE IDs, IOCs), approve or reject items, and commit decisions — all in the browser. The Commit button (Shift+C) uses challenge-response authentication: the browser derives a PBKDF2 key from the examiner's password and proves knowledge via HMAC — the password never leaves the browser. The CLI's `aiir approve` provides the same functionality from the terminal.
+
+![Dashboard — Findings](docs/images/dashboard.png)
+
+![Dashboard — Timeline](docs/images/timeline.png)
 
 ### Where Things Run
 
