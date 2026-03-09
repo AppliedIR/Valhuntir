@@ -17,7 +17,7 @@ OpenCTI-mcp is always optional (requires an OpenCTI instance).
 ### Prerequisites
 
 - Ubuntu 22.04+ (SIFT Workstation recommended)
-- Python 3.11+
+- Python 3.10+
 - Git
 - sudo access (required — creates the HMAC verification ledger at `/var/lib/aiir/verification/`)
 
@@ -43,7 +43,7 @@ The installer:
 ### Prerequisites
 
 - Windows 10/11 or Windows Server 2019+
-- Python 3.11+
+- Python 3.10+
 - Forensic tools (Zimmerman suite, Hayabusa) installed
 
 ### Install

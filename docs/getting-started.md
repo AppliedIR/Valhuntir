@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - SIFT Workstation (Ubuntu-based) or any Ubuntu 22.04+ system
-- Python 3.11+
+- Python 3.10+
 - sudo access (required for HMAC verification ledger at `/var/lib/aiir/verification/`)
 - An LLM client with MCP support (Claude Code, Claude Desktop, LibreChat, etc.)
 
