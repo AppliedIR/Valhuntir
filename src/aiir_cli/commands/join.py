@@ -104,14 +104,22 @@ def cmd_join(args, identity: dict) -> None:
 
 
 def cmd_setup_join_code(args, identity: dict) -> None:
-    """Generate a join code on this SIFT machine."""
-    gateway_url = _get_local_gateway_url()
+    """Generate a join code on this SIFT machine.
+
+    If the gateway is bound to localhost, prompts to rebind to 0.0.0.0
+    so remote machines can connect, then restarts the gateway.
+    """
     token = _get_local_gateway_token()
 
     if not token:
         print("No gateway token found. Is the gateway configured?", file=sys.stderr)
         print("Check ~/.aiir/gateway.yaml for api_keys", file=sys.stderr)
         sys.exit(1)
+
+    # Check if gateway needs rebinding for remote access
+    _ensure_remote_binding()
+
+    gateway_url = _get_local_gateway_url()
 
     try:
         import requests
@@ -333,6 +341,97 @@ def _get_wintools_credentials() -> tuple[str | None, str | None]:
         except (yaml.YAMLError, OSError):
             pass
     return None, None
+
+
+def _ensure_remote_binding() -> None:
+    """Check if gateway is localhost-only and offer to rebind for remote access.
+
+    Only acts when gateway.host is exactly '127.0.0.1' and no TLS is configured.
+    Prompts the user, updates gateway.yaml, and restarts the gateway service.
+    """
+    import subprocess
+    import time
+
+    gateway_config = Path.home() / ".aiir" / "gateway.yaml"
+    if not gateway_config.exists():
+        return
+
+    try:
+        with open(gateway_config) as f:
+            config = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError):
+        return
+
+    gw = config.get("gateway", {})
+    if not isinstance(gw, dict):
+        return
+
+    # Only rebind if bound to localhost; don't touch 0.0.0.0, custom IPs, or TLS
+    if gw.get("host") != "127.0.0.1":
+        return
+    if gw.get("tls"):
+        return
+
+    print("The gateway is bound to 127.0.0.1 (localhost only).")
+    print("Remote machines cannot connect until it binds to 0.0.0.0.")
+    print()
+    answer = input("Rebind gateway to 0.0.0.0 and restart? [Y/n] ").strip().lower()
+    if answer in ("n", "no"):
+        print(
+            "Skipped. To rebind manually, edit ~/.aiir/gateway.yaml "
+            "and restart the gateway.",
+            file=sys.stderr,
+        )
+        return
+
+    # Update gateway.yaml atomically
+    config["gateway"]["host"] = "0.0.0.0"
+    try:
+        fd = os.open(str(gateway_config), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+    except OSError as e:
+        print(f"Failed to update gateway.yaml: {e}", file=sys.stderr)
+        return
+
+    # Restart gateway via systemd
+    print("Restarting gateway...", end="", flush=True)
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", "aiir-gateway"],
+            timeout=15,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f" failed: {result.stderr.strip()}", file=sys.stderr)
+            print(
+                "Try manually: systemctl --user restart aiir-gateway",
+                file=sys.stderr,
+            )
+            return
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f" failed: {e}", file=sys.stderr)
+        return
+
+    # Wait for gateway to become healthy
+    port = gw.get("port", 4508)
+    health_url = f"http://127.0.0.1:{port}/health"
+    for _attempt in range(10):
+        time.sleep(1)
+        try:
+            import urllib.request
+
+            with urllib.request.urlopen(health_url, timeout=3) as resp:
+                if resp.status == 200:
+                    print(" done.")
+                    print(f"Gateway now listening on 0.0.0.0:{port} (all interfaces).")
+                    return
+        except OSError:
+            print(".", end="", flush=True)
+
+    print(" gateway did not become healthy in time.", file=sys.stderr)
+    print("Check: systemctl --user status aiir-gateway", file=sys.stderr)
 
 
 def _find_ca_cert() -> str | None:

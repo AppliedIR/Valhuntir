@@ -159,22 +159,15 @@ class TestJoinCodeCommand:
             },
         )
 
-        with (
-            patch.dict(sys.modules, {"requests": mock_requests}),
-            patch(
-                "aiir_cli.commands.join._get_local_gateway_url",
-                return_value="http://127.0.0.1:4508",
-            ),
-            patch(
-                "aiir_cli.commands.join._get_local_gateway_token",
-                return_value="aiir_gw_test",
-            ),
-        ):
+        with patch.dict(sys.modules, {"requests": mock_requests}):
             import importlib
 
             import aiir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
+            join_mod._ensure_remote_binding = lambda: None
+            join_mod._get_local_gateway_url = lambda: "http://127.0.0.1:4508"
+            join_mod._get_local_gateway_token = lambda: "aiir_gw_test"
             join_mod.cmd_setup_join_code(args, {"examiner": "steve"})
 
         captured = capsys.readouterr()
