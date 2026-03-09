@@ -5,7 +5,8 @@ backend services. Reads gateway URL and token from:
   1. CLI flags (--gateway, --token)
   2. Environment variables (AIIR_GATEWAY_URL, AIIR_GATEWAY_TOKEN)
   3. ~/.aiir/config.yaml (gateway_url, gateway_token)
-  4. Fallback: http://127.0.0.1:4508
+  4. ~/.aiir/gateway.yaml (api_keys dict for token, gateway.port for URL)
+  5. Fallback: http://127.0.0.1:4508
 """
 
 from __future__ import annotations
@@ -45,27 +46,47 @@ def _resolve_gateway(args) -> tuple[str, str | None]:
     if not token:
         token = os.environ.get("AIIR_GATEWAY_TOKEN")
 
+    # Try config.yaml first, then gateway.yaml (matches join.py pattern)
     if not url or not token:
-        config = _load_config()
-        if not url:
-            url = config.get("gateway_url")
-        if not token:
-            token = config.get("gateway_token")
+        for config_name in ("config.yaml", "gateway.yaml"):
+            config = _load_config(config_name)
+            if not config:
+                continue
+            if not url:
+                url = config.get("gateway_url")
+                # gateway.yaml stores port under gateway.port
+                if not url and config_name == "gateway.yaml":
+                    gw = config.get("gateway", {})
+                    if isinstance(gw, dict) and gw.get("port"):
+                        host = gw.get("host", "127.0.0.1")
+                        if host == "0.0.0.0":
+                            host = "127.0.0.1"
+                        url = f"http://{host}:{gw['port']}"
+            if not token:
+                # gateway.yaml uses api_keys dict; config.yaml uses gateway_token
+                api_keys = config.get("api_keys", {})
+                if isinstance(api_keys, dict) and api_keys:
+                    token = next(iter(api_keys))
+                if not token:
+                    token = config.get("gateway_token")
+            if url and token:
+                break
 
     if not url:
         url = "http://127.0.0.1:4508"
 
     if not token:
         print(
-            "Warning: No gateway token found. Check ~/.aiir/config.yaml",
+            "Warning: No gateway token found."
+            " Check ~/.aiir/config.yaml or ~/.aiir/gateway.yaml",
             file=sys.stderr,
         )
     return url.rstrip("/"), token if token else None
 
 
-def _load_config() -> dict:
-    """Load ~/.aiir/config.yaml, returning empty dict on failure."""
-    config_file = Path.home() / ".aiir" / "config.yaml"
+def _load_config(filename: str = "config.yaml") -> dict:
+    """Load ~/.aiir/{filename}, returning empty dict on failure."""
+    config_file = Path.home() / ".aiir" / filename
     if not config_file.is_file():
         return {}
     try:
