@@ -593,7 +593,7 @@ def _setup_samba_share(join_code: str) -> str:
     # Add current user to sift group
     try:
         subprocess.run(
-            ["sudo", "usermod", "-aG", "sift", os.environ.get("USER", "")],
+            ["sudo", "usermod", "-aG", "sift", os.environ.get("USER") or os.getlogin()],
             check=True,
             capture_output=True,
             timeout=10,
@@ -679,12 +679,8 @@ def _setup_samba_share(join_code: str) -> str:
                 )
             else:
                 subprocess.run(
-                    [
-                        "sudo",
-                        "bash",
-                        "-c",
-                        f'echo "{include_line}" >> /etc/samba/smb.conf',
-                    ],
+                    ["sudo", "tee", "-a", "/etc/samba/smb.conf"],
+                    input=f"\n{include_line}\n".encode(),
                     check=True,
                     capture_output=True,
                     timeout=10,
@@ -833,11 +829,9 @@ def _ensure_static_ip() -> str | None:
             timeout=10,
         )
         iface = None
-        for part in result.stdout.split():
-            if part == "dev":
-                idx = result.stdout.split().index("dev")
-                iface = result.stdout.split()[idx + 1]
-                break
+        parts = result.stdout.split()
+        if "dev" in parts:
+            iface = parts[parts.index("dev") + 1]
         if not iface:
             print("Could not detect network interface.", file=sys.stderr)
             return None
