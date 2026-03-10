@@ -9,6 +9,7 @@ from aiir_cli.commands.join import (
     _get_local_gateway_token,
     _get_local_gateway_url,
     _write_config,
+    derive_smb_password,
 )
 
 
@@ -146,7 +147,7 @@ class TestUrlNormalization:
 
 class TestJoinCodeCommand:
     def test_prints_instructions(self, capsys):
-        """Verify output format includes code and instructions."""
+        """Verify output format includes code and setup-windows instruction."""
         args = MagicMock()
         args.expires = 2
 
@@ -165,15 +166,38 @@ class TestJoinCodeCommand:
             import aiir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
+            join_mod._ensure_static_ip = lambda: "10.0.0.5"
             join_mod._ensure_remote_binding = lambda: None
             join_mod._get_local_gateway_url = lambda: "http://127.0.0.1:4508"
             join_mod._get_local_gateway_token = lambda: "aiir_gw_test"
+            join_mod._setup_samba_share = lambda code: "10.0.0.20"
+            join_mod._setup_firewall = lambda ip: None
             join_mod.cmd_setup_join_code(args, {"examiner": "steve"})
 
         captured = capsys.readouterr()
         assert "ABCD-EFGH" in captured.out
-        assert "aiir join" in captured.out
+        assert "setup-windows.ps1" in captured.out
         assert "expires in 2 hours" in captured.out
+
+
+class TestDeriveSMBPassword:
+    def test_known_vector(self):
+        """PBKDF2 test vector: ABCD-EFGH → 0a6e4700953ead036c7468173fccf1be."""
+        assert derive_smb_password("ABCD-EFGH") == "0a6e4700953ead036c7468173fccf1be"
+
+    def test_deterministic(self):
+        """Same input always produces same output."""
+        assert derive_smb_password("TEST-CODE") == derive_smb_password("TEST-CODE")
+
+    def test_different_inputs(self):
+        """Different inputs produce different passwords."""
+        assert derive_smb_password("AAAA-BBBB") != derive_smb_password("CCCC-DDDD")
+
+    def test_length(self):
+        """Output is exactly 32 hex characters."""
+        result = derive_smb_password("SOME-CODE")
+        assert len(result) == 32
+        assert all(c in "0123456789abcdef" for c in result)
 
 
 class TestGetLocalConfig:

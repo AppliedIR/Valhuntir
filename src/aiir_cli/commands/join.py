@@ -116,8 +116,8 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         print("Check ~/.aiir/gateway.yaml for api_keys", file=sys.stderr)
         sys.exit(1)
 
-    # Configure static IP before remote binding (used by _post_join_code_setup in Commit 2)
-    static_ip = _ensure_static_ip()  # noqa: F841
+    # Configure static IP before remote binding
+    static_ip = _ensure_static_ip()
 
     # Check if gateway needs rebinding for remote access
     _ensure_remote_binding()
@@ -127,7 +127,8 @@ def cmd_setup_join_code(args, identity: dict) -> None:
     try:
         import requests
     except ImportError:
-        _join_code_urllib(gateway_url, token, args)
+        data = _join_code_urllib(gateway_url, token, args)
+        _post_join_code_setup(data, static_ip)
         return
 
     expires = getattr(args, "expires", None) or 2
@@ -157,10 +158,7 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         sys.exit(1)
 
     data = resp.json()
-    print(f"Join code: {data['code']} (expires in {data['expires_hours']} hours)")
-    print()
-    print("On the remote machine, run:")
-    print(f"  {data['instructions']}")
+    _post_join_code_setup(data, static_ip)
 
 
 def _join_urllib(sift_url, code, wintools_url, wintools_token, verify, args):
@@ -223,8 +221,8 @@ def _join_urllib(sift_url, code, wintools_url, wintools_token, verify, args):
         print("Run 'aiir setup client --remote' to configure your LLM client.")
 
 
-def _join_code_urllib(gateway_url, token, args):
-    """Fallback join-code implementation using urllib."""
+def _join_code_urllib(gateway_url, token, args) -> dict:
+    """Fallback join-code implementation using urllib. Returns response data."""
     import ssl
     import urllib.request
 
@@ -250,15 +248,10 @@ def _join_code_urllib(gateway_url, token, args):
 
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
-            data = json.loads(resp.read())
+            return json.loads(resp.read())
     except (urllib.error.HTTPError, urllib.error.URLError) as e:
         print(f"Failed to generate join code: {e}", file=sys.stderr)
         sys.exit(1)
-
-    print(f"Join code: {data['code']} (expires in {data['expires_hours']} hours)")
-    print()
-    print("On the remote machine, run:")
-    print(f"  {data['instructions']}")
 
 
 def _write_config(gateway_url: str, gateway_token: str) -> None:
@@ -443,6 +436,347 @@ def _find_ca_cert() -> str | None:
     if ca_path.exists():
         return str(ca_path)
     return None
+
+
+def derive_smb_password(join_code: str) -> str:
+    """Derive SMB password from join code using PBKDF2-SHA256."""
+    import hashlib
+
+    dk = hashlib.pbkdf2_hmac("sha256", join_code.encode(), b"aiir-smb-v1", 600_000)
+    return dk.hex()[:32]
+
+
+def _get_sift_ip() -> str | None:
+    """Read static IP from ~/.aiir/network.yaml."""
+    p = Path.home() / ".aiir" / "network.yaml"
+    if not p.is_file():
+        return None
+    try:
+        doc = yaml.safe_load(p.read_text())
+        return doc.get("static_ip")
+    except Exception:
+        return None
+
+
+def _detect_ip() -> str:
+    """Detect current IP via UDP socket trick."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def _setup_firewall(wintools_ip: str) -> None:
+    """Add UFW rules for gateway (4508) and SMB (445), restricted to wintools IP."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            [
+                "sudo",
+                "ufw",
+                "allow",
+                "from",
+                wintools_ip,
+                "to",
+                "any",
+                "port",
+                "4508",
+                "comment",
+                "AIIR gateway",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+        subprocess.run(
+            [
+                "sudo",
+                "ufw",
+                "allow",
+                "from",
+                wintools_ip,
+                "to",
+                "any",
+                "port",
+                "445",
+                "comment",
+                "AIIR SMB",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"UFW rule failed: {e}") from e
+
+    # Reload if active, warn if inactive
+    result = subprocess.run(
+        ["sudo", "ufw", "status"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if "Status: active" in result.stdout:
+        subprocess.run(
+            ["sudo", "ufw", "reload"],
+            capture_output=True,
+            timeout=15,
+        )
+    else:
+        print(
+            "Warning: UFW is not active. Enable with 'sudo ufw enable'.",
+            file=sys.stderr,
+        )
+
+
+def _setup_samba_share(join_code: str) -> str:
+    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP."""
+    import re
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["sudo", "apt-get", "install", "-y", "samba"],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to install samba: {e}") from e
+
+    try:
+        subprocess.run(
+            ["sudo", "groupadd", "-f", "sift"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to create sift group: {e}") from e
+
+    # Create aiir-smb user
+    result = subprocess.run(
+        ["id", "-u", "aiir-smb"],
+        capture_output=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        try:
+            subprocess.run(
+                [
+                    "sudo",
+                    "useradd",
+                    "-r",
+                    "-s",
+                    "/usr/sbin/nologin",
+                    "-M",
+                    "-G",
+                    "sift",
+                    "aiir-smb",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to create aiir-smb user: {e}") from e
+    else:
+        subprocess.run(
+            ["sudo", "usermod", "-aG", "sift", "aiir-smb"],
+            capture_output=True,
+            timeout=10,
+        )
+
+    # Add current user to sift group
+    try:
+        subprocess.run(
+            ["sudo", "usermod", "-aG", "sift", os.environ.get("USER", "")],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to add user to sift group: {e}") from e
+
+    # Derive SMB password
+    derived_password = derive_smb_password(join_code)
+
+    # Set smbpasswd
+    try:
+        subprocess.run(
+            ["sudo", "smbpasswd", "-a", "-s", "aiir-smb"],
+            input=f"{derived_password}\n{derived_password}\n".encode(),
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to set SMB password: {e}") from e
+
+    # Prompt for wintools IP
+    wintools_ip = input("Enter the Windows machine's IP address: ").strip()
+    if not re.match(r"^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)", wintools_ip):
+        raise RuntimeError(
+            f"IP must be a private address (10.x, 172.16-31.x, 192.168.x): {wintools_ip}"
+        )
+
+    # Determine share path
+    cases_dir = os.environ.get("AIIR_CASES_DIR", "")
+    if not cases_dir:
+        cases_dir = str(Path.home() / "cases")
+
+    # Write Samba config
+    smb_conf = f"""[cases]
+    path = {cases_dir}
+    browsable = yes
+    writable = yes
+    valid users = aiir-smb
+    create mask = 0664
+    directory mask = 2775
+    force group = sift
+    hosts allow = {wintools_ip}
+"""
+    smb_conf_path = "/etc/samba/smb.conf.d/aiir-cases.conf"
+    try:
+        subprocess.run(
+            ["sudo", "mkdir", "-p", "/etc/samba/smb.conf.d"],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["sudo", "tee", smb_conf_path],
+            input=smb_conf.encode(),
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to write Samba config: {e}") from e
+
+    # Ensure include in smb.conf
+    try:
+        result = subprocess.run(
+            ["sudo", "cat", "/etc/samba/smb.conf"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        include_line = f"include = {smb_conf_path}"
+        if include_line not in result.stdout:
+            if result.returncode != 0 or not result.stdout.strip():
+                # Fresh install — create minimal smb.conf
+                minimal = f"[global]\n   workgroup = WORKGROUP\n{include_line}\n"
+                subprocess.run(
+                    ["sudo", "tee", "/etc/samba/smb.conf"],
+                    input=minimal.encode(),
+                    check=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+            else:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "bash",
+                        "-c",
+                        f'echo "{include_line}" >> /etc/samba/smb.conf',
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to update smb.conf: {e}") from e
+
+    # Restart smbd
+    try:
+        subprocess.run(
+            ["sudo", "systemctl", "restart", "smbd"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to restart smbd: {e}") from e
+
+    # Write ~/.aiir/samba.yaml
+    import datetime
+
+    aiir_dir = Path.home() / ".aiir"
+    aiir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    samba_data = {
+        "share_name": "cases",
+        "share_path": cases_dir,
+        "smb_user": "aiir-smb",
+        "wintools_ip": wintools_ip,
+        "configured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    (aiir_dir / "samba.yaml").write_text(
+        yaml.dump(samba_data, default_flow_style=False)
+    )
+
+    print(
+        f"Samba share configured: //{_get_sift_ip() or 'SIFT_IP'}/cases → {cases_dir}"
+    )
+    print("Note: Log out and back in for sift group membership to take effect.")
+    return wintools_ip
+
+
+def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
+    """Samba setup, firewall, and display — called after join code generation."""
+    join_code = data["code"]
+    sift_host = static_ip or _get_sift_ip() or _detect_ip()
+
+    try:
+        wintools_ip = _setup_samba_share(join_code)
+        _setup_firewall(wintools_ip)
+    except Exception as e:
+        print(f"\nWarning: Samba/firewall setup failed: {e}", file=sys.stderr)
+        print("Complete later with 'aiir setup join-code'", file=sys.stderr)
+
+    print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
+    print("\nOn Windows, run:")
+    print(f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host}")
+
+
+def notify_wintools_case_activated(case_id: str) -> None:
+    """Notify wintools-mcp of case activation. Non-fatal on failure."""
+    import urllib.request
+    from urllib.parse import urlparse, urlunparse
+
+    gateway_config = Path.home() / ".aiir" / "gateway.yaml"
+    if not gateway_config.is_file():
+        return
+    try:
+        config = yaml.safe_load(gateway_config.read_text())
+    except Exception:
+        return
+    wt = config.get("backends", {}).get("wintools-mcp", {})
+    if not wt:
+        return
+
+    parsed = urlparse(wt["url"])
+    activate_url = urlunparse(parsed._replace(path="/cases/activate"))
+    token = wt["bearer_token"]
+
+    payload = json.dumps({"case_id": case_id}).encode()
+    req = urllib.request.Request(
+        activate_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass
 
 
 def _ensure_static_ip() -> str | None:
