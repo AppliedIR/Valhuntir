@@ -116,6 +116,9 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         print("Check ~/.aiir/gateway.yaml for api_keys", file=sys.stderr)
         sys.exit(1)
 
+    # Configure static IP before remote binding (used by _post_join_code_setup in Commit 2)
+    static_ip = _ensure_static_ip()  # noqa: F841
+
     # Check if gateway needs rebinding for remote access
     _ensure_remote_binding()
 
@@ -440,3 +443,238 @@ def _find_ca_cert() -> str | None:
     if ca_path.exists():
         return str(ca_path)
     return None
+
+
+def _ensure_static_ip() -> str | None:
+    """Configure static IP via netplan. Returns the static IP or None if skipped."""
+    import subprocess
+
+    network_yaml = Path.home() / ".aiir" / "network.yaml"
+    if network_yaml.is_file():
+        try:
+            doc = yaml.safe_load(network_yaml.read_text())
+            existing_ip = doc.get("static_ip")
+            if existing_ip:
+                print(f"Static IP already configured: {existing_ip}")
+                answer = input("Reconfigure? [y/N] ").strip().lower()
+                if answer not in ("y", "yes"):
+                    return existing_ip
+        except (yaml.YAMLError, OSError):
+            pass
+
+    # Detect current IP via UDP socket trick
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            detected_ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        detected_ip = ""
+
+    ip = input(f"Enter static IP for this machine [{detected_ip}]: ").strip()
+    if not ip:
+        ip = detected_ip
+    if not ip:
+        print("No IP provided, skipping static IP configuration.", file=sys.stderr)
+        return None
+
+    # Validate RFC1918
+    import re
+
+    if not re.match(r"^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)", ip):
+        print(
+            "IP must be a private address (10.x, 172.16-31.x, 192.168.x)",
+            file=sys.stderr,
+        )
+        return None
+
+    # Detect interface
+    try:
+        result = subprocess.run(
+            ["ip", "route", "get", "8.8.8.8"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        iface = None
+        for part in result.stdout.split():
+            if part == "dev":
+                idx = result.stdout.split().index("dev")
+                iface = result.stdout.split()[idx + 1]
+                break
+        if not iface:
+            print("Could not detect network interface.", file=sys.stderr)
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        print(f"Failed to detect network interface: {e}", file=sys.stderr)
+        return None
+
+    # Detect prefix length
+    prefix = "24"
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "addr", "show", iface],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("inet "):
+                # inet 192.168.1.5/24 ...
+                addr_part = line.split()[1]
+                if "/" in addr_part:
+                    prefix = addr_part.split("/")[1]
+                break
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    # Detect DNS
+    dns_servers = []
+    try:
+        result = subprocess.run(
+            ["resolvectl", "status", iface],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if "DNS Servers" in line:
+                dns_servers = line.split(":", 1)[1].strip().split()
+                break
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    if not dns_servers:
+        resolv = Path("/etc/resolv.conf")
+        if resolv.is_file():
+            for line in resolv.read_text().splitlines():
+                if line.strip().startswith("nameserver"):
+                    dns_servers.append(line.strip().split()[1])
+    if not dns_servers:
+        dns_servers = ["8.8.8.8", "1.1.1.1"]
+
+    # Detect gateway
+    gateway = ""
+    try:
+        result = subprocess.run(
+            ["ip", "route"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("default"):
+                parts = line.split()
+                if "via" in parts:
+                    gateway = parts[parts.index("via") + 1]
+                break
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    # Pre-check existing netplan configs
+    import glob
+
+    existing_configs = glob.glob("/etc/netplan/*.yaml")
+    conflicting = []
+    for cfg_path in existing_configs:
+        if "99-aiir-static" in cfg_path:
+            continue
+        try:
+            with open(cfg_path) as f:
+                cfg_doc = yaml.safe_load(f)
+            if cfg_doc and "network" in cfg_doc:
+                ethernets = cfg_doc["network"].get("ethernets", {})
+                if iface in ethernets:
+                    conflicting.append(cfg_path)
+        except (yaml.YAMLError, OSError):
+            pass
+    if conflicting:
+        print(f"Warning: existing netplan configs for {iface}:")
+        for c in conflicting:
+            print(f"  {c}")
+        answer = input("Override with AIIR static config? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print("Skipped static IP configuration.", file=sys.stderr)
+            return None
+
+    # Write netplan config
+    netplan_content = f"""network:
+  version: 2
+  ethernets:
+    {iface}:
+      dhcp4: false
+      addresses:
+        - {ip}/{prefix}
+      routes:
+        - to: default
+          via: {gateway}
+      nameservers:
+        addresses: [{", ".join(dns_servers)}]
+"""
+    try:
+        subprocess.run(
+            ["sudo", "tee", "/etc/netplan/99-aiir-static.yaml"],
+            input=netplan_content.encode(),
+            capture_output=True,
+            check=True,
+            timeout=15,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to write netplan config: {e}", file=sys.stderr)
+        return None
+
+    # Apply netplan
+    try:
+        subprocess.run(
+            ["sudo", "netplan", "apply"],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to apply netplan: {e}", file=sys.stderr)
+        print(
+            "Review /etc/netplan/99-aiir-static.yaml and apply manually.",
+            file=sys.stderr,
+        )
+        return None
+
+    # Write ~/.aiir/network.yaml
+    import datetime
+
+    aiir_dir = Path.home() / ".aiir"
+    aiir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    network_data = {
+        "static_ip": ip,
+        "interface": iface,
+        "configured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    network_yaml.write_text(yaml.dump(network_data, default_flow_style=False))
+
+    # Verify gateway health
+    port = 4508
+    try:
+        gw_config = Path.home() / ".aiir" / "gateway.yaml"
+        if gw_config.is_file():
+            gw_doc = yaml.safe_load(gw_config.read_text())
+            port = gw_doc.get("gateway", {}).get("port", 4508)
+    except (yaml.YAMLError, OSError):
+        pass
+
+    health_url = f"http://127.0.0.1:{port}/health"
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(health_url, timeout=5) as resp:
+            if resp.status == 200:
+                print(f"Static IP set to {ip}, gateway healthy.")
+                return ip
+    except OSError:
+        pass
+
+    print(
+        f"Static IP set to {ip}. Gateway health check inconclusive — verify manually."
+    )
+    return ip
