@@ -90,19 +90,12 @@ graph LR
         RAPI --> RMX
     end
 
-    subgraph winbox ["Windows Forensic Workstation"]
-        WAPI["wintools-mcp API<br/>:4624"]
-        WMX["wintools-mcp<br/>Windows tool execution"]
-        WAPI --> WMX
-    end
-
     subgraph internet ["Internet"]
         ML["MS Learn MCP<br/>(HTTPS)"]
         ZE["Zeltser IR Writing MCP<br/>(HTTPS)"]
     end
 
     CC -->|"streamable-http"| RAPI
-    CC -->|"streamable-http"| WAPI
     CC -->|"HTTPS"| ML
     CC -->|"HTTPS"| ZE
     OC -->|"HTTP(S)"| OCTI
@@ -115,7 +108,6 @@ graph LR
 | Claude Code → opencti-mcp | stdio | Local Python process, connects out to OpenCTI via HTTP(S) |
 | opencti-mcp → OpenCTI Instance | HTTP(S) | opencti-mcp runs locally, calls out to the OpenCTI server |
 | Claude Code → remnux-mcp | streamable-http | Remote, on its own REMnux workstation |
-| Claude Code → wintools-mcp | streamable-http | Remote, on its own Windows workstation |
 | Claude Code → MS Learn MCP | HTTPS | `https://learn.microsoft.com/api/mcp` — streamable-http type in .mcp.json |
 | Claude Code → Zeltser IR Writing MCP | HTTPS | `https://website-mcp.zeltser.com/mcp` — streamable-http type in .mcp.json |
 
