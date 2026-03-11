@@ -505,66 +505,72 @@ def _detect_ip() -> str:
 
 def _setup_firewall(wintools_ip: str) -> None:
     """Add UFW rules for gateway (4508) and SMB (445), restricted to wintools IP."""
+    import shutil
     import subprocess
 
-    try:
-        subprocess.run(
-            [
-                "sudo",
-                "ufw",
-                "allow",
-                "from",
-                wintools_ip,
-                "to",
-                "any",
-                "port",
-                "4508",
-                "comment",
-                "AIIR gateway",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=15,
-        )
-        subprocess.run(
-            [
-                "sudo",
-                "ufw",
-                "allow",
-                "from",
-                wintools_ip,
-                "to",
-                "any",
-                "port",
-                "445",
-                "comment",
-                "AIIR SMB",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=15,
-        )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"UFW rule failed: {e}") from e
+    if not shutil.which("ufw"):
+        print("UFW not installed — skipping firewall rules.", file=sys.stderr)
+        return
 
-    # Reload if active, warn if inactive
+    # Check if UFW is active
     result = subprocess.run(
         ["sudo", "ufw", "status"],
         capture_output=True,
         text=True,
         timeout=10,
     )
-    if "Status: active" in result.stdout:
-        subprocess.run(
-            ["sudo", "ufw", "reload"],
-            capture_output=True,
-            timeout=15,
-        )
-    else:
+    if "Status: active" not in result.stdout:
         print(
-            "Warning: UFW is not active. Enable with 'sudo ufw enable'.",
+            "UFW is not active — skipping firewall rules. "
+            "Enable with 'sudo ufw enable' if needed.",
             file=sys.stderr,
         )
+        return
+
+    for port, label in [("4508", "AIIR gateway"), ("445", "AIIR SMB")]:
+        try:
+            subprocess.run(
+                [
+                    "sudo",
+                    "ufw",
+                    "allow",
+                    "from",
+                    wintools_ip,
+                    "to",
+                    "any",
+                    "port",
+                    port,
+                    "comment",
+                    label,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+        except subprocess.CalledProcessError:
+            # Retry without comment (older UFW versions)
+            subprocess.run(
+                [
+                    "sudo",
+                    "ufw",
+                    "allow",
+                    "from",
+                    wintools_ip,
+                    "to",
+                    "any",
+                    "port",
+                    port,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+
+    subprocess.run(
+        ["sudo", "ufw", "reload"],
+        capture_output=True,
+        timeout=15,
+    )
 
 
 def _setup_samba_share(join_code: str) -> str:
@@ -805,12 +811,23 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     except OSError:
         sift_host = static_ip or _get_sift_ip() or "SIFT_IP"
 
+    wintools_ip = None
     try:
         wintools_ip = _setup_samba_share(join_code)
-        _setup_firewall(wintools_ip)
     except Exception as e:
-        print(f"\nWarning: Samba/firewall setup failed: {e}", file=sys.stderr)
+        print(f"\nWarning: Samba share setup failed: {e}", file=sys.stderr)
         print("Complete later with 'aiir setup join-code'", file=sys.stderr)
+
+    if wintools_ip:
+        try:
+            _setup_firewall(wintools_ip)
+        except Exception as e:
+            print(f"\nWarning: Firewall setup failed: {e}", file=sys.stderr)
+            print(
+                "  Add rules manually: sudo ufw allow from "
+                f"{wintools_ip} to any port 4508,445",
+                file=sys.stderr,
+            )
 
     from urllib.parse import urlparse
 
