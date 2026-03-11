@@ -173,12 +173,6 @@ graph TB
 
 REMnux and Windows VMs are optional. SIFT alone provides 64 MCP tools across 7 backends, the case dashboard, and full case management.
 
-Other deployment options:
-
-- **Single machine** — everything on one OS, no VMs. Simplest setup.
-- **Remote orchestrator** — LLM client on a laptop, SIFT on a server. Use `setup-sift.sh --remote` for TLS and bearer token auth. The dashboard is accessible from any browser on the network.
-- **Multi-examiner** — each examiner runs their own SIFT instance. Cases are shared via `aiir case export` / `aiir case merge`.
-
 ### SIFT Platform Components
 
 The sift-gateway aggregates 7 MCP backends as stdio subprocesses behind a single HTTP endpoint. Each backend is also available individually. The case dashboard is served by the gateway for browser-based review and approval.
