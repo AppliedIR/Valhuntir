@@ -996,33 +996,60 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
     )
 
 
+def _detect_current_ip() -> str | None:
+    """Detect the current primary IPv4 address via UDP socket trick."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return None
+
+
 def _ensure_static_ip() -> str | None:
     """Configure static IP via netplan. Returns the static IP or None if skipped."""
-    import subprocess
-
     network_yaml = Path.home() / ".aiir" / "network.yaml"
     if network_yaml.is_file():
         try:
             doc = yaml.safe_load(network_yaml.read_text())
             existing_ip = doc.get("static_ip")
             if existing_ip:
-                print(f"Static IP already configured: {existing_ip}")
-                answer = input("Reconfigure? [y/N] ").strip().lower()
-                if answer not in ("y", "yes"):
-                    return existing_ip
+                # Verify the interface actually has this IP
+                actual_ip = _detect_current_ip()
+                if actual_ip == existing_ip:
+                    print(f"Static IP configured and active: {existing_ip}")
+                    answer = input("Reconfigure? [y/N] ").strip().lower()
+                    if answer not in ("y", "yes"):
+                        return existing_ip
+                else:
+                    print(
+                        f"Warning: network.yaml says {existing_ip} "
+                        f"but interface has {actual_ip or 'unknown'}"
+                    )
+                    print(
+                        "The static IP was stored but never applied to the interface."
+                    )
+                    answer = input(f"Apply {existing_ip} now? [Y/n] ").strip().lower()
+                    if answer in ("", "y", "yes"):
+                        ip = existing_ip
+                        # Fall through to apply logic below
+                    else:
+                        answer2 = input(
+                            "Enter a different IP, or blank to skip: "
+                        ).strip()
+                        if answer2:
+                            ip = answer2
+                        else:
+                            return None
+                    # Skip the detection/prompt section — ip is already set
+                    return _apply_static_ip(ip, network_yaml)
         except (yaml.YAMLError, OSError):
             pass
 
-    # Detect current IP via UDP socket trick
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            detected_ip = s.getsockname()[0]
-        finally:
-            s.close()
-    except OSError:
-        detected_ip = ""
+    detected_ip = _detect_current_ip() or ""
 
     ip = input(f"Enter static IP for this machine [{detected_ip}]: ").strip()
     if not ip:
@@ -1031,8 +1058,13 @@ def _ensure_static_ip() -> str | None:
         print("No IP provided, skipping static IP configuration.", file=sys.stderr)
         return None
 
-    # Validate RFC1918
+    return _apply_static_ip(ip, network_yaml)
+
+
+def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
+    """Validate IP, write netplan config, apply, write network.yaml."""
     import ipaddress
+    import subprocess
 
     try:
         addr = ipaddress.IPv4Address(ip)
