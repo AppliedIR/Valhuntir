@@ -16,7 +16,7 @@ from pathlib import Path
 import argcomplete
 
 from aiir_cli import __version__
-from aiir_cli.case_io import CaseError
+from aiir_cli.case_io import DEFAULT_CASES_DIR, CaseError
 from aiir_cli.commands.approve import cmd_approve
 from aiir_cli.commands.audit_cmd import cmd_audit
 from aiir_cli.commands.config import cmd_config
@@ -642,7 +642,7 @@ def _case_list_data(cases_dir=None) -> dict:
     import yaml
 
     if cases_dir is None:
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
     else:
         cases_dir = Path(cases_dir)
 
@@ -691,7 +691,7 @@ def _case_list(args, identity: dict) -> None:
     import os
     from pathlib import Path
 
-    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
     if not cases_dir.is_dir():
         print(f"No cases directory found: {cases_dir}")
         return
@@ -738,7 +738,7 @@ def _case_init_data(
     from aiir_cli.case_io import _atomic_write
 
     if cases_dir is None:
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
     else:
         cases_dir = Path(cases_dir)
 
@@ -964,7 +964,7 @@ def _case_activate_data(case_id: str, cases_dir=None) -> dict:
     from aiir_cli.case_io import _atomic_write
 
     if cases_dir is None:
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
     else:
         cases_dir = Path(cases_dir)
 
@@ -1037,7 +1037,7 @@ def _case_close(args, identity: dict) -> None:
 
     case_id = args.case_id
     _validate_case_id(case_id)
-    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
     case_dir = cases_dir / case_id
 
     if not case_dir.exists():
@@ -1114,7 +1114,7 @@ def _case_reopen(args, identity: dict) -> None:
 
     case_id = args.case_id
     _validate_case_id(case_id)
-    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
     case_dir = cases_dir / case_id
 
     if not case_dir.exists():

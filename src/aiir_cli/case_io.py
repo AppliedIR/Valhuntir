@@ -18,6 +18,8 @@ import yaml
 
 _EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
+DEFAULT_CASES_DIR = str(Path.home() / "cases")
+
 
 class CaseError(Exception):
     """Raised when case directory cannot be resolved or validation fails."""
@@ -76,7 +78,7 @@ def get_case_dir(case_id: str | None = None) -> Path:
     """Resolve the active case directory."""
     if case_id:
         _validate_case_id(case_id)
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
         case_dir = cases_dir / case_id
         if not case_dir.exists():
             raise CaseError(f"Case not found: {case_id}")
@@ -99,7 +101,7 @@ def get_case_dir(case_id: str | None = None) -> Path:
         else:
             # Legacy: bare case ID — resolve via AIIR_CASES_DIR
             _validate_case_id(content)
-            cases_dir = Path(os.environ.get("AIIR_CASES_DIR", "cases"))
+            cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
             case_dir = cases_dir / content
         if not case_dir.is_dir():
             raise CaseError(f"Case directory does not exist: {case_dir}")
