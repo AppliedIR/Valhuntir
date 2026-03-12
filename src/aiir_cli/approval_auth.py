@@ -144,20 +144,17 @@ def _ensure_passwords_dir(passwords_dir: Path) -> None:
         return
     except OSError:
         pass
-    # Parent is root-owned — use sudo.
-    # Safety: passwords_dir is always _PASSWORDS_DIR (hardcoded constant).
-    # This is NOT safe for arbitrary user input — do not generalize.
+    # Parent is root-owned — use sudo with list args (no shell interpolation).
     user = getpass_mod.getuser()
     print(f"Creating {passwords_dir}/ (requires sudo)...")
-    result = subprocess.run(
-        [
-            "sudo",
-            "sh",
-            "-c",
-            f"mkdir -p {passwords_dir} && chown {user}:{user} {passwords_dir} && chmod 700 {passwords_dir}",
-        ],
-        timeout=30,
-    )
+    for cmd in [
+        ["sudo", "mkdir", "-p", str(passwords_dir)],
+        ["sudo", "chown", f"{user}:{user}", str(passwords_dir)],
+        ["sudo", "chmod", "700", str(passwords_dir)],
+    ]:
+        result = subprocess.run(cmd, timeout=30)
+        if result.returncode != 0:
+            break
     if result.returncode != 0:
         print(
             f"Could not create {passwords_dir}/. Create it manually:\n"

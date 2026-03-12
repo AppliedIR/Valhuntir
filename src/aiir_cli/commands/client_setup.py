@@ -257,7 +257,8 @@ def _resolve_client(args, auto: bool) -> str:
     val = getattr(args, "client", None)
     if val:
         return val
-    # Always prompt for client — no sensible default (AIIR is LLM-agnostic)
+    if auto:
+        return "claude-code"
     return _wizard_client()
 
 
@@ -1582,12 +1583,19 @@ def _probe_health_with_auth(base_url: str, token: str | None) -> dict | None:
     """Probe /health with optional bearer token. Returns parsed dict or None."""
     import urllib.request
 
+    from aiir_cli.gateway import get_local_ssl_context
+
     try:
         url = f"{base_url.rstrip('/')}/health"
         req = urllib.request.Request(url, method="GET")
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        kwargs: dict = {"timeout": 5}
+        if base_url.startswith("https"):
+            ssl_ctx = get_local_ssl_context()
+            if ssl_ctx is not None:
+                kwargs["context"] = ssl_ctx
+        with urllib.request.urlopen(req, **kwargs) as resp:
             if resp.status == 200:
                 import json as _json
 
@@ -1603,12 +1611,19 @@ def _discover_services(base_url: str, token: str | None) -> list | None:
     """GET /api/v1/services and return the services list, or None on failure."""
     import urllib.request
 
+    from aiir_cli.gateway import get_local_ssl_context
+
     try:
         url = f"{base_url.rstrip('/')}/api/v1/services"
         req = urllib.request.Request(url, method="GET")
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        kwargs: dict = {"timeout": 5}
+        if base_url.startswith("https"):
+            ssl_ctx = get_local_ssl_context()
+            if ssl_ctx is not None:
+                kwargs["context"] = ssl_ctx
+        with urllib.request.urlopen(req, **kwargs) as resp:
             if resp.status == 200:
                 import json as _json
 

@@ -200,11 +200,11 @@ class TestDeriveSMBPassword:
 
 class TestGetLocalConfig:
     def test_get_gateway_url_default(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("aiir_cli.gateway.Path.home", lambda: tmp_path)
         assert _get_local_gateway_url() == "http://127.0.0.1:4508"
 
     def test_get_gateway_url_from_gateway_yaml(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("aiir_cli.gateway.Path.home", lambda: tmp_path)
         config_dir = tmp_path / ".aiir"
         config_dir.mkdir(parents=True)
         (config_dir / "gateway.yaml").write_text(
@@ -213,7 +213,7 @@ class TestGetLocalConfig:
         assert _get_local_gateway_url() == "http://127.0.0.1:9999"
 
     def test_get_gateway_url_tls(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("aiir_cli.gateway.Path.home", lambda: tmp_path)
         config_dir = tmp_path / ".aiir"
         config_dir.mkdir(parents=True)
         (config_dir / "gateway.yaml").write_text(

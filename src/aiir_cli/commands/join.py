@@ -843,18 +843,23 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
 
 
 def _wintools_ssl_context():
-    """Build SSL context for wintools connections using pinned cert."""
+    """Build SSL context for wintools connections using pinned cert.
+
+    Uses SSLContext(PROTOCOL_TLS_CLIENT) instead of create_default_context()
+    so that ONLY the pinned cert is trusted (no system CAs).
+    """
     import ssl
 
     cert_path = Path.home() / ".aiir" / "tls" / "wintools-cert.pem"
-    ctx = ssl.create_default_context()
     if cert_path.exists():
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.load_verify_locations(str(cert_path))
     else:
         print(
             "Warning: wintools TLS cert not found, skipping verification",
             file=sys.stderr,
         )
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     return ctx
