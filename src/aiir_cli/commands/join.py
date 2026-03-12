@@ -835,11 +835,12 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     gw_port = urlparse(gw_url).port or 4508
 
     print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
-    print("\nOn Windows, run:")
-    port_flag = f" -GatewayPort {gw_port}" if gw_port != 4508 else ""
-    print(
-        f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host}{port_flag}"
-    )
+    print(f"\nThe Windows installer will prompt for:")
+    print(f"  Join code:  {join_code}")
+    print(f"  SIFT IP:    {sift_host}")
+    print(f"  Port:       {gw_port}")
+    print(f"\nIf the installer is not already running:")
+    print(f"  .\\setup-windows.ps1")
 
 
 def _wintools_ssl_context():
@@ -1073,6 +1074,9 @@ def _ensure_static_ip() -> str | None:
 
     detected_ip = _detect_current_ip() or ""
 
+    print("Remote machines (Windows workstation, LLM clients) connect to this")
+    print("SIFT workstation by IP. A static IP ensures they can reconnect after reboot.")
+    print()
     ip = input(f"Enter static IP for this machine [{detected_ip}]: ").strip()
     if not ip:
         ip = detected_ip
