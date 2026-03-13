@@ -1570,6 +1570,17 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
             "url": _ensure_mcp_path(windows_url),
         }
 
+    remnux_url, remnux_token = _resolve_remnux(args, auto)
+    if remnux_url:
+        remnux_entry: dict = {
+            "type": "streamable-http",
+            "url": _ensure_mcp_path(remnux_url),
+        }
+        if remnux_token:
+            remnux_entry["headers"] = {"Authorization": f"Bearer {remnux_token}"}
+            _test_remnux_connection(remnux_url, remnux_token)
+        servers["remnux-mcp"] = remnux_entry
+
     include_zeltser, include_mslearn = _resolve_internet_mcps(args, auto)
     if include_zeltser:
         servers[_ZELTSER_MCP["name"]] = {
