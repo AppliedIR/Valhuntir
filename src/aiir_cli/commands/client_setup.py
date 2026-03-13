@@ -367,16 +367,15 @@ def _resolve_remnux(args, auto: bool) -> tuple[str, str]:
         return "", ""
 
     print("\n--- REMnux Malware Analysis Workstation ---")
-    print("If you have a REMnux VM running remnux-mcp, enter its IP address")
-    print("or hostname. The default port is 3000.")
+    print("If you have a REMnux VM running remnux-mcp, enter its IP address.")
     print()
-    print("  Format:   IP or IP:PORT     Examples: 192.168.1.30, 10.0.0.10:3000")
     print("  Find it:  On the REMnux box, run: ip addr show | grep inet")
 
-    answer = _prompt("\nREMnux endpoint", "skip")
-    if answer.lower() == "skip":
+    ip = _prompt("\nREMnux IP address", "skip")
+    if ip.lower() == "skip" or not ip.strip():
         return "", ""
-    url = _normalise_url(answer, 3000)
+    port = _prompt("REMnux port", "3000")
+    url = _normalise_url(f"{ip.strip()}:{port.strip()}", 3000)
     if not url:
         return "", ""
     token = token or _prompt_remnux_token()
