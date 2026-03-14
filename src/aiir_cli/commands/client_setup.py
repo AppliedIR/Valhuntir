@@ -633,6 +633,21 @@ def _merge_settings(target: Path, source: Path) -> None:
                     if not any(p in existing_pairs for p in new_pairs):
                         existing_hooks[hook_type].append(entry)
 
+    # Remove deprecated hooks from existing settings
+    _DEPRECATED_HOOKS = {"pre-bash-guard.sh"}
+    if "hooks" in existing:
+        for hook_type in list(existing["hooks"]):
+            existing["hooks"][hook_type] = [
+                entry
+                for entry in existing["hooks"][hook_type]
+                if not any(
+                    any(dh in h.get("command", "") for dh in _DEPRECATED_HOOKS)
+                    for h in entry.get("hooks", [])
+                )
+            ]
+            if not existing["hooks"][hook_type]:
+                del existing["hooks"][hook_type]
+
     # Merge permissions (additive, preserve ask/defaultMode)
     if "permissions" in incoming:
         existing_perms = existing.setdefault("permissions", {})
@@ -783,6 +798,14 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
                 _deploy_hook(hook_src, hook_target)
                 print(f"  Deployed:  {hook_name} -> {hook_target}")
 
+        # Remove deprecated hook files
+        hooks_dir = Path.home() / ".aiir" / "hooks"
+        for old_hook in ("pre-bash-guard.sh",):
+            old_path = hooks_dir / old_hook
+            if old_path.is_file():
+                old_path.unlink()
+                print(f"  Removed:   {old_hook} (deprecated)")
+
         # Deploy CLAUDE.md globally
         _deploy_claude_md(
             _find_asset("CLAUDE.md"),
@@ -834,6 +857,14 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
                 hook_target = project_dir / ".claude" / "hooks" / hook_name
                 _deploy_hook(hook_src, hook_target)
                 print(f"  Deployed:  {hook_name} -> {hook_target}")
+
+        # Remove deprecated hook files from project
+        proj_hooks_dir = project_dir / ".claude" / "hooks"
+        for old_hook in ("pre-bash-guard.sh",):
+            old_path = proj_hooks_dir / old_hook
+            if old_path.is_file():
+                old_path.unlink()
+                print(f"  Removed:   {old_hook} (deprecated)")
 
         # Deploy CLAUDE.md to project root
         _deploy_claude_md(

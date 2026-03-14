@@ -264,6 +264,21 @@ def cmd_update(args, identity: dict) -> None:
         count += 1
     print(f"  Reinstalling packages... {count} packages")
 
+    # Fix opentelemetry version conflict (pycti ~=1.35 vs chromadb)
+    if "rag-mcp" in installed and "opencti-mcp" in installed:
+        subprocess.run(
+            [
+                pip,
+                "install",
+                "--quiet",
+                "opentelemetry-sdk>=1.40",
+                "opentelemetry-api>=1.40",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
 
