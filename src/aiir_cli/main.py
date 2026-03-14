@@ -928,7 +928,10 @@ def _case_init(args, identity: dict) -> None:
 
     # Wintools sharing (after case creation succeeds)
     if _wintools_configured():
-        share = input("Share this case with wintools? [y/N] ").strip().lower()
+        if sys.stdin.isatty():
+            share = input("Share this case with wintools? [y/N] ").strip().lower()
+        else:
+            share = "n"
         if share in ("y", "yes"):
             try:
                 from aiir_cli.commands.join import (

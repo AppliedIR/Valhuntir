@@ -908,6 +908,8 @@ def notify_wintools_case_activated(case_id: str) -> None:
             kwargs["context"] = _wintools_ssl_context()
         with urllib.request.urlopen(req, **kwargs):
             pass
+    except (ConnectionError, OSError):
+        pass  # wintools unreachable — non-fatal
     except Exception as e:
         print(f"Warning: failed to notify wintools of activation: {e}", file=sys.stderr)
 
@@ -948,6 +950,8 @@ def notify_wintools_case_deactivated() -> None:
             kwargs["context"] = _wintools_ssl_context()
         with urllib.request.urlopen(req, **kwargs):
             pass
+    except (ConnectionError, OSError):
+        pass  # wintools unreachable — non-fatal
     except Exception as e:
         print(
             f"Warning: failed to notify wintools of deactivation: {e}", file=sys.stderr
