@@ -538,16 +538,7 @@ if [[ "$CLIENT" == "claude-code" ]]; then
         ERRORS=$((ERRORS + 1))
     fi
 
-    info "Fetching pre-bash-guard.sh..."
-    if curl -fsSL "$GITHUB_RAW/sift-mcp/main/claude-code/full/hooks/pre-bash-guard.sh" -o "$HOOKS_DIR/pre-bash-guard.sh" 2>/dev/null; then
-        chmod 755 "$HOOKS_DIR/pre-bash-guard.sh"
-        ok "pre-bash-guard.sh"
-    else
-        warn "Could not fetch pre-bash-guard.sh"
-        ERRORS=$((ERRORS + 1))
-    fi
-
-    # Generate settings.json with all 4 blocks
+    # Generate settings.json
     SETTINGS_DIR="$DEPLOY_DIR/.claude"
     mkdir -p "$SETTINGS_DIR"
     SETTINGS_FILE="$SETTINGS_DIR/settings.json"
@@ -566,17 +557,6 @@ if [[ "$CLIENT" == "claude-code" ]]; then
           {
             "type": "command",
             "command": "cat << 'EOF'\n<forensic-rules>\nPLAN before 3+ steps | EVIDENCE for claims | APPROVAL before conclusions\nRECORD actions via forensic-mcp | NO DELETE without approval\n</forensic-rules>\nEOF"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$DEPLOY_DIR/.claude/hooks/pre-bash-guard.sh"
           }
         ]
       }
@@ -654,7 +634,20 @@ if [[ "$CLIENT" == "claude-code" ]]; then
   },
   "sandbox": {
     "enabled": true,
-    "allowUnsandboxedCommands": false
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyWrite": [
+        "~/.aiir/gateway.yaml",
+        "~/.aiir/config.yaml",
+        "~/.aiir/active_case",
+        "~/.aiir/hooks",
+        "~/.aiir/.password_lockout",
+        "~/.aiir/.pin_lockout",
+        "~/.claude/settings.json",
+        "~/.claude/CLAUDE.md",
+        "~/.claude/rules"
+      ]
+    }
   }
 }
 SETTINGS

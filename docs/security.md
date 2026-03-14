@@ -88,9 +88,9 @@ When Claude Code is the LLM client, 41 deny rules block Read/Edit/Write tool acc
 
 These rules replace the previous generic denylist (rm -rf, mkfs, dd) with targeted protection for case integrity.
 
-### L4 — PreToolUse Hook
+### L4 — Sandbox Filesystem Write Protection
 
-A `pre-bash-guard.sh` hook intercepts Bash commands before execution. It blocks shell redirections, tee, cp, mv, and chmod targeting protected case data filenames (findings.json, timeline.json, approvals.jsonl, CASE.yaml). This is a heuristic — the spec labels it advisory — but it catches common bypass patterns.
+`sandbox.filesystem.denyWrite` uses bwrap to OS-enforce write blocking on protected paths. Bash commands run inside the sandbox cannot modify these files regardless of the shell construct used (sed -i, perl -i, redirections, etc.). Protected paths include `~/.aiir/gateway.yaml`, `~/.aiir/config.yaml`, `~/.aiir/active_case`, `~/.aiir/hooks`, `~/.claude/settings.json`, `~/.claude/CLAUDE.md`, and `~/.claude/rules`. MCP backends run outside the sandbox and can write case data normally.
 
 ### L5 — File Permission Protection
 

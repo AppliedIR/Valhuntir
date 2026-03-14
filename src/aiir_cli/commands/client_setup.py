@@ -648,9 +648,26 @@ def _merge_settings(target: Path, source: Path) -> None:
                 existing_deny.add(rule)
             existing_perms["deny"] = sorted(existing_deny)
 
-    # Merge sandbox config
+    # Merge sandbox config (deep-merge filesystem.denyWrite)
     if "sandbox" in incoming:
-        existing.setdefault("sandbox", {}).update(incoming["sandbox"])
+        existing_sandbox = existing.setdefault("sandbox", {})
+        incoming_sandbox = incoming["sandbox"]
+        # Deep-merge filesystem.denyWrite: append + deduplicate
+        if "filesystem" in incoming_sandbox:
+            existing_fs = existing_sandbox.setdefault("filesystem", {})
+            if "denyWrite" in incoming_sandbox["filesystem"]:
+                existing_dw = set(existing_fs.get("denyWrite", []))
+                for path in incoming_sandbox["filesystem"]["denyWrite"]:
+                    existing_dw.add(path)
+                existing_fs["denyWrite"] = sorted(existing_dw)
+            # Merge other filesystem keys (if any future additions)
+            for k, v in incoming_sandbox["filesystem"].items():
+                if k != "denyWrite":
+                    existing_fs[k] = v
+        # Merge top-level sandbox keys (enabled, allowUnsandboxedCommands)
+        for k, v in incoming_sandbox.items():
+            if k != "filesystem":
+                existing_sandbox[k] = v
 
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_600(target, json.dumps(existing, indent=2) + "\n")
@@ -758,7 +775,6 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         # Deploy hook scripts to ~/.aiir/hooks/
         for hook_name in (
             "forensic-audit.sh",
-            "pre-bash-guard.sh",
             "case-dir-check.sh",
         ):
             hook_src = _find_hook(hook_name)
@@ -811,7 +827,6 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         # Deploy hook scripts to project
         for hook_name in (
             "forensic-audit.sh",
-            "pre-bash-guard.sh",
             "case-dir-check.sh",
         ):
             hook_src = _find_hook(hook_name)
@@ -1156,7 +1171,7 @@ def _uninstall_sift() -> None:
 
     # [3] Hook scripts
     hooks_dir = Path.home() / ".aiir" / "hooks"
-    hook_scripts = ["forensic-audit.sh", "pre-bash-guard.sh", "case-dir-check.sh"]
+    hook_scripts = ["forensic-audit.sh", "case-dir-check.sh"]
     existing_hooks = [h for h in hook_scripts if (hooks_dir / h).is_file()]
     if existing_hooks:
         print(f"  [3] Hook scripts (~/.aiir/hooks/: {', '.join(existing_hooks)})")
@@ -1279,7 +1294,6 @@ def _uninstall_project() -> None:
         hooks_dir = claude_dir / "hooks"
         for hook_name in (
             "forensic-audit.sh",
-            "pre-bash-guard.sh",
             "case-dir-check.sh",
         ):
             hook_file = hooks_dir / hook_name
@@ -1376,9 +1390,6 @@ def _remove_forensic_settings(path: Path) -> None:
             for e in entries
             if not any(
                 "forensic-audit" in h.get("command", "") for h in e.get("hooks", [])
-            )
-            and not any(
-                "pre-bash-guard" in h.get("command", "") for h in e.get("hooks", [])
             )
             and not any(
                 "case-dir-check" in h.get("command", "") for h in e.get("hooks", [])

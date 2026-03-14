@@ -378,17 +378,6 @@ $settingsObj = @{
                 )
             }
         )
-        PreToolUse = @(
-            @{
-                matcher = "Bash"
-                hooks = @(
-                    @{
-                        type = "command"
-                        command = (Join-Path $hooksDir "pre-bash-guard.sh").Replace('\', '/')
-                    }
-                )
-            }
-        )
         PostToolUse = @(
             @{
                 matcher = "Bash"
@@ -463,6 +452,19 @@ $settingsObj = @{
     sandbox = @{
         enabled = $true
         allowUnsandboxedCommands = $false
+        filesystem = @{
+            denyWrite = @(
+                "~/.aiir/gateway.yaml",
+                "~/.aiir/config.yaml",
+                "~/.aiir/active_case",
+                "~/.aiir/hooks",
+                "~/.aiir/.password_lockout",
+                "~/.aiir/.pin_lockout",
+                "~/.claude/settings.json",
+                "~/.claude/CLAUDE.md",
+                "~/.claude/rules"
+            )
+        }
     }
 }
 
@@ -539,8 +541,7 @@ $assets = @(
     @{ Name = "AGENTS.md"; Url = "$githubRaw/sift-mcp/main/AGENTS.md"; Dest = (Join-Path $deployDir "AGENTS.md") },
     @{ Name = "FORENSIC_DISCIPLINE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/FORENSIC_DISCIPLINE.md"; Dest = (Join-Path $deployDir "FORENSIC_DISCIPLINE.md") },
     @{ Name = "TOOL_REFERENCE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/TOOL_REFERENCE.md"; Dest = (Join-Path $deployDir "TOOL_REFERENCE.md") },
-    @{ Name = "forensic-audit.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/hooks/forensic-audit.sh"; Dest = $hookPath },
-    @{ Name = "pre-bash-guard.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/hooks/pre-bash-guard.sh"; Dest = (Join-Path $hooksDir "pre-bash-guard.sh") }
+    @{ Name = "forensic-audit.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/hooks/forensic-audit.sh"; Dest = $hookPath }
 )
 
 foreach ($asset in $assets) {

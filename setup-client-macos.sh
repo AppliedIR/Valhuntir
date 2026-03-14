@@ -433,17 +433,6 @@ SETTINGS_CONTENT=$(cat << SETTINGS
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$DEPLOY_DIR/.claude/hooks/pre-bash-guard.sh"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "Bash",
@@ -517,7 +506,20 @@ SETTINGS_CONTENT=$(cat << SETTINGS
   },
   "sandbox": {
     "enabled": true,
-    "allowUnsandboxedCommands": false
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyWrite": [
+        "~/.aiir/gateway.yaml",
+        "~/.aiir/config.yaml",
+        "~/.aiir/active_case",
+        "~/.aiir/hooks",
+        "~/.aiir/.password_lockout",
+        "~/.aiir/.pin_lockout",
+        "~/.claude/settings.json",
+        "~/.claude/CLAUDE.md",
+        "~/.claude/rules"
+      ]
+    }
   }
 }
 SETTINGS
@@ -638,14 +640,6 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-info "Fetching pre-bash-guard.sh..."
-if curl -fsSL "$GITHUB_RAW/sift-mcp/main/claude-code/full/hooks/pre-bash-guard.sh" -o "$DEPLOY_DIR/.claude/hooks/pre-bash-guard.sh" 2>/dev/null; then
-    chmod 755 "$DEPLOY_DIR/.claude/hooks/pre-bash-guard.sh"
-    ok "pre-bash-guard.sh"
-else
-    warn "Could not fetch pre-bash-guard.sh"
-    ERRORS=$((ERRORS + 1))
-fi
 
 if (( ERRORS > 0 )); then
     warn "$ERRORS asset(s) could not be fetched. Re-run or download manually."
