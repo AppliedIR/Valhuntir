@@ -16,6 +16,7 @@ import getpass as getpass_mod
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -41,9 +42,12 @@ _MIN_PASSWORD_LENGTH = 8
 _PASSWORDS_DIR = Path("/var/lib/aiir/passwords")
 
 
+_EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
+
+
 def _validate_examiner_name(analyst: str) -> None:
-    """Reject examiner names containing path traversal characters."""
-    if ".." in analyst or "/" in analyst or "\\" in analyst:
+    """Reject examiner names that don't match canonical slug format."""
+    if not _EXAMINER_RE.match(analyst):
         raise ValueError(f"Invalid examiner name: {analyst!r}")
 
 

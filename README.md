@@ -560,7 +560,7 @@ aiir case migrate --import-all                         # Merge all examiners' da
 #### config
 
 ```
-aiir config --examiner "jane.doe"          # Set examiner identity
+aiir config --examiner "jane-doe"          # Set examiner identity
 aiir config --show                         # Show current configuration
 ```
 
@@ -636,9 +636,9 @@ Every approval, rejection, and command execution is logged with examiner identit
 
 | Priority | Source | Example |
 |----------|--------|---------|
-| 1 | `--examiner` flag | `aiir approve --examiner jane.doe F-jane-001` |
-| 2 | `AIIR_EXAMINER` env var | `export AIIR_EXAMINER=jane.doe` |
-| 3 | `~/.aiir/config.yaml` | `examiner: jane.doe` |
+| 1 | `--examiner` flag | `aiir approve --examiner jane-doe F-jane-001` |
+| 2 | `AIIR_EXAMINER` env var | `export AIIR_EXAMINER=jane-doe` |
+| 3 | `~/.aiir/config.yaml` | `examiner: jane-doe` |
 | 4 | `AIIR_ANALYST` env var | Deprecated fallback |
 | 5 | OS username | Warns if unconfigured |
 

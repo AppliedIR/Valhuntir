@@ -39,10 +39,10 @@ def get_examiner_identity(flag_override: str | None = None) -> dict:
     Returns:
         {
             "os_user": "sansforensics",
-            "examiner": "jane.doe",
+            "examiner": "jane-doe",
             "examiner_source": "config" | "flag" | "env" | "os_user",
             # Backward-compatible aliases
-            "analyst": "jane.doe",
+            "analyst": "jane-doe",
             "analyst_source": "config" | "flag" | "env" | "os_user",
         }
     """
