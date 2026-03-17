@@ -178,15 +178,26 @@ def _approve_specific(
     # IOC approval coupling
     from aiir_cli.case_io import load_iocs, save_iocs
 
+    # Build lookup for all findings (not just ones being approved)
+    all_findings = load_findings(case_dir)
+    finding_status = {fi["id"]: fi.get("status", "DRAFT") for fi in all_findings}
+    # Overlay the just-approved statuses
+    for item in to_approve:
+        finding_status[item["id"]] = item.get("status", "DRAFT")
+
     iocs = load_iocs(case_dir)
     iocs_modified = False
     for ioc in iocs:
         if ioc.get("manually_reviewed"):
             continue
         source_ids = ioc.get("source_findings", [])
-        if not any(sid in approved_ids for sid in source_ids):
+        if not source_ids:
             continue
-        if ioc.get("status") != "APPROVED":
+        # ALL source findings must be APPROVED
+        all_approved = all(
+            finding_status.get(sid, "DRAFT") == "APPROVED" for sid in source_ids
+        )
+        if all_approved and ioc.get("status") != "APPROVED":
             ioc["status"] = "APPROVED"
             ioc["approved_at"] = now
             ioc["approved_by"] = identity["examiner"]

@@ -110,19 +110,28 @@ def cmd_reject(args, identity: dict) -> None:
     # IOC rejection coupling
     from aiir_cli.case_io import load_iocs, save_iocs
 
+    # Build lookup for all finding statuses
+    all_findings = load_findings(case_dir)
+    finding_status = {fi["id"]: fi.get("status", "DRAFT") for fi in all_findings}
+    for rid in rejected:
+        finding_status[rid] = "REJECTED"
+
     iocs = load_iocs(case_dir)
     iocs_modified = False
     for ioc in iocs:
         if ioc.get("manually_reviewed"):
             continue
         source_ids = ioc.get("source_findings", [])
-        if not any(sid in rejected for sid in source_ids):
+        if not source_ids:
             continue
-        if ioc.get("status") != "REJECTED":
+        all_rejected = all(
+            finding_status.get(sid, "DRAFT") == "REJECTED" for sid in source_ids
+        )
+        if all_rejected and ioc.get("status") != "REJECTED":
             ioc["status"] = "REJECTED"
             ioc["rejected_at"] = now
             ioc["rejected_by"] = identity["examiner"]
-            ioc["rejection_reason"] = "Source finding rejected"
+            ioc["rejection_reason"] = "All source findings rejected"
             ioc["modified_at"] = now
             iocs_modified = True
             rejected.append(ioc["id"])
@@ -248,19 +257,28 @@ def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> No
     # IOC rejection coupling (interactive)
     from aiir_cli.case_io import load_iocs, save_iocs
 
+    # Build lookup for all finding statuses
+    all_findings_2 = load_findings(case_dir)
+    finding_status_2 = {fi["id"]: fi.get("status", "DRAFT") for fi in all_findings_2}
+    for rid in rejected:
+        finding_status_2[rid] = "REJECTED"
+
     iocs = load_iocs(case_dir)
     iocs_modified = False
     for ioc in iocs:
         if ioc.get("manually_reviewed"):
             continue
         source_ids = ioc.get("source_findings", [])
-        if not any(sid in rejected for sid in source_ids):
+        if not source_ids:
             continue
-        if ioc.get("status") != "REJECTED":
+        all_rejected = all(
+            finding_status_2.get(sid, "DRAFT") == "REJECTED" for sid in source_ids
+        )
+        if all_rejected and ioc.get("status") != "REJECTED":
             ioc["status"] = "REJECTED"
             ioc["rejected_at"] = now
             ioc["rejected_by"] = identity["examiner"]
-            ioc["rejection_reason"] = "Source finding rejected"
+            ioc["rejection_reason"] = "All source findings rejected"
             ioc["modified_at"] = now
             iocs_modified = True
             rejected.append(ioc["id"])
