@@ -203,15 +203,15 @@ Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML
 
 | Tool | Description |
 |------|-------------|
-| `run_command` | Execute a cataloged forensic tool |
+| `run_windows_command` | Execute a cataloged forensic tool |
 | `scan_tools` | Scan for all cataloged tools, report availability |
-| `list_available_tools` | List cataloged tools with installation status |
-| `list_missing_tools` | List tools not installed, with install guidance |
-| `check_tools` | Check specific tools by name |
-| `get_tool_help` | Tool-specific help, flags, caveats |
-| `suggest_tools` | Suggest tools for an artifact type |
+| `list_windows_tools` | List cataloged tools with installation status |
+| `list_missing_windows_tools` | List tools not installed, with install guidance |
+| `check_windows_tools` | Check specific tools by name |
+| `get_windows_tool_help` | Tool-specific help, flags, caveats |
+| `suggest_windows_tools` | Suggest tools for an artifact type |
 
-### Tool Catalog (22 entries)
+### Tool Catalog (31 entries)
 
 | File | Tools |
 |------|-------|
