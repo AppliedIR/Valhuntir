@@ -240,6 +240,6 @@ Every forensic tool response is wrapped in a structured envelope with forensic-k
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | SIFT monorepo: 11 packages, installer, platform docs |
 | [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows tool execution MCP + installer |
-| [vhir](https://github.com/AppliedIR/valihuntir) | CLI + architecture reference |
+| [ValiHuntIR](https://github.com/AppliedIR/valihuntir) | CLI + architecture reference |
 
 Public repos under the AppliedIR GitHub org.

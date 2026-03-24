@@ -618,5 +618,5 @@ if ($clientType -eq "claude-code") {
 }
 
 Write-Host ""
-Write-Host "Documentation: https://appliedir.github.io/vhir/" -ForegroundColor White
+Write-Host "Documentation: https://appliedir.github.io/valihuntir/" -ForegroundColor White
 Write-Host ""

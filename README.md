@@ -667,7 +667,7 @@ Every approval, rejection, and command execution is logged with examiner identit
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
 | [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (7 tools, 31 catalog entries) |
-| [vhir](https://github.com/AppliedIR/valihuntir) | CLI, architecture reference |
+| [ValiHuntIR](https://github.com/AppliedIR/valihuntir) | CLI, architecture reference |
 
 ## Updating
 
