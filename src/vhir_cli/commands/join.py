@@ -1,4 +1,4 @@
-"""aiir join — exchange a join code for gateway credentials from a remote machine."""
+"""vhir join — exchange a join code for gateway credentials from a remote machine."""
 
 from __future__ import annotations
 
@@ -120,10 +120,10 @@ def cmd_join(args, identity: dict) -> None:
                 "Note: gateway restart may be needed to activate the wintools backend"
             )
 
-    # Run aiir setup client to generate MCP config
+    # Run vhir setup client to generate MCP config
     if not getattr(args, "skip_setup", False):
         print()
-        print("Run 'aiir setup client --remote' to configure your LLM client.")
+        print("Run 'vhir setup client --remote' to configure your LLM client.")
 
 
 def cmd_setup_join_code(args, identity: dict) -> None:
@@ -136,7 +136,7 @@ def cmd_setup_join_code(args, identity: dict) -> None:
 
     if not token:
         print("No gateway token found. Is the gateway configured?", file=sys.stderr)
-        print("Check ~/.aiir/gateway.yaml for api_keys", file=sys.stderr)
+        print("Check ~/.vhir/gateway.yaml for api_keys", file=sys.stderr)
         sys.exit(1)
 
     # Configure static IP before remote binding
@@ -160,7 +160,7 @@ def cmd_setup_join_code(args, identity: dict) -> None:
     if not verify and gateway_url.startswith("https"):
         print(
             "WARNING: TLS certificate verification disabled for join-code request. "
-            "Use ~/.aiir/tls/ca-cert.pem to enable verification.",
+            "Use ~/.vhir/tls/ca-cert.pem to enable verification.",
             file=sys.stderr,
         )
     try:
@@ -241,7 +241,7 @@ def _join_urllib(sift_url, code, wintools_url, wintools_token, verify, args):
 
     if not getattr(args, "skip_setup", False):
         print()
-        print("Run 'aiir setup client --remote' to configure your LLM client.")
+        print("Run 'vhir setup client --remote' to configure your LLM client.")
 
 
 def _join_code_urllib(gateway_url, token, args) -> dict:
@@ -278,9 +278,9 @@ def _join_code_urllib(gateway_url, token, args) -> dict:
 
 
 def _write_config(gateway_url: str, gateway_token: str) -> None:
-    """Write gateway credentials to ~/.aiir/config.yaml.
+    """Write gateway credentials to ~/.vhir/config.yaml.
 
-    config.yaml's gateway_url is for remote clients only (written by 'aiir join'
+    config.yaml's gateway_url is for remote clients only (written by 'vhir join'
     on a remote machine). Local SIFT commands read gateway.yaml instead.
     """
     from urllib.parse import urlparse
@@ -294,7 +294,7 @@ def _write_config(gateway_url: str, gateway_token: str) -> None:
         )
         return
 
-    config_dir = Path.home() / ".aiir"
+    config_dir = Path.home() / ".vhir"
     config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path = config_dir / "config.yaml"
 
@@ -317,7 +317,7 @@ def _write_config(gateway_url: str, gateway_token: str) -> None:
 
 def _get_local_gateway_url() -> str:
     """Build the local gateway URL from gateway.yaml config."""
-    from aiir_cli.gateway import get_local_gateway_url
+    from vhir_cli.gateway import get_local_gateway_url
 
     return get_local_gateway_url()
 
@@ -326,7 +326,7 @@ def _get_local_gateway_token() -> str | None:
     """Get the first API key from the local gateway config."""
     # Try gateway.yaml first
     for config_name in ("gateway.yaml", "config.yaml"):
-        config_path = Path.home() / ".aiir" / config_name
+        config_path = Path.home() / ".vhir" / config_name
         if config_path.exists():
             try:
                 with open(config_path) as f:
@@ -349,14 +349,14 @@ def _detect_wintools() -> bool:
 
     Always returns False — use --wintools flag explicitly.
     Auto-detection removed because the wintools installer writes config to
-    $InstallDir/config.yaml, not ~/.aiir/wintools.yaml.
+    $InstallDir/config.yaml, not ~/.vhir/wintools.yaml.
     """
     return False
 
 
 def _get_wintools_credentials() -> tuple[str | None, str | None]:
     """Get wintools URL and token if available."""
-    wintools_config = Path.home() / ".aiir" / "wintools.yaml"
+    wintools_config = Path.home() / ".vhir" / "wintools.yaml"
     if wintools_config.exists():
         try:
             with open(wintools_config) as f:
@@ -378,7 +378,7 @@ def _ensure_remote_binding() -> None:
     import subprocess
     import time
 
-    gateway_config = Path.home() / ".aiir" / "gateway.yaml"
+    gateway_config = Path.home() / ".vhir" / "gateway.yaml"
     if not gateway_config.exists():
         return
 
@@ -404,7 +404,7 @@ def _ensure_remote_binding() -> None:
     answer = input("Rebind gateway to 0.0.0.0 and restart? [Y/n] ").strip().lower()
     if answer in ("n", "no"):
         print(
-            "Skipped. To rebind manually, edit ~/.aiir/gateway.yaml "
+            "Skipped. To rebind manually, edit ~/.vhir/gateway.yaml "
             "and restart the gateway.",
             file=sys.stderr,
         )
@@ -424,7 +424,7 @@ def _ensure_remote_binding() -> None:
     print("Restarting gateway...", end="", flush=True)
     try:
         result = subprocess.run(
-            ["systemctl", "--user", "restart", "aiir-gateway"],
+            ["systemctl", "--user", "restart", "vhir-gateway"],
             timeout=15,
             capture_output=True,
             text=True,
@@ -432,7 +432,7 @@ def _ensure_remote_binding() -> None:
         if result.returncode != 0:
             print(f" failed: {result.stderr.strip()}", file=sys.stderr)
             print(
-                "Try manually: systemctl --user restart aiir-gateway",
+                "Try manually: systemctl --user restart vhir-gateway",
                 file=sys.stderr,
             )
             return
@@ -441,7 +441,7 @@ def _ensure_remote_binding() -> None:
         return
 
     # Wait for gateway to become healthy
-    from aiir_cli.gateway import get_local_gateway_url, get_local_ssl_context
+    from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 
     port = gw.get("port", 4508)
     health_url = f"{get_local_gateway_url()}/health"
@@ -463,12 +463,12 @@ def _ensure_remote_binding() -> None:
             print(".", end="", flush=True)
 
     print(" gateway did not become healthy in time.", file=sys.stderr)
-    print("Check: systemctl --user status aiir-gateway", file=sys.stderr)
+    print("Check: systemctl --user status vhir-gateway", file=sys.stderr)
 
 
 def _find_ca_cert() -> str | None:
     """Find CA certificate for TLS verification."""
-    from aiir_cli.gateway import find_ca_cert
+    from vhir_cli.gateway import find_ca_cert
 
     return find_ca_cert()
 
@@ -477,13 +477,13 @@ def derive_smb_password(join_code: str) -> str:
     """Derive SMB password from join code using PBKDF2-SHA256."""
     import hashlib
 
-    dk = hashlib.pbkdf2_hmac("sha256", join_code.encode(), b"aiir-smb-v1", 600_000)
+    dk = hashlib.pbkdf2_hmac("sha256", join_code.encode(), b"vhir-smb-v1", 600_000)
     return dk.hex()[:32]
 
 
 def _get_sift_ip() -> str | None:
-    """Read static IP from ~/.aiir/network.yaml."""
-    p = Path.home() / ".aiir" / "network.yaml"
+    """Read static IP from ~/.vhir/network.yaml."""
+    p = Path.home() / ".vhir" / "network.yaml"
     if not p.is_file():
         return None
     try:
@@ -527,7 +527,7 @@ def _setup_firewall(wintools_ip: str) -> None:
         )
         return
 
-    for port, label in [("4508", "AIIR gateway"), ("445", "AIIR SMB")]:
+    for port, label in [("4508", "ValiHuntIR gateway"), ("445", "ValiHuntIR SMB")]:
         try:
             subprocess.run(
                 [
@@ -578,7 +578,7 @@ def _setup_samba_share(join_code: str) -> str:
     import subprocess
 
     # Idempotency: skip if already configured
-    samba_yaml = Path.home() / ".aiir" / "samba.yaml"
+    samba_yaml = Path.home() / ".vhir" / "samba.yaml"
     if samba_yaml.is_file():
         try:
             doc = yaml.safe_load(samba_yaml.read_text()) or {}
@@ -610,9 +610,9 @@ def _setup_samba_share(join_code: str) -> str:
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to create sift group: {e}") from e
 
-    # Create aiir-smb user
+    # Create vhir-smb user
     result = subprocess.run(
-        ["id", "-u", "aiir-smb"],
+        ["id", "-u", "vhir-smb"],
         capture_output=True,
         timeout=10,
     )
@@ -628,17 +628,17 @@ def _setup_samba_share(join_code: str) -> str:
                     "-M",
                     "-G",
                     "sift",
-                    "aiir-smb",
+                    "vhir-smb",
                 ],
                 check=True,
                 capture_output=True,
                 timeout=10,
             )
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to create aiir-smb user: {e}") from e
+            raise RuntimeError(f"Failed to create vhir-smb user: {e}") from e
     else:
         subprocess.run(
-            ["sudo", "usermod", "-aG", "sift", "aiir-smb"],
+            ["sudo", "usermod", "-aG", "sift", "vhir-smb"],
             capture_output=True,
             timeout=10,
         )
@@ -660,7 +660,7 @@ def _setup_samba_share(join_code: str) -> str:
     # Set smbpasswd
     try:
         subprocess.run(
-            ["sudo", "smbpasswd", "-a", "-s", "aiir-smb"],
+            ["sudo", "smbpasswd", "-a", "-s", "vhir-smb"],
             input=f"{derived_password}\n{derived_password}\n".encode(),
             check=True,
             capture_output=True,
@@ -683,16 +683,16 @@ def _setup_samba_share(join_code: str) -> str:
         )
 
     # Share starts at inactive placeholder — repointed per-case on activation
-    placeholder = str(Path.home() / ".aiir" / "share-inactive")
+    placeholder = str(Path.home() / ".vhir" / "share-inactive")
     Path(placeholder).mkdir(parents=True, exist_ok=True)
 
     # Write Samba config — force user ensures SMB file operations run as the
     # local installer user, eliminating the need to re-login for sift group
-    # membership.  Authentication still uses aiir-smb (valid users).
+    # membership.  Authentication still uses vhir-smb (valid users).
     username = os.environ.get("USER") or os.getlogin()
     smb_conf = f"""[cases]
     path = {placeholder}
-    valid users = aiir-smb
+    valid users = vhir-smb
     read only = no
     create mask = 0644
     directory mask = 0755
@@ -701,7 +701,7 @@ def _setup_samba_share(join_code: str) -> str:
     browsable = no
     hosts allow = {wintools_ip}
 """
-    smb_conf_path = "/etc/samba/smb.conf.d/aiir-cases.conf"
+    smb_conf_path = "/etc/samba/smb.conf.d/vhir-cases.conf"
     try:
         subprocess.run(
             ["sudo", "mkdir", "-p", "/etc/samba/smb.conf.d"],
@@ -770,14 +770,14 @@ def _setup_samba_share(join_code: str) -> str:
     )
     try:
         subprocess.run(
-            ["sudo", "tee", "/etc/sudoers.d/aiir-samba"],
+            ["sudo", "tee", "/etc/sudoers.d/vhir-samba"],
             input=sudoers_content.encode(),
             check=True,
             capture_output=True,
             timeout=10,
         )
         subprocess.run(
-            ["sudo", "chmod", "0440", "/etc/sudoers.d/aiir-samba"],
+            ["sudo", "chmod", "0440", "/etc/sudoers.d/vhir-samba"],
             check=True,
             capture_output=True,
             timeout=10,
@@ -786,20 +786,20 @@ def _setup_samba_share(join_code: str) -> str:
         print(f"Warning: Failed to create sudoers entry: {e}", file=sys.stderr)
         print("Case operations may require sudo password.", file=sys.stderr)
 
-    # Write ~/.aiir/samba.yaml
+    # Write ~/.vhir/samba.yaml
     import datetime
 
-    aiir_dir = Path.home() / ".aiir"
-    aiir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    vhir_dir = Path.home() / ".vhir"
+    vhir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     samba_data = {
         "share_name": "cases",
-        "smb_user": "aiir-smb",
+        "smb_user": "vhir-smb",
         "force_user": username,
         "wintools_ip": wintools_ip,
         "active_share_target": placeholder,
         "configured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    (aiir_dir / "samba.yaml").write_text(
+    (vhir_dir / "samba.yaml").write_text(
         yaml.dump(samba_data, default_flow_style=False)
     )
 
@@ -820,7 +820,7 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
         wintools_ip = _setup_samba_share(join_code)
     except Exception as e:
         print(f"\nWarning: Samba share setup failed: {e}", file=sys.stderr)
-        print("Complete later with 'aiir setup join-code'", file=sys.stderr)
+        print("Complete later with 'vhir setup join-code'", file=sys.stderr)
 
     if wintools_ip:
         try:
@@ -857,7 +857,7 @@ def _wintools_ssl_context():
     """
     import ssl
 
-    cert_path = Path.home() / ".aiir" / "tls" / "wintools-cert.pem"
+    cert_path = Path.home() / ".vhir" / "tls" / "wintools-cert.pem"
     if cert_path.exists():
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.load_verify_locations(str(cert_path))
@@ -877,7 +877,7 @@ def notify_wintools_case_activated(case_id: str) -> None:
     import urllib.request
     from urllib.parse import urlparse, urlunparse
 
-    gateway_config = Path.home() / ".aiir" / "gateway.yaml"
+    gateway_config = Path.home() / ".vhir" / "gateway.yaml"
     if not gateway_config.is_file():
         return
     try:
@@ -919,7 +919,7 @@ def notify_wintools_case_deactivated() -> None:
     import urllib.request
     from urllib.parse import urlparse, urlunparse
 
-    gateway_config = Path.home() / ".aiir" / "gateway.yaml"
+    gateway_config = Path.home() / ".vhir" / "gateway.yaml"
     if not gateway_config.is_file():
         return
     try:
@@ -966,7 +966,7 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
     """
     import subprocess
 
-    samba_yaml = Path.home() / ".aiir" / "samba.yaml"
+    samba_yaml = Path.home() / ".vhir" / "samba.yaml"
     if not samba_yaml.is_file():
         return  # Samba not configured
 
@@ -974,7 +974,7 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
     wintools_ip = doc.get("wintools_ip", "")
     current_target = doc.get("active_share_target", "")
 
-    placeholder = Path.home() / ".aiir" / "share-inactive"
+    placeholder = Path.home() / ".vhir" / "share-inactive"
     target = str(case_dir) if case_dir else str(placeholder)
 
     if target == current_target:
@@ -982,11 +982,11 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
 
     placeholder.mkdir(parents=True, exist_ok=True)
 
-    conf_path = "/etc/samba/smb.conf.d/aiir-cases.conf"
+    conf_path = "/etc/samba/smb.conf.d/vhir-cases.conf"
     username = doc.get("force_user") or os.environ.get("USER") or os.getlogin()
     smb_conf = f"""[cases]
     path = {target}
-    valid users = aiir-smb
+    valid users = vhir-smb
     read only = no
     create mask = 0644
     directory mask = 0755
@@ -1046,7 +1046,7 @@ def _detect_current_ip() -> str | None:
 
 def _ensure_static_ip() -> str | None:
     """Configure static IP via netplan. Returns the static IP or None if skipped."""
-    network_yaml = Path.home() / ".aiir" / "network.yaml"
+    network_yaml = Path.home() / ".vhir" / "network.yaml"
     if network_yaml.is_file():
         try:
             doc = yaml.safe_load(network_yaml.read_text())
@@ -1210,7 +1210,7 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
     existing_configs = glob.glob("/etc/netplan/*.yaml")
     conflicting = []
     for cfg_path in existing_configs:
-        if "99-aiir-static" in cfg_path:
+        if "99-vhir-static" in cfg_path:
             continue
         try:
             with open(cfg_path) as f:
@@ -1225,7 +1225,7 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
         print(f"Warning: existing netplan configs for {iface}:")
         for c in conflicting:
             print(f"  {c}")
-        answer = input("Override with AIIR static config? [y/N] ").strip().lower()
+        answer = input("Override with ValiHuntIR static config? [y/N] ").strip().lower()
         if answer not in ("y", "yes"):
             print("Skipped static IP configuration.", file=sys.stderr)
             return None
@@ -1249,7 +1249,7 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
 """
     try:
         subprocess.run(
-            ["sudo", "tee", "/etc/netplan/99-aiir-static.yaml"],
+            ["sudo", "tee", "/etc/netplan/99-vhir-static.yaml"],
             input=netplan_content.encode(),
             capture_output=True,
             check=True,
@@ -1270,16 +1270,16 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
     except subprocess.CalledProcessError as e:
         print(f"Failed to apply netplan: {e}", file=sys.stderr)
         print(
-            "Review /etc/netplan/99-aiir-static.yaml and apply manually.",
+            "Review /etc/netplan/99-vhir-static.yaml and apply manually.",
             file=sys.stderr,
         )
         return None
 
-    # Write ~/.aiir/network.yaml
+    # Write ~/.vhir/network.yaml
     import datetime
 
-    aiir_dir = Path.home() / ".aiir"
-    aiir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    vhir_dir = Path.home() / ".vhir"
+    vhir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     network_data = {
         "static_ip": ip,
         "interface": iface,
@@ -1288,7 +1288,7 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
     network_yaml.write_text(yaml.dump(network_data, default_flow_style=False))
 
     # Verify gateway health
-    from aiir_cli.gateway import get_local_gateway_url, get_local_ssl_context
+    from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 
     health_url = f"{get_local_gateway_url()}/health"
     ssl_ctx = get_local_ssl_context()

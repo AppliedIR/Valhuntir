@@ -2,4 +2,4 @@ blank_issues_enabled: false
 contact_links:
   - name: Questions & Discussion
     url: https://github.com/AppliedIR/aiir/discussions
-    about: Ask questions and discuss AIIR usage here instead of filing an issue.
+    about: Ask questions and discuss ValiHuntIR usage here instead of filing an issue.

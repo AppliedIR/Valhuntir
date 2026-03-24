@@ -23,9 +23,9 @@ body:
     id: component
     attributes:
       label: Component
-      description: Which part of AIIR would this affect?
+      description: Which part of ValiHuntIR would this affect?
       options:
-        - aiir CLI
+        - vhir CLI
         - MCP backends
         - Gateway
         - Installer

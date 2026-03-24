@@ -11,11 +11,11 @@ import yaml
 
 def _open_url(args, identity: dict, path: str, label: str) -> None:
     """Open a gateway URL in the browser."""
-    config_path = Path.home() / ".aiir" / "gateway.yaml"
+    config_path = Path.home() / ".vhir" / "gateway.yaml"
     if not config_path.is_file():
         print(
-            "Error: Gateway config not found (~/.aiir/gateway.yaml).\n"
-            "Run `aiir setup client` to configure the gateway.",
+            "Error: Gateway config not found (~/.vhir/gateway.yaml).\n"
+            "Run `vhir setup client` to configure the gateway.",
             file=sys.stderr,
         )
         sys.exit(1)

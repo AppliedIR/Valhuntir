@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from aiir_cli.commands.approve import _write_verification_entries
-from aiir_cli.verification import read_ledger
+from vhir_cli.commands.approve import _write_verification_entries
+from vhir_cli.verification import read_ledger
 
 
 @pytest.fixture(autouse=True)
 def _patch_verification_dir(tmp_path, monkeypatch):
     """Redirect VERIFICATION_DIR to tmp_path for all tests."""
-    monkeypatch.setattr("aiir_cli.verification.VERIFICATION_DIR", tmp_path)
+    monkeypatch.setattr("vhir_cli.verification.VERIFICATION_DIR", tmp_path)
 
 
 @pytest.fixture()

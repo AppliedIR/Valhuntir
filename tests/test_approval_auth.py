@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from aiir_cli.approval_auth import (
+from vhir_cli.approval_auth import (
     _LOCKOUT_SECONDS,
     _MAX_PASSWORD_ATTEMPTS,
     _MIN_PASSWORD_LENGTH,
@@ -30,22 +30,22 @@ from aiir_cli.approval_auth import (
 @pytest.fixture
 def config_path(tmp_path):
     """Config file path in a temp directory."""
-    return tmp_path / ".aiir" / "config.yaml"
+    return tmp_path / ".vhir" / "config.yaml"
 
 
 @pytest.fixture
 def passwords_dir(tmp_path, monkeypatch):
-    """Temp passwords directory (replaces /var/lib/aiir/passwords)."""
+    """Temp passwords directory (replaces /var/lib/vhir/passwords)."""
     d = tmp_path / "passwords"
     d.mkdir()
-    monkeypatch.setattr("aiir_cli.approval_auth._PASSWORDS_DIR", d)
+    monkeypatch.setattr("vhir_cli.approval_auth._PASSWORDS_DIR", d)
     return d
 
 
 class TestPasswordSetup:
     def test_setup_password_writes_to_passwords_dir(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "steve", passwords_dir=passwords_dir)
@@ -67,9 +67,9 @@ class TestPasswordSetup:
         # Mock subprocess so sudo doesn't actually run in tests
         failed = MagicMock(returncode=1, stderr="mock")
         with (
-            patch("aiir_cli.approval_auth.subprocess.run", return_value=failed),
+            patch("vhir_cli.approval_auth.subprocess.run", return_value=failed),
             patch(
-                "aiir_cli.approval_auth.getpass_prompt",
+                "vhir_cli.approval_auth.getpass_prompt",
                 side_effect=["mypasswd1", "mypasswd1"],
             ),
         ):
@@ -83,7 +83,7 @@ class TestPasswordSetup:
 
     def test_setup_password_verify_roundtrip(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
@@ -93,7 +93,7 @@ class TestPasswordSetup:
 
     def test_wrong_password_fails(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["correctpw", "correctpw"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
@@ -106,7 +106,7 @@ class TestPasswordSetup:
 
     def test_has_password_true_after_setup(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
@@ -114,28 +114,28 @@ class TestPasswordSetup:
 
     def test_setup_password_mismatch_exits(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["password1", "password2"],
         ):
             with pytest.raises(SystemExit):
                 setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
 
     def test_setup_password_empty_exits(self, config_path, passwords_dir):
-        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["", ""]):
+        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=["", ""]):
             with pytest.raises(SystemExit):
                 setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
 
     def test_setup_password_too_short_exits(self, config_path, passwords_dir):
         """Password shorter than _MIN_PASSWORD_LENGTH is rejected."""
         short = "x" * (_MIN_PASSWORD_LENGTH - 1)
-        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=[short, short]):
+        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=[short, short]):
             with pytest.raises(SystemExit):
                 setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
 
     def test_setup_password_exact_min_length_ok(self, config_path, passwords_dir):
         """Password exactly at _MIN_PASSWORD_LENGTH is accepted."""
         pw = "x" * _MIN_PASSWORD_LENGTH
-        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=[pw, pw]):
+        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=[pw, pw]):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
         assert has_password(config_path, "analyst1", passwords_dir=passwords_dir)
 
@@ -144,7 +144,7 @@ class TestPasswordSetup:
         with open(config_path, "w") as f:
             yaml.dump({"examiner": "steve"}, f)
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "steve", passwords_dir=passwords_dir)
@@ -156,7 +156,7 @@ class TestPasswordSetup:
     def test_password_file_permissions(self, config_path, passwords_dir):
         """Password file has 0o600 permissions."""
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "steve", passwords_dir=passwords_dir)
@@ -245,24 +245,24 @@ class TestExaminerNameValidation:
 class TestPasswordReset:
     def test_reset_password_requires_current(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["oldpasswd", "oldpasswd"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
         # Wrong current password
-        with patch("aiir_cli.approval_auth.getpass_prompt", side_effect=["wrong"]):
+        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=["wrong"]):
             with pytest.raises(SystemExit):
                 reset_password(config_path, "analyst1", passwords_dir=passwords_dir)
 
     def test_reset_password_success(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["oldpasswd", "oldpasswd"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
         # Correct current, then new password twice
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["oldpasswd", "newpasswd", "newpasswd"],
         ):
             reset_password(config_path, "analyst1", passwords_dir=passwords_dir)
@@ -281,7 +281,7 @@ class TestPasswordReset:
 class TestGetAnalystSalt:
     def test_salt_from_passwords_dir(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
@@ -297,22 +297,22 @@ class TestGetAnalystSalt:
 class TestRequireConfirmation:
     def test_password_mode_correct(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="mypasswd1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="mypasswd1"):
             mode, password = require_confirmation(config_path, "analyst1")
         assert mode == "password"
         assert password == "mypasswd1"
 
     def test_password_mode_wrong_exits(self, config_path, passwords_dir):
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="wrong"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="wrong"):
             with pytest.raises(SystemExit):
                 require_confirmation(config_path, "analyst1")
 
@@ -322,7 +322,7 @@ class TestRequireConfirmation:
             require_confirmation(config_path, "analyst1")
         captured = capsys.readouterr()
         assert "No approval password configured" in captured.err
-        assert "aiir config --setup-password" in captured.err
+        assert "vhir config --setup-password" in captured.err
 
 
 class TestTtyConfirmation:
@@ -354,7 +354,7 @@ class TestTtyConfirmation:
 def isolate_lockout_file(tmp_path, monkeypatch):
     """Point lockout file to temp dir and clean between tests."""
     lockout = tmp_path / ".password_lockout"
-    monkeypatch.setattr("aiir_cli.approval_auth._LOCKOUT_FILE", lockout)
+    monkeypatch.setattr("vhir_cli.approval_auth._LOCKOUT_FILE", lockout)
     yield lockout
     if lockout.exists():
         lockout.unlink()
@@ -419,11 +419,11 @@ class TestPasswordLockout:
     ):
         """require_confirmation records failure on wrong password."""
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="wrong"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="wrong"):
             with pytest.raises(SystemExit):
                 require_confirmation(config_path, "analyst1")
         assert _recent_failure_count("analyst1") == 1
@@ -431,13 +431,13 @@ class TestPasswordLockout:
     def test_require_confirmation_clears_on_success(self, config_path, passwords_dir):
         """require_confirmation clears failures on correct password."""
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
         _record_failure("analyst1")
         assert _recent_failure_count("analyst1") == 1
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="mypasswd1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="mypasswd1"):
             mode, password = require_confirmation(config_path, "analyst1")
         assert mode == "password"
         assert password == "mypasswd1"
@@ -446,7 +446,7 @@ class TestPasswordLockout:
     def test_lockout_blocks_require_confirmation(self, config_path, passwords_dir):
         """Locked-out analyst cannot even attempt password entry."""
         with patch(
-            "aiir_cli.approval_auth.getpass_prompt",
+            "vhir_cli.approval_auth.getpass_prompt",
             side_effect=["mypasswd1", "mypasswd1"],
         ):
             setup_password(config_path, "analyst1", passwords_dir=passwords_dir)

@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `aiir` CLI handles all human-only operations: case management, approval, reporting, evidence handling, and configuration. It is not callable by the AI.
+The `vhir` CLI handles all human-only operations: case management, approval, reporting, evidence handling, and configuration. It is not callable by the AI.
 
 ## Global Options
 
@@ -11,13 +11,13 @@ The `aiir` CLI handles all human-only operations: case management, approval, rep
 
 ## Case Management
 
-### `aiir case init`
+### `vhir case init`
 
 Initialize a new case.
 
 ```bash
-aiir case init "Ransomware Investigation"
-aiir case init "Phishing Campaign" --description "CEO spearphish, Feb 2026"
+vhir case init "Ransomware Investigation"
+vhir case init "Phishing Campaign" --description "CEO spearphish, Feb 2026"
 ```
 
 | Argument/Option | Description |
@@ -25,88 +25,88 @@ aiir case init "Phishing Campaign" --description "CEO spearphish, Feb 2026"
 | `name` | Case name (required) |
 | `--description` | Case description |
 
-### `aiir case activate`
+### `vhir case activate`
 
 Set the active case for the session.
 
 ```bash
-aiir case activate INC-2026-0225
+vhir case activate INC-2026-0225
 ```
 
-### `aiir case list`
+### `vhir case list`
 
 List all available cases.
 
 ```bash
-aiir case list
+vhir case list
 ```
 
-### `aiir case status`
+### `vhir case status`
 
 Show active case summary.
 
 ```bash
-aiir case status
+vhir case status
 ```
 
-### `aiir case close`
+### `vhir case close`
 
 Close a case.
 
 ```bash
-aiir case close INC-2026-0225 --summary "Investigation complete, all findings approved"
+vhir case close INC-2026-0225 --summary "Investigation complete, all findings approved"
 ```
 
-### `aiir case reopen`
+### `vhir case reopen`
 
 Reopen a closed case.
 
 ```bash
-aiir case reopen INC-2026-0225
+vhir case reopen INC-2026-0225
 ```
 
-### `aiir case migrate`
+### `vhir case migrate`
 
 Migrate a case from the legacy `examiners/` directory structure to the current flat layout.
 
 ```bash
-aiir case migrate --examiner alice
-aiir case migrate --import-all    # Merge all examiners' data
+vhir case migrate --examiner alice
+vhir case migrate --import-all    # Merge all examiners' data
 ```
 
 ## Examiner Portal
 
-### `aiir portal`
+### `vhir portal`
 
 Open the Examiner Portal in the default browser.
 
 ```bash
-aiir portal
+vhir portal
 ```
 
-The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `aiir approve --review` applies pending edits from the CLI.
+The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `vhir approve --review` applies pending edits from the CLI.
 
 ## Review
 
-### `aiir review`
+### `vhir review`
 
 Display case information, findings, timeline, evidence, and audit logs.
 
 ```bash
-aiir review                              # Case summary
-aiir review --findings                   # Findings table
-aiir review --findings --detail          # Full finding details
-aiir review --findings --status DRAFT    # Filter by status
-aiir review --timeline                   # Timeline events
-aiir review --timeline --type lateral    # Filter by event type
-aiir review --timeline --start 2026-02-20T00:00 --end 2026-02-22T23:59
-aiir review --todos                      # All TODOs
-aiir review --todos --open               # Open TODOs only
-aiir review --audit                      # Audit trail
-aiir review --evidence                   # Evidence integrity
-aiir review --iocs                       # IOCs from findings
-aiir review --verify                     # Cross-check findings vs approvals + HMAC verification
-aiir review --verify --mine              # HMAC verification for current examiner only
+vhir review                              # Case summary
+vhir review --findings                   # Findings table
+vhir review --findings --detail          # Full finding details
+vhir review --findings --status DRAFT    # Filter by status
+vhir review --timeline                   # Timeline events
+vhir review --timeline --type lateral    # Filter by event type
+vhir review --timeline --start 2026-02-20T00:00 --end 2026-02-22T23:59
+vhir review --todos                      # All TODOs
+vhir review --todos --open               # Open TODOs only
+vhir review --audit                      # Audit trail
+vhir review --evidence                   # Evidence integrity
+vhir review --iocs                       # IOCs from findings
+vhir review --verify                     # Cross-check findings vs approvals + HMAC verification
+vhir review --verify --mine              # HMAC verification for current examiner only
 ```
 
 | Option | Description |
@@ -129,19 +129,19 @@ aiir review --verify --mine              # HMAC verification for current examine
 
 ## Approval
 
-### `aiir approve`
+### `vhir approve`
 
 Approve staged findings and/or timeline events. Requires password confirmation.
 
 ```bash
-aiir approve                                    # Interactive review
-aiir approve F-alice-001 F-alice-002            # Approve specific findings
-aiir approve F-alice-003 --note "Confirmed"     # With examiner note
-aiir approve F-alice-004 --edit                 # Edit in $EDITOR first
-aiir approve --findings-only                    # Review only findings
-aiir approve --timeline-only                    # Review only timeline
-aiir approve --by bob                           # Review items by examiner
-aiir approve --review                           # Apply pending portal edits
+vhir approve                                    # Interactive review
+vhir approve F-alice-001 F-alice-002            # Approve specific findings
+vhir approve F-alice-003 --note "Confirmed"     # With examiner note
+vhir approve F-alice-004 --edit                 # Edit in $EDITOR first
+vhir approve --findings-only                    # Review only findings
+vhir approve --timeline-only                    # Review only timeline
+vhir approve --by bob                           # Review items by examiner
+vhir approve --review                           # Apply pending portal edits
 ```
 
 | Option | Description |
@@ -155,13 +155,13 @@ aiir approve --review                           # Apply pending portal edits
 | `--timeline-only` | Review only timeline events |
 | `--review` | Apply pending portal edits from `pending-reviews.json`, recompute hashes and HMAC signatures |
 
-### `aiir reject`
+### `vhir reject`
 
 Reject staged findings or timeline events.
 
 ```bash
-aiir reject F-alice-004 --reason "Insufficient evidence"
-aiir reject T-alice-007 --reason "Timestamp unreliable"
+vhir reject F-alice-004 --reason "Insufficient evidence"
+vhir reject T-alice-007 --reason "Timestamp unreliable"
 ```
 
 | Option | Description |
@@ -171,63 +171,63 @@ aiir reject T-alice-007 --reason "Timestamp unreliable"
 
 ## Evidence
 
-### `aiir evidence register`
+### `vhir evidence register`
 
 Register an evidence file (computes and records SHA-256 hash).
 
 ```bash
-aiir evidence register /path/to/disk.E01 --description "Workstation image"
+vhir evidence register /path/to/disk.E01 --description "Workstation image"
 ```
 
-### `aiir evidence list`
+### `vhir evidence list`
 
 List registered evidence files with hashes.
 
 ```bash
-aiir evidence list
+vhir evidence list
 ```
 
-### `aiir evidence verify`
+### `vhir evidence verify`
 
 Re-hash registered evidence files and report any modifications.
 
 ```bash
-aiir evidence verify
+vhir evidence verify
 ```
 
-### `aiir evidence log`
+### `vhir evidence log`
 
 Show evidence access log.
 
 ```bash
-aiir evidence log
-aiir evidence log --path disk.E01    # Filter by path substring
+vhir evidence log
+vhir evidence log --path disk.E01    # Filter by path substring
 ```
 
-### `aiir evidence lock` / `aiir evidence unlock`
+### `vhir evidence lock` / `vhir evidence unlock`
 
 Set evidence directory to read-only (bind mount) or restore write access.
 
 ```bash
-aiir evidence lock
-aiir evidence unlock
+vhir evidence lock
+vhir evidence unlock
 ```
 
-Legacy aliases: `aiir lock-evidence`, `aiir unlock-evidence`, `aiir register-evidence`.
+Legacy aliases: `vhir lock-evidence`, `vhir unlock-evidence`, `vhir register-evidence`.
 
 ## Reporting
 
-### `aiir report`
+### `vhir report`
 
 Generate case reports from approved data.
 
 ```bash
-aiir report --full --save full-report.json
-aiir report --executive-summary
-aiir report --timeline --from 2026-02-20 --to 2026-02-22
-aiir report --ioc
-aiir report --status-brief
-aiir report --findings F-alice-001,F-alice-002
+vhir report --full --save full-report.json
+vhir report --executive-summary
+vhir report --timeline --from 2026-02-20 --to 2026-02-22
+vhir report --ioc
+vhir report --status-brief
+vhir report --findings F-alice-001,F-alice-002
 ```
 
 | Option | Description |
@@ -244,98 +244,98 @@ aiir report --findings F-alice-001,F-alice-002
 
 ## TODOs
 
-### `aiir todo add`
+### `vhir todo add`
 
 Add a TODO item.
 
 ```bash
-aiir todo add "Analyze USB device history" --priority high --finding F-alice-002
-aiir todo add "Cross-reference DNS logs" --assignee bob
+vhir todo add "Analyze USB device history" --priority high --finding F-alice-002
+vhir todo add "Cross-reference DNS logs" --assignee bob
 ```
 
-### `aiir todo complete`
+### `vhir todo complete`
 
 Mark a TODO as completed.
 
 ```bash
-aiir todo complete TODO-alice-001
+vhir todo complete TODO-alice-001
 ```
 
-### `aiir todo update`
+### `vhir todo update`
 
 Update a TODO.
 
 ```bash
-aiir todo update TODO-alice-001 --note "Partial analysis done, needs USB timeline"
-aiir todo update TODO-alice-001 --priority high
-aiir todo update TODO-alice-001 --assignee carol
+vhir todo update TODO-alice-001 --note "Partial analysis done, needs USB timeline"
+vhir todo update TODO-alice-001 --priority high
+vhir todo update TODO-alice-001 --assignee carol
 ```
 
 ## Audit
 
-### `aiir audit log`
+### `vhir audit log`
 
 Show audit trail entries.
 
 ```bash
-aiir audit log
-aiir audit log --limit 20
-aiir audit log --mcp forensic-mcp
-aiir audit log --tool run_command
+vhir audit log
+vhir audit log --limit 20
+vhir audit log --mcp forensic-mcp
+vhir audit log --tool run_command
 ```
 
-### `aiir audit summary`
+### `vhir audit summary`
 
 Show audit summary with counts per MCP and tool.
 
 ```bash
-aiir audit summary
+vhir audit summary
 ```
 
 ## Collaboration
 
-### `aiir export`
+### `vhir export`
 
 Export findings and timeline as JSON for sharing.
 
 ```bash
-aiir export --file findings-alice.json
-aiir export --file recent.json --since 2026-02-24T00:00
+vhir export --file findings-alice.json
+vhir export --file recent.json --since 2026-02-24T00:00
 ```
 
-### `aiir merge`
+### `vhir merge`
 
 Merge incoming JSON into local findings and timeline.
 
 ```bash
-aiir merge --file findings-bob.json
+vhir merge --file findings-bob.json
 ```
 
 ## Execution
 
-### `aiir exec`
+### `vhir exec`
 
 Execute a forensic command with audit trail logging. Requires TTY confirmation.
 
 ```bash
-aiir exec --purpose "Extract prefetch files" -- cp -r /mnt/evidence/prefetch/ extractions/
+vhir exec --purpose "Extract prefetch files" -- cp -r /mnt/evidence/prefetch/ extractions/
 ```
 
 ## Setup
 
-### `aiir setup`
+### `vhir setup`
 
-Routes to setup subcommands. Run `aiir setup client` to configure your LLM client.
+Routes to setup subcommands. Run `vhir setup client` to configure your LLM client.
 
-### `aiir setup client`
+### `vhir setup client`
 
-Configure LLM client for AIIR endpoints.
+Configure LLM client for ValiHuntIR endpoints.
 
 ```bash
-aiir setup client                                    # Interactive wizard
-aiir setup client --client=claude-code -y            # Solo, Claude Code
-aiir setup client --sift=http://10.0.0.5:4508 --windows=10.0.0.10:4624
-aiir setup client --remote --token=aiir_gw_...       # Remote with auth
+vhir setup client                                    # Interactive wizard
+vhir setup client --client=claude-code -y            # Solo, Claude Code
+vhir setup client --sift=http://10.0.0.5:4508 --windows=10.0.0.10:4624
+vhir setup client --remote --token=vhir_gw_...       # Remote with auth
 ```
 
 | Option | Description |
@@ -350,62 +350,62 @@ aiir setup client --remote --token=aiir_gw_...       # Remote with auth
 | `--remote` | Remote setup (gateway on another host) |
 | `--token` | Bearer token for gateway auth |
 
-### `aiir setup test`
+### `vhir setup test`
 
 Test connectivity to all detected MCP servers.
 
 ```bash
-aiir setup test
+vhir setup test
 ```
 
-### `aiir setup join-code`
+### `vhir setup join-code`
 
 Generate a join code for remote machines.
 
 ```bash
-aiir setup join-code --expires 2
+vhir setup join-code --expires 2
 ```
 
 ## Service Management
 
-### `aiir service status`
+### `vhir service status`
 
 Show status of all backend services.
 
 ```bash
-aiir service status
+vhir service status
 ```
 
-### `aiir service start` / `stop` / `restart`
+### `vhir service start` / `stop` / `restart`
 
 Manage backend services through the gateway API.
 
 ```bash
-aiir service start forensic-mcp
-aiir service stop opencti-mcp
-aiir service restart                   # All backends
+vhir service start forensic-mcp
+vhir service stop opencti-mcp
+vhir service restart                   # All backends
 ```
 
 ## Configuration
 
-### `aiir config`
+### `vhir config`
 
-Manage AIIR settings.
+Manage ValiHuntIR settings.
 
 ```bash
-aiir config --show                     # Show current config
-aiir config --examiner alice           # Set examiner identity
-aiir config --setup-password           # Set approval password (min 8 chars)
-aiir config --reset-password           # Reset password (requires current)
+vhir config --show                     # Show current config
+vhir config --examiner alice           # Set examiner identity
+vhir config --setup-password           # Set approval password (min 8 chars)
+vhir config --reset-password           # Reset password (requires current)
 ```
 
 ## Join (Remote Setup)
 
-### `aiir join`
+### `vhir join`
 
 Join a SIFT gateway from a remote machine using a join code.
 
 ```bash
-aiir join --sift 10.0.0.5 --code ABC123
-aiir join --sift 10.0.0.5:4508 --code ABC123 --ca-cert ca-cert.pem
+vhir join --sift 10.0.0.5 --code ABC123
+vhir join --sift 10.0.0.5:4508 --code ABC123 --ca-cert ca-cert.pem
 ```

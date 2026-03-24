@@ -1,11 +1,11 @@
-"""Tests for aiir setup command."""
+"""Tests for vhir setup command."""
 
 from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
 
-from aiir_cli.commands.setup import cmd_setup
+from vhir_cli.commands.setup import cmd_setup
 
 # -- Fixtures --
 
@@ -19,7 +19,7 @@ def _identity():
 
 class TestCmdSetup:
     def test_bare_setup_exits(self):
-        """'aiir setup' with no subcommand exits with error."""
+        """'vhir setup' with no subcommand exits with error."""
         import pytest
 
         args = MagicMock()

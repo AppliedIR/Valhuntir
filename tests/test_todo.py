@@ -6,8 +6,8 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from aiir_cli.case_io import load_todos, save_todos
-from aiir_cli.commands.todo import cmd_todo
+from vhir_cli.case_io import load_todos, save_todos
+from vhir_cli.commands.todo import cmd_todo
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def case_dir(tmp_path, monkeypatch):
     case_path = tmp_path / case_id
     case_path.mkdir()
 
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
 
     meta = {"case_id": case_id, "name": "Test", "status": "open", "examiner": "tester"}
     with open(case_path / "CASE.yaml", "w") as f:
@@ -26,7 +26,7 @@ def case_dir(tmp_path, monkeypatch):
     with open(case_path / "todos.json", "w") as f:
         json.dump([], f)
 
-    monkeypatch.setenv("AIIR_CASE_DIR", str(case_path))
+    monkeypatch.setenv("VHIR_CASE_DIR", str(case_path))
     return case_path
 
 

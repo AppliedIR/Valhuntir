@@ -1,17 +1,17 @@
 """Evidence management commands: lock, unlock, register, list, verify, log.
 
 Subcommand group:
-  aiir evidence register <path> [--description]
-  aiir evidence list
-  aiir evidence verify
-  aiir evidence log [--path <filter>]
-  aiir evidence lock
-  aiir evidence unlock
+  vhir evidence register <path> [--description]
+  vhir evidence list
+  vhir evidence verify
+  vhir evidence log [--path <filter>]
+  vhir evidence lock
+  vhir evidence unlock
 
 Legacy aliases (backward compat):
-  aiir register-evidence <path>
-  aiir lock-evidence
-  aiir unlock-evidence
+  vhir register-evidence <path>
+  vhir lock-evidence
+  vhir unlock-evidence
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aiir_cli.approval_auth import require_tty_confirmation
-from aiir_cli.case_io import get_case_dir
+from vhir_cli.approval_auth import require_tty_confirmation
+from vhir_cli.case_io import get_case_dir
 
 
 def cmd_evidence(args, identity: dict) -> None:
@@ -45,7 +45,7 @@ def cmd_evidence(args, identity: dict) -> None:
         cmd_unlock_evidence(args, identity)
     else:
         print(
-            "Usage: aiir evidence {register|list|verify|log|lock|unlock}",
+            "Usage: vhir evidence {register|list|verify|log|lock|unlock}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -119,7 +119,7 @@ def cmd_unlock_evidence(args, identity: dict) -> None:
 
     _log_evidence_action(case_dir, "unlock", "Unlocked evidence directory", identity)
     print("Evidence directory unlocked (755). Files remain read-only.")
-    print("Use 'aiir evidence register <path>' after adding new files.")
+    print("Use 'vhir evidence register <path>' after adding new files.")
 
 
 def register_evidence_data(
@@ -143,7 +143,7 @@ def register_evidence_data(
         ValueError: If path is outside the case directory.
         OSError: If registry write fails.
     """
-    from aiir_cli.case_io import _atomic_write
+    from vhir_cli.case_io import _atomic_write
 
     case_dir = Path(case_dir)
     evidence_path = Path(path)

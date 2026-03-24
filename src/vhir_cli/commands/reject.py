@@ -9,8 +9,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aiir_cli.approval_auth import require_confirmation
-from aiir_cli.case_io import (
+from vhir_cli.approval_auth import require_confirmation
+from vhir_cli.case_io import (
     check_case_file_integrity,
     find_draft_item,
     get_case_dir,
@@ -25,7 +25,7 @@ from aiir_cli.case_io import (
 def cmd_reject(args, identity: dict) -> None:
     """Reject specific findings/timeline events."""
     case_dir = get_case_dir(getattr(args, "case", None))
-    config_path = Path.home() / ".aiir" / "config.yaml"
+    config_path = Path.home() / ".vhir" / "config.yaml"
 
     review = getattr(args, "review", False)
     if review and args.ids:
@@ -106,7 +106,7 @@ def cmd_reject(args, identity: dict) -> None:
         rejected.append(tl_event["id"])
 
     # IOC rejection coupling
-    from aiir_cli.case_io import load_iocs, save_iocs
+    from vhir_cli.case_io import load_iocs, save_iocs
 
     # Build lookup for all finding statuses
     all_findings = load_findings(case_dir)
@@ -251,7 +251,7 @@ def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> No
         rejected.append(tl_event["id"])
 
     # IOC rejection coupling (interactive)
-    from aiir_cli.case_io import load_iocs, save_iocs
+    from vhir_cli.case_io import load_iocs, save_iocs
 
     # Build lookup for all finding statuses
     all_findings_2 = load_findings(case_dir)

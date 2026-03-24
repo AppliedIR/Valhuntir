@@ -4,20 +4,20 @@
 
 - SIFT Workstation (Ubuntu-based) or any Ubuntu 22.04+ system
 - Python 3.10+
-- sudo access (required for HMAC verification ledger at `/var/lib/aiir/verification/`)
+- sudo access (required for HMAC verification ledger at `/var/lib/vhir/verification/`)
 - An LLM client with MCP support (Claude Code, Claude Desktop, LibreChat, etc.)
 
 ## Installation
 
 ### SIFT Workstation (All Components)
 
-The quickstart installs all MCP servers, the gateway, and the aiir CLI:
+The quickstart installs all MCP servers, the gateway, and the vhir CLI:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/aiir-quickstart.sh && bash /tmp/aiir-quickstart.sh
+curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh
 ```
 
-This runs `setup-sift.sh` in quick mode — MCP servers, gateway, aiir CLI, and client config in one step.
+This runs `setup-sift.sh` in quick mode — MCP servers, gateway, vhir CLI, and client config in one step.
 
 ### Step by Step
 
@@ -50,14 +50,14 @@ The Windows installer generates a bearer token. Copy it to your SIFT gateway con
 ### 1. Initialize a Case
 
 ```bash
-aiir case init "Suspicious Activity Investigation"
+vhir case init "Suspicious Activity Investigation"
 ```
 
-This creates a case directory under `~/.aiir/cases/` with a unique case ID (e.g., `INC-2026-0225`) and activates it.
+This creates a case directory under `~/.vhir/cases/` with a unique case ID (e.g., `INC-2026-0225`) and activates it.
 
 ### 2. Connect Your LLM Client
 
-If you ran `aiir setup client` during installation, your LLM client is already configured. Start your client — it will connect to the gateway at `http://127.0.0.1:4508/mcp`.
+If you ran `vhir setup client` during installation, your LLM client is already configured. Start your client — it will connect to the gateway at `http://127.0.0.1:4508/mcp`.
 
 ### 3. Start Investigating
 
@@ -76,25 +76,25 @@ The LLM will use MCP tools to execute forensic tools, record findings, and build
 Findings stage as DRAFT. Review them:
 
 ```bash
-aiir review --findings
+vhir review --findings
 ```
 
 Approve individual findings:
 
 ```bash
-aiir approve F-alice-001 F-alice-002
+vhir approve F-alice-001 F-alice-002
 ```
 
 Or use interactive review mode:
 
 ```bash
-aiir approve
+vhir approve
 ```
 
 ### 5. Generate a Report
 
 ```bash
-aiir report --full --save report.json
+vhir report --full --save report.json
 ```
 
 Or ask the LLM to generate a report using report-mcp:
@@ -110,10 +110,10 @@ Or ask the LLM to generate a report using report-mcp:
 Every action is attributed to an examiner. Set your identity:
 
 ```bash
-aiir config --examiner alice
+vhir config --examiner alice
 ```
 
-Resolution order: `--examiner` flag > `AIIR_EXAMINER` env var > `~/.aiir/config.yaml` > OS username.
+Resolution order: `--examiner` flag > `VHIR_EXAMINER` env var > `~/.vhir/config.yaml` > OS username.
 
 ### Case Directory
 
@@ -135,7 +135,7 @@ cases/INC-2026-0225/
 
 ### Human-in-the-Loop
 
-The AI cannot approve its own work. All findings and timeline events stage as DRAFT. Only the aiir CLI (which requires a human at a terminal) can move them to APPROVED or REJECTED. This is enforced structurally — there is no MCP tool for approval.
+The AI cannot approve its own work. All findings and timeline events stage as DRAFT. Only the vhir CLI (which requires a human at a terminal) can move them to APPROVED or REJECTED. This is enforced structurally — there is no MCP tool for approval.
 
 ### Evidence IDs
 

@@ -1,11 +1,11 @@
-"""Tests for aiir join and aiir setup join-code commands."""
+"""Tests for vhir join and vhir setup join-code commands."""
 
 import sys
 from unittest.mock import MagicMock, patch
 
 import yaml
 
-from aiir_cli.commands.join import (
+from vhir_cli.commands.join import (
     _get_local_gateway_token,
     _get_local_gateway_url,
     _write_config,
@@ -29,25 +29,25 @@ def _make_mock_requests(status_code=200, json_data=None):
 
 class TestWriteConfig:
     def test_writes_config(self, tmp_path, monkeypatch):
-        """Verify ~/.aiir/config.yaml written with gateway_url and token."""
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
-        _write_config("https://10.0.0.5:4508", "aiir_gw_abc123")
+        """Verify ~/.vhir/config.yaml written with gateway_url and token."""
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
+        _write_config("https://10.0.0.5:4508", "vhir_gw_abc123")
 
-        config_path = tmp_path / ".aiir" / "config.yaml"
+        config_path = tmp_path / ".vhir" / "config.yaml"
         assert config_path.exists()
         config = yaml.safe_load(config_path.read_text())
         assert config["gateway_url"] == "https://10.0.0.5:4508"
-        assert config["gateway_token"] == "aiir_gw_abc123"
+        assert config["gateway_token"] == "vhir_gw_abc123"
 
     def test_preserves_existing_fields(self, tmp_path, monkeypatch):
         """Existing config fields are preserved when writing gateway credentials."""
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
-        config_dir = tmp_path / ".aiir"
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir(parents=True)
         config_path = config_dir / "config.yaml"
         config_path.write_text(yaml.dump({"examiner": "steve"}))
 
-        _write_config("https://10.0.0.5:4508", "aiir_gw_abc123")
+        _write_config("https://10.0.0.5:4508", "vhir_gw_abc123")
 
         config = yaml.safe_load(config_path.read_text())
         assert config["examiner"] == "steve"
@@ -79,13 +79,13 @@ class TestWintoolsJoinNoGatewayToken:
 
         with (
             patch.dict(sys.modules, {"requests": mock_requests}),
-            patch("aiir_cli.commands.join._detect_wintools", return_value=False),
-            patch("aiir_cli.commands.join._find_ca_cert", return_value=None),
-            patch("aiir_cli.commands.join._write_config", write_config_mock),
+            patch("vhir_cli.commands.join._detect_wintools", return_value=False),
+            patch("vhir_cli.commands.join._find_ca_cert", return_value=None),
+            patch("vhir_cli.commands.join._write_config", write_config_mock),
         ):
             import importlib
 
-            import aiir_cli.commands.join as join_mod
+            import vhir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
             join_mod.cmd_join(args, {"examiner": "tester"})
@@ -106,7 +106,7 @@ class TestUrlNormalization:
         if json_data is None:
             json_data = {
                 "gateway_url": f"https://{sift_url}",
-                "gateway_token": "aiir_gw_test",
+                "gateway_token": "vhir_gw_test",
                 "backends": ["forensic-mcp", "sift-mcp"],
                 "examiner": "tester",
             }
@@ -117,7 +117,7 @@ class TestUrlNormalization:
             # Need to reimport to pick up the patched requests
             import importlib
 
-            import aiir_cli.commands.join as join_mod
+            import vhir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
             join_mod._detect_wintools = lambda: False
@@ -154,20 +154,20 @@ class TestJoinCodeCommand:
             {
                 "code": "ABCD-EFGH",
                 "expires_hours": 2,
-                "instructions": "aiir join --sift 10.0.0.5:4508 --code ABCD-EFGH",
+                "instructions": "vhir join --sift 10.0.0.5:4508 --code ABCD-EFGH",
             },
         )
 
         with patch.dict(sys.modules, {"requests": mock_requests}):
             import importlib
 
-            import aiir_cli.commands.join as join_mod
+            import vhir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
             join_mod._ensure_static_ip = lambda: "10.0.0.5"
             join_mod._ensure_remote_binding = lambda: None
             join_mod._get_local_gateway_url = lambda: "http://127.0.0.1:4508"
-            join_mod._get_local_gateway_token = lambda: "aiir_gw_test"
+            join_mod._get_local_gateway_token = lambda: "vhir_gw_test"
             join_mod._setup_samba_share = lambda code: "10.0.0.20"
             join_mod._setup_firewall = lambda ip: None
             join_mod.cmd_setup_join_code(args, {"examiner": "steve"})
@@ -180,8 +180,8 @@ class TestJoinCodeCommand:
 
 class TestDeriveSMBPassword:
     def test_known_vector(self):
-        """PBKDF2 test vector: ABCD-EFGH → 0a6e4700953ead036c7468173fccf1be."""
-        assert derive_smb_password("ABCD-EFGH") == "0a6e4700953ead036c7468173fccf1be"
+        """PBKDF2 test vector: ABCD-EFGH → e68ff7da0ef66a254df0516bb5c8a8aa."""
+        assert derive_smb_password("ABCD-EFGH") == "e68ff7da0ef66a254df0516bb5c8a8aa"
 
     def test_deterministic(self):
         """Same input always produces same output."""
@@ -200,12 +200,12 @@ class TestDeriveSMBPassword:
 
 class TestGetLocalConfig:
     def test_get_gateway_url_default(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.gateway.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("vhir_cli.gateway.Path.home", lambda: tmp_path)
         assert _get_local_gateway_url() == "http://127.0.0.1:4508"
 
     def test_get_gateway_url_from_gateway_yaml(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.gateway.Path.home", lambda: tmp_path)
-        config_dir = tmp_path / ".aiir"
+        monkeypatch.setattr("vhir_cli.gateway.Path.home", lambda: tmp_path)
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir(parents=True)
         (config_dir / "gateway.yaml").write_text(
             yaml.dump({"gateway": {"host": "0.0.0.0", "port": 9999}})
@@ -213,8 +213,8 @@ class TestGetLocalConfig:
         assert _get_local_gateway_url() == "http://127.0.0.1:9999"
 
     def test_get_gateway_url_tls(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.gateway.Path.home", lambda: tmp_path)
-        config_dir = tmp_path / ".aiir"
+        monkeypatch.setattr("vhir_cli.gateway.Path.home", lambda: tmp_path)
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir(parents=True)
         (config_dir / "gateway.yaml").write_text(
             yaml.dump(
@@ -230,14 +230,14 @@ class TestGetLocalConfig:
         assert _get_local_gateway_url() == "https://127.0.0.1:4508"
 
     def test_get_gateway_token_from_gateway_yaml(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
-        config_dir = tmp_path / ".aiir"
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir(parents=True)
         (config_dir / "gateway.yaml").write_text(
-            yaml.dump({"api_keys": {"aiir_gw_mytoken": {"examiner": "steve"}}})
+            yaml.dump({"api_keys": {"vhir_gw_mytoken": {"examiner": "steve"}}})
         )
-        assert _get_local_gateway_token() == "aiir_gw_mytoken"
+        assert _get_local_gateway_token() == "vhir_gw_mytoken"
 
     def test_get_gateway_token_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("aiir_cli.commands.join.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
         assert _get_local_gateway_token() is None

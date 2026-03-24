@@ -1,8 +1,8 @@
 """Audit trail commands.
 
 Read and summarize audit entries from the case directory:
-  aiir audit log [--limit N] [--mcp <name>] [--tool <name>]
-  aiir audit summary
+  vhir audit log [--limit N] [--mcp <name>] [--tool <name>]
+  vhir audit summary
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from aiir_cli.case_io import get_case_dir
+from vhir_cli.case_io import get_case_dir
 
 
 def cmd_audit(args, identity: dict) -> None:
@@ -22,7 +22,7 @@ def cmd_audit(args, identity: dict) -> None:
     elif action == "summary":
         _audit_summary(args)
     else:
-        print("Usage: aiir audit {log|summary}", file=sys.stderr)
+        print("Usage: vhir audit {log|summary}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -63,7 +63,7 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
                     try:
                         entry = json.loads(line)
                         entry.setdefault("tool", "approval")
-                        entry.setdefault("mcp", "aiir-cli")
+                        entry.setdefault("mcp", "vhir-cli")
                         entries.append(entry)
                     except json.JSONDecodeError:
                         corrupt_lines += 1

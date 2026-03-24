@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     CaseError,
     compute_content_hash,
     export_bundle,
@@ -20,31 +20,31 @@ from aiir_cli.case_io import (
     verify_approval_integrity,
     write_approval_log,
 )
-from aiir_cli.main import _case_list
+from vhir_cli.main import _case_list
 
 
 @pytest.fixture
 def case_dir(tmp_path, monkeypatch):
     """Create a minimal flat case directory."""
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
     return tmp_path
 
 
 class TestGetCaseDir:
     def test_from_env(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(tmp_path))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(tmp_path))
         assert get_case_dir() == tmp_path
 
     def test_from_explicit_id(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AIIR_CASES_DIR", str(tmp_path))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
         case = tmp_path / "INC-TEST"
         case.mkdir()
         result = get_case_dir("INC-TEST")
         assert result == case
 
     def test_no_case_exits(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("AIIR_CASE_DIR", raising=False)
-        monkeypatch.delenv("AIIR_CASES_DIR", raising=False)
+        monkeypatch.delenv("VHIR_CASE_DIR", raising=False)
+        monkeypatch.delenv("VHIR_CASES_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         with pytest.raises(CaseError):
             get_case_dir()
@@ -134,17 +134,17 @@ class TestPathTraversal:
     """Verify path traversal is rejected in case_id."""
 
     def test_case_id_dotdot_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AIIR_CASES_DIR", str(tmp_path))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
         with pytest.raises(CaseError):
             get_case_dir("../../etc")
 
     def test_case_id_slash_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AIIR_CASES_DIR", str(tmp_path))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
         with pytest.raises(CaseError):
             get_case_dir("foo/bar")
 
     def test_case_id_backslash_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("AIIR_CASES_DIR", str(tmp_path))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
         with pytest.raises(CaseError):
             get_case_dir("foo\\bar")
 
@@ -152,7 +152,7 @@ class TestPathTraversal:
         """import_bundle merges incoming items using last-write-wins."""
         import yaml
 
-        monkeypatch.setenv("AIIR_EXAMINER", "tester")
+        monkeypatch.setenv("VHIR_EXAMINER", "tester")
         meta_file = case_dir / "CASE.yaml"
         meta_file.write_text(yaml.dump({"case_id": "INC-001"}))
         bundle = {
@@ -176,7 +176,7 @@ class TestPathTraversal:
         """import_bundle accepts bare array (forensic-mcp export format)."""
         import yaml
 
-        monkeypatch.setenv("AIIR_EXAMINER", "tester")
+        monkeypatch.setenv("VHIR_EXAMINER", "tester")
         meta_file = case_dir / "CASE.yaml"
         meta_file.write_text(yaml.dump({"case_id": "INC-001"}))
         bare_array = [
@@ -201,16 +201,16 @@ class TestIdentityLowercase:
     """Verify identity module lowercases examiner names."""
 
     def test_uppercase_examiner_lowercased(self, monkeypatch):
-        monkeypatch.setenv("AIIR_EXAMINER", "Jane.Doe")
-        from aiir_cli.identity import get_examiner_identity
+        monkeypatch.setenv("VHIR_EXAMINER", "Jane.Doe")
+        from vhir_cli.identity import get_examiner_identity
 
         identity = get_examiner_identity()
         assert identity["examiner"] == "jane-doe"
 
     def test_flag_override_lowercased(self, monkeypatch):
-        monkeypatch.delenv("AIIR_EXAMINER", raising=False)
-        monkeypatch.delenv("AIIR_ANALYST", raising=False)
-        from aiir_cli.identity import get_examiner_identity
+        monkeypatch.delenv("VHIR_EXAMINER", raising=False)
+        monkeypatch.delenv("VHIR_ANALYST", raising=False)
+        from vhir_cli.identity import get_examiner_identity
 
         identity = get_examiner_identity(flag_override="ALICE")
         assert identity["examiner"] == "alice"
@@ -318,7 +318,7 @@ class TestExportBundle:
     def test_export_includes_data(self, case_dir, monkeypatch):
         import yaml
 
-        monkeypatch.setenv("AIIR_EXAMINER", "tester")
+        monkeypatch.setenv("VHIR_EXAMINER", "tester")
         (case_dir / "CASE.yaml").write_text(yaml.dump({"case_id": "INC-001"}))
         save_findings(
             case_dir,
@@ -342,7 +342,7 @@ class TestExportBundle:
     def test_export_since_filter(self, case_dir, monkeypatch):
         import yaml
 
-        monkeypatch.setenv("AIIR_EXAMINER", "tester")
+        monkeypatch.setenv("VHIR_EXAMINER", "tester")
         (case_dir / "CASE.yaml").write_text(yaml.dump({"case_id": "INC-001"}))
         save_findings(
             case_dir,
@@ -425,7 +425,7 @@ class TestImportBundle:
 
 
 class TestCaseList:
-    """Tests for aiir case list command."""
+    """Tests for vhir case list command."""
 
     def test_list_shows_cases(self, tmp_path, monkeypatch, capsys):
         cases_dir = tmp_path / "cases"
@@ -443,7 +443,7 @@ class TestCaseList:
                 {"case_id": "INC-2026-002", "name": "Ransomware", "status": "closed"}, f
             )
 
-        monkeypatch.setenv("AIIR_CASES_DIR", str(cases_dir))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(cases_dir))
         monkeypatch.chdir(tmp_path)
         args = Namespace(case=None)
         identity = {"examiner": "tester", "os_user": "tester"}
@@ -469,11 +469,11 @@ class TestCaseList:
 
         # Set active case — monkeypatch HOME so _case_list_data reads from tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        aiir_dir = tmp_path / ".aiir"
-        aiir_dir.mkdir()
-        (aiir_dir / "active_case").write_text("INC-2026-001")
+        vhir_dir = tmp_path / ".vhir"
+        vhir_dir.mkdir()
+        (vhir_dir / "active_case").write_text("INC-2026-001")
 
-        monkeypatch.setenv("AIIR_CASES_DIR", str(cases_dir))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(cases_dir))
         monkeypatch.chdir(tmp_path)
         args = Namespace(case=None)
         identity = {"examiner": "tester", "os_user": "tester"}
@@ -486,7 +486,7 @@ class TestCaseList:
         cases_dir = tmp_path / "cases"
         cases_dir.mkdir()
 
-        monkeypatch.setenv("AIIR_CASES_DIR", str(cases_dir))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(cases_dir))
         monkeypatch.chdir(tmp_path)
         args = Namespace(case=None)
         identity = {"examiner": "tester", "os_user": "tester"}
@@ -496,7 +496,7 @@ class TestCaseList:
         assert "No cases found" in output
 
     def test_list_no_cases_dir(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASES_DIR", str(tmp_path / "nonexistent"))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path / "nonexistent"))
         monkeypatch.chdir(tmp_path)
         args = Namespace(case=None)
         identity = {"examiner": "tester", "os_user": "tester"}
@@ -516,7 +516,7 @@ class TestCaseList:
                 {"case_id": "INC-2026-001", "name": "Real Case", "status": "open"}, f
             )
 
-        monkeypatch.setenv("AIIR_CASES_DIR", str(cases_dir))
+        monkeypatch.setenv("VHIR_CASES_DIR", str(cases_dir))
         monkeypatch.chdir(tmp_path)
         args = Namespace(case=None)
         identity = {"examiner": "tester", "os_user": "tester"}

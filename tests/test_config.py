@@ -1,11 +1,11 @@
-"""Tests for aiir config command."""
+"""Tests for vhir config command."""
 
 from unittest.mock import patch
 
 import pytest
 import yaml
 
-from aiir_cli.commands.config import cmd_config
+from vhir_cli.commands.config import cmd_config
 
 
 @pytest.fixture
@@ -37,26 +37,26 @@ class FakeArgs:
 
 class TestConfig:
     def test_set_examiner(self, config_dir, identity):
-        config_path = config_dir / ".aiir" / "config.yaml"
+        config_path = config_dir / ".vhir" / "config.yaml"
         args = FakeArgs(examiner="new_examiner")
-        with patch("aiir_cli.commands.config.Path.home", return_value=config_dir):
+        with patch("vhir_cli.commands.config.Path.home", return_value=config_dir):
             cmd_config(args, identity)
         config = yaml.safe_load(config_path.read_text())
         assert config["examiner"] == "new_examiner"
 
     def test_show_config(self, config_dir, identity, capsys):
-        config_path = config_dir / ".aiir" / "config.yaml"
+        config_path = config_dir / ".vhir" / "config.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(yaml.dump({"examiner": "test_examiner"}))
         args = FakeArgs(show=True)
-        with patch("aiir_cli.commands.config.Path.home", return_value=config_dir):
+        with patch("vhir_cli.commands.config.Path.home", return_value=config_dir):
             cmd_config(args, identity)
         out = capsys.readouterr().out
         assert "test_examiner" in out
 
     def test_show_when_no_config_file(self, config_dir, identity, capsys):
         args = FakeArgs(show=True)
-        with patch("aiir_cli.commands.config.Path.home", return_value=config_dir):
+        with patch("vhir_cli.commands.config.Path.home", return_value=config_dir):
             cmd_config(args, identity)
         out = capsys.readouterr().out
         assert "No configuration file found" in out

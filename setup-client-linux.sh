@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# setup-client-linux.sh — AIIR LLM Client Setup for Linux
+# setup-client-linux.sh — ValiHuntIR LLM Client Setup for Linux
 #
-# Configures an LLM client to connect to AIIR. Two modes:
-#   Local (on SIFT): delegates to aiir setup client
+# Configures an LLM client to connect to ValiHuntIR. Two modes:
+#   Local (on SIFT): delegates to vhir setup client
 #   Remote:          pure bash — curl join, config generation, asset deployment
 #
-# All remote deployments target ~/aiir/ as a fixed workspace directory.
+# All remote deployments target ~/vhir/ as a fixed workspace directory.
 # Forensic controls (hooks, permissions, sandbox) only apply when Claude Code
-# is launched from within ~/aiir/ or a subdirectory.
+# is launched from within ~/vhir/ or a subdirectory.
 #
 # Usage:
 #   ./setup-client-linux.sh                                   # Auto-detect mode
 #   ./setup-client-linux.sh --client=claude-code -y           # Local, non-interactive
 #   ./setup-client-linux.sh --sift=https://IP:4508 --code=XX  # Remote mode
-#   ./setup-client-linux.sh --uninstall                       # Remove AIIR workspace
+#   ./setup-client-linux.sh --uninstall                       # Remove ValiHuntIR workspace
 #   ./setup-client-linux.sh -h                                # Help
 #
 set -euo pipefail
@@ -49,7 +49,7 @@ for arg in "$@"; do
             echo "  --sift=URL         Gateway URL (forces remote mode)"
             echo "  --code=CODE        Join code (remote mode)"
             echo "  --ca-cert=PATH     CA certificate for TLS verification"
-            echo "  --uninstall        Remove AIIR workspace and forensic controls"
+            echo "  --uninstall        Remove ValiHuntIR workspace and forensic controls"
             echo "  -y, --yes          Accept all defaults (non-interactive)"
             echo "  -h, --help         Show this help"
             exit 0
@@ -127,7 +127,7 @@ prompt_yn_strict() {
 
 echo ""
 echo -e "${BOLD}============================================================${NC}"
-echo -e "${BOLD}  AIIR — LLM Client Setup (Linux)${NC}"
+echo -e "${BOLD}  ValiHuntIR — LLM Client Setup (Linux)${NC}"
 echo -e "${BOLD}  Artificial Intelligence Incident Response${NC}"
 echo -e "${BOLD}============================================================${NC}"
 echo ""
@@ -137,15 +137,15 @@ echo ""
 # =============================================================================
 
 if $UNINSTALL; then
-    DEPLOY_DIR="$HOME/aiir"
-    header "AIIR Forensic Controls — Uninstall"
+    DEPLOY_DIR="$HOME/vhir"
+    header "ValiHuntIR Forensic Controls — Uninstall"
 
     if [[ ! -d "$DEPLOY_DIR" ]]; then
-        info "No AIIR workspace found at $DEPLOY_DIR."
+        info "No ValiHuntIR workspace found at $DEPLOY_DIR."
         exit 0
     fi
 
-    echo "  AIIR workspace: $DEPLOY_DIR"
+    echo "  ValiHuntIR workspace: $DEPLOY_DIR"
     if [[ -d "$DEPLOY_DIR/cases" ]]; then
         echo ""
         echo -e "  ${YELLOW}WARNING: $DEPLOY_DIR/cases/ contains case data.${NC}"
@@ -153,9 +153,9 @@ if $UNINSTALL; then
     fi
     echo ""
 
-    if prompt_yn_strict "  Remove entire AIIR workspace ($DEPLOY_DIR)?"; then
+    if prompt_yn_strict "  Remove entire ValiHuntIR workspace ($DEPLOY_DIR)?"; then
         rm -rf "$DEPLOY_DIR"
-        rm -f "$HOME/.aiir/config.yaml"
+        rm -f "$HOME/.vhir/config.yaml"
         ok "Removed $DEPLOY_DIR"
     else
         echo ""
@@ -164,26 +164,26 @@ if $UNINSTALL; then
         for f in CLAUDE.md AGENTS.md FORENSIC_DISCIPLINE.md TOOL_REFERENCE.md; do
             rm -f "$DEPLOY_DIR/$f"
         done
-        rm -f "$HOME/.aiir/config.yaml"
+        rm -f "$HOME/.vhir/config.yaml"
         ok "Config files removed. $DEPLOY_DIR/cases/ preserved."
     fi
 
-    # Clean shell profile (AIIR_EXAMINER + marker)
+    # Clean shell profile (ValiHuntIR_EXAMINER + marker)
     SHELL_RC=""
     if [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc";
     elif [[ -f "$HOME/.zshrc" ]]; then SHELL_RC="$HOME/.zshrc"; fi
 
-    if [[ -n "$SHELL_RC" ]] && grep -q "AIIR" "$SHELL_RC" 2>/dev/null; then
-        sed -i '/# AIIR Platform/d' "$SHELL_RC"
-        sed -i '/AIIR_EXAMINER/d' "$SHELL_RC"
-        sed -i '/# aiir-path/d' "$SHELL_RC"
-        sed -i '\|\.aiir/venv/bin|d' "$SHELL_RC"
-        sed -i '/register-python-argcomplete aiir/d' "$SHELL_RC"
-        ok "Removed AIIR lines from $SHELL_RC"
+    if [[ -n "$SHELL_RC" ]] && grep -q "ValiHuntIR" "$SHELL_RC" 2>/dev/null; then
+        sed -i '/# ValiHuntIR Platform/d' "$SHELL_RC"
+        sed -i '/ValiHuntIR_EXAMINER/d' "$SHELL_RC"
+        sed -i '/# vhir-path/d' "$SHELL_RC"
+        sed -i '\|\.vhir/venv/bin|d' "$SHELL_RC"
+        sed -i '/register-python-argcomplete vhir/d' "$SHELL_RC"
+        ok "Removed ValiHuntIR lines from $SHELL_RC"
     fi
 
-    # Remove empty ~/.aiir/ directory
-    rmdir "$HOME/.aiir" 2>/dev/null || true
+    # Remove empty ~/.vhir/ directory
+    rmdir "$HOME/.vhir" 2>/dev/null || true
 
     # Claude Desktop config (safety net — old installer wrote this on Linux,
     # even though there's no official Linux build)
@@ -209,26 +209,26 @@ fi
 if [[ -n "$SIFT_URL" ]]; then
     # Explicit remote mode
     LOCAL_MODE=false
-elif [[ -f "$HOME/.aiir/gateway.yaml" ]] && grep -q "api_keys:" "$HOME/.aiir/gateway.yaml" 2>/dev/null; then
+elif [[ -f "$HOME/.vhir/gateway.yaml" ]] && grep -q "api_keys:" "$HOME/.vhir/gateway.yaml" 2>/dev/null; then
     LOCAL_MODE=true
 else
     LOCAL_MODE=false
 fi
 
 # =============================================================================
-# LOCAL MODE — delegate to aiir setup client
+# LOCAL MODE — delegate to vhir setup client
 # =============================================================================
 
 if $LOCAL_MODE; then
     info "SIFT platform detected (gateway.yaml found). Using local mode."
 
-    AIIR_CMD="$HOME/.aiir/venv/bin/aiir"
-    if [[ ! -x "$AIIR_CMD" ]]; then
+    ValiHuntIR_CMD="$HOME/.vhir/venv/bin/vhir"
+    if [[ ! -x "$ValiHuntIR_CMD" ]]; then
         # Try PATH
-        AIIR_CMD=$(command -v aiir 2>/dev/null || true)
+        ValiHuntIR_CMD=$(command -v vhir 2>/dev/null || true)
     fi
-    if [[ -z "$AIIR_CMD" ]]; then
-        err "aiir CLI not found. Run setup-sift.sh first."
+    if [[ -z "$ValiHuntIR_CMD" ]]; then
+        err "vhir CLI not found. Run setup-sift.sh first."
         exit 1
     fi
 
@@ -236,7 +236,7 @@ if $LOCAL_MODE; then
     [[ -n "$CLIENT" ]] && ARGS+=(--client="$CLIENT")
     $AUTO_YES && ARGS+=(-y)
 
-    exec "$AIIR_CMD" setup client "${ARGS[@]}"
+    exec "$ValiHuntIR_CMD" setup client "${ARGS[@]}"
     # exec replaces process — nothing below runs in local mode
 fi
 
@@ -281,8 +281,8 @@ if [[ -n "$CA_CERT" ]]; then
     CURL_OPTS+=(--cacert "$CA_CERT")
 elif [[ "$SIFT_URL" == https* ]]; then
     # Try common CA cert location, fall back to insecure for self-signed
-    if [[ -f "$HOME/.aiir/tls/ca-cert.pem" ]]; then
-        CURL_OPTS+=(--cacert "$HOME/.aiir/tls/ca-cert.pem")
+    if [[ -f "$HOME/.vhir/tls/ca-cert.pem" ]]; then
+        CURL_OPTS+=(--cacert "$HOME/.vhir/tls/ca-cert.pem")
     else
         CURL_OPTS+=(-k)
         warn "Using insecure TLS (no CA cert). Use --ca-cert for production."
@@ -308,7 +308,7 @@ JOIN_RESPONSE=$(curl "${CURL_OPTS[@]}" -X POST "$SIFT_URL/api/v1/setup/join" \
 }
 
 # Parse JSON response with grep/sed (no Python dependency)
-# Response format: {"status":"joined","gateway_token":"aiir_gw_...","gateway_url":"...","backends":["forensic-mcp",...]}
+# Response format: {"status":"joined","gateway_token":"vhir_gw_...","gateway_url":"...","backends":["forensic-mcp",...]}
 
 # Check for error response
 if echo "$JOIN_RESPONSE" | grep -q '"error"'; then
@@ -344,14 +344,14 @@ ok "Joined gateway"
 info "Token: ${GATEWAY_TOKEN:0:12}..."
 
 # Store token securely
-mkdir -p "$HOME/.aiir" && chmod 700 "$HOME/.aiir"
-AIIR_CONFIG="$HOME/.aiir/config.yaml"
-(umask 077 && cat > "$AIIR_CONFIG" <<CONF
+mkdir -p "$HOME/.vhir" && chmod 700 "$HOME/.vhir"
+ValiHuntIR_CONFIG="$HOME/.vhir/config.yaml"
+(umask 077 && cat > "$ValiHuntIR_CONFIG" <<CONF
 gateway_url: "$GATEWAY_URL"
 gateway_token: "$GATEWAY_TOKEN"
 CONF
 )
-ok "Credentials saved to $AIIR_CONFIG"
+ok "Credentials saved to $ValiHuntIR_CONFIG"
 
 # ---- Phase 3: Examiner Identity ----
 
@@ -366,21 +366,21 @@ EXAMINER_NAME=$(echo "$EXAMINER_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-
 [[ -z "$EXAMINER_NAME" ]] && EXAMINER_NAME="examiner"
 ok "Examiner: $EXAMINER_NAME"
 
-echo "examiner: $EXAMINER_NAME" >> "$AIIR_CONFIG"
+echo "examiner: $EXAMINER_NAME" >> "$ValiHuntIR_CONFIG"
 
-# Write AIIR_EXAMINER to shell profile
+# Write ValiHuntIR_EXAMINER to shell profile
 SHELL_RC=""
 if [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc";
 elif [[ -f "$HOME/.zshrc" ]]; then SHELL_RC="$HOME/.zshrc"; fi
 
 if [[ -n "$SHELL_RC" ]]; then
-    if grep -q "AIIR_EXAMINER" "$SHELL_RC" 2>/dev/null; then
-        sed -i "s/^export AIIR_EXAMINER=.*/export AIIR_EXAMINER=\"$EXAMINER_NAME\"/" "$SHELL_RC"
+    if grep -q "ValiHuntIR_EXAMINER" "$SHELL_RC" 2>/dev/null; then
+        sed -i "s/^export ValiHuntIR_EXAMINER=.*/export ValiHuntIR_EXAMINER=\"$EXAMINER_NAME\"/" "$SHELL_RC"
     else
-        echo "export AIIR_EXAMINER=\"$EXAMINER_NAME\"" >> "$SHELL_RC"
+        echo "export ValiHuntIR_EXAMINER=\"$EXAMINER_NAME\"" >> "$SHELL_RC"
     fi
 fi
-export AIIR_EXAMINER="$EXAMINER_NAME"
+export ValiHuntIR_EXAMINER="$EXAMINER_NAME"
 
 # ---- Phase 4: LLM Client Selection ----
 
@@ -403,9 +403,9 @@ ok "Client: $CLIENT"
 
 # ---- Phase 5: Workspace + MCP Config Generation ----
 
-header "AIIR Workspace"
+header "ValiHuntIR Workspace"
 
-DEPLOY_DIR="$HOME/aiir"
+DEPLOY_DIR="$HOME/vhir"
 mkdir -p "$DEPLOY_DIR/cases"
 
 # Build MCP server entries from backends
@@ -475,7 +475,7 @@ case "$CLIENT" in
         ok "Written: $CONFIG_FILE (merge into librechat.yaml)"
         ;;
     *)
-        CONFIG_FILE="$DEPLOY_DIR/aiir-mcp-config.json"
+        CONFIG_FILE="$DEPLOY_DIR/vhir-mcp-config.json"
         (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE (reference config)"
         info "Configure your LLM client using the entries in this file."
@@ -584,7 +584,7 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "mcp__opencti-mcp__*",
       "mcp__wintools-mcp__*",
       "mcp__remnux-mcp__*",
-      "mcp__aiir__*",
+      "mcp__vhir__*",
       "mcp__zeltser-ir-writing__*",
       "mcp__microsoft-learn__*"
     ],
@@ -605,29 +605,29 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "Write(**/audit/*.jsonl)",
       "Edit(**/evidence.json)",
       "Write(**/evidence.json)",
-      "Read(/var/lib/aiir/**)",
-      "Edit(/var/lib/aiir/**)",
-      "Write(/var/lib/aiir/**)",
-      "Bash(aiir approve*)",
-      "Bash(*aiir approve*)",
-      "Bash(aiir reject*)",
-      "Bash(*aiir reject*)",
+      "Read(/var/lib/vhir/**)",
+      "Edit(/var/lib/vhir/**)",
+      "Write(/var/lib/vhir/**)",
+      "Bash(vhir approve*)",
+      "Bash(*vhir approve*)",
+      "Bash(vhir reject*)",
+      "Bash(*vhir reject*)",
       "Edit(**/.claude/settings.json)",
       "Write(**/.claude/settings.json)",
       "Edit(**/.claude/CLAUDE.md)",
       "Write(**/.claude/CLAUDE.md)",
       "Edit(**/.claude/rules/**)",
       "Write(**/.claude/rules/**)",
-      "Edit(**/.aiir/hooks/**)",
-      "Write(**/.aiir/hooks/**)",
-      "Edit(**/.aiir/active_case)",
-      "Write(**/.aiir/active_case)",
-      "Edit(**/.aiir/gateway.yaml)",
-      "Write(**/.aiir/gateway.yaml)",
-      "Edit(**/.aiir/config.yaml)",
-      "Write(**/.aiir/config.yaml)",
-      "Edit(**/.aiir/.password_lockout)",
-      "Write(**/.aiir/.password_lockout)",
+      "Edit(**/.vhir/hooks/**)",
+      "Write(**/.vhir/hooks/**)",
+      "Edit(**/.vhir/active_case)",
+      "Write(**/.vhir/active_case)",
+      "Edit(**/.vhir/gateway.yaml)",
+      "Write(**/.vhir/gateway.yaml)",
+      "Edit(**/.vhir/config.yaml)",
+      "Write(**/.vhir/config.yaml)",
+      "Edit(**/.vhir/.password_lockout)",
+      "Write(**/.vhir/.password_lockout)",
       "Edit(**/pending-reviews.json)",
       "Write(**/pending-reviews.json)"
     ]
@@ -637,12 +637,12 @@ if [[ "$CLIENT" == "claude-code" ]]; then
     "allowUnsandboxedCommands": false,
     "filesystem": {
       "denyWrite": [
-        "~/.aiir/gateway.yaml",
-        "~/.aiir/config.yaml",
-        "~/.aiir/active_case",
-        "~/.aiir/hooks",
-        "~/.aiir/.password_lockout",
-        "~/.aiir/.pin_lockout",
+        "~/.vhir/gateway.yaml",
+        "~/.vhir/config.yaml",
+        "~/.vhir/active_case",
+        "~/.vhir/hooks",
+        "~/.vhir/.password_lockout",
+        "~/.vhir/.pin_lockout",
         "~/.claude/settings.json",
         "~/.claude/CLAUDE.md",
         "~/.claude/rules"
@@ -749,8 +749,8 @@ fi
 echo ""
 echo -e "${BOLD}SSH Access${NC}"
 echo "  SSH access to SIFT is required for finding approval and rejection"
-echo "  (aiir approve, aiir reject), evidence unlocking (aiir evidence"
-echo "  unlock), and command execution (aiir execute). These operations"
+echo "  (vhir approve, vhir reject), evidence unlocking (vhir evidence"
+echo "  unlock), and command execution (vhir execute). These operations"
 echo "  require password or terminal confirmation and are not available through"
 echo "  MCP. All other operations are available through MCP tools."
 
@@ -770,20 +770,20 @@ if [[ "$CLIENT" == "claude-code" ]]; then
     echo "  audited MCP tools."
 
     echo ""
-    echo -e "${BOLD}AIIR workspace created at ~/aiir/${NC}"
+    echo -e "${BOLD}ValiHuntIR workspace created at ~/vhir/${NC}"
     echo ""
-    echo -e "${YELLOW}${BOLD}IMPORTANT:${NC} Always launch Claude Code from ~/aiir/ or a subdirectory."
+    echo -e "${YELLOW}${BOLD}IMPORTANT:${NC} Always launch Claude Code from ~/vhir/ or a subdirectory."
     echo "Forensic controls (audit logging, guardrails, MCP tools) only apply"
     echo "when Claude Code is started from within this directory."
     echo ""
-    echo "  cd ~/aiir && claude"
+    echo "  cd ~/vhir && claude"
     echo ""
     echo "To organize case work while maintaining controls:"
     echo ""
-    echo "  mkdir ~/aiir/cases/INC-2026-001"
-    echo "  cd ~/aiir/cases/INC-2026-001 && claude"
+    echo "  mkdir ~/vhir/cases/INC-2026-001"
+    echo "  cd ~/vhir/cases/INC-2026-001 && claude"
 fi
 
 echo ""
-echo -e "${BOLD}Documentation:${NC} https://appliedir.github.io/aiir/"
+echo -e "${BOLD}Documentation:${NC} https://appliedir.github.io/vhir/"
 echo ""

@@ -14,8 +14,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aiir_cli.approval_auth import require_tty_confirmation
-from aiir_cli.case_io import get_case_dir
+from vhir_cli.approval_auth import require_tty_confirmation
+from vhir_cli.case_io import get_case_dir
 
 _MCP_NAME = "cli-exec"
 _EVIDENCE_PREFIX = "cliexec"
@@ -27,7 +27,7 @@ def cmd_exec(args, identity: dict) -> None:
 
     if not args.cmd:
         print(
-            'No command provided. Usage: aiir exec --purpose "reason" -- <command> [args...]',
+            'No command provided. Usage: vhir exec --purpose "reason" -- <command> [args...]',
             file=sys.stderr,
         )
         sys.exit(1)
@@ -163,7 +163,7 @@ def _log_exec(
         "tool": "exec",
         "audit_id": audit_id,
         "examiner": examiner,
-        "case_id": os.environ.get("AIIR_ACTIVE_CASE", ""),
+        "case_id": os.environ.get("VHIR_ACTIVE_CASE", ""),
         "source": "cli_exec",
         "params": {"command": command, "purpose": purpose},
         "result_summary": {"exit_code": exit_code, "output": stdout_summary},

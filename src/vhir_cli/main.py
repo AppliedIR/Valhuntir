@@ -1,4 +1,4 @@
-"""AIIR CLI entry point.
+"""ValiHuntIR CLI entry point.
 
 Human-only actions that the LLM orchestrator cannot bypass:
 - approve/reject findings and timeline events (/dev/tty + password)
@@ -15,37 +15,37 @@ from pathlib import Path
 
 import argcomplete
 
-from aiir_cli import __version__
-from aiir_cli.case_io import DEFAULT_CASES_DIR, CaseError
-from aiir_cli.commands.approve import cmd_approve
-from aiir_cli.commands.audit_cmd import cmd_audit
-from aiir_cli.commands.backup import cmd_backup
-from aiir_cli.commands.config import cmd_config
-from aiir_cli.commands.dashboard import cmd_dashboard, cmd_portal
-from aiir_cli.commands.evidence import (
+from vhir_cli import __version__
+from vhir_cli.case_io import DEFAULT_CASES_DIR, CaseError
+from vhir_cli.commands.approve import cmd_approve
+from vhir_cli.commands.audit_cmd import cmd_audit
+from vhir_cli.commands.backup import cmd_backup
+from vhir_cli.commands.config import cmd_config
+from vhir_cli.commands.dashboard import cmd_dashboard, cmd_portal
+from vhir_cli.commands.evidence import (
     cmd_evidence,
     cmd_lock_evidence,
     cmd_register_evidence,
     cmd_unlock_evidence,
 )
-from aiir_cli.commands.execute import cmd_exec
-from aiir_cli.commands.join import cmd_join
-from aiir_cli.commands.migrate import cmd_migrate
-from aiir_cli.commands.reject import cmd_reject
-from aiir_cli.commands.report import cmd_report
-from aiir_cli.commands.review import cmd_review
-from aiir_cli.commands.service import cmd_service
-from aiir_cli.commands.setup import cmd_setup
-from aiir_cli.commands.sync import cmd_export, cmd_merge
-from aiir_cli.commands.todo import cmd_todo
-from aiir_cli.commands.update import cmd_update
-from aiir_cli.identity import get_examiner_identity, warn_if_unconfigured
+from vhir_cli.commands.execute import cmd_exec
+from vhir_cli.commands.join import cmd_join
+from vhir_cli.commands.migrate import cmd_migrate
+from vhir_cli.commands.reject import cmd_reject
+from vhir_cli.commands.report import cmd_report
+from vhir_cli.commands.review import cmd_review
+from vhir_cli.commands.service import cmd_service
+from vhir_cli.commands.setup import cmd_setup
+from vhir_cli.commands.sync import cmd_export, cmd_merge
+from vhir_cli.commands.todo import cmd_todo
+from vhir_cli.commands.update import cmd_update
+from vhir_cli.identity import get_examiner_identity, warn_if_unconfigured
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="aiir",
-        description="Applied IR — forensic investigation CLI",
+        prog="vhir",
+        description="ValiHuntIR — forensic investigation CLI",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_case_init.add_argument(
         "--cases-dir",
         default=None,
-        help="Cases root directory (default: $AIIR_CASES_DIR or ~/cases)",
+        help="Cases root directory (default: $VHIR_CASES_DIR or ~/cases)",
     )
 
     p_case_activate = case_sub.add_parser(
@@ -142,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_case_activate.add_argument(
         "--cases-dir",
         default=None,
-        help="Cases root directory (default: $AIIR_CASES_DIR or ~/cases)",
+        help="Cases root directory (default: $VHIR_CASES_DIR or ~/cases)",
     )
 
     p_case_close = case_sub.add_parser("close", help="Close a case")
@@ -268,7 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="SIFT gateway address (e.g., 10.0.0.5 or 10.0.0.5:4508)",
     )
     p_join.add_argument(
-        "--code", required=True, help="Join code from 'aiir setup join-code'"
+        "--code", required=True, help="Join code from 'vhir setup join-code'"
     )
     p_join.add_argument(
         "--wintools", action="store_true", help="This is a wintools machine"
@@ -284,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_sub.add_parser("test", help="Test connectivity to all detected MCP servers")
 
     p_client = setup_sub.add_parser(
-        "client", help="Configure LLM client for AIIR endpoints"
+        "client", help="Configure LLM client for ValiHuntIR endpoints"
     )
     p_client.add_argument(
         "--client",
@@ -332,7 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_client.add_argument(
         "--uninstall",
         action="store_true",
-        help="Remove AIIR forensic controls",
+        help="Remove ValiHuntIR forensic controls",
     )
 
     p_join_code = setup_sub.add_parser(
@@ -356,7 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_merge.add_argument("--file", required=True, help="Input file path")
 
     # config
-    p_config = sub.add_parser("config", help="Configure AIIR settings")
+    p_config = sub.add_parser("config", help="Configure ValiHuntIR settings")
     p_config.add_argument("--examiner", help="Set examiner identity")
     p_config.add_argument(
         "--analyst", dest="examiner", help="(deprecated, use --examiner)"
@@ -565,7 +565,7 @@ def _cmd_case(args, identity: dict) -> None:
         _case_list(args, identity)
     else:
         print(
-            "Usage: aiir case {init|activate|close|reopen|status|list|migrate}",
+            "Usage: vhir case {init|activate|close|reopen|status|list|migrate}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -587,12 +587,12 @@ def _case_status_data(case_dir) -> dict:
 
     import yaml
 
-    from aiir_cli.case_io import load_findings, load_timeline, load_todos
+    from vhir_cli.case_io import load_findings, load_timeline, load_todos
 
     case_dir = Path(case_dir)
     meta_file = case_dir / "CASE.yaml"
     if not meta_file.exists():
-        raise ValueError(f"Not an AIIR case directory: {case_dir}")
+        raise ValueError(f"Not a ValiHuntIR case directory: {case_dir}")
 
     with open(meta_file) as f:
         meta = yaml.safe_load(f) or {}
@@ -626,7 +626,7 @@ def _case_status_data(case_dir) -> dict:
 
 def _case_status(args, identity: dict) -> None:
     """CLI wrapper — prints formatted case status."""
-    from aiir_cli.case_io import get_case_dir
+    from vhir_cli.case_io import get_case_dir
 
     try:
         case_dir = get_case_dir(getattr(args, "case", None))
@@ -654,14 +654,14 @@ def _case_status(args, identity: dict) -> None:
 
     pending = data["finding_draft"] + data["timeline_draft"]
     if pending:
-        print(f"\n  {pending} item(s) awaiting approval — run: aiir approve")
+        print(f"\n  {pending} item(s) awaiting approval — run: vhir approve")
 
 
 def _case_list_data(cases_dir=None) -> dict:
     """Return list of cases as structured data.
 
     Args:
-        cases_dir: Path to cases directory. Defaults to AIIR_CASES_DIR env or "cases".
+        cases_dir: Path to cases directory. Defaults to VHIR_CASES_DIR env or "cases".
 
     Returns:
         Dict with "cases" list, each entry having id, name, status, active bool.
@@ -672,7 +672,7 @@ def _case_list_data(cases_dir=None) -> dict:
     import yaml
 
     if cases_dir is None:
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+        cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
     else:
         cases_dir = Path(cases_dir)
 
@@ -681,7 +681,7 @@ def _case_list_data(cases_dir=None) -> dict:
 
     # Determine active case (file may contain absolute path or legacy bare ID)
     active_case_dir_name = None
-    active_file = Path.home() / ".aiir" / "active_case"
+    active_file = Path.home() / ".vhir" / "active_case"
     if active_file.exists():
         try:
             content = active_file.read_text().strip()
@@ -721,7 +721,7 @@ def _case_list(args, identity: dict) -> None:
     import os
     from pathlib import Path
 
-    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+    cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
     if not cases_dir.is_dir():
         print(f"No cases directory found: {cases_dir}")
         return
@@ -749,7 +749,7 @@ def _case_init_data(
         name: Case name.
         examiner: Examiner identity slug.
         description: Optional case description.
-        cases_dir: Path to cases directory. Defaults to AIIR_CASES_DIR env or "cases".
+        cases_dir: Path to cases directory. Defaults to VHIR_CASES_DIR env or "cases".
 
     Returns:
         Dict with case_id, case_dir, examiner, created.
@@ -765,10 +765,10 @@ def _case_init_data(
 
     import yaml
 
-    from aiir_cli.case_io import _atomic_write
+    from vhir_cli.case_io import _atomic_write
 
     if cases_dir is None:
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+        cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
     else:
         cases_dir = Path(cases_dir)
 
@@ -842,9 +842,9 @@ def _case_init_data(
 
     # Set active case pointer
     try:
-        aiir_dir = Path.home() / ".aiir"
-        aiir_dir.mkdir(exist_ok=True)
-        _atomic_write(aiir_dir / "active_case", str(case_dir.resolve()))
+        vhir_dir = Path.home() / ".vhir"
+        vhir_dir.mkdir(exist_ok=True)
+        _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
     except OSError:
         pass  # non-fatal — CLI wrapper will warn
 
@@ -868,7 +868,7 @@ def _set_case_wintools_permissions(case_dir: Path) -> None:
         sift_gid = grp.getgrnam("sift").gr_gid
     except KeyError:
         raise RuntimeError(
-            "Group 'sift' not found. Run 'aiir setup join-code' to set up wintools integration."
+            "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
 
     # Create extractions/wintools/ with setgid + group-writable
@@ -892,7 +892,7 @@ def _wintools_configured() -> bool:
 
     import yaml
 
-    p = Path.home() / ".aiir" / "samba.yaml"
+    p = Path.home() / ".vhir" / "samba.yaml"
     if not p.is_file():
         return False
     try:
@@ -908,7 +908,7 @@ def _gateway_has_wintools() -> bool:
 
     import yaml
 
-    p = Path.home() / ".aiir" / "gateway.yaml"
+    p = Path.home() / ".vhir" / "gateway.yaml"
     if not p.is_file():
         return False
     try:
@@ -951,7 +951,7 @@ def _case_init(args, identity: dict) -> None:
             share = "n"
         if share in ("y", "yes"):
             try:
-                from aiir_cli.commands.join import (
+                from vhir_cli.commands.join import (
                     _repoint_samba_share,
                     notify_wintools_case_activated,
                 )
@@ -966,12 +966,12 @@ def _case_init(args, identity: dict) -> None:
                     file=sys.stderr,
                 )
     elif _gateway_has_wintools():
-        print("Tip: Run 'aiir setup join-code' to set up file sharing with wintools")
+        print("Tip: Run 'vhir setup join-code' to set up file sharing with wintools")
 
     print()
     print("Next steps:")
     print(f"  1. Copy evidence into: {data['case_dir']}/evidence/")
-    print("  2. Register each file:  aiir evidence register <file>")
+    print("  2. Register each file:  vhir evidence register <file>")
     print("  3. If using Claude Code, launch from the case directory")
     print("     to ensure proper sandbox scope:")
     print(f"       cd {data['case_dir']}")
@@ -982,7 +982,7 @@ def _case_activate_data(case_id: str, cases_dir=None) -> dict:
 
     Args:
         case_id: Case ID to activate.
-        cases_dir: Path to cases directory. Defaults to AIIR_CASES_DIR env or "cases".
+        cases_dir: Path to cases directory. Defaults to VHIR_CASES_DIR env or "cases".
 
     Returns:
         Dict with case_id, case_dir.
@@ -994,10 +994,10 @@ def _case_activate_data(case_id: str, cases_dir=None) -> dict:
     import os
     from pathlib import Path
 
-    from aiir_cli.case_io import _atomic_write
+    from vhir_cli.case_io import _atomic_write
 
     if cases_dir is None:
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+        cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
     else:
         cases_dir = Path(cases_dir)
 
@@ -1010,9 +1010,9 @@ def _case_activate_data(case_id: str, cases_dir=None) -> dict:
     if not case_dir.exists():
         raise ValueError(f"Case not found: {case_id}")
 
-    aiir_dir = Path.home() / ".aiir"
-    aiir_dir.mkdir(exist_ok=True)
-    _atomic_write(aiir_dir / "active_case", str(case_dir.resolve()))
+    vhir_dir = Path.home() / ".vhir"
+    vhir_dir.mkdir(exist_ok=True)
+    _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
 
     return {"case_id": case_id, "case_dir": str(case_dir)}
 
@@ -1039,7 +1039,7 @@ def _case_activate(args, identity: dict) -> None:
     case_path = Path(data["case_dir"])
     if _wintools_configured():
         try:
-            from aiir_cli.commands.join import (
+            from vhir_cli.commands.join import (
                 _repoint_samba_share,
                 notify_wintools_case_activated,
                 notify_wintools_case_deactivated,
@@ -1066,11 +1066,11 @@ def _case_close(args, identity: dict) -> None:
 
     import yaml
 
-    from aiir_cli.case_io import _validate_case_id
+    from vhir_cli.case_io import _validate_case_id
 
     case_id = args.case_id
     _validate_case_id(case_id)
-    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+    cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
     case_dir = cases_dir / case_id
 
     if not case_dir.exists():
@@ -1096,14 +1096,14 @@ def _case_close(args, identity: dict) -> None:
     if summary:
         meta["close_summary"] = summary
 
-    from aiir_cli.case_io import _atomic_write as _aw
+    from vhir_cli.case_io import _atomic_write as _aw
 
     _aw(meta_file, yaml.dump(meta, default_flow_style=False))
 
     # Clear wintools share
     if _wintools_configured() and (case_dir / "extractions" / "wintools").is_dir():
         try:
-            from aiir_cli.commands.join import (
+            from vhir_cli.commands.join import (
                 _repoint_samba_share,
                 notify_wintools_case_deactivated,
             )
@@ -1115,14 +1115,14 @@ def _case_close(args, identity: dict) -> None:
 
     # Copy verification ledger into case directory
     try:
-        from aiir_cli.verification import copy_ledger_to_case
+        from vhir_cli.verification import copy_ledger_to_case
 
         copy_ledger_to_case(case_id, case_dir)
     except (ImportError, OSError):
         pass  # Non-fatal — ledger may not exist
 
     # Clear active case pointer if this was the active case
-    active_file = Path.home() / ".aiir" / "active_case"
+    active_file = Path.home() / ".vhir" / "active_case"
     if active_file.exists():
         try:
             current = active_file.read_text().strip()
@@ -1143,11 +1143,11 @@ def _case_reopen(args, identity: dict) -> None:
 
     import yaml
 
-    from aiir_cli.case_io import _atomic_write, _validate_case_id
+    from vhir_cli.case_io import _atomic_write, _validate_case_id
 
     case_id = args.case_id
     _validate_case_id(case_id)
-    cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+    cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
     case_dir = cases_dir / case_id
 
     if not case_dir.exists():
@@ -1171,16 +1171,16 @@ def _case_reopen(args, identity: dict) -> None:
     _atomic_write(meta_file, yaml.dump(meta, default_flow_style=False))
 
     # Set as active case
-    aiir_dir = Path.home() / ".aiir"
-    aiir_dir.mkdir(exist_ok=True)
-    _atomic_write(aiir_dir / "active_case", str(case_dir.resolve()))
+    vhir_dir = Path.home() / ".vhir"
+    vhir_dir.mkdir(exist_ok=True)
+    _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
 
     print(f"Case {case_id} reopened and set as active.")
 
     # Repoint share if this case is shared
     if _wintools_configured() and (case_dir / "extractions" / "wintools").is_dir():
         try:
-            from aiir_cli.commands.join import (
+            from vhir_cli.commands.join import (
                 _repoint_samba_share,
                 notify_wintools_case_activated,
             )

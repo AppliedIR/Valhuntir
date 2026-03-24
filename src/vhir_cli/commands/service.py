@@ -1,11 +1,11 @@
-"""Service management for the AIIR gateway.
+"""Service management for the ValiHuntIR gateway.
 
 Talks to the gateway's REST API to list, start, stop, and restart
 backend services. Reads gateway URL and token from:
   1. CLI flags (--gateway, --token)
-  2. Environment variables (AIIR_GATEWAY_URL, AIIR_GATEWAY_TOKEN)
-  3. ~/.aiir/config.yaml (gateway_url, gateway_token)
-  4. ~/.aiir/gateway.yaml (api_keys dict for token, gateway.port for URL)
+  2. Environment variables (VHIR_GATEWAY_URL, VHIR_GATEWAY_TOKEN)
+  3. ~/.vhir/config.yaml (gateway_url, gateway_token)
+  4. ~/.vhir/gateway.yaml (api_keys dict for token, gateway.port for URL)
   5. Fallback: http://127.0.0.1:4508
 """
 
@@ -27,7 +27,7 @@ def cmd_service(args, identity: dict) -> None:
     elif action in ("start", "stop", "restart"):
         _service_action(args, action)
     else:
-        print("Usage: aiir service {status|start|stop|restart}", file=sys.stderr)
+        print("Usage: vhir service {status|start|stop|restart}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -41,15 +41,15 @@ def _resolve_gateway(args) -> tuple[str, str | None, ssl.SSLContext | None]:
     """
     import os
 
-    from aiir_cli.gateway import get_local_gateway_url, get_local_ssl_context
+    from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 
     url = getattr(args, "gateway", None)
     token = getattr(args, "token", None)
 
     if not url:
-        url = os.environ.get("AIIR_GATEWAY_URL")
+        url = os.environ.get("VHIR_GATEWAY_URL")
     if not token:
-        token = os.environ.get("AIIR_GATEWAY_TOKEN")
+        token = os.environ.get("VHIR_GATEWAY_TOKEN")
 
     # Read token from config files if not already set
     if not token:
@@ -72,15 +72,15 @@ def _resolve_gateway(args) -> tuple[str, str | None, ssl.SSLContext | None]:
 
     if not token:
         print(
-            "Warning: No gateway token found. Check ~/.aiir/gateway.yaml",
+            "Warning: No gateway token found. Check ~/.vhir/gateway.yaml",
             file=sys.stderr,
         )
     return url.rstrip("/"), token if token else None, ssl_ctx
 
 
 def _load_config(filename: str = "config.yaml") -> dict:
-    """Load ~/.aiir/{filename}, returning empty dict on failure."""
-    config_file = Path.home() / ".aiir" / filename
+    """Load ~/.vhir/{filename}, returning empty dict on failure."""
+    config_file = Path.home() / ".vhir" / filename
     if not config_file.is_file():
         return {}
     try:

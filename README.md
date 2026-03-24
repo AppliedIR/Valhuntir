@@ -1,21 +1,23 @@
-# AIIR
-[![CI](https://github.com/AppliedIR/aiir/actions/workflows/ci.yml/badge.svg)](https://github.com/AppliedIR/aiir/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-appliedir.github.io-blue)](https://appliedir.github.io/aiir/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AppliedIR/aiir/blob/main/LICENSE)
+![ValiHuntIR](docs/images/vhir-logo.png)
 
-AI Incident Response platform with varying levels of human-in-the-loop review and control based on your deployment needs. CLI and architecture reference.
+# ValiHuntIR
+[![CI](https://github.com/AppliedIR/valihuntir/actions/workflows/ci.yml/badge.svg)](https://github.com/AppliedIR/valihuntir/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-appliedir.github.io-blue)](https://appliedir.github.io/valihuntir/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AppliedIR/valihuntir/blob/main/LICENSE)
 
-**[Platform Documentation](https://appliedir.github.io/aiir/)** ·
-[CLI Reference](https://appliedir.github.io/aiir/cli-reference/)
+ValiHuntIR forensic investigation platform with varying levels of human-in-the-loop review and control based on your deployment needs. CLI and architecture reference.
+
+**[Platform Documentation](https://appliedir.github.io/valihuntir/)** ·
+[CLI Reference](https://appliedir.github.io/valihuntir/cli-reference/)
 
 > **Public Beta** — This project is undergoing active feature development.
 > Backward compatibility with future releases is not guaranteed. Consider
 > this a public beta for feature testing and evaluation rather than a
 > production-ready tool for real case data.
 
-## AIIR Lite — Get Started in Minutes
+## ValiHuntIR Lite — Get Started in Minutes
 
-In its simplest form, AIIR Lite provides Claude Code with forensic knowledge and instructions on how to enforce forensic rigor, present findings for human review, and audit actions taken. MCP servers enhance accuracy by providing authoritative information — a forensic knowledge RAG and a Windows triage database — plus optional OpenCTI threat intelligence and REMnux malware analysis.
+In its simplest form, ValiHuntIR Lite provides Claude Code with forensic knowledge and instructions on how to enforce forensic rigor, present findings for human review, and audit actions taken. MCP servers enhance accuracy by providing authoritative information — a forensic knowledge RAG and a Windows triage database — plus optional OpenCTI threat intelligence and REMnux malware analysis.
 
 **Quick** — Forensic discipline, MCP packages, and config. No databases (<70 MB):
 
@@ -45,7 +47,7 @@ claude
 /welcome
 ```
 
-To update an existing AIIR Lite installation, re-run the installer from an updated clone (first step changes into wherever you installed the sift-mcp repo on initial installation):
+To update an existing ValiHuntIR Lite installation, re-run the installer from an updated clone (first step changes into wherever you installed the sift-mcp repo on initial installation):
 
 ```
 cd sift-mcp
@@ -56,7 +58,7 @@ git pull
 The installer is idempotent — it reuses the existing venv, skips databases
 and RAG index if already present, and redeploys config files.
 
-#### AIIR Lite
+#### ValiHuntIR Lite
 
 ```mermaid
 graph LR
@@ -70,7 +72,7 @@ graph LR
     end
 ```
 
-#### AIIR Lite with Optional Add-ons
+#### ValiHuntIR Lite with Optional Add-ons
 
 ```mermaid
 graph LR
@@ -116,21 +118,21 @@ graph LR
 | Claude Code → MS Learn MCP | HTTPS | `https://learn.microsoft.com/api/mcp` — streamable-http type in .mcp.json |
 | Claude Code → Zeltser IR Writing MCP | HTTPS | `https://website-mcp.zeltser.com/mcp` — streamable-http type in .mcp.json |
 
-No gateway, no sandbox, no deny rules. Claude runs forensic tools directly via Bash. Forensic discipline is suggested and reinforced via prompt hooks and reference documents, but Claude Code can choose to ignore them. See the [sift-mcp README](https://github.com/AppliedIR/sift-mcp#aiir-lite--get-started-in-minutes) for details and optional add-ons.
+No gateway, no sandbox, no deny rules. Claude runs forensic tools directly via Bash. Forensic discipline is suggested and reinforced via prompt hooks and reference documents, but Claude Code can choose to ignore them. See the [sift-mcp README](https://github.com/AppliedIR/sift-mcp#valihuntir-lite--get-started-in-minutes) for details and optional add-ons.
 
-## Full AIIR — Structural Enforcement
+## Full ValiHuntIR — Structural Enforcement
 
-For use cases where more definitive human-in-the-loop approval is desired, the full AIIR suite ensures accountability and enforces human review of findings through cryptographic signing, password-gated approvals, and multiple layered controls.
+For use cases where more definitive human-in-the-loop approval is desired, the full ValiHuntIR suite ensures accountability and enforces human review of findings through cryptographic signing, password-gated approvals, and multiple layered controls.
 
-Full AIIR is **LLM client agnostic** — connect any MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, LibreChat, Cherry Studio, and any MCP-only client that supports Streamable HTTP transport with Bearer token authentication. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
+Full ValiHuntIR is **LLM client agnostic** — connect any MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, LibreChat, Cherry Studio, and any MCP-only client that supports Streamable HTTP transport with Bearer token authentication. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
 
 ## Platform Architecture
 
-The examiner interacts with AIIR through three interfaces: the **LLM client** (AI-assisted investigation), the **Examiner Portal** (browser-based review and approval), and the **aiir CLI** (case management, evidence handling, and verification).
+The examiner interacts with ValiHuntIR through three interfaces: the **LLM client** (AI-assisted investigation), the **Examiner Portal** (browser-based review and approval), and the **vhir CLI** (case management, evidence handling, and verification).
 
 ### Deployment Overview
 
-The typical deployment runs three VMs on a single host: SIFT (primary workstation), REMnux (malware analysis), and Windows (forensic tool execution). The examiner works on the SIFT VM — running the LLM client, the Examiner Portal in a browser, and the aiir CLI. REMnux and Windows are headless worker VMs. All three communicate over a VM-local network. Internet access is through NAT for external MCP services.
+The typical deployment runs three VMs on a single host: SIFT (primary workstation), REMnux (malware analysis), and Windows (forensic tool execution). The examiner works on the SIFT VM — running the LLM client, the Examiner Portal in a browser, and the vhir CLI. REMnux and Windows are headless worker VMs. All three communicate over a VM-local network. Internet access is through NAT for external MCP services.
 
 ```mermaid
 graph TB
@@ -138,7 +140,7 @@ graph TB
         subgraph sift ["SIFT VM"]
             CC["LLM Client<br/>(human interface)"]
             BR["Browser<br/>(Examiner Portal)"]
-            CLI["aiir CLI"]
+            CLI["vhir CLI"]
             GW["sift-gateway :4508"]
             CASE["Case Directory"]
 
@@ -210,7 +212,7 @@ graph LR
 
 ### Human-in-the-Loop Workflow
 
-All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the aiir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings.
+All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings.
 
 ```mermaid
 sequenceDiagram
@@ -226,14 +228,14 @@ sequenceDiagram
     Human->>Case: Commit (password + HMAC signing)
 
     Note over Case: Only APPROVED items<br/>appear in reports
-    Human->>Case: aiir report --full
+    Human->>Case: vhir report --full
 ```
 
 The **Examiner Portal** is the primary review interface with 8 tabs: Overview (investigation progress and getting started guide), Findings (the core review workflow with provenance chain display), Timeline (chronological events with a color-coded ruler), Hosts (systems involved, aggregated from findings), Accounts (user/service accounts involved), Evidence (registered files with SHA-256 integrity verification), IOCs (indicators extracted from findings with category/status filters), and TODOs (outstanding tasks).
 
 Examiners review findings and timeline events, edit fields (confidence, justification, observation, interpretation, MITRE IDs, IOCs, tags), approve or reject items, and commit decisions — all in the browser. Each finding displays its evidence artifacts with a provenance chain showing which registered evidence files were input, which tools processed them, and what output was extracted. Keyboard shortcuts (`1`-`8` tabs, `j`/`k` navigate, `a` approve, `r` reject, `e` edit, `Shift+C` commit) enable fast review. The sidebar is resizable, and search matches across title, observation, host, and account fields. Light and dark themes are supported.
 
-The Commit button (`Shift+C`) uses challenge-response authentication: the browser derives a PBKDF2 key from the examiner's password and proves knowledge via HMAC — the password never leaves the browser. Timeline events auto-created from findings follow the finding's approval status unless manually edited. IOCs auto-extracted from findings cascade when all source findings reach the same status. The CLI's `aiir approve` provides the same functionality from the terminal. Open the portal with `aiir portal`.
+The Commit button (`Shift+C`) uses challenge-response authentication: the browser derives a PBKDF2 key from the examiner's password and proves knowledge via HMAC — the password never leaves the browser. Timeline events auto-created from findings follow the finding's approval status unless manually edited. IOCs auto-extracted from findings cascade when all source findings reach the same status. The CLI's `vhir approve` provides the same functionality from the terminal. Open the portal with `vhir portal`.
 
 ![Examiner Portal — Findings](docs/images/dashboard.png)
 
@@ -253,7 +255,7 @@ The Commit button (`Shift+C`) uses challenge-response authentication: the browse
 | opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (10 tools) |
 | Examiner Portal | SIFT | (via gateway) | 8-tab browser UI: overview, findings with provenance chains, timeline with ruler, hosts, accounts, evidence verification, IOCs, TODOs. Primary review UI. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (7 tools) |
-| aiir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via Examiner Portal. Remote examiners need SSH only for CLI-exclusive operations. |
+| vhir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via Examiner Portal. Remote examiners need SSH only for CLI-exclusive operations. |
 | forensic-knowledge | anywhere | -- | Shared YAML data package (tools, artifacts, discipline) |
 
 The gateway exposes each backend as a separate MCP endpoint. Clients can connect to the aggregate endpoint or to individual backends:
@@ -276,7 +278,7 @@ graph LR
     subgraph e1 ["Examiner 1 — SIFT Workstation"]
         CC1["LLM Client<br/>(human interface)"]
         BR1["Browser<br/>(human interface)"]
-        CLI1["aiir CLI"]
+        CLI1["vhir CLI"]
         GW1["sift-gateway<br/>:4508"]
         MCPs1["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp<br/>windows-triage-mcp · opencti-mcp"]
         CASE1["Case Directory"]
@@ -291,7 +293,7 @@ graph LR
     subgraph e2 ["Examiner 2 — SIFT Workstation"]
         CC2["LLM Client<br/>(human interface)"]
         BR2["Browser<br/>(human interface)"]
-        CLI2["aiir CLI"]
+        CLI2["vhir CLI"]
         GW2["sift-gateway<br/>:4508"]
         MCPs2["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp<br/>windows-triage-mcp · opencti-mcp"]
         CASE2["Case Directory"]
@@ -332,18 +334,18 @@ cases/INC-2026-0219/
 
 ### External Dependencies
 
-- **Zeltser IR Writing MCP** — Required for report generation. Configured automatically by `aiir setup client`. URL: https://website-mcp.zeltser.com/mcp (HTTPS, no auth)
+- **Zeltser IR Writing MCP** — Required for report generation. Configured automatically by `vhir setup client`. URL: https://website-mcp.zeltser.com/mcp (HTTPS, no auth)
 
 ## Quick Start
 
 ### SIFT Workstation
 
-Requires Python 3.10+ and sudo access. The installer handles everything: MCP servers, gateway, aiir CLI, HMAC verification ledger, examiner identity, and LLM client configuration. When you select Claude Code, additional forensic controls are deployed (kernel-level sandbox, case data deny rules, PreToolUse guard hook, PostToolUse audit hook, provenance enforcement, password-gated human approval with HMAC signing). Other clients get MCP config only.
+Requires Python 3.10+ and sudo access. The installer handles everything: MCP servers, gateway, vhir CLI, HMAC verification ledger, examiner identity, and LLM client configuration. When you select Claude Code, additional forensic controls are deployed (kernel-level sandbox, case data deny rules, PreToolUse guard hook, PostToolUse audit hook, provenance enforcement, password-gated human approval with HMAC signing). Other clients get MCP config only.
 
 **Quick** — Core platform only, no databases (~70 MB):
 
 ```
-curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/aiir-quickstart.sh && bash /tmp/aiir-quickstart.sh
+curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh
 ```
 
 **Recommended** — Adds the RAG knowledge base (22,000+ records from 23 security sources) and Windows triage databases (2.6M baseline records), downloaded as pre-built snapshots. Requires ~14 GB disk space:
@@ -353,7 +355,7 @@ curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.
 - ~1 GB — RAG index, source code, and everything else
 
 ```
-curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/aiir-quickstart.sh && bash /tmp/aiir-quickstart.sh --recommended
+curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh --recommended
 ```
 
 **Custom** — Individual package selection, OpenCTI integration, or remote access with TLS:
@@ -383,17 +385,17 @@ Then run the installer:
 
 ## Security Considerations
 
-All AIIR components are assumed to run on a private forensic network, protected by firewalls, and not exposed to incoming connections from the Internet or potentially hostile systems. The design assumes dedicated, isolated systems are used throughout.
+All ValiHuntIR components are assumed to run on a private forensic network, protected by firewalls, and not exposed to incoming connections from the Internet or potentially hostile systems. The design assumes dedicated, isolated systems are used throughout.
 
 Any data loaded into the system or its component VMs, computers, or instances runs the risk of being exposed to the underlying AI. Only place data on these systems that you are willing to send to your AI provider.
 
 Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
 
-AIIR is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) can also operate outside MCP, but `aiir setup client` deploys forensic controls for Claude Code: a kernel-level sandbox restricts Bash writes, deny rules block Edit/Write to case data files, a PreToolUse hook guards against Bash redirections to protected files, a PostToolUse hook captures every Bash command to the audit trail, provenance enforcement ensures findings are traceable to evidence, and an HMAC verification ledger provides cryptographic proof that approved findings haven't been tampered with. AIIR is not designed to defend against a malicious AI or to constrain the AI client that you deploy.
+ValiHuntIR is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) can also operate outside MCP, but `vhir setup client` deploys forensic controls for Claude Code: a kernel-level sandbox restricts Bash writes, deny rules block Edit/Write to case data files, a PreToolUse hook guards against Bash redirections to protected files, a PostToolUse hook captures every Bash command to the audit trail, provenance enforcement ensures findings are traceable to evidence, and an HMAC verification ledger provides cryptographic proof that approved findings haven't been tampered with. ValiHuntIR is not designed to defend against a malicious AI or to constrain the AI client that you deploy.
 
 ## Commands
 
-Most `aiir` CLI operations have MCP equivalents via case-mcp, forensic-mcp, and report-mcp. When working with an MCP-connected client, you can ask the AI to handle case management, evidence registration, report generation, and more — the AI operates through audited MCP tools rather than direct CLI invocation.
+Most `vhir` CLI operations have MCP equivalents via case-mcp, forensic-mcp, and report-mcp. When working with an MCP-connected client, you can ask the AI to handle case management, evidence registration, report generation, and more — the AI operates through audited MCP tools rather than direct CLI invocation.
 
 The commands below that require human interaction at the terminal (`/dev/tty`) **cannot** be delegated to the AI. These are intentional human-in-the-loop checkpoints — they use password entry, interactive review, or terminal confirmation to ensure the human examiner retains control over approval, rejection, and security-sensitive operations.
 
@@ -404,14 +406,14 @@ These commands read from `/dev/tty` directly and cannot be run by an AI client, 
 #### approve
 
 ```
-aiir approve                                             # Interactive review of all DRAFT items
-aiir approve F-alice-001 F-alice-002 T-alice-001         # Approve specific IDs
-aiir approve F-alice-001 --edit                          # Edit in $EDITOR before approving
-aiir approve F-alice-001 --note "Malware family unconfirmed"  # Approve with examiner note
-aiir approve --by jane                                   # Filter to IDs with jane's examiner prefix
-aiir approve --findings-only                             # Skip timeline events
-aiir approve --timeline-only                             # Skip findings
-aiir approve --review                                    # Apply pending portal edits
+vhir approve                                             # Interactive review of all DRAFT items
+vhir approve F-alice-001 F-alice-002 T-alice-001         # Approve specific IDs
+vhir approve F-alice-001 --edit                          # Edit in $EDITOR before approving
+vhir approve F-alice-001 --note "Malware family unconfirmed"  # Approve with examiner note
+vhir approve --by jane                                   # Filter to IDs with jane's examiner prefix
+vhir approve --findings-only                             # Skip timeline events
+vhir approve --timeline-only                             # Skip findings
+vhir approve --review                                    # Apply pending portal edits
 ```
 
 Requires password entry via `/dev/tty`. Approved findings are HMAC-signed with a PBKDF2-derived key. The `--review` flag applies edits made in the Examiner Portal (stored in `pending-reviews.json`), recomputes content hashes and HMAC signatures, then removes the pending file. Alternatively, use the portal's Commit button (Shift+C) which performs the same operation via challenge-response authentication — the password never leaves the browser.
@@ -419,8 +421,8 @@ Requires password entry via `/dev/tty`. Approved findings are HMAC-signed with a
 #### reject
 
 ```
-aiir reject F-alice-003 --reason "Insufficient evidence for attribution"
-aiir reject F-alice-003 T-alice-002 --reason "Contradicted by memory analysis"
+vhir reject F-alice-003 --reason "Insufficient evidence for attribution"
+vhir reject F-alice-003 T-alice-002 --reason "Contradicted by memory analysis"
 ```
 
 Requires password confirmation via `/dev/tty`.
@@ -428,7 +430,7 @@ Requires password confirmation via `/dev/tty`.
 #### exec
 
 ```
-aiir exec --purpose "Extract MFT from image" -- fls -r -m / image.E01
+vhir exec --purpose "Extract MFT from image" -- fls -r -m / image.E01
 ```
 
 Requires `/dev/tty` confirmation. Logged to `audit/cli-exec.jsonl`. Use this for manual tool execution with audit trail when not operating through MCP.
@@ -436,11 +438,11 @@ Requires `/dev/tty` confirmation. Logged to `audit/cli-exec.jsonl`. Use this for
 #### backup
 
 ```
-aiir backup /path/to/destination                         # Back up case data (interactive)
-aiir backup /path/to/destination --all                   # Include evidence + extractions
-aiir backup /path/to/destination --include-evidence      # Include evidence files
-aiir backup /path/to/destination --include-extractions   # Include extraction files
-aiir backup --verify /path/to/backup/                    # Verify backup integrity
+vhir backup /path/to/destination                         # Back up case data (interactive)
+vhir backup /path/to/destination --all                   # Include evidence + extractions
+vhir backup /path/to/destination --include-evidence      # Include evidence files
+vhir backup /path/to/destination --include-extractions   # Include extraction files
+vhir backup --verify /path/to/backup/                    # Verify backup integrity
 ```
 
 Creates a timestamped backup with SHA-256 manifest. Verification checks every file hash against the manifest. The `--all` flag includes evidence and extraction files (which can be large). Without flags, interactive mode prompts per category with size estimates.
@@ -448,8 +450,8 @@ Creates a timestamped backup with SHA-256 manifest. Verification checks every fi
 #### evidence unlock
 
 ```
-aiir unlock-evidence                       # Directory chmod 755, files remain 444
-aiir evidence unlock
+vhir unlock-evidence                       # Directory chmod 755, files remain 444
+vhir evidence unlock
 ```
 
 Requires `/dev/tty` confirmation. Unlocking evidence allows writes to the evidence directory.
@@ -457,8 +459,8 @@ Requires `/dev/tty` confirmation. Unlocking evidence allows writes to the eviden
 #### Password management
 
 ```
-aiir config --setup-password               # Set approval password (PBKDF2-hashed, min 8 chars)
-aiir config --reset-password               # Reset password (requires current, re-signs ledger)
+vhir config --setup-password               # Set approval password (PBKDF2-hashed, min 8 chars)
+vhir config --reset-password               # Reset password (requires current, re-signs ledger)
 ```
 
 Password entry uses masked input via `/dev/tty` with termios. No echo, no stdin — the AI cannot read or supply the password.
@@ -466,8 +468,8 @@ Password entry uses masked input via `/dev/tty` with termios. No echo, no stdin 
 #### HMAC verification
 
 ```
-aiir review --findings --verify            # Cross-check content hashes + HMAC verification
-aiir review --findings --verify --mine    # HMAC verification for current examiner only
+vhir review --findings --verify            # Cross-check content hashes + HMAC verification
+vhir review --findings --verify --mine    # HMAC verification for current examiner only
 ```
 
 Verification requires the examiner's password to derive the HMAC key and confirm integrity.
@@ -479,130 +481,130 @@ The remaining commands can also be performed through MCP tools (case-mcp, forens
 #### portal
 
 ```
-aiir portal                                              # Open the Examiner Portal in your browser
+vhir portal                                              # Open the Examiner Portal in your browser
 ```
 
-Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `aiir approve --review` applies pending edits from the CLI.
+Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `vhir approve --review` applies pending edits from the CLI.
 
 #### case
 
 ```
-aiir case init "Ransomware Investigation"                # Create a new case
-aiir case close INC-2026-02191200                        # Close a case by ID
-aiir case activate INC-2026-02191200                     # Set active case
-aiir case migrate                                        # Migrate to flat layout (see below)
+vhir case init "Ransomware Investigation"                # Create a new case
+vhir case close INC-2026-02191200                        # Close a case by ID
+vhir case activate INC-2026-02191200                     # Set active case
+vhir case migrate                                        # Migrate to flat layout (see below)
 ```
 
 #### review
 
 ```
-aiir review                                # Case summary (counts by status)
-aiir review --findings                     # Findings table
-aiir review --findings --detail            # Full finding detail
-aiir review --iocs                         # IOCs grouped by approval status
-aiir review --timeline                     # Timeline events
-aiir review --timeline --status APPROVED   # Filter timeline by status
-aiir review --timeline --start 2026-01-01 --end 2026-01-31   # Filter by date range
-aiir review --timeline --type execution    # Filter by event type
-aiir review --evidence                     # Evidence registry and access log
-aiir review --audit --limit 100            # Audit trail (last N entries)
-aiir review --todos --open                 # Open TODOs
+vhir review                                # Case summary (counts by status)
+vhir review --findings                     # Findings table
+vhir review --findings --detail            # Full finding detail
+vhir review --iocs                         # IOCs grouped by approval status
+vhir review --timeline                     # Timeline events
+vhir review --timeline --status APPROVED   # Filter timeline by status
+vhir review --timeline --start 2026-01-01 --end 2026-01-31   # Filter by date range
+vhir review --timeline --type execution    # Filter by event type
+vhir review --evidence                     # Evidence registry and access log
+vhir review --audit --limit 100            # Audit trail (last N entries)
+vhir review --todos --open                 # Open TODOs
 ```
 
 #### todo
 
 ```
-aiir todo                                                          # List open TODOs
-aiir todo --all                                                    # Include completed
-aiir todo add "Run volatility on server-04" --assignee jane --priority high --finding F-alice-003
-aiir todo complete TODO-alice-001
-aiir todo update TODO-alice-002 --note "Waiting on third party" --priority low
+vhir todo                                                          # List open TODOs
+vhir todo --all                                                    # Include completed
+vhir todo add "Run volatility on server-04" --assignee jane --priority high --finding F-alice-003
+vhir todo complete TODO-alice-001
+vhir todo update TODO-alice-002 --note "Waiting on third party" --priority low
 ```
 
 #### evidence
 
 ```
-aiir register-evidence /path/to/image.E01 --description "Disk image from workstation"
-aiir lock-evidence                         # All files chmod 444, directory chmod 555
+vhir register-evidence /path/to/image.E01 --description "Disk image from workstation"
+vhir lock-evidence                         # All files chmod 444, directory chmod 555
 
-aiir evidence register /path/to/image.E01 --description "Disk image"
-aiir evidence list
-aiir evidence verify
-aiir evidence log [--path <filter>]
-aiir evidence lock
+vhir evidence register /path/to/image.E01 --description "Disk image"
+vhir evidence list
+vhir evidence verify
+vhir evidence log [--path <filter>]
+vhir evidence lock
 ```
 
 #### export / merge
 
 ```
-aiir export --file steve-findings.json      # Export findings for sharing
-aiir merge --file jane-findings.json        # Merge another examiner's findings
+vhir export --file steve-findings.json      # Export findings for sharing
+vhir merge --file jane-findings.json        # Merge another examiner's findings
 ```
 
 #### report
 
 ```
-aiir report --full [--save <path>]
-aiir report --executive-summary [--save <path>]
-aiir report --timeline [--from <date> --to <date>] [--save <path>]
-aiir report --ioc [--save <path>]
-aiir report --findings F-alice-001,F-alice-002 [--save <path>]
-aiir report --status-brief [--save <path>]
+vhir report --full [--save <path>]
+vhir report --executive-summary [--save <path>]
+vhir report --timeline [--from <date> --to <date>] [--save <path>]
+vhir report --ioc [--save <path>]
+vhir report --findings F-alice-001,F-alice-002 [--save <path>]
+vhir report --status-brief [--save <path>]
 ```
 
 #### audit
 
 ```
-aiir audit log [--limit 100] [--mcp sift-mcp] [--tool run_command]
-aiir audit summary
+vhir audit log [--limit 100] [--mcp sift-mcp] [--tool run_command]
+vhir audit summary
 ```
 
 #### service
 
 ```
-aiir service status                    # Show running backends + health
-aiir service start forensic-rag        # Start a backend
-aiir service stop windows-triage       # Stop a backend
-aiir service restart sift-mcp          # Restart a backend
+vhir service status                    # Show running backends + health
+vhir service start forensic-rag        # Start a backend
+vhir service stop windows-triage       # Stop a backend
+vhir service restart sift-mcp          # Restart a backend
 ```
 
 #### case migrate
 
 ```
-aiir case migrate                                      # Migrate primary examiner data to flat layout
-aiir case migrate --examiner alice                     # Specify examiner
-aiir case migrate --import-all                         # Merge all examiners' data
+vhir case migrate                                      # Migrate primary examiner data to flat layout
+vhir case migrate --examiner alice                     # Specify examiner
+vhir case migrate --import-all                         # Merge all examiners' data
 ```
 
 #### config
 
 ```
-aiir config --examiner "jane-doe"          # Set examiner identity
-aiir config --show                         # Show current configuration
+vhir config --examiner "jane-doe"          # Set examiner identity
+vhir config --show                         # Show current configuration
 ```
 
 #### update
 
 ```
-aiir update                       # Pull latest, reinstall, redeploy, restart
-aiir update --check               # Check for updates without applying
-aiir update --no-restart          # Skip gateway restart after update
+vhir update                       # Pull latest, reinstall, redeploy, restart
+vhir update --check               # Check for updates without applying
+vhir update --no-restart          # Skip gateway restart after update
 ```
 
 #### join
 
 ```
-aiir join --sift SIFT_URL --code CODE                            # Join from remote machine using join code
-aiir join --sift SIFT_URL --code CODE --wintools                 # Join as wintools machine (registers backend)
+vhir join --sift SIFT_URL --code CODE                            # Join from remote machine using join code
+vhir join --sift SIFT_URL --code CODE --wintools                 # Join as wintools machine (registers backend)
 ```
 
-Exchange a one-time join code for gateway credentials. Run on the remote machine (analyst laptop or Windows forensic workstation). The join code is generated on SIFT via `aiir setup join-code`. Credentials are saved to `~/.aiir/config.yaml` with restricted permissions (0600).
+Exchange a one-time join code for gateway credentials. Run on the remote machine (analyst laptop or Windows forensic workstation). The join code is generated on SIFT via `vhir setup join-code`. Credentials are saved to `~/.vhir/config.yaml` with restricted permissions (0600).
 
 #### setup
 
 ```
-aiir setup client                          # Interactive client configuration (recommended)
-aiir setup test                            # Test MCP server connectivity
+vhir setup client                          # Interactive client configuration (recommended)
+vhir setup test                            # Test MCP server connectivity
 ```
 
 #### setup client
@@ -610,42 +612,42 @@ aiir setup test                            # Test MCP server connectivity
 Generate Streamable HTTP config for your LLM client:
 
 ```
-aiir setup client                                                          # Interactive wizard
-aiir setup client --client=claude-code --sift=http://127.0.0.1:4508 -y    # Local solo
-aiir setup client --sift=SIFT_IP:4508 --windows=WIN_IP:4624               # SIFT + Windows
+vhir setup client                                                          # Interactive wizard
+vhir setup client --client=claude-code --sift=http://127.0.0.1:4508 -y    # Local solo
+vhir setup client --sift=SIFT_IP:4508 --windows=WIN_IP:4624               # SIFT + Windows
 ```
 
-For remote orchestrator setups (Path 2), remote examiners run a platform-specific setup script that creates a `~/aiir/` workspace with MCP config, forensic controls, and discipline docs:
+For remote orchestrator setups (Path 2), remote examiners run a platform-specific setup script that creates a `~/vhir/` workspace with MCP config, forensic controls, and discipline docs:
 
 ```
 # Linux
-curl -sSL https://raw.githubusercontent.com/AppliedIR/aiir/main/setup-client-linux.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/valihuntir/main/setup-client-linux.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 
 # macOS
-curl -sSL https://raw.githubusercontent.com/AppliedIR/aiir/main/setup-client-macos.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/valihuntir/main/setup-client-macos.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 ```
 
 ```
 # Windows
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/aiir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/valihuntir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
 .\setup-client-windows.ps1 -Sift https://SIFT_IP:4508 -Code XXXX-XXXX
 ```
 
-Always launch your LLM client from `~/aiir/` or a subdirectory. Forensic controls only apply when started from within the workspace. To uninstall, re-run the setup script with `--uninstall` (Linux/macOS) or `-Uninstall` (Windows).
+Always launch your LLM client from `~/vhir/` or a subdirectory. Forensic controls only apply when started from within the workspace. To uninstall, re-run the setup script with `--uninstall` (Linux/macOS) or `-Uninstall` (Windows).
 
-Claude Desktop's config file supports stdio transport only. The [mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge is used to connect to the gateway. `aiir setup client --client=claude-desktop` generates the correct mcp-remote config automatically.
+Claude Desktop's config file supports stdio transport only. The [mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge is used to connect to the gateway. `vhir setup client --client=claude-desktop` generates the correct mcp-remote config automatically.
 
 | Client | Platforms | Config file | Extras |
 |--------|-----------|-------------|--------|
-| Claude Code | Linux, macOS, Windows | `~/aiir/.mcp.json` or `~/.claude.json` (SIFT) | `CLAUDE.md`, `settings.json`, sandbox, audit hooks |
+| Claude Code | Linux, macOS, Windows | `~/vhir/.mcp.json` or `~/.claude.json` (SIFT) | `CLAUDE.md`, `settings.json`, sandbox, audit hooks |
 | Claude Desktop | macOS, Windows | `claude_desktop_config.json` (see note) | Requires mcp-remote bridge. Project instructions from AGENTS.md |
 | Cherry Studio | Linux, macOS, Windows | JSON import (manual) | `baseUrl` field, `streamableHttp` type (camelCase) |
-| LibreChat | Any (browser) | `librechat.yaml` (`mcpServers` section) | AIIR generates `librechat_mcp.yaml` reference to merge |
-| Other | Any | `aiir-mcp-config.json` | Manual integration |
+| LibreChat | Any (browser) | `librechat.yaml` (`mcpServers` section) | ValiHuntIR generates `librechat_mcp.yaml` reference to merge |
+| Other | Any | `vhir-mcp-config.json` | Manual integration |
 
-Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Claude Desktop is not available on Linux. Claude Desktop's config file supports stdio transport only — the `aiir setup client` wizard generates mcp-remote bridge configs automatically. Config path is platform-specific: `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows. Any MCP client that supports Streamable HTTP transport with Bearer token authentication headers will work — the gateway is not client-specific.
+Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Claude Desktop is not available on Linux. Claude Desktop's config file supports stdio transport only — the `vhir setup client` wizard generates mcp-remote bridge configs automatically. Config path is platform-specific: `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows. Any MCP client that supports Streamable HTTP transport with Bearer token authentication headers will work — the gateway is not client-specific.
 
 ## Examiner Identity
 
@@ -653,10 +655,10 @@ Every approval, rejection, and command execution is logged with examiner identit
 
 | Priority | Source | Example |
 |----------|--------|---------|
-| 1 | `--examiner` flag | `aiir approve --examiner jane-doe F-jane-001` |
-| 2 | `AIIR_EXAMINER` env var | `export AIIR_EXAMINER=jane-doe` |
-| 3 | `~/.aiir/config.yaml` | `examiner: jane-doe` |
-| 4 | `AIIR_ANALYST` env var | Deprecated fallback |
+| 1 | `--examiner` flag | `vhir approve --examiner jane-doe F-jane-001` |
+| 2 | `VHIR_EXAMINER` env var | `export VHIR_EXAMINER=jane-doe` |
+| 3 | `~/.vhir/config.yaml` | `examiner: jane-doe` |
+| 4 | `VHIR_ANALYST` env var | Deprecated fallback |
 | 5 | OS username | Warns if unconfigured |
 
 ## Repo Map
@@ -665,26 +667,26 @@ Every approval, rejection, and command execution is logged with examiner identit
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
 | [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (7 tools, 31 catalog entries) |
-| [aiir](https://github.com/AppliedIR/aiir) | CLI, architecture reference |
+| [vhir](https://github.com/AppliedIR/valihuntir) | CLI, architecture reference |
 
 ## Updating
 
-### Full AIIR
+### Full ValiHuntIR
 
 ```
-aiir update              # Pull latest code, reinstall packages, redeploy controls, restart gateway
-aiir update --check      # Check for updates without applying
-aiir update --no-restart # Update without restarting the gateway
+vhir update              # Pull latest code, reinstall packages, redeploy controls, restart gateway
+vhir update --check      # Check for updates without applying
+vhir update --no-restart # Update without restarting the gateway
 ```
 
-The update command pulls the latest code from both repos (sift-mcp and aiir),
+The update command pulls the latest code from both repos (sift-mcp and vhir),
 reinstalls all packages, redeploys forensic controls, restarts the gateway,
 and runs a connectivity smoke test.
 
 ## Upgrading from Lite to Full
 
 Both modes share the same Python venv, triage databases, and RAG index. Full
-AIIR adds the gateway (7 MCP backends behind one HTTP endpoint), 4 additional
+ValiHuntIR adds the gateway (7 MCP backends behind one HTTP endpoint), 4 additional
 MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp), a web-based review
 portal (Examiner Portal), structured case management, sandbox enforcement,
 and HMAC-signed approvals.
@@ -696,9 +698,9 @@ fresh or transfer findings manually.
 
 ## Evidence Handling
 
-Never place original evidence on any AIIR system. Only use working copies for which verified originals or backups exist. AIIR workstations process evidence through AI-connected tools, and any data loaded into these systems may be transmitted to the configured AI provider. Treat all AIIR systems as analysis environments, not evidence storage.
+Never place original evidence on any ValiHuntIR system. Only use working copies for which verified originals or backups exist. ValiHuntIR workstations process evidence through AI-connected tools, and any data loaded into these systems may be transmitted to the configured AI provider. Treat all ValiHuntIR systems as analysis environments, not evidence storage.
 
-Evidence integrity is verified by SHA-256 hashes recorded at registration. Examiners can optionally lock evidence to read-only via `aiir evidence lock`. Proper evidence integrity depends on verified hashes, write blockers, and chain-of-custody procedures that exist outside this platform.
+Evidence integrity is verified by SHA-256 hashes recorded at registration. Examiners can optionally lock evidence to read-only via `vhir evidence lock`. Proper evidence integrity depends on verified hashes, write blockers, and chain-of-custody procedures that exist outside this platform.
 
 Case directories can reside on external or removable media. ext4 is preferred for full permission support. NTFS and exFAT are acceptable but file permission controls (read-only protection) will be silently ineffective. FAT32 is discouraged due to the 4 GB file size limit.
 

@@ -1,9 +1,9 @@
-"""Setup command for AIIR — routes to subcommands.
+"""Setup command for ValiHuntIR — routes to subcommands.
 
 Subcommands:
-- aiir setup client   — Configure LLM client
-- aiir setup test     — Test connectivity
-- aiir setup join-code — Generate join code
+- vhir setup client   — Configure LLM client
+- vhir setup test     — Test connectivity
+- vhir setup join-code — Generate join code
 """
 
 from __future__ import annotations
@@ -21,21 +21,21 @@ def cmd_setup(args, identity: dict) -> None:
         return
 
     if action == "client":
-        from aiir_cli.commands.client_setup import cmd_setup_client
+        from vhir_cli.commands.client_setup import cmd_setup_client
 
         cmd_setup_client(args, identity)
         return
 
     if action == "join-code":
-        from aiir_cli.commands.join import cmd_setup_join_code
+        from vhir_cli.commands.join import cmd_setup_join_code
 
         cmd_setup_join_code(args, identity)
         return
 
-    # No subcommand — redirect to 'aiir setup client'
+    # No subcommand — redirect to 'vhir setup client'
     print(
-        "Usage: aiir setup <client|test|join-code>\n"
-        "Run 'aiir setup client' to configure your LLM client.",
+        "Usage: vhir setup <client|test|join-code>\n"
+        "Run 'vhir setup client' to configure your LLM client.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -52,7 +52,7 @@ def _run_connectivity_test() -> None:
     import urllib.request
 
     print("=" * 60)
-    print("  AIIR Connectivity Test")
+    print("  ValiHuntIR Connectivity Test")
     print("=" * 60)
 
     # --- Sandbox health check ---
@@ -190,7 +190,7 @@ def _run_connectivity_test() -> None:
         print("    socat: OK")
 
     # Resolve gateway URL
-    from aiir_cli.gateway import get_local_gateway_url, get_local_ssl_context
+    from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 
     gateway_url = get_local_gateway_url()
     ssl_ctx = get_local_ssl_context()
@@ -219,7 +219,7 @@ def _run_connectivity_test() -> None:
                 time.sleep(delay)
             else:
                 print("  Gateway: OFFLINE — is the gateway running?")
-                print("    Start with: aiir service start")
+                print("    Start with: vhir service start")
                 return
         except Exception as e:
             print(f"  Gateway: ERROR ({e})")

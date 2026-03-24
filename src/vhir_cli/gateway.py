@@ -1,10 +1,10 @@
-"""Shared helpers for talking to the local AIIR gateway.
+"""Shared helpers for talking to the local ValiHuntIR gateway.
 
-Reads ~/.aiir/gateway.yaml for host, port, and TLS config.
+Reads ~/.vhir/gateway.yaml for host, port, and TLS config.
 Always uses 127.0.0.1 for local access (even if host is 0.0.0.0).
 
 config.yaml's gateway_url field is for remote clients only — written by
-'aiir join' on remote machines, never read by local commands. F12 (rebind
+'vhir join' on remote machines, never read by local commands. F12 (rebind
 not updating config.yaml) is moot because local commands use gateway.yaml.
 """
 
@@ -15,10 +15,10 @@ from pathlib import Path
 
 
 def _read_gateway_config() -> dict:
-    """Load ~/.aiir/gateway.yaml, returning empty dict on failure."""
+    """Load ~/.vhir/gateway.yaml, returning empty dict on failure."""
     import yaml
 
-    gateway_config = Path.home() / ".aiir" / "gateway.yaml"
+    gateway_config = Path.home() / ".vhir" / "gateway.yaml"
     if not gateway_config.exists():
         return {}
     try:
@@ -48,7 +48,7 @@ def get_local_ssl_context() -> ssl.SSLContext | None:
     """Return an SSL context for local gateway connections, or None if no TLS.
 
     If TLS is configured (gateway.tls.certfile exists in gateway.yaml):
-      - Loads ~/.aiir/tls/ca-cert.pem if present (proper verification)
+      - Loads ~/.vhir/tls/ca-cert.pem if present (proper verification)
       - Otherwise returns a permissive context (self-signed cert support)
     If no TLS, returns None (caller should not pass context to urlopen).
     """
@@ -75,8 +75,8 @@ def get_local_ssl_context() -> ssl.SSLContext | None:
 
 
 def find_ca_cert() -> str | None:
-    """Return ~/.aiir/tls/ca-cert.pem path if it exists, else None."""
-    ca_path = Path.home() / ".aiir" / "tls" / "ca-cert.pem"
+    """Return ~/.vhir/tls/ca-cert.pem path if it exists, else None."""
+    ca_path = Path.home() / ".vhir" / "tls" / "ca-cert.pem"
     if ca_path.exists():
         return str(ca_path)
     return None

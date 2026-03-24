@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from aiir_cli.commands.audit_cmd import cmd_audit
+from vhir_cli.commands.audit_cmd import cmd_audit
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def case_dir(tmp_path, monkeypatch):
     case_path.mkdir()
     (case_path / "audit").mkdir()
 
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
 
     meta = {
         "case_id": case_id,
@@ -29,7 +29,7 @@ def case_dir(tmp_path, monkeypatch):
     with open(case_path / "CASE.yaml", "w") as f:
         yaml.dump(meta, f)
 
-    monkeypatch.setenv("AIIR_CASE_DIR", str(case_path))
+    monkeypatch.setenv("VHIR_CASE_DIR", str(case_path))
     return case_path
 
 
@@ -148,7 +148,7 @@ class TestAuditLog:
     ):
         cmd_audit(_make_args("log", limit=50), identity)
         output = capsys.readouterr().out
-        assert "aiir-cli" in output
+        assert "vhir-cli" in output
         assert "approval" in output
 
     def test_log_filter_by_mcp(self, case_dir, sample_audit, identity, capsys):
@@ -219,7 +219,7 @@ class TestAuditSummary:
         cmd_audit(_make_args("summary"), identity)
         output = capsys.readouterr().out
         assert "Total entries: 7" in output
-        assert "aiir-cli" in output
+        assert "vhir-cli" in output
 
     def test_summary_by_tool(self, case_dir, sample_audit, identity, capsys):
         cmd_audit(_make_args("summary"), identity)

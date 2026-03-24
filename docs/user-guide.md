@@ -16,22 +16,22 @@ A typical investigation follows this flow:
 ### Creating a Case
 
 ```bash
-aiir case init "Ransomware Investigation - ACME Corp"
+vhir case init "Ransomware Investigation - ACME Corp"
 ```
 
 The case is automatically activated. To see your active case:
 
 ```bash
-aiir case status
+vhir case status
 ```
 
 ### Managing Multiple Cases
 
 ```bash
-aiir case list                    # List all cases
-aiir case activate INC-2026-0225  # Switch active case
-aiir case close INC-2026-0225 --summary "Investigation complete"
-aiir case reopen INC-2026-0225    # Reopen if needed
+vhir case list                    # List all cases
+vhir case activate INC-2026-0225  # Switch active case
+vhir case close INC-2026-0225 --summary "Investigation complete"
+vhir case reopen INC-2026-0225    # Reopen if needed
 ```
 
 ### Evidence Registration
@@ -39,9 +39,9 @@ aiir case reopen INC-2026-0225    # Reopen if needed
 Register evidence files to create an integrity baseline:
 
 ```bash
-aiir evidence register /path/to/disk.E01 --description "Workstation forensic image"
-aiir evidence list                # Show registered evidence
-aiir evidence verify              # Re-hash and check for modifications
+vhir evidence register /path/to/disk.E01 --description "Workstation forensic image"
+vhir evidence list                # Show registered evidence
+vhir evidence verify              # Re-hash and check for modifications
 ```
 
 Registered files are set to read-only (chmod 444) as a defense-in-depth measure.
@@ -109,10 +109,10 @@ The LLM records events through `record_timeline_event()` with:
 ### Filtering Timeline
 
 ```bash
-aiir review --timeline                           # All timeline events
-aiir review --timeline --status APPROVED          # Approved only
-aiir review --timeline --type lateral             # Lateral movement events
-aiir review --timeline --start 2026-02-20T00:00   # Date range
+vhir review --timeline                           # All timeline events
+vhir review --timeline --status APPROVED          # Approved only
+vhir review --timeline --type lateral             # Lateral movement events
+vhir review --timeline --start 2026-02-20T00:00   # Date range
 ```
 
 ## Review and Approval
@@ -120,21 +120,21 @@ aiir review --timeline --start 2026-02-20T00:00   # Date range
 ### Reviewing Case Status
 
 ```bash
-aiir review                    # Case summary
-aiir review --findings         # Findings table
-aiir review --findings --detail # Full finding details
-aiir review --timeline         # Timeline events
-aiir review --todos            # TODO items
-aiir review --audit            # Audit trail
-aiir review --evidence         # Evidence integrity
-aiir review --iocs             # IOCs from findings
+vhir review                    # Case summary
+vhir review --findings         # Findings table
+vhir review --findings --detail # Full finding details
+vhir review --timeline         # Timeline events
+vhir review --todos            # TODO items
+vhir review --audit            # Audit trail
+vhir review --evidence         # Evidence integrity
+vhir review --iocs             # IOCs from findings
 ```
 
 ### Integrity Verification
 
 ```bash
-aiir review --verify                # Full verification (all examiners, prompts for each password)
-aiir review --verify --mine         # HMAC verification for current examiner only
+vhir review --verify                # Full verification (all examiners, prompts for each password)
+vhir review --verify --mine         # HMAC verification for current examiner only
 ```
 
 This performs three levels of verification:
@@ -147,25 +147,25 @@ This performs three levels of verification:
 Interactive mode (reviews each DRAFT finding):
 
 ```bash
-aiir approve
+vhir approve
 ```
 
 Approve specific findings:
 
 ```bash
-aiir approve F-alice-001 F-alice-002 --note "Confirmed with disk forensics"
+vhir approve F-alice-001 F-alice-002 --note "Confirmed with disk forensics"
 ```
 
 Approve with interpretation override:
 
 ```bash
-aiir approve F-alice-003 --interpretation "Confirmed malicious based on YARA match"
+vhir approve F-alice-003 --interpretation "Confirmed malicious based on YARA match"
 ```
 
 ### Rejecting Findings
 
 ```bash
-aiir reject F-alice-004 --reason "Insufficient evidence, timestamp inconsistency"
+vhir reject F-alice-004 --reason "Insufficient evidence, timestamp inconsistency"
 ```
 
 ### Examiner Portal
@@ -173,7 +173,7 @@ aiir reject F-alice-004 --reason "Insufficient evidence, timestamp inconsistency
 The Examiner Portal is the primary review interface. Open it with:
 
 ```bash
-aiir portal
+vhir portal
 ```
 
 The portal displays all findings and timeline events with inline editing for:
@@ -192,14 +192,14 @@ Review, approve, reject, and commit findings directly in the browser using the C
 Alternatively, edits can be applied from the CLI:
 
 ```bash
-aiir approve --review
+vhir approve --review
 ```
 
 This applies pending edits saved in `pending-reviews.json`, recomputes content hashes, and updates HMAC signatures.
 
 ## Report Generation
 
-Reports are generated through report-mcp (via the LLM) or the aiir CLI.
+Reports are generated through report-mcp (via the LLM) or the vhir CLI.
 
 ### Report Profiles
 
@@ -226,11 +226,11 @@ The LLM calls `generate_report()` which returns structured case data and Zeltser
 ### Via CLI
 
 ```bash
-aiir report --full --save full-report.json
-aiir report --executive-summary
-aiir report --ioc
-aiir report --status-brief
-aiir report --timeline --from 2026-02-20 --to 2026-02-22
+vhir report --full --save full-report.json
+vhir report --executive-summary
+vhir report --ioc
+vhir report --status-brief
+vhir report --timeline --from 2026-02-20 --to 2026-02-22
 ```
 
 ## Investigation TODOs
@@ -238,10 +238,10 @@ aiir report --timeline --from 2026-02-20 --to 2026-02-22
 Track what still needs to be done:
 
 ```bash
-aiir todo add "Analyze USB device history" --priority high --finding F-alice-002
-aiir todo add "Cross-reference with DNS logs" --assignee bob
-aiir review --todos --open      # Show open TODOs
-aiir todo complete TODO-alice-001
+vhir todo add "Analyze USB device history" --priority high --finding F-alice-002
+vhir todo add "Cross-reference with DNS logs" --assignee bob
+vhir review --todos --open      # Show open TODOs
+vhir todo complete TODO-alice-001
 ```
 
 The LLM can also manage TODOs through forensic-mcp's `add_todo()`, `list_todos()`, `update_todo()`, and `complete_todo()` tools.
@@ -253,14 +253,14 @@ Each examiner works on their own SIFT workstation with a local case directory. C
 ### Export
 
 ```bash
-aiir export --file findings-alice.json
-aiir export --file recent-alice.json --since 2026-02-24T00:00
+vhir export --file findings-alice.json
+vhir export --file recent-alice.json --since 2026-02-24T00:00
 ```
 
 ### Merge
 
 ```bash
-aiir merge --file findings-bob.json
+vhir merge --file findings-bob.json
 ```
 
 Merge uses last-write-wins by `modified_at` timestamp. APPROVED findings are protected from overwrite. IDs include the examiner name (e.g., `F-alice-001`, `F-bob-003`) so they never collide.
@@ -270,10 +270,10 @@ Merge uses last-write-wins by `modified_at` timestamp. APPROVED findings are pro
 Every tool execution is logged:
 
 ```bash
-aiir audit log                       # Recent audit entries
-aiir audit log --mcp forensic-mcp    # Filter by backend
-aiir audit log --tool run_command    # Filter by tool
-aiir audit summary                   # Counts per MCP and tool
+vhir audit log                       # Recent audit entries
+vhir audit log --mcp forensic-mcp    # Filter by backend
+vhir audit log --tool run_command    # Filter by tool
+vhir audit summary                   # Counts per MCP and tool
 ```
 
 Audit files are append-only JSONL in the case `audit/` directory. Each backend writes its own file. When Claude Code is the client, a PostToolUse hook additionally captures every Bash command to `audit/claude-code.jsonl`.

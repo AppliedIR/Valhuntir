@@ -1,4 +1,4 @@
-"""Tests for aiir case migrate command."""
+"""Tests for vhir case migrate command."""
 
 import json
 from argparse import Namespace
@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from aiir_cli.commands.migrate import _re_id, _re_id_refs, cmd_migrate
+from vhir_cli.commands.migrate import _re_id, _re_id_refs, cmd_migrate
 
 
 @pytest.fixture
@@ -114,8 +114,8 @@ class TestBasicMigration:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -139,8 +139,8 @@ class TestBasicMigration:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -170,8 +170,8 @@ class TestBasicMigration:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -202,8 +202,8 @@ class TestBasicMigration:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -223,8 +223,8 @@ class TestBasicMigration:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -262,8 +262,8 @@ class TestApprovalCrossReferences:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -298,8 +298,8 @@ class TestApprovalCrossReferences:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -355,8 +355,8 @@ class TestImportAll:
             )
         )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=True)
         cmd_migrate(args, identity)
 
@@ -400,8 +400,8 @@ class TestImportAll:
             )
         )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=True)
         cmd_migrate(args, identity)
 
@@ -446,8 +446,8 @@ class TestImportAll:
                 + "\n"
             )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=True)
         cmd_migrate(args, identity)
 
@@ -478,8 +478,8 @@ class TestBackup:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -508,8 +508,8 @@ class TestBackup:
         (case_dir / "examiners.bak").mkdir()
         (case_dir / "examiners.bak" / "sentinel.txt").write_text("preserve me")
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -527,8 +527,8 @@ class TestCaseYamlUpdate:
     def test_removes_old_fields(self, tmp_path, monkeypatch, identity):
         case_dir = tmp_path / "case1"
         _make_old_case(case_dir, examiner="alice", findings=[])
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -541,8 +541,8 @@ class TestCaseYamlUpdate:
     def test_extractions_dir_created(self, tmp_path, monkeypatch, identity):
         case_dir = tmp_path / "case1"
         _make_old_case(case_dir, examiner="alice", findings=[])
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -558,8 +558,8 @@ class TestCorruptJsonGraceful:
         exam_dir = case_dir / "examiners" / "alice"
         (exam_dir / "findings.json").write_text("{not valid json!!")
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -575,8 +575,8 @@ class TestCorruptJsonGraceful:
         exam_dir = case_dir / "examiners" / "alice"
         (exam_dir / "timeline.json").write_text("corrupted!")
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -591,8 +591,8 @@ class TestCorruptJsonGraceful:
         exam_dir = case_dir / "examiners" / "alice"
         (exam_dir / "todos.json").write_text("not json")
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -610,8 +610,8 @@ class TestCorruptJsonGraceful:
             f.write("not json at all\n")
             f.write('{"action": "also_good"}\n')
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -642,8 +642,8 @@ class TestCorruptJsonGraceful:
             f.write('{"item_id": "F-001", "action": "APPROVED"}\n')
             f.write("CORRUPT LINE\n")
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -663,8 +663,8 @@ class TestNoExaminersDir:
         case_dir.mkdir()
         (case_dir / "CASE.yaml").write_text(yaml.dump({"case_id": "INC-001"}))
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -696,8 +696,8 @@ class TestExistingFlatFilesRefusesOverwrite:
             json.dumps([{"id": "F-alice-001", "title": "Existing"}])
         )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         with pytest.raises(SystemExit):
             cmd_migrate(args, identity)
@@ -709,8 +709,8 @@ class TestExistingFlatFilesRefusesOverwrite:
             json.dumps([{"id": "T-alice-001", "timestamp": "2026-01-10T08:00:00Z"}])
         )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         with pytest.raises(SystemExit):
             cmd_migrate(args, identity)
@@ -722,8 +722,8 @@ class TestExistingFlatFilesRefusesOverwrite:
             json.dumps([{"todo_id": "TODO-alice-001", "description": "Existing"}])
         )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         with pytest.raises(SystemExit):
             cmd_migrate(args, identity)
@@ -748,8 +748,8 @@ class TestExistingFlatFilesRefusesOverwrite:
         (case_dir / "timeline.json").write_text(json.dumps([]))
         (case_dir / "todos.json").write_text(json.dumps([]))
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         # Should not raise
         cmd_migrate(args, identity)
@@ -766,8 +766,8 @@ class TestExaminerNotFound:
         case_dir = tmp_path / "case1"
         _make_old_case(case_dir, examiner="alice", findings=[])
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "bob")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "bob")
         args = Namespace(case=None, examiner="bob", import_all=False)
         with pytest.raises(SystemExit):
             cmd_migrate(args, identity)
@@ -778,8 +778,8 @@ class TestExaminerNotFound:
         case_dir = tmp_path / "case1"
         _make_old_case(case_dir, examiner="alice", findings=[])
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "bob")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "bob")
         args = Namespace(case=None, examiner="bob", import_all=False)
         with pytest.raises(SystemExit):
             cmd_migrate(args, identity)
@@ -805,8 +805,8 @@ class TestAuditMerge:
             },
         )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -838,8 +838,8 @@ class TestAuditMerge:
         with open(bob_audit / "sift.jsonl", "w") as f:
             f.write(json.dumps({"tool": "vol3", "examiner": "bob"}) + "\n")
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=True)
         cmd_migrate(args, identity)
 
@@ -860,8 +860,8 @@ class TestMissingOptionalFiles:
         (case_dir / "CASE.yaml").write_text(yaml.dump({"case_id": "INC-001"}))
         (case_dir / "examiners" / "alice").mkdir(parents=True)
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -888,8 +888,8 @@ class TestMissingOptionalFiles:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -917,8 +917,8 @@ class TestModifiedAtFallback:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -940,8 +940,8 @@ class TestModifiedAtFallback:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -973,8 +973,8 @@ class TestActionReIdRefs:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -1011,8 +1011,8 @@ class TestActionReIdRefs:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -1045,8 +1045,8 @@ class TestActionReIdRefs:
                 },
             ],
         )
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -1077,8 +1077,8 @@ class TestEvidenceCopy:
         exam_dir = case_dir / "examiners" / "alice"
         (exam_dir / "evidence.json").write_text(json.dumps({"files": ["disk.E01"]}))
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 
@@ -1094,8 +1094,8 @@ class TestEvidenceCopy:
                 json.dumps({"action": "mount", "ts": "2026-01-10T12:00:00Z"}) + "\n"
             )
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
         args = Namespace(case=None, examiner="alice", import_all=False)
         cmd_migrate(args, identity)
 

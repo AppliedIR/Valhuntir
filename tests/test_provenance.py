@@ -1,4 +1,4 @@
-"""Tests for provenance display and cross-file verification in aiir CLI."""
+"""Tests for provenance display and cross-file verification in vhir CLI."""
 
 import json
 from argparse import Namespace
@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     compute_content_hash,
     load_audit_index,
     load_findings,
@@ -14,7 +14,7 @@ from aiir_cli.case_io import (
     verify_approval_integrity,
     write_approval_log,
 )
-from aiir_cli.commands.review import cmd_review
+from vhir_cli.commands.review import cmd_review
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def case_dir(tmp_path, monkeypatch):
     case_id = "INC-2026-PROV"
     case_path = tmp_path / case_id
     case_path.mkdir()
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
     meta = {
         "case_id": case_id,
         "name": "Provenance Test",
@@ -34,7 +34,7 @@ def case_dir(tmp_path, monkeypatch):
         yaml.dump(meta, f)
     with open(case_path / "evidence.json", "w") as f:
         json.dump({"files": []}, f)
-    monkeypatch.setenv("AIIR_CASE_DIR", str(case_path))
+    monkeypatch.setenv("VHIR_CASE_DIR", str(case_path))
     return case_path
 
 

@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from aiir_cli.approval_auth import setup_password
-from aiir_cli.case_io import (
+from vhir_cli.approval_auth import setup_password
+from vhir_cli.case_io import (
     load_approval_log,
     load_findings,
     load_timeline,
@@ -16,8 +16,8 @@ from aiir_cli.case_io import (
     save_findings,
     save_timeline,
 )
-from aiir_cli.commands.approve import _approve_specific, cmd_approve
-from aiir_cli.commands.reject import cmd_reject
+from vhir_cli.commands.approve import _approve_specific, cmd_approve
+from vhir_cli.commands.reject import cmd_reject
 
 
 @pytest.fixture
@@ -37,8 +37,8 @@ def case_dir(tmp_path, monkeypatch):
     with open(case_path / "todos.json", "w") as f:
         json.dump([], f)
 
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
-    monkeypatch.setenv("AIIR_CASE_DIR", str(case_path))
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_CASE_DIR", str(case_path))
     return case_path
 
 
@@ -55,15 +55,15 @@ def identity():
 
 @pytest.fixture
 def config_path(tmp_path):
-    return tmp_path / ".aiir" / "config.yaml"
+    return tmp_path / ".vhir" / "config.yaml"
 
 
 @pytest.fixture(autouse=True)
 def isolate_passwords_dir(tmp_path, monkeypatch):
-    """Point _PASSWORDS_DIR to temp dir so tests never touch /var/lib/aiir/."""
+    """Point _PASSWORDS_DIR to temp dir so tests never touch /var/lib/vhir/."""
     d = tmp_path / "passwords"
     d.mkdir(mode=0o700)
-    monkeypatch.setattr("aiir_cli.approval_auth._PASSWORDS_DIR", d)
+    monkeypatch.setattr("vhir_cli.approval_auth._PASSWORDS_DIR", d)
     return d
 
 
@@ -71,7 +71,7 @@ def isolate_passwords_dir(tmp_path, monkeypatch):
 def pw_config(config_path):
     """Set up a password for analyst1 and return config_path."""
     with patch(
-        "aiir_cli.approval_auth.getpass_prompt",
+        "vhir_cli.approval_auth.getpass_prompt",
         side_effect=["testpass1", "testpass1"],
     ):
         setup_password(config_path, "analyst1")
@@ -82,7 +82,7 @@ def pw_config(config_path):
 def isolate_lockout_file(tmp_path, monkeypatch):
     """Point lockout file to temp dir to avoid cross-test contamination."""
     lockout = tmp_path / ".password_lockout"
-    monkeypatch.setattr("aiir_cli.approval_auth._LOCKOUT_FILE", lockout)
+    monkeypatch.setattr("vhir_cli.approval_auth._LOCKOUT_FILE", lockout)
     yield lockout
     if lockout.exists():
         lockout.unlink()
@@ -129,7 +129,7 @@ def staged_timeline(case_dir):
 
 class TestApproveSpecific:
     def test_approve_finding(self, case_dir, identity, staged_finding, pw_config):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "APPROVED"
@@ -138,7 +138,7 @@ class TestApproveSpecific:
     def test_approve_timeline_event(
         self, case_dir, identity, staged_timeline, pw_config
     ):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(case_dir, ["T-tester-001"], identity, pw_config)
         timeline = load_timeline(case_dir)
         assert timeline[0]["status"] == "APPROVED"
@@ -153,14 +153,14 @@ class TestApproveSpecific:
     def test_approve_already_approved(
         self, case_dir, identity, staged_finding, pw_config
     ):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         findings = load_findings(case_dir)
         assert findings[0]["status"] == "APPROVED"
 
     def test_approval_log_written(self, case_dir, identity, staged_finding, pw_config):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
         log = load_approval_log(case_dir)
         assert len(log) == 1
@@ -179,7 +179,7 @@ class TestApproveSpecific:
         assert "No approval password configured" in captured.err
 
     def test_approve_with_note(self, case_dir, identity, staged_finding, pw_config):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(
                 case_dir,
                 ["F-tester-001"],
@@ -198,7 +198,7 @@ class TestApproveSpecific:
     def test_approve_with_interpretation_override(
         self, case_dir, identity, staged_finding, pw_config
     ):
-        with patch("aiir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
             _approve_specific(
                 case_dir,
                 ["F-tester-001"],
@@ -230,7 +230,7 @@ class TestApproveInteractive:
             findings_only=False,
             timeline_only=False,
         )
-        with patch("aiir_cli.commands.approve.Path.home", return_value=case_dir.parent):
+        with patch("vhir_cli.commands.approve.Path.home", return_value=case_dir.parent):
             cmd_approve(args, identity)
         captured = capsys.readouterr()
         assert "No staged items" in captured.out
@@ -251,11 +251,11 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["a"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -278,11 +278,11 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["n", "Good finding"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -306,11 +306,11 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["r", "Bad evidence"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -334,11 +334,11 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["s"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -364,11 +364,11 @@ class TestApproveInteractive:
             side_effect=["t", "Verify with net logs", "jane", "high"],
         ):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -405,11 +405,11 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["a"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -441,11 +441,11 @@ class TestApproveInteractive:
         )
         with patch("builtins.input", side_effect=["a"]):
             with patch(
-                "aiir_cli.commands.approve.Path.home",
+                "vhir_cli.commands.approve.Path.home",
                 return_value=case_dir.parent,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_approve(args, identity)
@@ -463,9 +463,9 @@ class TestReject:
             case=None,
             analyst=None,
         )
-        with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
+        with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             with patch(
-                "aiir_cli.approval_auth.getpass_prompt",
+                "vhir_cli.approval_auth.getpass_prompt",
                 return_value="testpass1",
             ):
                 cmd_reject(args, identity)
@@ -479,9 +479,9 @@ class TestReject:
         args = Namespace(
             ids=["F-tester-001"], reason="Bad data", case=None, analyst=None
         )
-        with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
+        with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             with patch(
-                "aiir_cli.approval_auth.getpass_prompt",
+                "vhir_cli.approval_auth.getpass_prompt",
                 return_value="testpass1",
             ):
                 cmd_reject(args, identity)
@@ -494,16 +494,16 @@ class TestReject:
         self, case_dir, identity, staged_finding, capsys, pw_config
     ):
         args = Namespace(ids=["F-999"], reason="nope", case=None, analyst=None)
-        with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
+        with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             cmd_reject(args, identity)
         captured = capsys.readouterr()
         assert "not found or not DRAFT" in captured.err
 
     def test_reject_no_reason(self, case_dir, identity, staged_finding, pw_config):
         args = Namespace(ids=["F-tester-001"], reason="", case=None, analyst=None)
-        with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
+        with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             with patch(
-                "aiir_cli.approval_auth.getpass_prompt",
+                "vhir_cli.approval_auth.getpass_prompt",
                 return_value="testpass1",
             ):
                 cmd_reject(args, identity)
@@ -517,7 +517,7 @@ class TestReject:
     ):
         """A finding added between display and confirmation survives rejection."""
         original_confirm = __import__(
-            "aiir_cli.approval_auth", fromlist=["require_confirmation"]
+            "vhir_cli.approval_auth", fromlist=["require_confirmation"]
         ).require_confirmation
 
         def confirm_and_add_finding(config_path, analyst):
@@ -536,13 +536,13 @@ class TestReject:
             return original_confirm(config_path, analyst)
 
         args = Namespace(ids=["F-tester-001"], reason="bad", case=None, analyst=None)
-        with patch("aiir_cli.commands.reject.Path.home", return_value=case_dir.parent):
+        with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             with patch(
-                "aiir_cli.commands.reject.require_confirmation",
+                "vhir_cli.commands.reject.require_confirmation",
                 side_effect=confirm_and_add_finding,
             ):
                 with patch(
-                    "aiir_cli.approval_auth.getpass_prompt",
+                    "vhir_cli.approval_auth.getpass_prompt",
                     return_value="testpass1",
                 ):
                     cmd_reject(args, identity)

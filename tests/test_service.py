@@ -1,4 +1,4 @@
-"""Tests for aiir service subcommand."""
+"""Tests for vhir service subcommand."""
 
 import argparse
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aiir_cli.commands.service import (
+from vhir_cli.commands.service import (
     _resolve_gateway,
     _service_action,
     _service_status,
@@ -27,8 +27,8 @@ class TestResolveGateway:
         assert token == "tok"
 
     def test_env_vars(self, monkeypatch):
-        monkeypatch.setenv("AIIR_GATEWAY_URL", "https://env-host:4508")
-        monkeypatch.setenv("AIIR_GATEWAY_TOKEN", "env_tok")
+        monkeypatch.setenv("VHIR_GATEWAY_URL", "https://env-host:4508")
+        monkeypatch.setenv("VHIR_GATEWAY_TOKEN", "env_tok")
         args = self._make_args()
         url, token, _ssl = _resolve_gateway(args)
         assert url == "https://env-host:4508"
@@ -38,7 +38,7 @@ class TestResolveGateway:
         """Token resolved from config.yaml, URL from gateway.yaml."""
         import yaml
 
-        config_dir = tmp_path / ".aiir"
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir()
         # config.yaml provides token only (URL comes from gateway.yaml)
         (config_dir / "config.yaml").write_text(yaml.dump({"gateway_token": "cfg_tok"}))
@@ -47,8 +47,8 @@ class TestResolveGateway:
             yaml.dump({"gateway": {"host": "0.0.0.0", "port": 9999}})
         )
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        monkeypatch.delenv("AIIR_GATEWAY_URL", raising=False)
-        monkeypatch.delenv("AIIR_GATEWAY_TOKEN", raising=False)
+        monkeypatch.delenv("VHIR_GATEWAY_URL", raising=False)
+        monkeypatch.delenv("VHIR_GATEWAY_TOKEN", raising=False)
         args = self._make_args()
         url, token, _ssl = _resolve_gateway(args)
         assert url == "http://127.0.0.1:9999"
@@ -56,8 +56,8 @@ class TestResolveGateway:
 
     def test_fallback_localhost(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        monkeypatch.delenv("AIIR_GATEWAY_URL", raising=False)
-        monkeypatch.delenv("AIIR_GATEWAY_TOKEN", raising=False)
+        monkeypatch.delenv("VHIR_GATEWAY_URL", raising=False)
+        monkeypatch.delenv("VHIR_GATEWAY_TOKEN", raising=False)
         args = self._make_args()
         url, token, _ssl = _resolve_gateway(args)
         assert url == "http://127.0.0.1:4508"
@@ -70,8 +70,8 @@ class TestResolveGateway:
 
 
 class TestServiceStatus:
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_status_prints_table(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = {
@@ -98,8 +98,8 @@ class TestServiceStatus:
         assert "running" in out
         assert "stopped" in out
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_status_unreachable_exits(self, mock_resolve, mock_api):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = None
@@ -109,8 +109,8 @@ class TestServiceStatus:
 
 
 class TestServiceAction:
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_start_service(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", "tok", None)
         mock_api.return_value = {"status": "started", "name": "forensic-mcp"}
@@ -126,8 +126,8 @@ class TestServiceAction:
             ssl_context=None,
         )
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_stop_service(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = {"status": "stopped", "name": "sift-mcp"}
@@ -137,8 +137,8 @@ class TestServiceAction:
         assert "sift-mcp" in out
         assert "stopped" in out
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_restart_service(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = {"status": "restarted", "name": "forensic-mcp"}
@@ -147,8 +147,8 @@ class TestServiceAction:
         out = capsys.readouterr().out
         assert "restarted" in out
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_unknown_backend_error(self, mock_resolve, mock_api):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = {"error": "Unknown backend: nope"}
@@ -156,8 +156,8 @@ class TestServiceAction:
         with pytest.raises(SystemExit):
             _service_action(args, "start")
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_unreachable_gateway_exits(self, mock_resolve, mock_api):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = None
@@ -172,13 +172,13 @@ class TestCmdService:
         with pytest.raises(SystemExit):
             cmd_service(args, {"examiner": "test"})
 
-    @patch("aiir_cli.commands.service._service_status")
+    @patch("vhir_cli.commands.service._service_status")
     def test_routes_to_status(self, mock_status):
         args = argparse.Namespace(service_action="status", gateway=None, token=None)
         cmd_service(args, {"examiner": "test"})
         mock_status.assert_called_once_with(args)
 
-    @patch("aiir_cli.commands.service._service_action")
+    @patch("vhir_cli.commands.service._service_action")
     def test_routes_to_start(self, mock_action):
         args = argparse.Namespace(
             service_action="start", gateway=None, token=None, backend_name="b1"
@@ -188,8 +188,8 @@ class TestCmdService:
 
 
 class TestBulkServiceAction:
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_stop_all_backends(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", "tok", None)
         mock_api.side_effect = [
@@ -210,8 +210,8 @@ class TestBulkServiceAction:
         assert "forensic-mcp: stopped" in out
         assert "sift-mcp: stopped" in out
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_start_all_backends(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.side_effect = [
@@ -225,8 +225,8 @@ class TestBulkServiceAction:
         assert "forensic-mcp: started" in out
         assert "sift-mcp: started" in out
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_bulk_no_services_found(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.return_value = {"services": []}
@@ -235,8 +235,8 @@ class TestBulkServiceAction:
         out = capsys.readouterr().out
         assert "No services found" in out
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_bulk_partial_failure_exits(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", None, None)
         mock_api.side_effect = [
@@ -248,8 +248,8 @@ class TestBulkServiceAction:
         with pytest.raises(SystemExit):
             _service_action(args, "stop")
 
-    @patch("aiir_cli.commands.service._api_request")
-    @patch("aiir_cli.commands.service._resolve_gateway")
+    @patch("vhir_cli.commands.service._api_request")
+    @patch("vhir_cli.commands.service._resolve_gateway")
     def test_single_backend_still_works(self, mock_resolve, mock_api, capsys):
         mock_resolve.return_value = ("http://localhost:4508", "tok", None)
         mock_api.return_value = {"status": "restarted", "name": "forensic-mcp"}

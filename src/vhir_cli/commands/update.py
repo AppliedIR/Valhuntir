@@ -1,9 +1,9 @@
-"""Update AIIR installation on a SIFT workstation.
+"""Update ValiHuntIR installation on a SIFT workstation.
 
 Pulls latest code, reinstalls packages, redeploys forensic controls,
 and restarts the gateway. Runs on SIFT workstations only.
 
-Remote clients that joined via 'aiir join' are not updated by this
+Remote clients that joined via 'vhir join' are not updated by this
 command — they would need to re-run their client setup script.
 """
 
@@ -16,14 +16,14 @@ import sys
 from pathlib import Path
 
 # Install order matches setup-sift.sh dependency chain.
-# aiir-cli must come before case-mcp/report-mcp.
+# vhir-cli must come before case-mcp/report-mcp.
 _INSTALL_ORDER = [
     "forensic-knowledge",
     "sift-common",
     "forensic-mcp",
     "sift-mcp",
     "sift-gateway",
-    "aiir-cli",
+    "vhir-cli",
     "case-mcp",
     "case-dashboard",
     "report-mcp",
@@ -33,7 +33,7 @@ _INSTALL_ORDER = [
 ]
 
 # Paths relative to manifest["source"] (sift-mcp repo root).
-# aiir-cli is special — relative to parent directory.
+# vhir-cli is special — relative to parent directory.
 _PACKAGE_PATHS = {
     "forensic-knowledge": "packages/forensic-knowledge",
     "sift-common": "packages/sift-common",
@@ -53,7 +53,7 @@ _BWRAP_PROFILE_PATH = Path("/etc/apparmor.d/bwrap")
 
 _BWRAP_PROFILE_CONTENT = """\
 # AppArmor profile for bubblewrap — grants user namespace access.
-# Installed by AIIR for Claude Code kernel sandbox.
+# Installed by ValiHuntIR for Claude Code kernel sandbox.
 # Safe to remove: sudo rm /etc/apparmor.d/bwrap && sudo systemctl reload apparmor
 abi <abi/4.0>,
 include <tunables/global>
@@ -151,9 +151,9 @@ def _ensure_bwrap_profile() -> None:
 
 
 def _ensure_password_dir() -> None:
-    """Ensure /var/lib/aiir/passwords/ exists, migrating from pins/ if needed."""
-    passwords_dir = Path("/var/lib/aiir/passwords")
-    pins_dir = Path("/var/lib/aiir/pins")
+    """Ensure /var/lib/vhir/passwords/ exists, migrating from pins/ if needed."""
+    passwords_dir = Path("/var/lib/vhir/passwords")
+    pins_dir = Path("/var/lib/vhir/pins")
 
     if passwords_dir.is_dir():
         return
@@ -204,15 +204,15 @@ def _ensure_password_dir() -> None:
 
 
 def cmd_update(args, identity: dict) -> None:
-    """Pull latest code and redeploy AIIR installation."""
+    """Pull latest code and redeploy ValiHuntIR installation."""
     check_only = getattr(args, "check", False)
     no_restart = getattr(args, "no_restart", False)
 
     # Step 1: Preflight
-    manifest_path = Path.home() / ".aiir" / "manifest.json"
+    manifest_path = Path.home() / ".vhir" / "manifest.json"
     if not manifest_path.is_file():
         print(
-            "No manifest found at ~/.aiir/manifest.json.\n"
+            "No manifest found at ~/.vhir/manifest.json.\n"
             "This command requires a SIFT installation (setup-sift.sh).",
             file=sys.stderr,
         )
@@ -225,7 +225,7 @@ def cmd_update(args, identity: dict) -> None:
         sys.exit(1)
 
     source = Path(manifest.get("source", ""))
-    aiir_dir = source.parent / "aiir"
+    vhir_dir = source.parent / "vhir"
     venv = manifest.get("venv", "")
 
     if not source.is_dir():
@@ -241,7 +241,7 @@ def cmd_update(args, identity: dict) -> None:
         )
         sys.exit(1)
 
-    repos = [("sift-mcp", source), ("aiir", aiir_dir)]
+    repos = [("sift-mcp", source), ("vhir", vhir_dir)]
 
     # Step 2: Fetch + compare
     for name, path in repos:
@@ -282,7 +282,7 @@ def cmd_update(args, identity: dict) -> None:
             )
 
     if check_only:
-        print("\n  Run 'aiir update' to apply.")
+        print("\n  Run 'vhir update' to apply.")
         return
 
     # Step 3: Record pre-update state + pull
@@ -338,8 +338,8 @@ def cmd_update(args, identity: dict) -> None:
     for pkg_name in _INSTALL_ORDER:
         if pkg_name not in installed:
             continue
-        if pkg_name == "aiir-cli":
-            pkg_path = str(aiir_dir)
+        if pkg_name == "vhir-cli":
+            pkg_path = str(vhir_dir)
         else:
             rel = _PACKAGE_PATHS.get(pkg_name)
             if not rel:
@@ -386,14 +386,14 @@ def cmd_update(args, identity: dict) -> None:
     # Step 5: Redeploy forensic controls
     client = manifest.get("client")
     if client == "claude-code":
-        from aiir_cli.commands.client_setup import _deploy_claude_code_assets
+        from vhir_cli.commands.client_setup import _deploy_claude_code_assets
 
         print("  Redeploying forensic controls...")
         _deploy_claude_code_assets()
     elif client:
         print(f"  Client: {client} (no local controls to redeploy)")
     else:
-        print("  No client type in manifest. Run 'aiir setup client' to configure.")
+        print("  No client type in manifest. Run 'vhir setup client' to configure.")
 
     # Step 5.5: Fix sandbox if bwrap profile missing (Ubuntu 23.10+)
     if client == "claude-code":
@@ -419,7 +419,7 @@ def cmd_update(args, identity: dict) -> None:
     else:
         print("  Restarting gateway... ", end="", flush=True)
         result = subprocess.run(
-            ["systemctl", "--user", "restart", "aiir-gateway"],
+            ["systemctl", "--user", "restart", "vhir-gateway"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -428,11 +428,11 @@ def cmd_update(args, identity: dict) -> None:
             print("done")
         else:
             print(f"failed ({result.stderr.strip()})")
-            print("  Check with: systemctl --user status aiir-gateway")
+            print("  Check with: systemctl --user status vhir-gateway")
 
     # Step 8: Smoke test
     print("  Running connectivity test...")
-    from aiir_cli.commands.setup import _run_connectivity_test
+    from vhir_cli.commands.setup import _run_connectivity_test
 
     _run_connectivity_test()
 

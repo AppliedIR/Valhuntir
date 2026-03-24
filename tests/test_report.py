@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiir_cli.case_io import save_findings, save_timeline, save_todos
-from aiir_cli.commands.report import cmd_report
+from vhir_cli.case_io import save_findings, save_timeline, save_todos
+from vhir_cli.commands.report import cmd_report
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def case_dir(tmp_path, monkeypatch):
     (case_path / "reports").mkdir()
     (case_path / "audit").mkdir()
 
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
 
     meta = {
         "case_id": case_id,
@@ -39,7 +39,7 @@ def case_dir(tmp_path, monkeypatch):
     for fname in ("findings.json", "timeline.json", "todos.json"):
         (case_path / fname).write_text("[]")
 
-    monkeypatch.setenv("AIIR_CASE_DIR", str(case_path))
+    monkeypatch.setenv("VHIR_CASE_DIR", str(case_path))
     return case_path
 
 

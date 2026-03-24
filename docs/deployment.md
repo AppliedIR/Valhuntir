@@ -19,7 +19,7 @@ OpenCTI-mcp is always optional (requires an OpenCTI instance).
 - Ubuntu 22.04+ (SIFT Workstation recommended)
 - Python 3.10+
 - Git
-- sudo access (required — creates the HMAC verification ledger at `/var/lib/aiir/verification/`)
+- sudo access (required — creates the HMAC verification ledger at `/var/lib/vhir/verification/`)
 
 ### Install
 
@@ -30,13 +30,13 @@ git clone https://github.com/AppliedIR/sift-mcp.git && cd sift-mcp
 
 The installer:
 1. Creates a Python virtual environment
-2. Installs MCP servers, gateway, and aiir CLI via pip
-3. Creates the HMAC verification ledger directory at `/var/lib/aiir/verification/` (requires sudo)
+2. Installs MCP servers, gateway, and vhir CLI via pip
+3. Creates the HMAC verification ledger directory at `/var/lib/vhir/verification/` (requires sudo)
 4. Sets examiner identity
 5. Generates `gateway.yaml` configuration
 6. Creates a systemd service for the gateway (optional)
 7. Starts the gateway
-8. Runs `aiir setup client` to configure your LLM client
+8. Runs `vhir setup client` to configure your LLM client
 
 ## Windows Workstation Setup
 
@@ -58,7 +58,7 @@ The installer:
 1. Requires typing `security_hole` to acknowledge the security implications
 2. Creates a Python virtual environment
 3. Installs the wintools-mcp package
-4. Generates a bearer token (`aiir_wt_` prefix)
+4. Generates a bearer token (`vhir_wt_` prefix)
 5. Creates `config.yaml` with the token
 6. Optionally creates a Windows service
 
@@ -71,21 +71,21 @@ backends:
   wintools-mcp:
     type: http
     url: "http://WIN_IP:4624/mcp"
-    bearer_token: "aiir_wt_..."
+    bearer_token: "vhir_wt_..."
 ```
 
-Or use `aiir setup client` with the `--windows` flag:
+Or use `vhir setup client` with the `--windows` flag:
 
 ```bash
-aiir setup client --sift=http://127.0.0.1:4508 --windows=WIN_IP:4624
+vhir setup client --sift=http://127.0.0.1:4508 --windows=WIN_IP:4624
 ```
 
 ### SMB Configuration
 
-wintools-mcp accesses the case directory on SIFT via SMB for audit trail writes. Set `AIIR_SHARE_ROOT` to the SMB mount point:
+wintools-mcp accesses the case directory on SIFT via SMB for audit trail writes. Set `VHIR_SHARE_ROOT` to the SMB mount point:
 
 ```powershell
-$env:AIIR_SHARE_ROOT = "E:\cases\SRL2\"
+$env:VHIR_SHARE_ROOT = "E:\cases\SRL2\"
 ```
 
 ## Remote Access (TLS + Auth)
@@ -99,43 +99,43 @@ For deployments where the LLM client runs on a different machine:
 ```
 
 This generates:
-- Local CA certificate and gateway TLS certificate at `~/.aiir/tls/`
-- Bearer token (`aiir_gw_` prefix) in `gateway.yaml`
+- Local CA certificate and gateway TLS certificate at `~/.vhir/tls/`
+- Bearer token (`vhir_gw_` prefix) in `gateway.yaml`
 - Gateway binds to `0.0.0.0:4508` with TLS
 
 The installer prints per-OS remote client setup commands with a join code.
 
 ### Remote Client Setup
 
-Run the appropriate setup script on the machine where your LLM client runs. Each script joins the gateway and creates a `~/aiir/` workspace with MCP config, forensic controls, and discipline docs.
+Run the appropriate setup script on the machine where your LLM client runs. Each script joins the gateway and creates a `~/vhir/` workspace with MCP config, forensic controls, and discipline docs.
 
 **Linux:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/AppliedIR/aiir/main/setup-client-linux.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/valihuntir/main/setup-client-linux.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 ```
 
 **macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/AppliedIR/aiir/main/setup-client-macos.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/valihuntir/main/setup-client-macos.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 ```
 
 **Windows:**
 ```powershell
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/aiir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/valihuntir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
 .\setup-client-windows.ps1 -Sift https://SIFT_IP:4508 -Code XXXX-XXXX
 ```
 
-Always launch your LLM client from `~/aiir/` or a subdirectory. Forensic controls only apply when started from within the workspace.
+Always launch your LLM client from `~/vhir/` or a subdirectory. Forensic controls only apply when started from within the workspace.
 
 ```bash
-cd ~/aiir && claude                          # start from workspace root
-mkdir ~/aiir/cases/INC-2026-001              # organize by case
-cd ~/aiir/cases/INC-2026-001 && claude       # case-specific session
+cd ~/vhir && claude                          # start from workspace root
+mkdir ~/vhir/cases/INC-2026-001              # organize by case
+cd ~/vhir/cases/INC-2026-001 && claude       # case-specific session
 ```
 
-To uninstall, re-run the setup script with `--uninstall` (Linux/macOS) or `-Uninstall` (Windows). On SIFT, use `aiir setup client --uninstall`.
+To uninstall, re-run the setup script with `--uninstall` (Linux/macOS) or `-Uninstall` (Windows). On SIFT, use `vhir setup client --uninstall`.
 
 Your LLM client must run locally on your machine to reach the SIFT gateway. Cloud-hosted LLM services cannot connect to internal network addresses.
 
@@ -144,7 +144,7 @@ Your LLM client must run locally on your machine to reach the SIFT gateway. Clou
 Generate a join code on the SIFT workstation:
 
 ```bash
-aiir setup join-code --expires 2    # 2-hour expiry
+vhir setup join-code --expires 2    # 2-hour expiry
 ```
 
 ## Multi-Examiner Deployment
@@ -166,17 +166,17 @@ Examiners share findings via JSON export/import:
 
 ```bash
 # Alice exports her findings
-aiir export --file findings-alice.json
+vhir export --file findings-alice.json
 
 # Bob imports Alice's findings
-aiir merge --file findings-alice.json
+vhir merge --file findings-alice.json
 ```
 
 IDs include the examiner name (`F-alice-001`, `F-bob-003`) so they never collide. Merge uses last-write-wins by `modified_at` timestamp. APPROVED findings are protected from overwrite.
 
 ## Gateway Configuration
 
-The gateway is configured via `gateway.yaml` (typically at `~/.aiir/gateway.yaml`).
+The gateway is configured via `gateway.yaml` (typically at `~/.vhir/gateway.yaml`).
 
 ### Backend Configuration
 
@@ -206,14 +206,14 @@ backends:
   wintools-mcp:
     type: http
     url: "http://WIN_IP:4624/mcp"
-    bearer_token: "aiir_wt_..."
+    bearer_token: "vhir_wt_..."
 ```
 
 ### Authentication
 
 ```yaml
 api_keys:
-  aiir_gw_a1b2c3d4e5f6a1b2c3d4e5f6:
+  vhir_gw_a1b2c3d4e5f6a1b2c3d4e5f6:
     examiner: "alice"
     role: "examiner"
 ```
@@ -225,9 +225,9 @@ api_keys:
 | `SIFT_TIMEOUT` | `600` | Default command timeout (seconds) |
 | `SIFT_TOOL_PATHS` | (none) | Extra binary search paths (colon-separated) |
 | `SIFT_HAYABUSA_DIR` | `/opt/hayabusa` | Hayabusa install location |
-| `AIIR_CASE_DIR` | (none) | Active case directory (falls back to `~/.aiir/active_case`) |
-| `AIIR_CASES_DIR` | (none) | Root directory containing all cases |
-| `AIIR_EXAMINER` | (none) | Examiner identity |
+| `VHIR_CASE_DIR` | (none) | Active case directory (falls back to `~/.vhir/active_case`) |
+| `VHIR_CASES_DIR` | (none) | Root directory containing all cases |
+| `VHIR_EXAMINER` | (none) | Examiner identity |
 
 ### wintools-mcp Environment Variables
 
@@ -237,14 +237,14 @@ api_keys:
 | `WINTOOLS_HOST` | `127.0.0.1` | HTTP bind address |
 | `WINTOOLS_PORT` | `4624` | HTTP port |
 | `WINTOOLS_TOOL_PATHS` | (none) | Additional binary search directories |
-| `AIIR_SHARE_ROOT` | (none) | SMB mount root for evidence and extractions |
-| `AIIR_EXAMINER` | OS user | Examiner identity |
+| `VHIR_SHARE_ROOT` | (none) | SMB mount root for evidence and extractions |
+| `VHIR_EXAMINER` | OS user | Examiner identity |
 
 ## Client Configuration
 
 ### Claude Code
 
-`aiir setup client --client=claude-code` deploys:
+`vhir setup client --client=claude-code` deploys:
 
 - `.mcp.json` with Streamable HTTP endpoint
 - `.claude/settings.json` with kernel-level sandbox, case data deny rules, PreToolUse guard hook, and PostToolUse audit hook
@@ -253,12 +253,12 @@ api_keys:
 
 ### Claude Desktop
 
-`aiir setup client --client=claude-desktop` generates `claude_desktop_config.json`:
+`vhir setup client --client=claude-desktop` generates `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "aiir": {
+    "vhir": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "http://127.0.0.1:4508/mcp",
                "--header", "Authorization:${AUTH_HEADER}"],
@@ -280,20 +280,20 @@ Two external MCPs are configured during client setup:
 The installer can create a systemd service for the gateway:
 
 ```bash
-sudo systemctl enable aiir-gateway
-sudo systemctl start aiir-gateway
-sudo systemctl status aiir-gateway
+sudo systemctl enable vhir-gateway
+sudo systemctl start vhir-gateway
+sudo systemctl status vhir-gateway
 ```
 
 Logs:
 ```bash
-journalctl -u aiir-gateway -f
+journalctl -u vhir-gateway -f
 ```
 
 ## Testing Connectivity
 
 ```bash
-aiir setup test    # Test all configured MCP endpoints
+vhir setup test    # Test all configured MCP endpoints
 ```
 
 This verifies connectivity to the gateway and all backend MCPs.

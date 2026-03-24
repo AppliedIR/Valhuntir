@@ -1,15 +1,15 @@
 """Review case status, audit trail, evidence integrity, and findings.
 
 Supports multiple view modes:
-  aiir review                        — case summary
-  aiir review --findings             — finding summary table
-  aiir review --findings --detail    — full findings with all fields
-  aiir review --findings --verify    — cross-check against approvals.jsonl
-  aiir review --iocs                 — IOCs grouped by approval status
-  aiir review --timeline             — timeline summary
-  aiir review --timeline --detail    — full timeline with evidence refs
-  aiir review --evidence             — evidence registry
-  aiir review --audit                — audit trail
+  vhir review                        — case summary
+  vhir review --findings             — finding summary table
+  vhir review --findings --detail    — full findings with all fields
+  vhir review --findings --verify    — cross-check against approvals.jsonl
+  vhir review --iocs                 — IOCs grouped by approval status
+  vhir review --timeline             — timeline summary
+  vhir review --timeline --detail    — full timeline with evidence refs
+  vhir review --evidence             — evidence registry
+  vhir review --audit                — audit trail
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     get_case_dir,
     hmac_text,
     load_audit_index,
@@ -302,7 +302,7 @@ def _show_findings_verify(
 def _show_ledger_reconciliation(case_dir: Path) -> None:
     """Show reconciliation between approved items and verification ledger."""
     try:
-        from aiir_cli.verification import read_ledger
+        from vhir_cli.verification import read_ledger
     except ImportError:
         return
 
@@ -349,7 +349,7 @@ def _show_ledger_reconciliation(case_dir: Path) -> None:
 
     if alerts:
         print(
-            f"\n{alerts} alert(s) found. Run 'aiir review --findings --verify' with password for full HMAC check."
+            f"\n{alerts} alert(s) found. Run 'vhir review --findings --verify' with password for full HMAC check."
         )
 
 
@@ -360,14 +360,14 @@ def _show_hmac_verification(
 ) -> None:
     """Perform full HMAC verification with password prompt."""
     try:
-        from aiir_cli.approval_auth import get_analyst_salt, getpass_prompt
-        from aiir_cli.verification import read_ledger, verify_items
+        from vhir_cli.approval_auth import get_analyst_salt, getpass_prompt
+        from vhir_cli.verification import read_ledger, verify_items
     except ImportError:
         return
 
     meta = load_case_meta(case_dir)
     case_id = meta.get("case_id", case_dir.name)
-    config_path = Path.home() / ".aiir" / "config.yaml"
+    config_path = Path.home() / ".vhir" / "config.yaml"
 
     ledger = read_ledger(case_id)
     if not ledger:
@@ -632,7 +632,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                         )
                         continue
                     entry["tool"] = "approval"
-                    entry["mcp"] = "aiir-cli"
+                    entry["mcp"] = "vhir-cli"
                     entries.append(entry)
         except OSError as e:
             print(f"  Warning: could not read {approvals_file}: {e}", file=sys.stderr)

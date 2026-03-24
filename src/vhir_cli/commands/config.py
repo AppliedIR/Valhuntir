@@ -7,12 +7,12 @@ from pathlib import Path
 
 import yaml
 
-from aiir_cli.approval_auth import reset_password, setup_password
+from vhir_cli.approval_auth import reset_password, setup_password
 
 
 def cmd_config(args, identity: dict) -> None:
-    """Configure AIIR settings."""
-    config_path = Path.home() / ".aiir" / "config.yaml"
+    """Configure ValiHuntIR settings."""
+    config_path = Path.home() / ".vhir" / "config.yaml"
 
     if getattr(args, "setup_password", False):
         setup_password(config_path, identity["examiner"])
@@ -80,7 +80,7 @@ def cmd_config(args, identity: dict) -> None:
         config.pop("analyst", None)
 
         try:
-            from aiir_cli.case_io import _atomic_write
+            from vhir_cli.case_io import _atomic_write
 
             _atomic_write(config_path, yaml.dump(config, default_flow_style=False))
         except (OSError, yaml.YAMLError) as e:

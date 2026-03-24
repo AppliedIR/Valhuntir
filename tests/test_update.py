@@ -1,4 +1,4 @@
-"""Tests for aiir update command."""
+"""Tests for vhir update command."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aiir_cli.commands.update import (
+from vhir_cli.commands.update import (
     _INSTALL_ORDER,
     _PACKAGE_PATHS,
     cmd_update,
@@ -18,12 +18,12 @@ from aiir_cli.commands.update import (
 @pytest.fixture
 def manifest_dir(tmp_path):
     """Create a minimal manifest layout."""
-    aiir_dir = tmp_path / ".aiir"
-    aiir_dir.mkdir()
+    vhir_dir = tmp_path / ".vhir"
+    vhir_dir.mkdir()
 
-    src = tmp_path / ".aiir" / "src" / "sift-mcp"
+    src = tmp_path / ".vhir" / "src" / "sift-mcp"
     src.mkdir(parents=True)
-    (tmp_path / ".aiir" / "src" / "aiir").mkdir()
+    (tmp_path / ".vhir" / "src" / "vhir").mkdir()
 
     venv = tmp_path / "venv"
     venv.mkdir()
@@ -45,14 +45,14 @@ def manifest_dir(tmp_path):
             "forensic-mcp": {"module": "forensic_mcp", "version": "0.1.0"},
             "sift-mcp": {"module": "sift_mcp", "version": "0.1.0"},
             "sift-gateway": {"module": "sift_gateway", "version": "0.1.0"},
-            "aiir-cli": {"module": "aiir_cli", "version": "0.1.0"},
+            "vhir-cli": {"module": "vhir_cli", "version": "0.1.0"},
             "case-mcp": {"module": "case_mcp", "version": "0.1.0"},
             "report-mcp": {"module": "report_mcp", "version": "0.1.0"},
         },
         "client": "claude-code",
-        "git": {"sift-mcp": "abc1234", "aiir": "def5678"},
+        "git": {"sift-mcp": "abc1234", "vhir": "def5678"},
     }
-    manifest_path = aiir_dir / "manifest.json"
+    manifest_path = vhir_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
     return tmp_path, manifest_path
@@ -143,7 +143,7 @@ def test_check_behind(manifest_dir, capsys):
 
     out = capsys.readouterr().out
     assert "3 commits behind" in out
-    assert "aiir update" in out
+    assert "vhir update" in out
 
 
 def test_fetch_failure(manifest_dir, capsys):
@@ -188,20 +188,20 @@ def test_pip_install_order(manifest_dir):
     with (
         patch("pathlib.Path.home", return_value=tmp_path),
         patch("subprocess.run", side_effect=mock_run),
-        patch("aiir_cli.commands.client_setup._deploy_claude_code_assets"),
-        patch("aiir_cli.commands.setup._run_connectivity_test"),
+        patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
+        patch("vhir_cli.commands.setup._run_connectivity_test"),
     ):
         cmd_update(_make_args(no_restart=True), {})
 
-    # Verify order: aiir-cli must come before case-mcp and report-mcp
-    aiir_idx = next((i for i, p in enumerate(installed) if p.endswith("/aiir")), -1)
+    # Verify order: vhir-cli must come before case-mcp and report-mcp
+    vhir_idx = next((i for i, p in enumerate(installed) if p.endswith("/vhir")), -1)
     case_idx = next((i for i, p in enumerate(installed) if "case-mcp" in p), -1)
     report_idx = next((i for i, p in enumerate(installed) if "report-mcp" in p), -1)
 
-    if aiir_idx >= 0 and case_idx >= 0:
-        assert aiir_idx < case_idx, "aiir-cli must install before case-mcp"
-    if aiir_idx >= 0 and report_idx >= 0:
-        assert aiir_idx < report_idx, "aiir-cli must install before report-mcp"
+    if vhir_idx >= 0 and case_idx >= 0:
+        assert vhir_idx < case_idx, "vhir-cli must install before case-mcp"
+    if vhir_idx >= 0 and report_idx >= 0:
+        assert vhir_idx < report_idx, "vhir-cli must install before report-mcp"
 
 
 def test_no_restart_flag(manifest_dir):
@@ -223,8 +223,8 @@ def test_no_restart_flag(manifest_dir):
     with (
         patch("pathlib.Path.home", return_value=tmp_path),
         patch("subprocess.run", side_effect=mock_run),
-        patch("aiir_cli.commands.client_setup._deploy_claude_code_assets"),
-        patch("aiir_cli.commands.setup._run_connectivity_test"),
+        patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
+        patch("vhir_cli.commands.setup._run_connectivity_test"),
     ):
         cmd_update(_make_args(no_restart=True), {})
 
@@ -233,7 +233,7 @@ def test_no_restart_flag(manifest_dir):
 
 def test_client_written_to_manifest(tmp_path):
     """client_setup writes client type to manifest."""
-    manifest_path = tmp_path / ".aiir" / "manifest.json"
+    manifest_path = tmp_path / ".vhir" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(json.dumps({"version": "1.0"}))
 
@@ -293,9 +293,9 @@ def test_old_manifest_no_client(manifest_dir, capsys):
     with (
         patch("pathlib.Path.home", return_value=tmp_path),
         patch("subprocess.run", side_effect=mock_run),
-        patch("aiir_cli.commands.setup._run_connectivity_test"),
+        patch("vhir_cli.commands.setup._run_connectivity_test"),
     ):
         cmd_update(_make_args(no_restart=True), {})
 
     out = capsys.readouterr().out
-    assert "aiir setup client" in out
+    assert "vhir setup client" in out

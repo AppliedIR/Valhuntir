@@ -1,4 +1,4 @@
-"""Generate LLM client configuration pointing at AIIR API servers.
+"""Generate LLM client configuration pointing at ValiHuntIR API servers.
 
 On SIFT, MCP entries use ``type: http`` in global ``~/.claude.json``.
 On remote clients, entries use ``type: streamable-http`` in project
@@ -13,7 +13,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from aiir_cli.setup.config_gen import _write_600
+from vhir_cli.setup.config_gen import _write_600
 
 # ---------------------------------------------------------------------------
 # External reference MCPs (optional, public, no auth)
@@ -41,7 +41,7 @@ _FORENSIC_ALLOW_RULES = {
     "mcp__opencti-mcp__*",
     "mcp__wintools-mcp__*",
     "mcp__remnux-mcp__*",
-    "mcp__aiir__*",
+    "mcp__vhir__*",
     "mcp__zeltser-ir-writing__*",
     "mcp__microsoft-learn__*",
 }
@@ -63,13 +63,13 @@ _FORENSIC_DENY_RULES = {
     "Write(**/audit/*.jsonl)",
     "Edit(**/evidence.json)",
     "Write(**/evidence.json)",
-    "Read(/var/lib/aiir/**)",
-    "Edit(/var/lib/aiir/**)",
-    "Write(/var/lib/aiir/**)",
-    "Bash(aiir approve*)",
-    "Bash(*aiir approve*)",
-    "Bash(aiir reject*)",
-    "Bash(*aiir reject*)",
+    "Read(/var/lib/vhir/**)",
+    "Edit(/var/lib/vhir/**)",
+    "Write(/var/lib/vhir/**)",
+    "Bash(vhir approve*)",
+    "Bash(*vhir approve*)",
+    "Bash(vhir reject*)",
+    "Bash(*vhir reject*)",
     # Control file self-protection (anti-accident, anti-injection)
     "Edit(**/.claude/settings.json)",
     "Write(**/.claude/settings.json)",
@@ -77,16 +77,16 @@ _FORENSIC_DENY_RULES = {
     "Write(**/.claude/CLAUDE.md)",
     "Edit(**/.claude/rules/**)",
     "Write(**/.claude/rules/**)",
-    "Edit(**/.aiir/hooks/**)",
-    "Write(**/.aiir/hooks/**)",
-    "Edit(**/.aiir/active_case)",
-    "Write(**/.aiir/active_case)",
-    "Edit(**/.aiir/gateway.yaml)",
-    "Write(**/.aiir/gateway.yaml)",
-    "Edit(**/.aiir/config.yaml)",
-    "Write(**/.aiir/config.yaml)",
-    "Edit(**/.aiir/.password_lockout)",
-    "Write(**/.aiir/.password_lockout)",
+    "Edit(**/.vhir/hooks/**)",
+    "Write(**/.vhir/hooks/**)",
+    "Edit(**/.vhir/active_case)",
+    "Write(**/.vhir/active_case)",
+    "Edit(**/.vhir/gateway.yaml)",
+    "Write(**/.vhir/gateway.yaml)",
+    "Edit(**/.vhir/config.yaml)",
+    "Write(**/.vhir/config.yaml)",
+    "Edit(**/.vhir/.password_lockout)",
+    "Write(**/.vhir/.password_lockout)",
     # Sync with template (was in settings.json but missing here)
     "Edit(**/pending-reviews.json)",
     "Write(**/pending-reviews.json)",
@@ -95,8 +95,8 @@ _FORENSIC_DENY_RULES = {
 # Old forensic deny rules — removed during migration re-deploy
 _OLD_FORENSIC_DENY_RULES = {"Bash(rm -rf *)", "Bash(mkfs*)", "Bash(dd *)"}
 
-# AIIR MCP names — used for uninstall identification.
-_AIIR_BACKEND_NAMES = {
+# ValiHuntIR MCP names — used for uninstall identification.
+_VHIR_BACKEND_NAMES = {
     "forensic-mcp",
     "case-mcp",
     "sift-mcp",
@@ -106,7 +106,7 @@ _AIIR_BACKEND_NAMES = {
     "opencti-mcp",
     "wintools-mcp",
     "remnux-mcp",
-    "aiir",
+    "vhir",
     "zeltser-ir-writing",
     "microsoft-learn",
 }
@@ -118,7 +118,7 @@ _AIIR_BACKEND_NAMES = {
 
 
 def cmd_setup_client(args, identity: dict) -> None:
-    """Generate LLM client configuration for AIIR endpoints."""
+    """Generate LLM client configuration for ValiHuntIR endpoints."""
     if getattr(args, "uninstall", False):
         _cmd_uninstall(args)
         return
@@ -159,7 +159,7 @@ def cmd_setup_client(args, identity: dict) -> None:
                     file=sys.stderr,
                 )
                 print(
-                    "Run 'aiir service status' to diagnose. "
+                    "Run 'vhir service status' to diagnose. "
                     "These backends can be added manually later.",
                     file=sys.stderr,
                 )
@@ -183,7 +183,7 @@ def cmd_setup_client(args, identity: dict) -> None:
             }
             if local_token:
                 entry["headers"] = {"Authorization": f"Bearer {local_token}"}
-            servers["aiir"] = entry
+            servers["vhir"] = entry
 
     if windows_url:
         win_entry: dict = {
@@ -227,8 +227,8 @@ def cmd_setup_client(args, identity: dict) -> None:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 4. Record client type in manifest (for aiir update)
-    manifest_path = Path.home() / ".aiir" / "manifest.json"
+    # 4. Record client type in manifest (for vhir update)
+    manifest_path = Path.home() / ".vhir" / "manifest.json"
     if manifest_path.is_file():
         try:
             manifest = json.loads(manifest_path.read_text())
@@ -256,7 +256,7 @@ def cmd_setup_client(args, identity: dict) -> None:
 
 def _is_sift() -> bool:
     """Return True if running on a SIFT workstation (gateway.yaml exists)."""
-    return (Path.home() / ".aiir" / "gateway.yaml").is_file()
+    return (Path.home() / ".vhir" / "gateway.yaml").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ def _resolve_sift(args, auto: bool) -> str:
         return val  # explicit switch (even "" means "no sift")
 
     # Auto-detect local gateway
-    from aiir_cli.gateway import get_local_gateway_url
+    from vhir_cli.gateway import get_local_gateway_url
 
     default = get_local_gateway_url()
     if auto:
@@ -292,7 +292,7 @@ def _resolve_sift(args, auto: bool) -> str:
         status = "not detected, will use default"
 
     print("\n--- SIFT Workstation (Gateway) ---")
-    print("The AIIR gateway runs on your SIFT workstation and provides")
+    print("The ValiHuntIR gateway runs on your SIFT workstation and provides")
     print("forensic tools (forensic-mcp, sift-mcp, forensic-rag, etc.).")
     print()
     print(f"  Default:  {default}  ({status})")
@@ -344,7 +344,7 @@ def _prompt_windows_token() -> str:
     print()
     print("  Wintools requires a bearer token for HTTPS connections.")
     print("  Find it:  On the Windows box, check the installer output or")
-    print("            C:\\ProgramData\\aiir\\config.yaml (bearer_token field)")
+    print("            C:\\ProgramData\\vhir\\config.yaml (bearer_token field)")
     return _prompt("\nWindows bearer token", "")
 
 
@@ -423,8 +423,8 @@ def _resolve_examiner(args, identity: dict) -> str:
 
 
 def _wizard_client() -> str:
-    print("\n=== AIIR Client Configuration ===")
-    print("Which LLM client will connect to your AIIR endpoints?\n")
+    print("\n=== ValiHuntIR Client Configuration ===")
+    print("Which LLM client will connect to your ValiHuntIR endpoints?\n")
     print("  1. Claude Code      CLI agent (writes .mcp.json + CLAUDE.md)")
     print("  2. Claude Desktop   Desktop app (writes claude_desktop_config.json)")
     print("  3. LibreChat        Web UI (writes librechat_mcp.yaml)")
@@ -546,7 +546,7 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
 
     else:
         # Manual / other — just dump JSON
-        output = Path.cwd() / "aiir-mcp-config.json"
+        output = Path.cwd() / "vhir-mcp-config.json"
         _merge_and_write(output, config)
         print(f"  Generated: {output}")
 
@@ -556,17 +556,17 @@ def _find_claude_code_assets() -> Path | None:
 
     Search order:
     1. Well-known paths relative to sift-mcp installation
-    2. ~/.aiir/src/sift-mcp/claude-code/
-    3. /opt/aiir/sift-mcp/claude-code/
+    2. ~/.vhir/src/sift-mcp/claude-code/
+    3. /opt/vhir/sift-mcp/claude-code/
     """
     candidates = [
-        lambda: Path.home() / ".aiir" / "src" / "sift-mcp" / "claude-code",
-        lambda: Path.home() / "aiir" / "sift-mcp" / "claude-code",
-        lambda: Path("/opt/aiir/sift-mcp/claude-code"),
+        lambda: Path.home() / ".vhir" / "src" / "sift-mcp" / "claude-code",
+        lambda: Path.home() / "vhir" / "sift-mcp" / "claude-code",
+        lambda: Path("/opt/vhir/sift-mcp/claude-code"),
     ]
 
     # Also check gateway.yaml for sift-mcp source path
-    gw_config = Path.home() / ".aiir" / "gateway.yaml"
+    gw_config = Path.home() / ".vhir" / "gateway.yaml"
     if gw_config.is_file():
         try:
             import yaml
@@ -736,7 +736,7 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
     """Deploy settings.json, hooks, skills, and doc files for Claude Code.
 
     Sources from sift-mcp/claude-code/ directory (shared/ + full/).
-    On SIFT: deploys globally (settings to ~/.claude/, hook to ~/.aiir/hooks/).
+    On SIFT: deploys globally (settings to ~/.claude/, hook to ~/.vhir/hooks/).
     On non-SIFT: deploys to project directory.
 
     project_dir is optional on SIFT (global deployment doesn't need it).
@@ -787,7 +787,7 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
             print(f"  Merged:    settings.json -> {settings_target}")
             _fixup_global_hook_path(settings_target)
 
-        # Deploy hook scripts to ~/.aiir/hooks/
+        # Deploy hook scripts to ~/.vhir/hooks/
         for hook_name in (
             "forensic-audit.sh",
             "case-dir-check.sh",
@@ -795,12 +795,12 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         ):
             hook_src = _find_hook(hook_name)
             if hook_src:
-                hook_target = Path.home() / ".aiir" / "hooks" / hook_name
+                hook_target = Path.home() / ".vhir" / "hooks" / hook_name
                 _deploy_hook(hook_src, hook_target)
                 print(f"  Deployed:  {hook_name} -> {hook_target}")
 
         # Remove deprecated hook files
-        hooks_dir = Path.home() / ".aiir" / "hooks"
+        hooks_dir = Path.home() / ".vhir" / "hooks"
         for old_hook in ("pre-bash-guard.sh",):
             old_path = hooks_dir / old_hook
             if old_path.is_file():
@@ -900,13 +900,13 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
 
 
 def _fixup_global_hook_path(settings_path: Path) -> None:
-    """Replace $CLAUDE_PROJECT_DIR hook paths with absolute ~/.aiir/hooks/ path."""
+    """Replace $CLAUDE_PROJECT_DIR hook paths with absolute ~/.vhir/hooks/ path."""
     try:
         data = json.loads(settings_path.read_text())
     except (json.JSONDecodeError, OSError):
         return
 
-    hooks_dir = Path.home() / ".aiir" / "hooks"
+    hooks_dir = Path.home() / ".vhir" / "hooks"
     changed = False
 
     for hook_type in (
@@ -945,7 +945,7 @@ def _merge_and_write(path: Path, config: dict) -> None:
                 f"Warning: could not read existing config {path}: {e}", file=sys.stderr
             )
 
-    # Merge: existing servers are preserved, AIIR servers overwritten
+    # Merge: existing servers are preserved, ValiHuntIR servers overwritten
     existing_servers = existing.get("mcpServers", {})
     existing_servers.update(config.get("mcpServers", {}))
     existing["mcpServers"] = existing_servers
@@ -976,7 +976,7 @@ _BACKEND_INIT_TIMEOUTS = {
 _DEFAULT_INIT_TIMEOUT = 15000  # 15s — safe margin for others
 
 _PROMPT_PREFIX = """\
-You are an IR analyst orchestrating forensic investigations on an AIIR workstation. Evidence guides theory, never the reverse.
+You are an IR analyst orchestrating forensic investigations on an ValiHuntIR workstation. Evidence guides theory, never the reverse.
 
 EVIDENCE PRESENTATION: Every finding must include: (1) Source — artifact file path. (2) Extraction — tool and command. (3) Content — actual log entry or record, never a summary. (4) Observation — factual. (5) Interpretation — analytical, clearly labeled. (6) Confidence — SPECULATIVE/LOW/MEDIUM/HIGH with justification. If you cannot show the evidence, you cannot make the claim.
 
@@ -1006,13 +1006,13 @@ _LIBRECHAT_POST_INSTALL = """\
 
    Open LibreChat → Agents panel → Create Agent, then:
 
-   Name:           AIIR Investigation
+   Name:           ValiHuntIR Investigation
    Model:          claude-sonnet-4-6 (or your preferred Claude model)
    Instructions:   paste from docs/librechat-setup.md "Agent Instructions"
                    section (NOT the full promptPrefix — see setup guide)
    Tool Search:    ON
 
-   Add MCP Servers: select all AIIR backends
+   Add MCP Servers: select all ValiHuntIR backends
 
    Deferred loading: for each backend's tools, click the clock icon to
    defer ALL tools EXCEPT these 6 (used almost every turn):
@@ -1043,7 +1043,7 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     """Write LibreChat mcpServers YAML snippet with model settings."""
     from urllib.parse import urlparse
 
-    lines = ["# AIIR MCP servers — merge into your librechat.yaml", "mcpServers:"]
+    lines = ["# ValiHuntIR MCP servers — merge into your librechat.yaml", "mcpServers:"]
     gateway_host = None
     for name, info in servers.items():
         # Skip non-streamable-http entries (Claude Desktop npx bridge)
@@ -1090,7 +1090,7 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     lines.append("    maxRecursionLimit: 100  # hard cap")
     # Greeting (plain text — LibreChat does not render markdown in greetings)
     greeting_lines = [
-        "AIIR Investigation workspace ready. Connected backends and forensic",
+        "ValiHuntIR Investigation workspace ready. Connected backends and forensic",
         "discipline are active. Start with your investigation objective or",
         "evidence to analyze. All findings stage as DRAFT for your review.",
     ]
@@ -1099,8 +1099,8 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     lines.append("")
     lines.append("modelSpecs:")
     lines.append("  list:")
-    lines.append("    - spec: aiir-investigation")
-    lines.append('      name: "AIIR Investigation"')
+    lines.append("    - spec: vhir-investigation")
+    lines.append('      name: "ValiHuntIR Investigation"')
     lines.append("      preset:")
     lines.append(
         '        endpoint: "anthropic"  # change if using azureOpenAI, bedrock, etc.'
@@ -1122,11 +1122,11 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
 
 _AGENTS_MD_CANDIDATES = [
     lambda: Path.cwd() / "AGENTS.md",
-    lambda: Path.home() / ".aiir" / "src" / "sift-mcp" / "AGENTS.md",
-    lambda: Path.home() / "aiir" / "sift-mcp" / "AGENTS.md",
-    lambda: Path.home() / "aiir" / "forensic-mcp" / "AGENTS.md",
-    lambda: Path("/opt/aiir/sift-mcp") / "AGENTS.md",
-    lambda: Path("/opt/aiir") / "AGENTS.md",
+    lambda: Path.home() / ".vhir" / "src" / "sift-mcp" / "AGENTS.md",
+    lambda: Path.home() / "vhir" / "sift-mcp" / "AGENTS.md",
+    lambda: Path.home() / "vhir" / "forensic-mcp" / "AGENTS.md",
+    lambda: Path("/opt/vhir/sift-mcp") / "AGENTS.md",
+    lambda: Path("/opt/vhir") / "AGENTS.md",
 ]
 
 
@@ -1163,10 +1163,10 @@ def _copy_agents_md(target: Path) -> None:
 
 
 def _cmd_uninstall(args) -> None:
-    """Remove AIIR forensic controls with interactive per-component approval."""
+    """Remove ValiHuntIR forensic controls with interactive per-component approval."""
     sift = _is_sift()
 
-    print("\nAIIR Forensic Controls — Uninstall\n")
+    print("\nValiHuntIR Forensic Controls — Uninstall\n")
 
     if sift:
         _uninstall_sift()
@@ -1182,10 +1182,10 @@ def _uninstall_sift() -> None:
     claude_json = Path.home() / ".claude.json"
     if claude_json.is_file():
         print("  [1] MCP servers (~/.claude.json mcpServers)")
-        print("      Only AIIR backend entries are removed. Others preserved.")
+        print("      Only ValiHuntIR backend entries are removed. Others preserved.")
         if _prompt_yn_strict("      Remove?"):
-            _remove_aiir_mcp_entries(claude_json)
-            print("      Removed AIIR MCP entries.")
+            _remove_vhir_mcp_entries(claude_json)
+            print("      Removed ValiHuntIR MCP entries.")
         else:
             print("      Skipped.")
     print()
@@ -1203,11 +1203,11 @@ def _uninstall_sift() -> None:
     print()
 
     # [3] Hook scripts
-    hooks_dir = Path.home() / ".aiir" / "hooks"
+    hooks_dir = Path.home() / ".vhir" / "hooks"
     hook_scripts = ["forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh"]
     existing_hooks = [h for h in hook_scripts if (hooks_dir / h).is_file()]
     if existing_hooks:
-        print(f"  [3] Hook scripts (~/.aiir/hooks/: {', '.join(existing_hooks)})")
+        print(f"  [3] Hook scripts (~/.vhir/hooks/: {', '.join(existing_hooks)})")
         if _prompt_yn_strict("      Remove?"):
             for h in existing_hooks:
                 (hooks_dir / h).unlink()
@@ -1281,10 +1281,10 @@ def _uninstall_sift() -> None:
             print("      Skipped.")
     print()
 
-    # [6] Gateway credentials (~/.aiir/config.yaml)
-    config_yaml = Path.home() / ".aiir" / "config.yaml"
+    # [6] Gateway credentials (~/.vhir/config.yaml)
+    config_yaml = Path.home() / ".vhir" / "config.yaml"
     if config_yaml.is_file():
-        print("  [6] Gateway credentials (~/.aiir/config.yaml)")
+        print("  [6] Gateway credentials (~/.vhir/config.yaml)")
         print("      Contains bearer token for gateway authentication.")
         if _prompt_yn_strict("      Remove?"):
             config_yaml.unlink()
@@ -1293,10 +1293,10 @@ def _uninstall_sift() -> None:
             print("      Skipped.")
 
     # Generated config file
-    mcp_config = Path.home() / "aiir-mcp-config.json"
+    mcp_config = Path.home() / "vhir-mcp-config.json"
     if mcp_config.is_file():
         mcp_config.unlink()
-        print("      Removed ~/aiir-mcp-config.json")
+        print("      Removed ~/vhir-mcp-config.json")
 
     print("\nUninstall complete.")
 
@@ -1320,7 +1320,7 @@ def _uninstall_project() -> None:
 
     has_mcp_json = mcp_json.is_file()
 
-    # Surgical .claude/ removal — only remove AIIR files, not user settings
+    # Surgical .claude/ removal — only remove ValiHuntIR files, not user settings
     claude_files_to_remove: list[Path] = []
     if claude_dir.is_dir():
         settings_file = claude_dir / "settings.json"
@@ -1341,23 +1341,23 @@ def _uninstall_project() -> None:
             claude_files_to_remove.append(settings_file)
 
     if not files_to_remove and not claude_files_to_remove and not has_mcp_json:
-        print("  No AIIR files found in current directory.")
+        print("  No ValiHuntIR files found in current directory.")
         return
 
     print("  Files to remove:")
     for p in files_to_remove:
         print(f"    {p}")
     if has_mcp_json:
-        print(f"    {mcp_json} (AIIR entries only)")
+        print(f"    {mcp_json} (ValiHuntIR entries only)")
     for p in claude_files_to_remove:
         print(f"    {p}")
 
     if _prompt_yn_strict("  Remove all?"):
         for p in files_to_remove:
             p.unlink()
-        # Surgical .mcp.json removal — only AIIR entries
+        # Surgical .mcp.json removal — only ValiHuntIR entries
         if has_mcp_json:
-            _remove_aiir_mcp_entries(mcp_json)
+            _remove_vhir_mcp_entries(mcp_json)
         # Restore CLAUDE.md backup if exists
         if has_claude_md:
             bak = claude_md.with_suffix(".md.bak")
@@ -1382,23 +1382,23 @@ def _uninstall_project() -> None:
         print("  Skipped.")
 
     # Remove gateway credentials
-    config_yaml = Path.home() / ".aiir" / "config.yaml"
+    config_yaml = Path.home() / ".vhir" / "config.yaml"
     if config_yaml.is_file():
         config_yaml.unlink()
-        print("  Removed ~/.aiir/config.yaml")
+        print("  Removed ~/.vhir/config.yaml")
 
     print("\nUninstall complete.")
 
 
-def _remove_aiir_mcp_entries(path: Path) -> None:
-    """Remove AIIR backend entries from ~/.claude.json mcpServers."""
+def _remove_vhir_mcp_entries(path: Path) -> None:
+    """Remove ValiHuntIR backend entries from ~/.claude.json mcpServers."""
     try:
         data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return
     servers = data.get("mcpServers", {})
     for name in list(servers.keys()):
-        if name in _AIIR_BACKEND_NAMES:
+        if name in _VHIR_BACKEND_NAMES:
             del servers[name]
     _write_600(path, json.dumps(data, indent=2) + "\n")
 
@@ -1463,16 +1463,16 @@ def _remove_forensic_settings(path: Path) -> None:
 
 
 def _read_local_token() -> str | None:
-    """Read the first api_key from ~/.aiir/gateway.yaml.
+    """Read the first api_key from ~/.vhir/gateway.yaml.
 
     The api_keys format in gateway.yaml is a dict keyed by token string:
         api_keys:
-          aiir_gw_abc123...:
+          vhir_gw_abc123...:
             examiner: "default"
             role: "lead"
     So next(iter(api_keys)) returns the token string itself.
     """
-    config_path = Path.home() / ".aiir" / "gateway.yaml"
+    config_path = Path.home() / ".vhir" / "gateway.yaml"
     if not config_path.is_file():
         return None
     try:
@@ -1544,7 +1544,7 @@ def _probe_health(base_url: str) -> bool:
     try:
         import urllib.request
 
-        from aiir_cli.gateway import get_local_ssl_context
+        from vhir_cli.gateway import get_local_ssl_context
 
         url = f"{base_url.rstrip('/')}/health"
         req = urllib.request.Request(url, method="GET")
@@ -1576,7 +1576,7 @@ def _probe_health(base_url: str) -> bool:
 def _cmd_add_remnux(args) -> None:
     """Add or update only the remnux-mcp entry in existing client config."""
     # Detect client type from manifest
-    manifest_path = Path.home() / ".aiir" / "manifest.json"
+    manifest_path = Path.home() / ".vhir" / "manifest.json"
     client = None
     if manifest_path.is_file():
         try:
@@ -1586,7 +1586,7 @@ def _cmd_add_remnux(args) -> None:
             pass
     if not client:
         print(
-            "Cannot detect client type — run 'aiir setup client' first.",
+            "Cannot detect client type — run 'vhir setup client' first.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1641,7 +1641,7 @@ def _cmd_add_remnux(args) -> None:
 
 
 def _cmd_setup_client_remote(args, identity: dict) -> None:
-    """Generate client config pointing at a remote AIIR gateway.
+    """Generate client config pointing at a remote ValiHuntIR gateway.
 
     Discovers running backends via the service management API, then builds
     per-backend MCP endpoint entries with bearer token auth.
@@ -1749,7 +1749,7 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 8. Save gateway config for `aiir service` commands
+    # 8. Save gateway config for `vhir service` commands
     _save_gateway_config(gateway_url, token)
 
     print(f"\n  Remote setup complete. Examiner: {examiner}")
@@ -1793,7 +1793,7 @@ def _probe_health_with_auth(base_url: str, token: str | None) -> dict | None:
     """Probe /health with optional bearer token. Returns parsed dict or None."""
     import urllib.request
 
-    from aiir_cli.gateway import get_local_ssl_context
+    from vhir_cli.gateway import get_local_ssl_context
 
     try:
         url = f"{base_url.rstrip('/')}/health"
@@ -1821,7 +1821,7 @@ def _discover_services(base_url: str, token: str | None) -> list | None:
     """GET /api/v1/services and return the services list, or None on failure."""
     import urllib.request
 
-    from aiir_cli.gateway import get_local_ssl_context
+    from vhir_cli.gateway import get_local_ssl_context
 
     try:
         url = f"{base_url.rstrip('/')}/api/v1/services"
@@ -1847,10 +1847,10 @@ def _discover_services(base_url: str, token: str | None) -> list | None:
 
 
 def _save_gateway_config(url: str, token: str | None) -> None:
-    """Save gateway URL and token to ~/.aiir/config.yaml."""
+    """Save gateway URL and token to ~/.vhir/config.yaml."""
     import yaml
 
-    config_dir = Path.home() / ".aiir"
+    config_dir = Path.home() / ".vhir"
     config_file = config_dir / "config.yaml"
 
     existing = {}

@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     export_bundle,
     get_case_dir,
     import_bundle,

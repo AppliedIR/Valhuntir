@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiir_cli.verification import (
+from vhir_cli.verification import (
     compute_hmac,
     copy_ledger_to_case,
     derive_hmac_key,
@@ -18,7 +18,7 @@ from aiir_cli.verification import (
 @pytest.fixture(autouse=True)
 def _patch_verification_dir(tmp_path, monkeypatch):
     """Redirect VERIFICATION_DIR to tmp_path for all tests."""
-    monkeypatch.setattr("aiir_cli.verification.VERIFICATION_DIR", tmp_path)
+    monkeypatch.setattr("vhir_cli.verification.VERIFICATION_DIR", tmp_path)
 
 
 def test_derive_hmac_key():

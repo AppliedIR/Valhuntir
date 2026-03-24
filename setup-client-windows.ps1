@@ -1,20 +1,20 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    AIIR LLM Client Setup for Windows
+    ValiHuntIR LLM Client Setup for Windows
 
 .DESCRIPTION
-    Joins the SIFT gateway and creates a functional $HOME\aiir\ workspace
+    Joins the SIFT gateway and creates a functional $HOME\vhir\ workspace
     with MCP config, forensic controls, and discipline docs.
 
 .PARAMETER Sift
     Gateway URL (required). Example: https://192.168.1.100:4508
 
 .PARAMETER Code
-    Join code (required). Generated on SIFT with: aiir setup join-code
+    Join code (required). Generated on SIFT with: vhir setup join-code
 
 .PARAMETER Uninstall
-    Remove AIIR workspace and forensic controls.
+    Remove ValiHuntIR workspace and forensic controls.
 
 .PARAMETER Help
     Show help and exit.
@@ -64,7 +64,7 @@ function Prompt-YN-Strict {
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor White
-Write-Host "  AIIR - LLM Client Setup (Windows)" -ForegroundColor White
+Write-Host "  ValiHuntIR - LLM Client Setup (Windows)" -ForegroundColor White
 Write-Host "  Artificial Intelligence Incident Response" -ForegroundColor White
 Write-Host "============================================================" -ForegroundColor White
 Write-Host ""
@@ -75,7 +75,7 @@ if ($Help) {
     Write-Host "Parameters:"
     Write-Host "  -Sift URL     Gateway URL (required)"
     Write-Host "  -Code CODE    Join code (required)"
-    Write-Host "  -Uninstall    Remove AIIR workspace"
+    Write-Host "  -Uninstall    Remove ValiHuntIR workspace"
     Write-Host "  -Help         Show this help"
     exit 0
 }
@@ -85,17 +85,17 @@ if ($Help) {
 # =============================================================================
 
 if ($Uninstall) {
-    $deployDir = Join-Path $HOME "aiir"
+    $deployDir = Join-Path $HOME "vhir"
     Write-Host ""
-    Write-Host "AIIR Forensic Controls - Uninstall" -ForegroundColor White
+    Write-Host "ValiHuntIR Forensic Controls - Uninstall" -ForegroundColor White
     Write-Host ""
 
     if (-not (Test-Path $deployDir)) {
-        Write-Info "No AIIR workspace found at $deployDir."
+        Write-Info "No ValiHuntIR workspace found at $deployDir."
         exit 0
     }
 
-    Write-Host "  AIIR workspace: $deployDir"
+    Write-Host "  ValiHuntIR workspace: $deployDir"
     $casesDir = Join-Path $deployDir "cases"
     if (Test-Path $casesDir) {
         Write-Host ""
@@ -104,9 +104,9 @@ if ($Uninstall) {
     }
     Write-Host ""
 
-    if (Prompt-YN-Strict "  Remove entire AIIR workspace ($deployDir)?") {
+    if (Prompt-YN-Strict "  Remove entire ValiHuntIR workspace ($deployDir)?") {
         Remove-Item -Path $deployDir -Recurse -Force
-        $configYaml = Join-Path $HOME ".aiir" "config.yaml"
+        $configYaml = Join-Path $HOME ".vhir" "config.yaml"
         if (Test-Path $configYaml) { Remove-Item -Path $configYaml -Force }
         Write-Ok "Removed $deployDir"
     } else {
@@ -120,7 +120,7 @@ if ($Uninstall) {
             $fp = Join-Path $deployDir $f
             if (Test-Path $fp) { Remove-Item -Path $fp -Force }
         }
-        $configYaml = Join-Path $HOME ".aiir" "config.yaml"
+        $configYaml = Join-Path $HOME ".vhir" "config.yaml"
         if (Test-Path $configYaml) { Remove-Item -Path $configYaml -Force }
         Write-Ok "Config files removed. $casesDir preserved."
     }
@@ -204,12 +204,12 @@ $backends = $json.backends
 Write-Ok "Joined gateway"
 
 # Store token
-$aiirDir = Join-Path $HOME ".aiir"
-if (-not (Test-Path $aiirDir)) {
-    New-Item -ItemType Directory -Path $aiirDir -Force | Out-Null
+$vhirDir = Join-Path $HOME ".vhir"
+if (-not (Test-Path $vhirDir)) {
+    New-Item -ItemType Directory -Path $vhirDir -Force | Out-Null
 }
 
-$configFile = Join-Path $aiirDir "config.yaml"
+$configFile = Join-Path $vhirDir "config.yaml"
 @"
 gateway_url: "$gatewayUrl"
 gateway_token: "$gatewayToken"
@@ -236,10 +236,10 @@ Write-Ok "Credentials saved to $configFile"
 # =============================================================================
 
 Write-Host ""
-Write-Host "=== AIIR Workspace ===" -ForegroundColor White
+Write-Host "=== ValiHuntIR Workspace ===" -ForegroundColor White
 Write-Host ""
 
-$deployDir = Join-Path $HOME "aiir"
+$deployDir = Join-Path $HOME "vhir"
 $casesDir = Join-Path $deployDir "cases"
 $claudeDir = Join-Path $deployDir ".claude"
 $hooksDir = Join-Path $claudeDir "hooks"
@@ -347,7 +347,7 @@ switch ($clientType) {
         Write-Ok "Written: $configPath (merge into librechat.yaml)"
     }
     default {
-        $configPath = Join-Path $deployDir "aiir-mcp-config.json"
+        $configPath = Join-Path $deployDir "vhir-mcp-config.json"
         $mcpConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
         Write-Ok "Written: $configPath (reference config)"
         Write-Info "Configure your LLM client using the entries in this file."
@@ -401,7 +401,7 @@ $settingsObj = @{
             "mcp__opencti-mcp__*",
             "mcp__wintools-mcp__*",
             "mcp__remnux-mcp__*",
-            "mcp__aiir__*",
+            "mcp__vhir__*",
             "mcp__zeltser-ir-writing__*",
             "mcp__microsoft-learn__*"
         )
@@ -422,29 +422,29 @@ $settingsObj = @{
             "Write(**/audit/*.jsonl)",
             "Edit(**/evidence.json)",
             "Write(**/evidence.json)",
-            "Read(/var/lib/aiir/**)",
-            "Edit(/var/lib/aiir/**)",
-            "Write(/var/lib/aiir/**)",
-            "Bash(aiir approve*)",
-            "Bash(*aiir approve*)",
-            "Bash(aiir reject*)",
-            "Bash(*aiir reject*)",
+            "Read(/var/lib/vhir/**)",
+            "Edit(/var/lib/vhir/**)",
+            "Write(/var/lib/vhir/**)",
+            "Bash(vhir approve*)",
+            "Bash(*vhir approve*)",
+            "Bash(vhir reject*)",
+            "Bash(*vhir reject*)",
             "Edit(**/.claude/settings.json)",
             "Write(**/.claude/settings.json)",
             "Edit(**/.claude/CLAUDE.md)",
             "Write(**/.claude/CLAUDE.md)",
             "Edit(**/.claude/rules/**)",
             "Write(**/.claude/rules/**)",
-            "Edit(**/.aiir/hooks/**)",
-            "Write(**/.aiir/hooks/**)",
-            "Edit(**/.aiir/active_case)",
-            "Write(**/.aiir/active_case)",
-            "Edit(**/.aiir/gateway.yaml)",
-            "Write(**/.aiir/gateway.yaml)",
-            "Edit(**/.aiir/config.yaml)",
-            "Write(**/.aiir/config.yaml)",
-            "Edit(**/.aiir/.password_lockout)",
-            "Write(**/.aiir/.password_lockout)",
+            "Edit(**/.vhir/hooks/**)",
+            "Write(**/.vhir/hooks/**)",
+            "Edit(**/.vhir/active_case)",
+            "Write(**/.vhir/active_case)",
+            "Edit(**/.vhir/gateway.yaml)",
+            "Write(**/.vhir/gateway.yaml)",
+            "Edit(**/.vhir/config.yaml)",
+            "Write(**/.vhir/config.yaml)",
+            "Edit(**/.vhir/.password_lockout)",
+            "Write(**/.vhir/.password_lockout)",
             "Edit(**/pending-reviews.json)",
             "Write(**/pending-reviews.json)"
         )
@@ -454,12 +454,12 @@ $settingsObj = @{
         allowUnsandboxedCommands = $false
         filesystem = @{
             denyWrite = @(
-                "~/.aiir/gateway.yaml",
-                "~/.aiir/config.yaml",
-                "~/.aiir/active_case",
-                "~/.aiir/hooks",
-                "~/.aiir/.password_lockout",
-                "~/.aiir/.pin_lockout",
+                "~/.vhir/gateway.yaml",
+                "~/.vhir/config.yaml",
+                "~/.vhir/active_case",
+                "~/.vhir/hooks",
+                "~/.vhir/.password_lockout",
+                "~/.vhir/.pin_lockout",
                 "~/.claude/settings.json",
                 "~/.claude/CLAUDE.md",
                 "~/.claude/rules"
@@ -578,8 +578,8 @@ Write-Host "Workspace:   $deployDir"
 Write-Host ""
 Write-Host "SSH Access" -ForegroundColor White
 Write-Host "  SSH access to SIFT is required for finding approval and rejection"
-Write-Host "  (aiir approve, aiir reject), evidence unlocking (aiir evidence"
-Write-Host "  unlock), and command execution (aiir execute). These operations"
+Write-Host "  (vhir approve, vhir reject), evidence unlocking (vhir evidence"
+Write-Host "  unlock), and command execution (vhir execute). These operations"
 Write-Host "  require password or terminal confirmation and are not available through"
 Write-Host "  MCP. All other operations are available through MCP tools."
 Write-Host ""
@@ -603,7 +603,7 @@ if ($clientType -eq "claude-code") {
     Write-Host "  with SIFT through audited MCP tools."
 
     Write-Host ""
-    Write-Host "AIIR workspace created at $deployDir\" -ForegroundColor White
+    Write-Host "ValiHuntIR workspace created at $deployDir\" -ForegroundColor White
     Write-Host ""
     Write-Host "IMPORTANT: Always launch Claude Code from $deployDir\ or a subdirectory." -ForegroundColor Yellow
     Write-Host "Forensic controls (audit logging, guardrails, MCP tools) only apply"
@@ -618,5 +618,5 @@ if ($clientType -eq "claude-code") {
 }
 
 Write-Host ""
-Write-Host "Documentation: https://appliedir.github.io/aiir/" -ForegroundColor White
+Write-Host "Documentation: https://appliedir.github.io/vhir/" -ForegroundColor White
 Write-Host ""

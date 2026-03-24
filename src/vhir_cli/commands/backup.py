@@ -13,14 +13,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aiir_cli.case_io import get_case_dir, load_case_meta
-from aiir_cli.verification import VERIFICATION_DIR
+from vhir_cli.case_io import get_case_dir, load_case_meta
+from vhir_cli.verification import VERIFICATION_DIR
 
 _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
 
 
 def cmd_backup(args, identity: dict) -> None:
-    """Entry point for 'aiir backup'."""
+    """Entry point for 'vhir backup'."""
     verify_path = getattr(args, "verify", None)
     if verify_path:
         ok = _verify_backup(Path(verify_path))

@@ -6,9 +6,9 @@ body:
     id: component
     attributes:
       label: Component
-      description: Which part of AIIR is affected?
+      description: Which part of ValiHuntIR is affected?
       options:
-        - aiir CLI
+        - vhir CLI
         - sift-gateway
         - forensic-mcp
         - case-mcp
@@ -40,8 +40,8 @@ body:
       label: Steps to reproduce
       description: Exact steps to trigger the bug.
       placeholder: |
-        1. Run `aiir case init ...`
-        2. Run `aiir evidence register ...`
+        1. Run `vhir case init ...`
+        2. Run `vhir evidence register ...`
         3. See error
     validations:
       required: true
@@ -63,7 +63,7 @@ body:
         OS: Ubuntu 22.04 (SIFT)
         Python: 3.10.12
         Install: setup-sift.sh (quick tier)
-        aiir version: (run `aiir --version`)
+        vhir version: (run `vhir --version`)
       render: shell
     validations:
       required: true

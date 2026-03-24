@@ -1,12 +1,12 @@
 """Report generation commands.
 
 Reads case data from the case directory and produces formatted reports:
-  aiir report --full                      Full case report (JSON)
-  aiir report --executive-summary         High-level summary
-  aiir report --timeline [--from/--to]    Timeline events
-  aiir report --ioc                       Extracted IOCs
-  aiir report --findings <id,...>         Specific findings detail
-  aiir report --status-brief              Quick status counts
+  vhir report --full                      Full case report (JSON)
+  vhir report --executive-summary         High-level summary
+  vhir report --timeline [--from/--to]    Timeline events
+  vhir report --ioc                       Extracted IOCs
+  vhir report --findings <id,...>         Specific findings detail
+  vhir report --status-brief              Quick status counts
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     get_case_dir,
     load_case_meta,
     load_findings,
@@ -62,7 +62,7 @@ def cmd_report(args, identity: dict) -> None:
         _report_status_brief(case_dir, args)
     else:
         print(
-            "Usage: aiir report --full | --executive-summary | --timeline | --ioc | --findings <ids> | --status-brief",
+            "Usage: vhir report --full | --executive-summary | --timeline | --ioc | --findings <ids> | --status-brief",
             file=sys.stderr,
         )
         sys.exit(1)

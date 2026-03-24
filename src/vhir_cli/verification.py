@@ -1,6 +1,6 @@
 """HMAC verification ledger for approved findings and timeline events.
 
-The verification ledger lives at /var/lib/aiir/verification/{case-id}.jsonl.
+The verification ledger lives at /var/lib/vhir/verification/{case-id}.jsonl.
 This path is outside any user's home directory and is unreachable by the
 Claude Code sandbox from any CWD.
 
@@ -18,7 +18,7 @@ import os
 import shutil
 from pathlib import Path
 
-VERIFICATION_DIR = Path("/var/lib/aiir/verification")
+VERIFICATION_DIR = Path("/var/lib/vhir/verification")
 PBKDF2_ITERATIONS = 600_000
 
 
@@ -43,7 +43,7 @@ def compute_hmac(derived_key: bytes, description: str) -> str:
 
 
 def write_ledger_entry(case_id: str, entry: dict) -> None:
-    """Append entry to /var/lib/aiir/verification/{case_id}.jsonl."""
+    """Append entry to /var/lib/vhir/verification/{case_id}.jsonl."""
     _validate_case_id(case_id)
     VERIFICATION_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = VERIFICATION_DIR / f"{case_id}.jsonl"

@@ -1,4 +1,4 @@
-"""Tests for aiir setup client command."""
+"""Tests for vhir setup client command."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from aiir_cli.commands.client_setup import (
+from vhir_cli.commands.client_setup import (
     _MSLEARN_MCP,
     _cmd_setup_client_remote,
     _ensure_mcp_path,
@@ -16,8 +16,8 @@ from aiir_cli.commands.client_setup import (
     _merge_settings,
     _normalise_url,
     _read_local_token,
-    _remove_aiir_mcp_entries,
     _remove_forensic_settings,
+    _remove_vhir_mcp_entries,
     _save_gateway_config,
     _wizard_client,
     cmd_setup_client,
@@ -61,13 +61,13 @@ class TestMergeAndWrite:
         path = tmp_path / "config.json"
         config = {
             "mcpServers": {
-                "aiir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
             }
         }
         _merge_and_write(path, config)
         data = json.loads(path.read_text())
-        assert "aiir" in data["mcpServers"]
-        assert data["mcpServers"]["aiir"]["type"] == "streamable-http"
+        assert "vhir" in data["mcpServers"]
+        assert data["mcpServers"]["vhir"]["type"] == "streamable-http"
 
     def test_preserves_existing_servers(self, tmp_path):
         path = tmp_path / "config.json"
@@ -76,36 +76,36 @@ class TestMergeAndWrite:
 
         config = {
             "mcpServers": {
-                "aiir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
             }
         }
         _merge_and_write(path, config)
         data = json.loads(path.read_text())
         assert "custom" in data["mcpServers"]
-        assert "aiir" in data["mcpServers"]
+        assert "vhir" in data["mcpServers"]
 
-    def test_overwrites_aiir_server(self, tmp_path):
+    def test_overwrites_vhir_server(self, tmp_path):
         path = tmp_path / "config.json"
         existing = {
             "mcpServers": {
-                "aiir": {"type": "streamable-http", "url": "http://old:4508/mcp"}
+                "vhir": {"type": "streamable-http", "url": "http://old:4508/mcp"}
             }
         }
         path.write_text(json.dumps(existing))
 
         config = {
             "mcpServers": {
-                "aiir": {"type": "streamable-http", "url": "http://new:4508/mcp"}
+                "vhir": {"type": "streamable-http", "url": "http://new:4508/mcp"}
             }
         }
         _merge_and_write(path, config)
         data = json.loads(path.read_text())
-        assert data["mcpServers"]["aiir"]["url"] == "http://new:4508/mcp"
+        assert data["mcpServers"]["vhir"]["url"] == "http://new:4508/mcp"
 
     def test_creates_parent_dirs(self, tmp_path):
         path = tmp_path / "subdir" / "deep" / "config.json"
         config = {
-            "mcpServers": {"aiir": {"type": "streamable-http", "url": "http://x/mcp"}}
+            "mcpServers": {"vhir": {"type": "streamable-http", "url": "http://x/mcp"}}
         }
         _merge_and_write(path, config)
         assert path.is_file()
@@ -114,9 +114,9 @@ class TestMergeAndWrite:
 class TestIsSift:
     def test_true_when_gateway_yaml_exists(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        aiir_dir = tmp_path / ".aiir"
-        aiir_dir.mkdir()
-        (aiir_dir / "gateway.yaml").write_text("api_keys: {}")
+        vhir_dir = tmp_path / ".vhir"
+        vhir_dir.mkdir()
+        (vhir_dir / "gateway.yaml").write_text("api_keys: {}")
         assert _is_sift() is True
 
     def test_false_when_no_gateway_yaml(self, tmp_path, monkeypatch):
@@ -213,9 +213,9 @@ class TestCmdSetupClient:
         config_path = tmp_path / ".mcp.json"
         assert config_path.is_file()
         data = json.loads(config_path.read_text())
-        assert "aiir" in data["mcpServers"]
-        assert data["mcpServers"]["aiir"]["url"] == "http://127.0.0.1:4508/mcp"
-        assert data["mcpServers"]["aiir"]["type"] == "streamable-http"
+        assert "vhir" in data["mcpServers"]
+        assert data["mcpServers"]["vhir"]["url"] == "http://127.0.0.1:4508/mcp"
+        assert data["mcpServers"]["vhir"]["type"] == "streamable-http"
         # Zeltser included by default
         assert "zeltser-ir-writing" in data["mcpServers"]
 
@@ -244,7 +244,7 @@ class TestCmdSetupClient:
         assert "zeltser-ir-writing" in data["mcpServers"]
 
     @patch(
-        "aiir_cli.commands.client_setup._prompt_windows_token", return_value="wt_tok"
+        "vhir_cli.commands.client_setup._prompt_windows_token", return_value="wt_tok"
     )
     def test_windows_endpoint(self, mock_prompt, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -259,7 +259,7 @@ class TestCmdSetupClient:
         assert win["url"] == "https://192.168.1.20:4624/mcp"
         assert win["headers"] == {"Authorization": "Bearer wt_tok"}
 
-    @patch("aiir_cli.commands.client_setup._test_remnux_connection")
+    @patch("vhir_cli.commands.client_setup._test_remnux_connection")
     def test_remnux_endpoint(self, mock_test, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         self._isolate_home(monkeypatch, tmp_path)
@@ -301,16 +301,16 @@ class TestCmdSetupClient:
 
         data = json.loads((tmp_path / ".mcp.json").read_text())
         assert "my-custom-mcp" in data["mcpServers"]
-        assert "aiir" in data["mcpServers"]
+        assert "vhir" in data["mcpServers"]
 
     def test_sift_writes_global_claude_json(self, tmp_path, monkeypatch):
         """On SIFT, MCP servers go to ~/.claude.json with type=http."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         # Create gateway.yaml to trigger SIFT detection
-        aiir_dir = tmp_path / ".aiir"
-        aiir_dir.mkdir()
-        (aiir_dir / "gateway.yaml").write_text("api_keys: {}")
+        vhir_dir = tmp_path / ".vhir"
+        vhir_dir.mkdir()
+        (vhir_dir / "gateway.yaml").write_text("api_keys: {}")
 
         args = self._make_args()
         identity = {"examiner": "testuser"}
@@ -323,11 +323,11 @@ class TestCmdSetupClient:
         claude_json = tmp_path / ".claude.json"
         assert claude_json.is_file()
         data = json.loads(claude_json.read_text())
-        assert "aiir" in data["mcpServers"]
-        assert data["mcpServers"]["aiir"]["type"] == "http"
+        assert "vhir" in data["mcpServers"]
+        assert data["mcpServers"]["vhir"]["type"] == "http"
 
     @patch(
-        "aiir_cli.commands.client_setup._prompt_windows_token", return_value="wt_tok"
+        "vhir_cli.commands.client_setup._prompt_windows_token", return_value="wt_tok"
     )
     def test_librechat_config(self, mock_prompt, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -398,7 +398,7 @@ class TestFormatServerEntry:
 
     def test_claude_desktop_uses_mcp_remote(self):
         with patch(
-            "aiir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx"
+            "vhir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx"
         ):
             entry = _format_server_entry(
                 "claude-desktop", "https://sift:4508/mcp", "tok123"
@@ -415,7 +415,7 @@ class TestFormatServerEntry:
 
     def test_claude_desktop_requires_npx(self):
         """Verify SystemExit raised when npx is not installed."""
-        with patch("aiir_cli.commands.client_setup.shutil.which", return_value=None):
+        with patch("vhir_cli.commands.client_setup.shutil.which", return_value=None):
             with pytest.raises(SystemExit, match="npx"):
                 _format_server_entry(
                     "claude-desktop", "https://sift:4508/mcp", "tok123"
@@ -437,15 +437,15 @@ class TestRemoteSetup:
             "no_mslearn": True,
             "yes": True,
             "remote": True,
-            "token": "aiir_gw_abc123",
+            "token": "vhir_gw_abc123",
             "uninstall": False,
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    @patch("aiir_cli.commands.client_setup._probe_health_with_auth")
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._save_gateway_config")
+    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._save_gateway_config")
     def test_remote_generates_per_backend_urls(
         self, mock_save, mock_discover, mock_probe, tmp_path, monkeypatch
     ):
@@ -465,7 +465,7 @@ class TestRemoteSetup:
         data = json.loads(config_path.read_text())
 
         # No aggregate — per-backend entries cover everything
-        assert "aiir" not in data["mcpServers"]
+        assert "vhir" not in data["mcpServers"]
 
         # Per-backend endpoints
         assert "forensic-mcp" in data["mcpServers"]
@@ -479,9 +479,9 @@ class TestRemoteSetup:
             == "https://sift.example.com:4508/mcp/sift-mcp"
         )
 
-    @patch("aiir_cli.commands.client_setup._probe_health_with_auth")
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._save_gateway_config")
+    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._save_gateway_config")
     def test_remote_bearer_token_in_headers(
         self, mock_save, mock_discover, mock_probe, tmp_path, monkeypatch
     ):
@@ -498,7 +498,7 @@ class TestRemoteSetup:
             if "headers" in entry:
                 assert entry["headers"]["Authorization"] == "Bearer secret_token_xyz"
 
-    @patch("aiir_cli.commands.client_setup._probe_health_with_auth")
+    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
     def test_remote_unreachable_gateway_exits(self, mock_probe, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_probe.return_value = None
@@ -507,9 +507,9 @@ class TestRemoteSetup:
         with pytest.raises(SystemExit):
             _cmd_setup_client_remote(args, identity)
 
-    @patch("aiir_cli.commands.client_setup._probe_health_with_auth")
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._save_gateway_config")
+    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._save_gateway_config")
     def test_remote_saves_gateway_config(
         self, mock_save, mock_discover, mock_probe, tmp_path, monkeypatch
     ):
@@ -521,13 +521,13 @@ class TestRemoteSetup:
         identity = {"examiner": "testuser"}
         _cmd_setup_client_remote(args, identity)
         mock_save.assert_called_once_with(
-            "https://sift.example.com:4508", "aiir_gw_abc123"
+            "https://sift.example.com:4508", "vhir_gw_abc123"
         )
 
-    @patch("aiir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx")
-    @patch("aiir_cli.commands.client_setup._probe_health_with_auth")
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._save_gateway_config")
+    @patch("vhir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx")
+    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._save_gateway_config")
     def test_remote_claude_desktop_uses_mcp_remote(
         self, mock_save, mock_discover, mock_probe, mock_which, tmp_path, monkeypatch
     ):
@@ -556,13 +556,13 @@ class TestSaveGatewayConfig:
         _save_gateway_config("https://sift:4508", "tok123")
         import yaml
 
-        config = yaml.safe_load((tmp_path / ".aiir" / "config.yaml").read_text())
+        config = yaml.safe_load((tmp_path / ".vhir" / "config.yaml").read_text())
         assert config["gateway_url"] == "https://sift:4508"
         assert config["gateway_token"] == "tok123"
 
     def test_preserves_existing_keys(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        config_dir = tmp_path / ".aiir"
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir()
         import yaml
 
@@ -576,17 +576,17 @@ class TestSaveGatewayConfig:
 class TestReadLocalToken:
     def test_reads_token_from_gateway_yaml(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        config_dir = tmp_path / ".aiir"
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir()
         import yaml
 
         gateway_config = {
             "api_keys": {
-                "aiir_gw_abc123xyz": {"examiner": "default", "role": "lead"},
+                "vhir_gw_abc123xyz": {"examiner": "default", "role": "lead"},
             },
         }
         (config_dir / "gateway.yaml").write_text(yaml.dump(gateway_config))
-        assert _read_local_token() == "aiir_gw_abc123xyz"
+        assert _read_local_token() == "vhir_gw_abc123xyz"
 
     def test_no_gateway_yaml_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
@@ -594,7 +594,7 @@ class TestReadLocalToken:
 
     def test_empty_api_keys_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        config_dir = tmp_path / ".aiir"
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir()
         import yaml
 
@@ -603,7 +603,7 @@ class TestReadLocalToken:
 
     def test_no_api_keys_key_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        config_dir = tmp_path / ".aiir"
+        config_dir = tmp_path / ".vhir"
         config_dir.mkdir()
         import yaml
 
@@ -629,14 +629,14 @@ class TestLocalModeTokenThreading:
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._read_local_token")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._read_local_token")
     def test_local_mode_injects_token(
         self, mock_token, mock_discover, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        mock_token.return_value = "aiir_gw_secret123"
+        mock_token.return_value = "vhir_gw_secret123"
         mock_discover.return_value = [
             {"name": "forensic-mcp", "started": True},
             {"name": "sift-mcp", "started": True},
@@ -648,15 +648,15 @@ class TestLocalModeTokenThreading:
         data = json.loads((tmp_path / ".mcp.json").read_text())
         for name in ("forensic-mcp", "sift-mcp"):
             entry = data["mcpServers"][name]
-            assert entry["headers"]["Authorization"] == "Bearer aiir_gw_secret123"
+            assert entry["headers"]["Authorization"] == "Bearer vhir_gw_secret123"
 
         # Verify token was passed to discover
         mock_discover.assert_called_once_with(
-            "http://127.0.0.1:4508", "aiir_gw_secret123"
+            "http://127.0.0.1:4508", "vhir_gw_secret123"
         )
 
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._read_local_token")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._read_local_token")
     def test_local_mode_no_token_no_headers(
         self, mock_token, mock_discover, tmp_path, monkeypatch
     ):
@@ -671,26 +671,26 @@ class TestLocalModeTokenThreading:
         data = json.loads((tmp_path / ".mcp.json").read_text())
         assert "headers" not in data["mcpServers"]["forensic-mcp"]
 
-    @patch("aiir_cli.commands.client_setup._discover_services")
-    @patch("aiir_cli.commands.client_setup._read_local_token")
+    @patch("vhir_cli.commands.client_setup._discover_services")
+    @patch("vhir_cli.commands.client_setup._read_local_token")
     def test_local_mode_fallback_aggregate_gets_token(
         self, mock_token, mock_discover, tmp_path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        mock_token.return_value = "aiir_gw_tok"
+        mock_token.return_value = "vhir_gw_tok"
         mock_discover.return_value = None  # Discovery failed
         args = self._make_args()
         identity = {"examiner": "testuser"}
         cmd_setup_client(args, identity)
 
         data = json.loads((tmp_path / ".mcp.json").read_text())
-        entry = data["mcpServers"]["aiir"]
-        assert entry["headers"]["Authorization"] == "Bearer aiir_gw_tok"
+        entry = data["mcpServers"]["vhir"]
+        assert entry["headers"]["Authorization"] == "Bearer vhir_gw_tok"
 
 
 class TestUninstallHelpers:
-    def test_remove_aiir_mcp_entries(self, tmp_path):
+    def test_remove_vhir_mcp_entries(self, tmp_path):
         path = tmp_path / ".claude.json"
         data = {
             "mcpServers": {
@@ -701,7 +701,7 @@ class TestUninstallHelpers:
             "other_key": "preserved",
         }
         path.write_text(json.dumps(data))
-        _remove_aiir_mcp_entries(path)
+        _remove_vhir_mcp_entries(path)
 
         result = json.loads(path.read_text())
         assert "my-custom" in result["mcpServers"]

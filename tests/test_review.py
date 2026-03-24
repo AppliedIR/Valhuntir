@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     compute_content_hash,
     load_findings,
     save_findings,
@@ -14,7 +14,7 @@ from aiir_cli.case_io import (
     verify_approval_integrity,
     write_approval_log,
 )
-from aiir_cli.commands.review import (
+from vhir_cli.commands.review import (
     _extract_iocs_from_findings,
     _extract_text_iocs,
     cmd_review,
@@ -28,7 +28,7 @@ def case_dir(tmp_path, monkeypatch):
     case_path = tmp_path / case_id
     case_path.mkdir()
 
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
 
     meta = {
         "case_id": case_id,
@@ -43,7 +43,7 @@ def case_dir(tmp_path, monkeypatch):
     with open(case_path / "evidence.json", "w") as f:
         json.dump({"files": []}, f)
 
-    monkeypatch.setenv("AIIR_CASE_DIR", str(case_path))
+    monkeypatch.setenv("VHIR_CASE_DIR", str(case_path))
     return case_path
 
 

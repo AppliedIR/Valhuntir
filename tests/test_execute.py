@@ -1,11 +1,11 @@
-"""Tests for aiir exec command."""
+"""Tests for vhir exec command."""
 
 import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aiir_cli.commands.execute import cmd_exec
+from vhir_cli.commands.execute import cmd_exec
 
 
 def _mock_tty(response="y\n"):
@@ -18,7 +18,7 @@ def _mock_tty(response="y\n"):
 @pytest.fixture
 def case_dir(tmp_path, monkeypatch):
     """Create a flat case directory with audit dir."""
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
     (tmp_path / "audit").mkdir(parents=True)
     return tmp_path
 
@@ -45,7 +45,7 @@ class TestExecEmptyCommand:
     def test_empty_cmd_exits_with_guidance(
         self, case_dir, identity, monkeypatch, capsys
     ):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(cmd=[], purpose="test")
         with pytest.raises(SystemExit):
             cmd_exec(args, identity)
@@ -56,7 +56,7 @@ class TestExecEmptyCommand:
     def test_only_separator_exits_with_guidance(
         self, case_dir, identity, monkeypatch, capsys
     ):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(cmd=["--"], purpose="test")
         with pytest.raises(SystemExit):
             cmd_exec(args, identity)
@@ -66,9 +66,9 @@ class TestExecEmptyCommand:
 
 class TestExec:
     def test_audit_written_on_exec(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(cmd=["echo", "hello"], purpose="test command")
-        with patch("aiir_cli.approval_auth.open", return_value=_mock_tty()):
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
             cmd_exec(args, identity)
         log_file = case_dir / "audit" / "cli-exec.jsonl"
         assert log_file.exists()
@@ -83,20 +83,20 @@ class TestExec:
         assert "elapsed_ms" in entry
 
     def test_cancelled_exec_writes_nothing(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(cmd=["echo", "hello"], purpose="test")
-        with patch("aiir_cli.approval_auth.open", return_value=_mock_tty("n\n")):
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty("n\n")):
             cmd_exec(args, identity)
         log_file = case_dir / "audit" / "cli-exec.jsonl"
         assert not log_file.exists()
 
     def test_audit_id_sequence_increments(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(cmd=["echo", "one"], purpose="first")
-        with patch("aiir_cli.approval_auth.open", return_value=_mock_tty()):
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
             cmd_exec(args, identity)
         args2 = FakeArgs(cmd=["echo", "two"], purpose="second")
-        with patch("aiir_cli.approval_auth.open", return_value=_mock_tty()):
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
             cmd_exec(args2, identity)
         log_file = case_dir / "audit" / "cli-exec.jsonl"
         lines = [json.loads(line) for line in log_file.read_text().strip().split("\n")]
@@ -105,9 +105,9 @@ class TestExec:
         assert lines[1]["audit_id"].endswith("-002")
 
     def test_result_summary_captures_exit_code(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(cmd=["echo", "hello"], purpose="test")
-        with patch("aiir_cli.approval_auth.open", return_value=_mock_tty()):
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
             cmd_exec(args, identity)
         log_file = case_dir / "audit" / "cli-exec.jsonl"
         entry = json.loads(log_file.read_text().strip())

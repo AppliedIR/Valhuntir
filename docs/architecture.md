@@ -2,7 +2,7 @@
 
 ## System Overview
 
-AIIR uses MCP (Model Context Protocol) to connect LLM clients to forensic tools. The architecture separates concerns into three layers:
+ValiHuntIR uses MCP (Model Context Protocol) to connect LLM clients to forensic tools. The architecture separates concerns into three layers:
 
 1. **Gateway layer** — HTTP entry point, authentication, request routing
 2. **MCP backends** — Specialized servers for different forensic functions
@@ -38,7 +38,7 @@ These are structural facts. If any other document contradicts these, the invaria
 3. **wintools-mcp runs on a Windows machine.** It is independent of the gateway. The gateway does not manage or proxy wintools-mcp.
 4. **Clients connect to two endpoints at most:** the gateway (SIFT tools) and wintools-mcp (Windows tools).
 5. **The case directory is local per examiner.** Multi-examiner collaboration uses export/merge, not shared filesystem.
-6. **Human approval is structural.** The AI cannot approve its own work. Only the aiir CLI can move findings to APPROVED.
+6. **Human approval is structural.** The AI cannot approve its own work. Only the vhir CLI can move findings to APPROVED.
 7. **AGENTS.md is the source of truth for forensic rules.** Per-client config files (CLAUDE.md) are copies, not sources.
 8. **forensic-knowledge is a shared data package.** It has no runtime state.
 
@@ -96,7 +96,7 @@ Offline Windows baseline validation. Checks files, processes, services, schedule
 
 ### case-dashboard
 
-The Examiner Portal. Web-based finding review interface served by the gateway at `/portal/`. Provides inline editing of findings (confidence, justification, observation, interpretation, MITRE IDs, IOCs), evidence artifact display, and an integrity section showing verification status, provenance, and content hashes. Edits are saved to `pending-reviews.json` and applied via `aiir approve --review`.
+The Examiner Portal. Web-based finding review interface served by the gateway at `/portal/`. Provides inline editing of findings (confidence, justification, observation, interpretation, MITRE IDs, IOCs), evidence artifact display, and an integrity section showing verification status, provenance, and content hashes. Edits are saved to `pending-reviews.json` and applied via `vhir approve --review`.
 
 ### opencti-mcp
 
@@ -106,7 +106,7 @@ Read-only threat intelligence from OpenCTI. IOC lookup, threat actor search, mal
 
 ### Solo Analyst
 
-One SIFT workstation. The LLM client, aiir CLI, gateway, and all MCPs run on the same machine.
+One SIFT workstation. The LLM client, vhir CLI, gateway, and all MCPs run on the same machine.
 
 ```text
 ┌─────────────────────── SIFT Workstation ───────────────────────┐
@@ -117,7 +117,7 @@ One SIFT workstation. The LLM client, aiir CLI, gateway, and all MCPs run on the
 │                                      │                         │
 │                                  SIFT MCPs                     │
 │                                      │                         │
-│  aiir CLI ──filesystem──► Case Directory ◄── forensic-mcp      │
+│  vhir CLI ──filesystem──► Case Directory ◄── forensic-mcp      │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -131,7 +131,7 @@ SIFT workstation plus a Windows forensic VM. The LLM client makes two separate H
 │                                                                │
 │  LLM Client ──streamable-http──► sift-gateway :4508 ──► MCPs  │
 │                                                                │
-│  aiir CLI ──filesystem──► Case Directory                       │
+│  vhir CLI ──filesystem──► Case Directory                       │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 
@@ -162,7 +162,7 @@ Each examiner runs their own full stack on their own SIFT workstation. Collabora
 
 ```text
 ┌─ Examiner 1 — SIFT Workstation ─┐
-│ LLM Client + aiir CLI            │
+│ LLM Client + vhir CLI            │
 │ sift-gateway :4508 ──► MCPs      │
 │ Case Directory (local)            │
 └───────────────────────────────────┘
@@ -170,7 +170,7 @@ Each examiner runs their own full stack on their own SIFT workstation. Collabora
         │  export / merge (JSON files)
         │
 ┌─ Examiner 2 — SIFT Workstation ─┐
-│ LLM Client + aiir CLI            │
+│ LLM Client + vhir CLI            │
 │ sift-gateway :4508 ──► MCPs      │
 │ Case Directory (local)            │
 └───────────────────────────────────┘
@@ -240,6 +240,6 @@ Every forensic tool response is wrapped in a structured envelope with forensic-k
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | SIFT monorepo: 11 packages, installer, platform docs |
 | [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows tool execution MCP + installer |
-| [aiir](https://github.com/AppliedIR/aiir) | CLI + architecture reference |
+| [vhir](https://github.com/AppliedIR/valihuntir) | CLI + architecture reference |
 
 Public repos under the AppliedIR GitHub org.

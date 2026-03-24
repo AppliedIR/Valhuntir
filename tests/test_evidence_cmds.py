@@ -5,7 +5,7 @@ import stat
 
 import pytest
 
-from aiir_cli.commands.evidence import (
+from vhir_cli.commands.evidence import (
     cmd_evidence,
     cmd_evidence_log,
     cmd_list_evidence,
@@ -18,7 +18,7 @@ from aiir_cli.commands.evidence import (
 @pytest.fixture
 def case_dir(tmp_path, monkeypatch):
     """Create flat case dir with evidence directory."""
-    monkeypatch.setenv("AIIR_EXAMINER", "tester")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
     (tmp_path / "evidence").mkdir()
     (tmp_path / "evidence.json").write_text('{"files": []}')
     return tmp_path
@@ -53,7 +53,7 @@ class FakeArgs:
 
 class TestLockEvidence:
     def test_lock_sets_444_perms(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "sample.bin"
         ev_file.write_bytes(b"evidence data")
         cmd_lock_evidence(FakeArgs(), identity)
@@ -64,7 +64,7 @@ class TestLockEvidence:
 
 class TestRegisterEvidence:
     def test_register_updates_evidence_json(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "malware.bin"
         ev_file.write_bytes(b"malware content")
         args = FakeArgs(path=str(ev_file), description="Test malware")
@@ -77,7 +77,7 @@ class TestRegisterEvidence:
 
 class TestListEvidence:
     def test_list_shows_registered_files(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         # Register a file first
         ev_file = case_dir / "evidence" / "sample.bin"
         ev_file.write_bytes(b"test data")
@@ -93,13 +93,13 @@ class TestListEvidence:
         assert "1 evidence file(s)" in output
 
     def test_list_empty_registry(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         cmd_list_evidence(FakeArgs(), identity)
         output = capsys.readouterr().out
         assert "No evidence files" in output
 
     def test_list_no_registry(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         (case_dir / "evidence.json").unlink()
         cmd_list_evidence(FakeArgs(), identity)
         output = capsys.readouterr().out
@@ -108,7 +108,7 @@ class TestListEvidence:
 
 class TestVerifyEvidence:
     def test_verify_ok(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "intact.bin"
         ev_file.write_bytes(b"original data")
         cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
@@ -121,7 +121,7 @@ class TestVerifyEvidence:
         assert "1 verified" in output
 
     def test_verify_modified(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "tampered.bin"
         ev_file.write_bytes(b"original data")
         cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
@@ -139,7 +139,7 @@ class TestVerifyEvidence:
         assert "ALERT" in output
 
     def test_verify_missing(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "deleted.bin"
         ev_file.write_bytes(b"data")
         cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
@@ -154,7 +154,7 @@ class TestVerifyEvidence:
         assert "1 missing" in output
 
     def test_verify_empty_registry(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         cmd_verify_evidence(FakeArgs(), identity)
         output = capsys.readouterr().out
         assert "No evidence files" in output
@@ -162,7 +162,7 @@ class TestVerifyEvidence:
 
 class TestEvidenceLog:
     def test_log_shows_entries(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "sample.bin"
         ev_file.write_bytes(b"data")
         cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
@@ -174,7 +174,7 @@ class TestEvidenceLog:
         assert "1 entries" in output
 
     def test_log_filter_by_path(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev1 = case_dir / "evidence" / "alpha.bin"
         ev2 = case_dir / "evidence" / "beta.bin"
         ev1.write_bytes(b"a")
@@ -194,7 +194,7 @@ class TestEvidenceLog:
         assert "1 entries" in output
 
     def test_log_empty(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         cmd_evidence_log(FakeArgs(), identity)
         output = capsys.readouterr().out
         assert "No evidence access log" in output
@@ -202,7 +202,7 @@ class TestEvidenceLog:
 
 class TestEvidenceSubcommandDispatch:
     def test_dispatch_register(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         ev_file = case_dir / "evidence" / "dispatch.bin"
         ev_file.write_bytes(b"dispatch test")
         args = FakeArgs(
@@ -213,27 +213,27 @@ class TestEvidenceSubcommandDispatch:
         assert "Registered" in output
 
     def test_dispatch_list(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(evidence_action="list")
         cmd_evidence(args, identity)
         output = capsys.readouterr().out
         assert "No evidence files" in output
 
     def test_dispatch_verify(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(evidence_action="verify")
         cmd_evidence(args, identity)
         output = capsys.readouterr().out
         assert "No evidence files" in output
 
     def test_dispatch_log(self, case_dir, identity, monkeypatch, capsys):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         args = FakeArgs(evidence_action="log")
         cmd_evidence(args, identity)
         output = capsys.readouterr().out
         assert "No evidence access log" in output
 
     def test_dispatch_no_action(self, case_dir, identity, monkeypatch):
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         with pytest.raises(SystemExit):
             cmd_evidence(FakeArgs(), identity)

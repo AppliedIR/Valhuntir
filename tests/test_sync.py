@@ -1,4 +1,4 @@
-"""Tests for aiir export/merge commands."""
+"""Tests for vhir export/merge commands."""
 
 import argparse
 import json
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aiir_cli.commands.sync import cmd_export, cmd_merge
+from vhir_cli.commands.sync import cmd_export, cmd_merge
 
 
 def _init_case(case_dir: Path, examiner: str = "alice") -> None:
@@ -58,8 +58,8 @@ class TestExport:
     def test_export_writes_bundle(self, tmp_path, monkeypatch):
         case_dir = tmp_path / "case"
         _init_case(case_dir)
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         output = tmp_path / "bundle.json"
         args = _make_export_args(file=str(output))
@@ -75,8 +75,8 @@ class TestExport:
     def test_export_no_file_exits(self, tmp_path, monkeypatch):
         case_dir = tmp_path / "case"
         _init_case(case_dir)
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         args = _make_export_args(file="")
         with pytest.raises(SystemExit):
@@ -97,8 +97,8 @@ class TestExport:
         )
         (case_dir / "findings.json").write_text(json.dumps(findings))
 
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         output = tmp_path / "bundle.json"
         args = _make_export_args(file=str(output), since="2026-03-01T00:00:00Z")
@@ -113,8 +113,8 @@ class TestMerge:
     def test_merge_reads_bundle(self, tmp_path, monkeypatch, capsys):
         case_dir = tmp_path / "case"
         _init_case(case_dir, examiner="alice")
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         bundle = {
             "case_id": "INC-2026-0001",
@@ -144,8 +144,8 @@ class TestMerge:
     def test_merge_missing_file_exits(self, tmp_path, monkeypatch):
         case_dir = tmp_path / "case"
         _init_case(case_dir)
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         args = _make_merge_args(file=str(tmp_path / "nonexistent.json"))
         with pytest.raises(SystemExit):
@@ -154,8 +154,8 @@ class TestMerge:
     def test_merge_no_file_flag_exits(self, tmp_path, monkeypatch):
         case_dir = tmp_path / "case"
         _init_case(case_dir)
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         args = _make_merge_args(file="")
         with pytest.raises(SystemExit):
@@ -164,8 +164,8 @@ class TestMerge:
     def test_merge_last_write_wins(self, tmp_path, monkeypatch, capsys):
         case_dir = tmp_path / "case"
         _init_case(case_dir, examiner="alice")
-        monkeypatch.setenv("AIIR_CASE_DIR", str(case_dir))
-        monkeypatch.setenv("AIIR_EXAMINER", "alice")
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
 
         # Import a bundle with a newer version of alice's finding
         bundle = {

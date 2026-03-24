@@ -2,9 +2,9 @@
 
 Always captures os_user. Explicit examiner identity resolved by priority:
 1. --examiner flag (highest)
-2. AIIR_EXAMINER env var
-3. AIIR_ANALYST env var (deprecated alias)
-4. .aiir/config.yaml examiner or analyst field
+2. VHIR_EXAMINER env var
+3. VHIR_ANALYST env var (deprecated alias)
+4. .vhir/config.yaml examiner or analyst field
 5. Falls back to OS username
 """
 
@@ -72,18 +72,18 @@ def get_examiner_identity(flag_override: str | None = None) -> dict:
     if flag_override:
         return _result(flag_override, "flag")
 
-    # Priority 2: AIIR_EXAMINER env var
-    env_examiner = os.environ.get("AIIR_EXAMINER")
+    # Priority 2: VHIR_EXAMINER env var
+    env_examiner = os.environ.get("VHIR_EXAMINER")
     if env_examiner:
         return _result(env_examiner, "env")
 
-    # Priority 3: AIIR_ANALYST env var (deprecated alias)
-    env_analyst = os.environ.get("AIIR_ANALYST")
+    # Priority 3: VHIR_ANALYST env var (deprecated alias)
+    env_analyst = os.environ.get("VHIR_ANALYST")
     if env_analyst:
         return _result(env_analyst, "env")
 
-    # Priority 4: .aiir/config.yaml
-    config_path = Path.home() / ".aiir" / "config.yaml"
+    # Priority 4: .vhir/config.yaml
+    config_path = Path.home() / ".vhir" / "config.yaml"
     if config_path.exists():
         try:
             with open(config_path) as f:
@@ -110,7 +110,7 @@ def warn_if_unconfigured(identity: dict) -> None:
     if identity["examiner_source"] == "os_user":
         print(
             f"No examiner identity configured. Using OS user '{identity['os_user']}'.\n"
-            f"Run 'aiir config --examiner <name>' to set your identity.\n"
+            f"Run 'vhir config --examiner <name>' to set your identity.\n"
             f"Tip: For audit accountability, use individual OS accounts rather than shared ones.\n",
             file=sys.stderr,
         )

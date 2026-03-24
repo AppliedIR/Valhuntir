@@ -78,49 +78,49 @@ def get_case_dir(case_id: str | None = None) -> Path:
     """Resolve the active case directory."""
     if case_id:
         _validate_case_id(case_id)
-        cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+        cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
         case_dir = cases_dir / case_id
         if not case_dir.exists():
             raise CaseError(f"Case not found: {case_id}")
         return case_dir
 
-    # Check AIIR_CASE_DIR env var
-    env_dir = os.environ.get("AIIR_CASE_DIR")
+    # Check VHIR_CASE_DIR env var
+    env_dir = os.environ.get("VHIR_CASE_DIR")
     if env_dir:
         case_dir = Path(env_dir)
         if not case_dir.is_dir():
             raise CaseError(f"Case directory does not exist: {case_dir}")
         return case_dir
 
-    # Check ~/.aiir/active_case pointer (absolute path or legacy bare ID)
-    active_file = Path.home() / ".aiir" / "active_case"
+    # Check ~/.vhir/active_case pointer (absolute path or legacy bare ID)
+    active_file = Path.home() / ".vhir" / "active_case"
     if active_file.exists():
         content = active_file.read_text().strip()
         if os.path.isabs(content):
             case_dir = Path(content)
         else:
-            # Legacy: bare case ID — resolve via AIIR_CASES_DIR
+            # Legacy: bare case ID — resolve via VHIR_CASES_DIR
             _validate_case_id(content)
-            cases_dir = Path(os.environ.get("AIIR_CASES_DIR", DEFAULT_CASES_DIR))
+            cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
             case_dir = cases_dir / content
         if not case_dir.is_dir():
             raise CaseError(f"Case directory does not exist: {case_dir}")
         return case_dir
 
-    raise CaseError("No active case. Use --case <id> or set AIIR_CASE_DIR.")
+    raise CaseError("No active case. Use --case <id> or set VHIR_CASE_DIR.")
 
 
 def get_examiner(case_dir: Path | None = None) -> str:
     """Get the current examiner identity.
 
-    Resolution: AIIR_EXAMINER > AIIR_ANALYST (deprecated) > CASE.yaml > OS user.
+    Resolution: VHIR_EXAMINER > VHIR_ANALYST (deprecated) > CASE.yaml > OS user.
     Validates the result to prevent path traversal via crafted env vars.
     """
-    env_exam = os.environ.get("AIIR_EXAMINER", "").strip().lower()
+    env_exam = os.environ.get("VHIR_EXAMINER", "").strip().lower()
     if env_exam:
         _validate_examiner(env_exam)
         return env_exam
-    env_analyst = os.environ.get("AIIR_ANALYST", "").strip().lower()
+    env_analyst = os.environ.get("VHIR_ANALYST", "").strip().lower()
     if env_analyst:
         _validate_examiner(env_analyst)
         return env_analyst

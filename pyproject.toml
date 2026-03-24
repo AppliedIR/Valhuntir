@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aiir-cli"
+name = "vhir-cli"
 version = "0.5.3"
-description = "AIIR CLI: human-in-the-loop approval, evidence management, forensic command execution"
+description = "ValiHuntIR CLI: human-in-the-loop approval, evidence management, forensic command execution"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
@@ -28,11 +28,11 @@ dependencies = [
 ]
 
 [project.scripts]
-aiir = "aiir_cli.main:main"
+vhir = "vhir_cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/AppliedIR/aiir"
-Repository = "https://github.com/AppliedIR/aiir"
+Homepage = "https://github.com/AppliedIR/valihuntir"
+Repository = "https://github.com/AppliedIR/valihuntir"
 
 [project.optional-dependencies]
 dev = [
@@ -42,7 +42,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/aiir_cli"]
+packages = ["src/vhir_cli"]
 
 [tool.ruff]
 target-version = "py310"
@@ -69,5 +69,5 @@ ignore = [
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["src/aiir_cli"]
+source = ["src/vhir_cli"]
 branch = true

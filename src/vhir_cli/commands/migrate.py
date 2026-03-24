@@ -1,7 +1,7 @@
 """Migrate cases from old examiners/ directory structure to flat layout.
 
 Usage:
-  aiir case migrate [--case-dir <path>] [--examiner <name>] [--import-all]
+  vhir case migrate [--case-dir <path>] [--examiner <name>] [--import-all]
 
 Detects the old examiners/ subdirectory structure and flattens it:
 - Re-IDs findings: F-001 → F-alice-001
@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 import yaml
 
-from aiir_cli.case_io import (
+from vhir_cli.case_io import (
     _atomic_write,
     get_case_dir,
     get_examiner,

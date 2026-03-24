@@ -4,7 +4,7 @@ Password uses getpass (reads from /dev/tty, no echo) to block
 both AI-via-Bash AND expect-style terminal automation.
 A password must be configured before approvals are allowed.
 
-Password hashes are stored in /var/lib/aiir/passwords/{examiner}.json
+Password hashes are stored in /var/lib/vhir/passwords/{examiner}.json
 (0o600, directory 0o700) — protected by Read/Edit/Write deny
 rules so the LLM cannot access the hash material. Auto-migration
 from the legacy config.yaml location happens on first use.
@@ -37,9 +37,9 @@ import yaml
 PBKDF2_ITERATIONS = 600_000
 _MAX_PASSWORD_ATTEMPTS = 3
 _LOCKOUT_SECONDS = 900  # 15 minutes
-_LOCKOUT_FILE = Path.home() / ".aiir" / ".password_lockout"
+_LOCKOUT_FILE = Path.home() / ".vhir" / ".password_lockout"
 _MIN_PASSWORD_LENGTH = 8
-_PASSWORDS_DIR = Path("/var/lib/aiir/passwords")
+_PASSWORDS_DIR = Path("/var/lib/vhir/passwords")
 
 
 _EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
@@ -91,8 +91,8 @@ def _save_password_entry(passwords_dir: Path, analyst: str, entry: dict) -> None
 
 
 def _maybe_migrate_pin_dir() -> None:
-    """Migrate /var/lib/aiir/pins/ → /var/lib/aiir/passwords/ if needed."""
-    old_dir = Path("/var/lib/aiir/pins")
+    """Migrate /var/lib/vhir/pins/ → /var/lib/vhir/passwords/ if needed."""
+    old_dir = Path("/var/lib/vhir/pins")
     if old_dir.is_dir() and not _PASSWORDS_DIR.is_dir():
         try:
             old_dir.rename(_PASSWORDS_DIR)
@@ -100,7 +100,7 @@ def _maybe_migrate_pin_dir() -> None:
             pass
 
     # Migrate lockout file: .pin_lockout → .password_lockout
-    old_lockout = Path.home() / ".aiir" / ".pin_lockout"
+    old_lockout = Path.home() / ".vhir" / ".pin_lockout"
     if old_lockout.exists() and not _LOCKOUT_FILE.exists():
         try:
             old_lockout.rename(_LOCKOUT_FILE)
@@ -183,7 +183,7 @@ def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | No
     """
     if not has_password(config_path, analyst):
         print(
-            "No approval password configured. Set one with:\n  aiir config --setup-password\n",
+            "No approval password configured. Set one with:\n  vhir config --setup-password\n",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -338,8 +338,8 @@ def reset_password(
         print(
             "\nIf you have forgotten your password, you can force a reset by removing\n"
             "the password file and setting up a new one:\n"
-            f"\n  rm /var/lib/aiir/passwords/{analyst}.json"
-            "\n  aiir config --setup-password\n"
+            f"\n  rm /var/lib/vhir/passwords/{analyst}.json"
+            "\n  vhir config --setup-password\n"
             "\nThis will invalidate HMAC signatures on previously approved findings.\n"
             "The findings themselves are preserved — only the integrity proof is lost.",
             file=sys.stderr,
@@ -354,7 +354,7 @@ def reset_password(
     # Re-HMAC verification ledger entries with new key
     new_salt = get_analyst_salt(config_path, analyst, passwords_dir=passwords_dir)
     try:
-        from aiir_cli.verification import (
+        from vhir_cli.verification import (
             VERIFICATION_DIR,
             derive_hmac_key,
             rehmac_entries,

@@ -25,8 +25,8 @@ from pathlib import Path
 
 import yaml
 
-from aiir_cli.approval_auth import require_confirmation
-from aiir_cli.case_io import (
+from vhir_cli.approval_auth import require_confirmation
+from vhir_cli.case_io import (
     check_case_file_integrity,
     compute_content_hash,
     find_draft_item,
@@ -45,7 +45,7 @@ from aiir_cli.case_io import (
 def cmd_approve(args, identity: dict) -> None:
     """Approve findings/timeline events."""
     case_dir = get_case_dir(getattr(args, "case", None))
-    config_path = Path.home() / ".aiir" / "config.yaml"
+    config_path = Path.home() / ".vhir" / "config.yaml"
 
     review = getattr(args, "review", False)
     if review and args.ids:
@@ -65,7 +65,7 @@ def cmd_approve(args, identity: dict) -> None:
             if n_items > 0:
                 print(
                     f"  Note: {n_items} pending dashboard review(s). "
-                    "Use `aiir approve --review` to apply them."
+                    "Use `vhir approve --review` to apply them."
                 )
         except (json.JSONDecodeError, OSError):
             pass
@@ -174,7 +174,7 @@ def _approve_specific(
         coupled_events.append(tl_event)
 
     # IOC approval coupling
-    from aiir_cli.case_io import load_iocs, save_iocs
+    from vhir_cli.case_io import load_iocs, save_iocs
 
     # Build lookup for all findings (not just ones being approved)
     all_findings = load_findings(case_dir)
@@ -248,7 +248,7 @@ def _approve_specific(
         print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
     if hmac_failures:
         print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
-        print("  Re-run 'aiir approve' on these items to generate HMAC entries.")
+        print("  Re-run 'vhir approve' on these items to generate HMAC entries.")
 
 
 def _interactive_review(
@@ -432,7 +432,7 @@ def _interactive_review(
             coupled_tl.append(tl_event)
 
     # IOC approval/rejection coupling
-    from aiir_cli.case_io import load_iocs, save_iocs
+    from vhir_cli.case_io import load_iocs, save_iocs
 
     all_finding_status = {f["id"]: f.get("status", "DRAFT") for f in findings}
     iocs = load_iocs(case_dir)
@@ -546,7 +546,7 @@ def _interactive_review(
         print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
     if hmac_failures:
         print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
-        print("  Re-run 'aiir approve' on these items to generate HMAC entries.")
+        print("  Re-run 'vhir approve' on these items to generate HMAC entries.")
 
 
 def _write_verification_entries(
@@ -562,8 +562,8 @@ def _write_verification_entries(
         return []  # No password — HMAC not applicable, not a failure
 
     try:
-        from aiir_cli.approval_auth import get_analyst_salt
-        from aiir_cli.verification import (
+        from vhir_cli.approval_auth import get_analyst_salt
+        from vhir_cli.verification import (
             compute_hmac,
             derive_hmac_key,
             write_ledger_entry,
@@ -1052,7 +1052,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
 
-    from aiir_cli.case_io import load_iocs, save_iocs
+    from vhir_cli.case_io import load_iocs, save_iocs
 
     iocs = load_iocs(case_dir)
 
@@ -1388,4 +1388,4 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
     if hmac_failures:
         print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
-        print("  Re-run 'aiir approve' on these items to generate HMAC entries.")
+        print("  Re-run 'vhir approve' on these items to generate HMAC entries.")
