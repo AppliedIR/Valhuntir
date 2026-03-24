@@ -1,8 +1,8 @@
 site_name: ValiHuntIR Documentation
 site_description: ValiHuntIR — forensic investigation platform
-site_url: https://appliedir.github.io/aiir/
-repo_url: https://github.com/AppliedIR/aiir
-repo_name: AppliedIR/aiir
+site_url: https://appliedir.github.io/valihuntir/
+repo_url: https://github.com/AppliedIR/valihuntir
+repo_name: AppliedIR/valihuntir
 edit_uri: edit/main/docs/
 
 theme:
