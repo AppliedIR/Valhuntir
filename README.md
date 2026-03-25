@@ -158,7 +158,7 @@ graph TB
         end
 
         CC -->|"streamable-http"| RAPI
-        CC -->|"streamable-http"| WAPI
+        GW -->|"HTTPS"| WAPI
         WAPI -->|"SMB"| CASE
     end
 
