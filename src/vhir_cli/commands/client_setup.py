@@ -919,11 +919,13 @@ def _fixup_global_hook_path(settings_path: Path) -> None:
         for entry in entries:
             for h in entry.get("hooks", []):
                 cmd = h.get("command", "")
-                if "$CLAUDE_PROJECT_DIR" in cmd and cmd.endswith(".sh"):
-                    # Extract the script filename from the path
+                if cmd.endswith(".sh"):
                     script_name = cmd.rsplit("/", 1)[-1]
-                    h["command"] = str(hooks_dir / script_name)
-                    changed = True
+                    correct_path = str(hooks_dir / script_name)
+                    if cmd != correct_path:
+                        # Rewrite $CLAUDE_PROJECT_DIR paths AND stale .aiir paths
+                        h["command"] = correct_path
+                        changed = True
 
     if changed:
         _write_600(settings_path, json.dumps(data, indent=2) + "\n")
