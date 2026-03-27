@@ -242,7 +242,11 @@ def cmd_update(args, identity: dict) -> None:
         sys.exit(1)
 
     # Verify uv is available (installed by setup-sift.sh)
-    if subprocess.run(["uv", "--version"], capture_output=True).returncode != 0:
+    try:
+        uv_ok = subprocess.run(["uv", "--version"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        uv_ok = False
+    if not uv_ok:
         print(
             "uv not found. Run setup-sift.sh to install it.",
             file=sys.stderr,
