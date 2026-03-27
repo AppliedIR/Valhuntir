@@ -695,5 +695,5 @@ if [[ "$CLIENT" == "claude-code" ]]; then
 fi
 
 echo ""
-echo -e "${BOLD}Documentation:${NC} https://appliedir.github.io/valhuntir/"
+echo -e "${BOLD}Documentation:${NC} https://appliedir.github.io/Valhuntir/"
 echo ""

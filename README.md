@@ -2,13 +2,13 @@
 
 # Valhuntir
 [![CI](https://github.com/AppliedIR/valhuntir/actions/workflows/ci.yml/badge.svg)](https://github.com/AppliedIR/valhuntir/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-appliedir.github.io-blue)](https://appliedir.github.io/valhuntir/)
+[![Docs](https://img.shields.io/badge/docs-appliedir.github.io-blue)](https://appliedir.github.io/Valhuntir/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AppliedIR/valhuntir/blob/main/LICENSE)
 
 Valhuntir forensic investigation platform with varying levels of human-in-the-loop review and control based on your deployment needs. CLI and architecture reference.
 
-**[Platform Documentation](https://appliedir.github.io/valhuntir/)** ·
-[CLI Reference](https://appliedir.github.io/valhuntir/cli-reference/)
+**[Platform Documentation](https://appliedir.github.io/Valhuntir/)** ·
+[CLI Reference](https://appliedir.github.io/Valhuntir/cli-reference/)
 
 > **Public Beta** — This project is undergoing active feature development.
 > Backward compatibility with future releases is not guaranteed. Consider
