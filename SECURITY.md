@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please report it using [GitHub's private vulnerability reporting](https://github.com/AppliedIR/valhuntir/security/advisories/new) rather than opening a public issue.
+If you discover a security vulnerability, please report it using [GitHub's private vulnerability reporting](https://github.com/AppliedIR/Valhuntir/security/advisories/new) rather than opening a public issue.
 
 Please include:
 - Description of the vulnerability

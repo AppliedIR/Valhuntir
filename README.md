@@ -1,9 +1,9 @@
 ![Valhuntir](docs/images/vhir-logo.png)
 
 # Valhuntir
-[![CI](https://github.com/AppliedIR/valhuntir/actions/workflows/ci.yml/badge.svg)](https://github.com/AppliedIR/valhuntir/actions/workflows/ci.yml)
+[![CI](https://github.com/AppliedIR/Valhuntir/actions/workflows/ci.yml/badge.svg)](https://github.com/AppliedIR/Valhuntir/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-appliedir.github.io-blue)](https://appliedir.github.io/Valhuntir/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AppliedIR/valhuntir/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AppliedIR/Valhuntir/blob/main/LICENSE)
 
 Valhuntir forensic investigation platform with varying levels of human-in-the-loop review and control based on your deployment needs. CLI and architecture reference.
 
@@ -625,17 +625,17 @@ For remote orchestrator setups (Path 2), remote examiners run a platform-specifi
 
 ```
 # Linux
-curl -sSL https://raw.githubusercontent.com/AppliedIR/valhuntir/main/setup-client-linux.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/Valhuntir/main/setup-client-linux.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 
 # macOS
-curl -sSL https://raw.githubusercontent.com/AppliedIR/valhuntir/main/setup-client-macos.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/Valhuntir/main/setup-client-macos.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 ```
 
 ```
 # Windows
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/valhuntir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/Valhuntir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
 .\setup-client-windows.ps1 -Sift https://SIFT_IP:4508 -Code XXXX-XXXX
 ```
 
@@ -671,7 +671,7 @@ Every approval, rejection, and command execution is logged with examiner identit
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
 | [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (7 tools, 31 catalog entries) |
-| [Valhuntir](https://github.com/AppliedIR/valhuntir) | CLI, architecture reference |
+| [Valhuntir](https://github.com/AppliedIR/Valhuntir) | CLI, architecture reference |
 
 ## Updating
 

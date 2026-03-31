@@ -31,8 +31,8 @@ dependencies = [
 vhir = "vhir_cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/AppliedIR/valhuntir"
-Repository = "https://github.com/AppliedIR/valhuntir"
+Homepage = "https://github.com/AppliedIR/Valhuntir"
+Repository = "https://github.com/AppliedIR/Valhuntir"
 
 [project.optional-dependencies]
 dev = [

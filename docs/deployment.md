@@ -111,19 +111,19 @@ Run the appropriate setup script on the machine where your LLM client runs. Each
 
 **Linux:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/AppliedIR/valhuntir/main/setup-client-linux.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/Valhuntir/main/setup-client-linux.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 ```
 
 **macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/AppliedIR/valhuntir/main/setup-client-macos.sh \
+curl -sSL https://raw.githubusercontent.com/AppliedIR/Valhuntir/main/setup-client-macos.sh \
   | bash -s -- --sift=https://SIFT_IP:4508 --code=XXXX-XXXX
 ```
 
 **Windows:**
 ```powershell
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/valhuntir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/Valhuntir/main/setup-client-windows.ps1 -OutFile setup-client-windows.ps1
 .\setup-client-windows.ps1 -Sift https://SIFT_IP:4508 -Code XXXX-XXXX
 ```
 
