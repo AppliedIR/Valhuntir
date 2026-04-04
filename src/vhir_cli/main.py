@@ -492,6 +492,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("portal", help="Open the Examiner Portal in your browser")
     sub.add_parser("dashboard", help="Open the legacy dashboard (v1)")
 
+    # Plugin discovery — external packages register subcommands
+    from importlib.metadata import entry_points
+
+    registered = set(sub.choices.keys())
+    for ep in entry_points(group="vhir.plugins"):
+        try:
+            register_fn = ep.load()
+            register_fn(sub, registered)
+        except Exception as e:
+            print(f"Warning: failed to load plugin {ep.name}: {e}", file=sys.stderr)
+
     return parser
 
 
@@ -539,6 +550,14 @@ def main() -> None:
         try:
             handler(args, identity)
         except CaseError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif hasattr(args, "func"):
+        try:
+            args.func(args, identity)
+        except SystemExit:
+            raise
+        except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
     else:
@@ -741,7 +760,7 @@ def _case_list(args, identity: dict) -> None:
 
 
 def _case_init_data(
-    name: str, examiner: str, description: str = "", cases_dir=None
+    name: str, examiner: str, description: str = "", cases_dir=None, case_id=None
 ) -> dict:
     """Create a new case and return structured data.
 
@@ -776,7 +795,16 @@ def _case_init_data(
         raise ValueError("Cannot initialize case: examiner identity is empty.")
 
     ts = datetime.now(timezone.utc)
-    case_id = f"INC-{ts.strftime('%Y')}-{ts.strftime('%m%d%H%M%S')}"
+    if not case_id:
+        case_id = f"INC-{ts.strftime('%Y')}-{ts.strftime('%m%d%H%M%S')}"
+    else:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$", case_id):
+            raise ValueError(
+                "case_id must be alphanumeric with hyphens/underscores, "
+                "start with letter/digit, 2-64 chars"
+            )
     case_dir = cases_dir / case_id
 
     if case_dir.exists():

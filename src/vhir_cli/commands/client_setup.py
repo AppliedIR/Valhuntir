@@ -216,6 +216,19 @@ def cmd_setup_client(args, identity: dict) -> None:
             "url": _MSLEARN_MCP["url"],
         }
 
+    # opensearch-mcp — detect if installed, add as stdio for Claude Code
+    import importlib.util
+
+    if (
+        importlib.util.find_spec("opensearch_mcp") is not None
+        and "opensearch-mcp" not in servers
+    ):
+        servers["opensearch-mcp"] = {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "opensearch_mcp"],
+        }
+
     if not servers:
         print("No endpoints configured — nothing to write.", file=sys.stderr)
         return

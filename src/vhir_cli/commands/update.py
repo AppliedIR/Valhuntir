@@ -30,10 +30,12 @@ _INSTALL_ORDER = [
     "windows-triage-mcp",
     "rag-mcp",
     "opencti-mcp",
+    "opensearch-mcp",
 ]
 
 # Paths relative to manifest["source"] (sift-mcp repo root).
 # vhir-cli is special — relative to parent directory.
+# opensearch-mcp is external — resolved separately in _EXTERNAL_PACKAGES.
 _PACKAGE_PATHS = {
     "forensic-knowledge": "packages/forensic-knowledge",
     "sift-common": "packages/sift-common",
@@ -354,6 +356,15 @@ def cmd_update(args, identity: dict) -> None:
             continue
         if pkg_name == "vhir-cli":
             pkg_path = str(vhir_dir)
+        elif pkg_name == "opensearch-mcp":
+            # External repo — check sibling of sift-mcp, then default
+            candidates = [
+                source.parent / "opensearch-mcp",
+                Path.home() / ".vhir" / "src" / "opensearch-mcp",
+            ]
+            pkg_path = next((str(p) for p in candidates if p.is_dir()), None)
+            if not pkg_path:
+                continue
         else:
             rel = _PACKAGE_PATHS.get(pkg_name)
             if not rel:

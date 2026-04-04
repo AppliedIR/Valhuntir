@@ -118,13 +118,13 @@ graph LR
 | Claude Code → MS Learn MCP | HTTPS | `https://learn.microsoft.com/api/mcp` — streamable-http type in .mcp.json |
 | Claude Code → Zeltser IR Writing MCP | HTTPS | `https://website-mcp.zeltser.com/mcp` — streamable-http type in .mcp.json |
 
-No gateway, no sandbox, no deny rules. Claude runs forensic tools directly via Bash. Forensic discipline is suggested and reinforced via prompt hooks and reference documents, but Claude Code can choose to ignore them. See the [sift-mcp README](https://github.com/AppliedIR/sift-mcp#valhuntir-lite--get-started-in-minutes) for details and optional add-ons.
+No gateway, no sandbox, no deny rules. Claude runs forensic tools directly via Bash. Forensic discipline is suggested and reinforced via prompt hooks and reference documents, but Claude Code can choose to ignore them. See the [sift-mcp README](https://github.com/AppliedIR/sift-mcp#valhuntir-lite) for details and optional add-ons.
 
-## Full Valhuntir — Structural Enforcement
+## Valhuntir — Structural Enforcement
 
-For use cases where more definitive human-in-the-loop approval is desired, the full Valhuntir suite ensures accountability and enforces human review of findings through cryptographic signing, password-gated approvals, and multiple layered controls.
+For use cases where more definitive human-in-the-loop approval is desired, Valhuntir ensures accountability and enforces human review of findings through cryptographic signing, password-gated approvals, and multiple layered controls. With optional [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed and indexed into OpenSearch, giving the LLM 17 purpose-built query tools for structured investigation across millions of records.
 
-Full Valhuntir is **LLM client agnostic** — connect any MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, LibreChat, Cherry Studio, and any MCP-only client that supports Streamable HTTP transport with Bearer token authentication. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
+Valhuntir is **LLM client agnostic** — connect any MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, LibreChat, Cherry Studio, and any MCP-only client that supports Streamable HTTP transport with Bearer token authentication. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
 
 ## Platform Architecture
 
@@ -142,6 +142,7 @@ graph TB
             BR["Browser<br/>(Examiner Portal)"]
             CLI["vhir CLI"]
             GW["sift-gateway :4508"]
+            OSD["OpenSearch<br/>Docker :9200"]
             CASE["Case Directory"]
 
             CC -->|"streamable-http"| GW
@@ -173,26 +174,28 @@ graph TB
     GW -.->|"HTTP(S)"| OCTI
 ```
 
-REMnux and Windows VMs are optional. SIFT alone provides 79 MCP tools across 7 backends, the Examiner Portal, and full case management.
+REMnux, Windows, and OpenSearch are optional. SIFT alone provides 73 MCP tools across 7 backends (90 with opensearch-mcp), the Examiner Portal, and full case management.
 
 ### SIFT Platform Components
 
-The sift-gateway aggregates 7 MCP backends as stdio subprocesses behind a single HTTP endpoint. Each backend is also available individually. The Examiner Portal is served by the gateway for browser-based review and approval.
+The sift-gateway aggregates up to 8 MCP backends as stdio subprocesses behind a single HTTP endpoint. Each backend is also available individually. The Examiner Portal is served by the gateway for browser-based review and approval. opensearch-mcp connects to a local or remote OpenSearch instance for evidence indexing and querying at scale.
 
 ```mermaid
 graph LR
     GW["sift-gateway :4508"]
 
-    FM["forensic-mcp<br/>26 tools · findings, timeline,<br/>evidence, discipline"]
+    FM["forensic-mcp<br/>23 tools · findings, timeline,<br/>evidence, discipline"]
     CM["case-mcp<br/>15 tools · case management,<br/>audit queries, backup"]
     RM["report-mcp<br/>6 tools · report generation,<br/>IOC aggregation"]
-    SM["sift-mcp<br/>6 tools · Linux forensic<br/>tool execution"]
+    SM["sift-mcp<br/>5 tools · Linux forensic<br/>tool execution"]
     RAG["forensic-rag<br/>3 tools · semantic search<br/>23K records"]
     WT["windows-triage<br/>13 tools · offline baseline<br/>validation"]
-    OC["opencti<br/>10 tools · threat<br/>intelligence"]
+    OC["opencti<br/>8 tools · threat<br/>intelligence"]
+    OS["opensearch-mcp<br/>17 tools · evidence indexing,<br/>query, enrichment"]
     CD["Examiner Portal<br/>browser review + commit"]
     FK["forensic-knowledge<br/>shared YAML data"]
     CASE["Case Directory"]
+    OSD["OpenSearch<br/>Docker :9200"]
 
     GW -->|stdio| FM
     GW -->|stdio| CM
@@ -201,6 +204,7 @@ graph LR
     GW -->|stdio| RAG
     GW -->|stdio| WT
     GW -->|stdio| OC
+    GW -->|stdio| OS
     GW --> CD
     FM --> FK
     SM --> FK
@@ -208,6 +212,7 @@ graph LR
     CM --> CASE
     RM --> CASE
     CD --> CASE
+    OS --> OSD
 ```
 
 ### Human-in-the-Loop Workflow
@@ -250,13 +255,15 @@ The timeline view places findings and other observables in chronological context
 | Component | Runs on | Port | Purpose |
 |-----------|---------|------|---------|
 | sift-gateway | SIFT | 4508 | Aggregates SIFT-local MCPs behind one HTTP endpoint |
-| forensic-mcp | SIFT | (via gateway) | Findings, timeline, evidence, TODOs, IOCs, discipline (26 tools) |
+| forensic-mcp | SIFT | (via gateway) | Findings, timeline, evidence, TODOs, IOCs, discipline (23 tools) |
 | case-mcp | SIFT | (via gateway) | Case management, audit queries, evidence registration, backup (15 tools) |
 | report-mcp | SIFT | (via gateway) | Report generation with profiles, IOC aggregation, MITRE mapping (6 tools) |
-| sift-mcp | SIFT | (via gateway) | Denylist-protected forensic tool execution on Linux/SIFT (6 tools) |
+| sift-mcp | SIFT | (via gateway) | Denylist-protected forensic tool execution on Linux/SIFT (5 tools) |
+| opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (17 tools). Optional. |
 | forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more |
 | windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation |
-| opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (10 tools) |
+| opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (8 tools) |
+| OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
 | Examiner Portal | SIFT | (via gateway) | 8-tab browser UI: overview, findings with provenance chains, timeline with ruler, hosts, accounts, evidence verification, IOCs, TODOs. Primary review UI. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (7 tools) |
 | vhir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via Examiner Portal. Remote examiners need SSH only for CLI-exclusive operations. |
@@ -270,6 +277,7 @@ http://localhost:4508/mcp/forensic-mcp
 http://localhost:4508/mcp/case-mcp
 http://localhost:4508/mcp/report-mcp
 http://localhost:4508/mcp/sift-mcp
+http://localhost:4508/mcp/opensearch-mcp
 http://localhost:4508/mcp/windows-triage-mcp
 http://localhost:4508/mcp/forensic-rag-mcp
 http://localhost:4508/mcp/opencti-mcp
@@ -675,7 +683,7 @@ Every approval, rejection, and command execution is logged with examiner identit
 
 ## Updating
 
-### Full Valhuntir
+### Valhuntir
 
 ```
 vhir update              # Pull latest code, reinstall packages, redeploy controls, restart gateway
@@ -687,17 +695,17 @@ The update command pulls the latest code from both repos (sift-mcp and vhir),
 reinstalls all packages, redeploys forensic controls, restarts the gateway,
 and runs a connectivity smoke test.
 
-## Upgrading from Lite to Full
+## Upgrading from Lite to Valhuntir
 
-Both modes share the same Python venv, triage databases, and RAG index. Full
-Valhuntir adds the gateway (7 MCP backends behind one HTTP endpoint), 4 additional
-MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp), a web-based review
-portal (Examiner Portal), structured case management, sandbox enforcement,
-and HMAC-signed approvals.
+Both modes share the same Python venv, triage databases, and RAG index.
+Valhuntir adds the gateway (up to 8 MCP backends behind one HTTP endpoint),
+4+ additional MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp,
+and optionally opensearch-mcp), a web-based review portal (Examiner Portal),
+structured case management, sandbox enforcement, and HMAC-signed approvals.
 
 To upgrade, run `setup-sift.sh` from your existing sift-mcp clone. The
 installer reuses the existing venv and databases. Lite case data (markdown
-files) does not auto-migrate to full case data (structured JSON) — start
+files) does not auto-migrate to Valhuntir case data (structured JSON) — start
 fresh or transfer findings manually.
 
 ## Evidence Handling
