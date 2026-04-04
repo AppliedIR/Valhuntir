@@ -516,26 +516,105 @@ def _prompt_yn_strict(message: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _claude_mcp_add_available() -> bool:
+    """Check if claude CLI is available."""
+    import shutil
+
+    return shutil.which("claude") is not None
+
+
+def _claude_mcp_add(name: str, entry: dict) -> None:
+    """Register one MCP server via claude mcp add."""
+    import subprocess
+
+    url = entry.get("url", "")
+    if not url:
+        return
+    # Remove existing entry first (idempotent)
+    subprocess.run(
+        ["claude", "mcp", "remove", name, "-s", "user"],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+    )
+    cmd = ["claude", "mcp", "add", "-t", "http", "-s", "user"]
+    headers = entry.get("headers", {})
+    for k, v in headers.items():
+        cmd.extend(["-H", f"{k}: {v}"])
+    cmd.append(name)
+    cmd.append(url)
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace")[:200]
+        print(
+            f"  WARNING: claude mcp add {name} failed: {stderr}",
+            file=sys.stderr,
+        )
+
+
+def _cleanup_duplicate_backends(servers: dict) -> None:
+    """Remove per-backend entries that duplicate gateway routing."""
+    _BACKEND_NAMES = {
+        "forensic-mcp",
+        "case-mcp",
+        "sift-mcp",
+        "report-mcp",
+        "forensic-rag-mcp",
+        "windows-triage-mcp",
+        "opencti-mcp",
+        "opensearch-mcp",
+        "wintools-mcp",
+        "forensic-rag",
+        "windows-triage",
+    }
+    gw_url = servers.get("vhir", {}).get("url", "")
+    if not gw_url:
+        return
+    gw_base = gw_url.rsplit("/mcp/", 1)[0]
+    claude_json = Path.home() / ".claude.json"
+    if not claude_json.is_file():
+        return
+    try:
+        data = json.loads(claude_json.read_text())
+        existing = data.get("mcpServers", {})
+        removed = []
+        for name in list(existing):
+            if name in _BACKEND_NAMES:
+                entry_url = existing[name].get("url", "")
+                if entry_url.startswith(gw_base):
+                    del existing[name]
+                    removed.append(name)
+        if removed:
+            _write_600(claude_json, json.dumps(data, indent=2) + "\n")
+            print(f"  Cleaned up {len(removed)} duplicate backend entries")
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
 def _generate_config(client: str, servers: dict, examiner: str) -> None:
     config = {"mcpServers": servers}
     sift = _is_sift()
 
     if client == "claude-code":
+        # Standardize type to "http" for all Claude Code installs
+        for entry in servers.values():
+            entry["type"] = "http"
+
         if sift:
-            # SIFT: write MCP servers globally to ~/.claude.json
-            global_config = Path.home() / ".claude.json"
-            # Transform type to "http" for global scope
-            global_servers = {}
-            for name, entry in servers.items():
-                g_entry = dict(entry)
-                g_entry["type"] = "http"
-                global_servers[name] = g_entry
-            _merge_and_write(global_config, {"mcpServers": global_servers})
-            print(f"  Generated: {global_config} (global MCP servers)")
+            # SIFT: prefer claude mcp add (canonical, reliable)
+            if _claude_mcp_add_available():
+                for name, entry in servers.items():
+                    _claude_mcp_add(name, entry)
+                print(f"  Registered {len(servers)} MCP servers via claude mcp add")
+            else:
+                global_config = Path.home() / ".claude.json"
+                _merge_and_write(global_config, {"mcpServers": servers})
+                print(f"  Generated: {global_config} (global MCP servers)")
+                print("  NOTE: If tools don't load, try: claude mcp add ...")
+            # Clean up per-backend duplicates from prior installs
+            _cleanup_duplicate_backends(servers)
         else:
-            # Non-SIFT: write .mcp.json to cwd
             output = Path.cwd() / ".mcp.json"
-            _merge_and_write(output, config)
+            _merge_and_write(output, {"mcpServers": servers})
             print(f"  Generated: {output}")
 
         _deploy_claude_code_assets(Path.cwd())
