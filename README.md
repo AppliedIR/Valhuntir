@@ -306,7 +306,6 @@ curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.
 
 ```
 curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh --recommended --opensearch
-cd ~/.vhir/src/opensearch-mcp && ./scripts/setup-opensearch.sh
 ```
 
 **Custom** — Individual package selection, OpenCTI integration, or remote access with TLS:
