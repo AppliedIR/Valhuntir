@@ -260,6 +260,15 @@ def cmd_update(args, identity: dict) -> None:
 
     repos = [("sift-mcp", source), ("vhir", vhir_dir)]
 
+    # Add opensearch-mcp if installed (external repo, not in sift-mcp monorepo)
+    for os_candidate in [
+        source.parent / "opensearch-mcp",
+        Path.home() / ".vhir" / "src" / "opensearch-mcp",
+    ]:
+        if os_candidate.is_dir() and (os_candidate / ".git").is_dir():
+            repos.append(("opensearch-mcp", os_candidate))
+            break
+
     # Step 2: Fetch + compare
     for name, path in repos:
         if not path.is_dir():
