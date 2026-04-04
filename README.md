@@ -27,29 +27,25 @@ Valhuntir is **LLM client agnostic** — connect any MCP-compatible client throu
 
 With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 17 purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
 
-**The math:** 50M records x ~200 tokens/record = 10 billion tokens (impossible). Indexed: the LLM issues `idx_search(query="event.code:4688 AND process.parent.name:cmd.exe")` = ~500 tokens (instant).
+**The math:** 50M records x ~200 tokens/record = 10 billion tokens. Indexed: the LLM issues a structured query and gets back 50 results in ~500 tokens.
 
-15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, and Prefetch/SRUM.
+15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, and Prefetch/SRUM (via Plaso or wintools-mcp).
 
 Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`), and proper `@timestamp` with timezone handling.
 
 ### Investigation Workflow
 
-The recommended workflow uses OpenSearch for evidence indexing. Without OpenSearch, the same investigation tools are available through direct file-based analysis via `run_command` — OpenSearch adds scale, not capability.
+1. **Create a case** — set case name, examiner identity, case directory
+2. **Register evidence** — hash files, establish chain of custody
+3. **Ingest and index** — parse evidence into OpenSearch for structured querying (or analyze files directly without OpenSearch)
+4. **Scope the investigation** — review what's indexed, identify hosts and artifact types, check for Sigma detection hits
+5. **Enrich programmatically** — validate files/services against known-good baselines, check IOCs against threat intelligence (zero LLM tokens)
+6. **Search and analyze** — query across millions of records, aggregate patterns, build timelines
+7. **Record findings** — stage findings and timeline events as DRAFT with full evidence provenance
+8. **Human review** — examiner approves or rejects each finding via the Examiner Portal or CLI (HMAC-signed)
+9. **Generate report** — produce IR report from approved findings with MITRE mappings and IOC aggregation
 
-```
-1. case_init("Ransomware Investigation")     → Create case, set examiner
-2. evidence_register(path, description)       → SHA-256 hash, chain of custody
-3. idx_ingest(case_dir, hostname)             → Parse + index into OpenSearch
-4. idx_case_summary(case_id)                  → Hosts, artifacts, fields, time range
-5. idx_search / idx_aggregate / idx_timeline  → Structured queries (~500 tokens each)
-6. idx_enrich_triage + idx_enrich_intel       → Programmatic enrichment (zero tokens)
-7. record_finding / record_timeline_event     → Stage as DRAFT with provenance
-8. Examiner Portal or vhir approve            → Human review → APPROVED/REJECTED
-9. generate_report(profile="full")            → IR report from approved findings
-```
-
-Without OpenSearch, steps 3-6 are replaced by direct tool execution (`run_command`) and manual analysis. The investigation workflow, findings, timeline, and reporting are identical either way.
+Without OpenSearch, steps 3-6 are replaced by direct tool execution and manual analysis. Findings, timeline, approval workflow, and reporting are identical either way.
 
 ### Deployment Configurations
 
@@ -306,27 +302,19 @@ curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.
 curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh --recommended
 ```
 
-**Custom** — Individual package selection, OpenCTI integration, or remote access with TLS:
+**Recommended with OpenSearch** — Everything above plus evidence indexing at scale. Parses and indexes evidence into OpenSearch, giving the LLM 17 structured query tools instead of reading raw artifacts. Requires Docker.
 
 ```
-git clone https://github.com/AppliedIR/sift-mcp.git
-cd sift-mcp
-./setup-sift.sh
-```
-
-Add `--opensearch` to any install command to include evidence indexing. This works with quick, recommended, and custom installs:
-
-```
-bash /tmp/vhir-quickstart.sh --recommended --opensearch
-```
-
-After installation, set up the OpenSearch Docker container:
-
-```
+curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh --recommended --opensearch
 cd ~/.vhir/src/opensearch-mcp && ./scripts/setup-opensearch.sh
 ```
 
-If opensearch-mcp is already cloned alongside sift-mcp, the installer detects it automatically — no flag needed.
+**Custom** — Individual package selection, OpenCTI integration, or remote access with TLS:
+
+```
+git clone https://github.com/AppliedIR/sift-mcp.git && cd sift-mcp
+./setup-sift.sh
+```
 
 ### Windows Forensic Workstation (optional)
 
