@@ -148,6 +148,10 @@ def register_evidence_data(
     case_dir = Path(case_dir)
     evidence_path = Path(path)
 
+    # Resolve relative paths against case directory
+    if not evidence_path.is_absolute():
+        evidence_path = case_dir / evidence_path
+
     if not evidence_path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
