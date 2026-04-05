@@ -205,6 +205,69 @@ def _ensure_password_dir() -> None:
         )
 
 
+def _check_opensearch_version(source: Path) -> None:
+    """Warn if running OpenSearch container doesn't match pinned version."""
+    import re
+
+    # Find pinned version from docker-compose.yml
+    for os_path in [
+        source.parent / "opensearch-mcp" / "docker" / "docker-compose.yml",
+        Path.home()
+        / ".vhir"
+        / "src"
+        / "opensearch-mcp"
+        / "docker"
+        / "docker-compose.yml",
+    ]:
+        if os_path.is_file():
+            text = os_path.read_text()
+            m = re.search(r"opensearchproject/opensearch:(\S+)", text)
+            if m:
+                pinned = m.group(1)
+                break
+    else:
+        return  # No docker-compose found — opensearch not installed
+
+    # Check running container version
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Config.Image}}", "vhir-opensearch"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return  # Container not running
+    running_image = result.stdout.strip()
+    running_m = re.search(r"opensearchproject/opensearch:(\S+)", running_image)
+    if not running_m:
+        return
+    running = running_m.group(1)
+
+    if running != pinned:
+        print(
+            f"\n  OpenSearch version mismatch: running {running}, code requires {pinned}."
+        )
+        print("  Upgrading requires recreating the container. Indexed search data")
+        print("  will be cleared and must be reingested. Case records (findings,")
+        print("  timeline, evidence) are NOT affected.")
+        setup_script = os_path.parent / "setup-opensearch.sh"
+        try:
+            answer = input("\n  Upgrade OpenSearch now? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer in ("y", "yes"):
+            print(f"  Running {setup_script}...")
+            result = subprocess.run(
+                ["bash", str(setup_script)],
+                timeout=300,
+            )
+            if result.returncode != 0:
+                print("  OpenSearch upgrade failed.", file=sys.stderr)
+        else:
+            print(f"  Skipped. To upgrade later: bash {setup_script}")
+        print()
+
+
 def cmd_update(args, identity: dict) -> None:
     """Pull latest code and redeploy Valhuntir installation."""
     check_only = getattr(args, "check", False)
@@ -463,6 +526,9 @@ def cmd_update(args, identity: dict) -> None:
             print(f"failed ({result.stderr.strip()})")
             print("  Check with: systemctl --user status vhir-gateway")
             restart_ok = False
+
+    # Step 7b: Check OpenSearch version mismatch
+    _check_opensearch_version(source)
 
     # Step 8: Smoke test (wait for gateway to bind port after restart)
     run_test = not no_restart
