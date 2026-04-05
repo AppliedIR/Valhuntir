@@ -27,8 +27,6 @@ Valhuntir is **LLM client agnostic** — connect any MCP-compatible client throu
 
 With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 17 purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
 
-**The math:** 50M records x ~200 tokens/record = 10 billion tokens. Indexed: the LLM issues a structured query and gets back 50 results in ~500 tokens.
-
 15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, and Prefetch/SRUM (via Plaso or wintools-mcp).
 
 Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`), and proper `@timestamp` with timezone handling.
@@ -39,9 +37,9 @@ Every parser produces deterministic content-based document IDs (re-ingest = zero
 2. **Register evidence** — hash files, establish chain of custody
 3. **Ingest and index** — parse evidence into OpenSearch for structured querying (or analyze files directly without OpenSearch)
 4. **Scope the investigation** — review what's indexed, identify hosts and artifact types, check for Sigma detection hits
-5. **Enrich programmatically** — validate files/services against known-good baselines, check IOCs against threat intelligence (zero LLM tokens)
+5. **Enrich programmatically** — validate files/services against known-good baselines, check IOCs against threat intelligence (zero LLM tokens with opensearch-mcp)
 6. **Search and analyze** — query across millions of records, aggregate patterns, build timelines
-7. **Record findings** — stage findings and timeline events as DRAFT with full evidence provenance
+7. **Record findings** — LLM stages findings and timeline events as DRAFT with full evidence provenance
 8. **Human review** — examiner approves or rejects each finding via the Examiner Portal or CLI (HMAC-signed)
 9. **Generate report** — produce IR report from approved findings with MITRE mappings and IOC aggregation
 
@@ -149,7 +147,7 @@ graph LR
 
 ### Human-in-the-Loop Workflow
 
-All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings.
+All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings. MCP guidance provides reminders to the LLM to check in with the human frequently for review and guidance.
 
 ```mermaid
 sequenceDiagram
@@ -181,6 +179,24 @@ Examiners review findings in the Examiner Portal — validating artifacts, obser
 The timeline view places findings and other observables in chronological context across the investigation.
 
 ![Examiner Portal — Timeline](docs/images/portal-timeline.png)
+
+### Forensic Knowledge Reinforcement
+
+Valhuntir reinforces forensic discipline through multiple layers built into the MCP servers, client configuration, and gateway — not through a single system prompt that the LLM can drift from during long sessions.
+
+**Forensic Knowledge (FK) package** — A shared YAML data package (`forensic-knowledge`) used by forensic-mcp and sift-mcp. Contains tool catalogs with forensic context (caveats, common mistakes, interpretation guidance), artifact descriptions, and discipline rules. When sift-mcp executes a forensic tool, the FK package enriches the response with tool-specific guidance — the LLM receives not just the output but context on how to interpret it correctly. This is injected at the MCP response level, not in the system prompt, so it arrives exactly when the LLM needs it.
+
+**Rotating discipline reminders** — Each sift-mcp tool response includes a rotating forensic discipline reminder selected from the FK rules. These are short, contextual nudges ("Evidence guides theory, never the reverse", "Absence of evidence is not evidence of absence", etc.) that reinforce methodology throughout the session without consuming a fixed block of the context window. forensic-mcp reinforces discipline through finding validation — when the LLM records a finding, the server checks it against methodology standards and returns actionable feedback.
+
+**MCP server instructions** — Each MCP server provides structured instructions via the MCP protocol's `instructions` field, delivered during session initialization. These describe the server's tools, expected workflows, and constraints. The gateway aggregates instructions from all backends into a single coherent briefing.
+
+**Client configuration** — For Claude Code, `vhir setup client` deploys `CLAUDE.md` (investigation rules and MCP backend descriptions), `FORENSIC_DISCIPLINE.md` (evidence standards, confidence levels, checkpoint requirements), and `TOOL_REFERENCE.md` (tool selection workflows and score interpretation) as persistent context. `AGENTS.md` (MCP server descriptions, recording requirements, provenance rules, adversarial evidence handling) is deployed as a rules file for Claude Code and is available for other MCP clients to load as project instructions. For clients that don't support project instructions, the MCP server instructions delivered via the protocol carry the core guidance.
+
+**Forensic RAG** — The `forensic-rag-mcp` server provides semantic search across 23,000+ records from 23 authoritative sources: Sigma rules, MITRE ATT&CK techniques, MITRE D3FEND countermeasures, Atomic Red Team tests, KAPE targets, Velociraptor artifacts, forensic artifact definitions, LOLBAS/LOLDrivers, CISA KEV, and more. The LLM queries this during investigation to ground its analysis in authoritative references rather than training data.
+
+**Windows triage baseline** — The `windows-triage-mcp` server provides offline validation against 2.6 million known Windows file and process baseline records. The LLM can check whether a file, service, scheduled task, or registry entry is expected, suspicious, or unknown — without any network call.
+
+These layers work together: FK enriches tool responses in real-time, discipline reminders maintain methodology awareness, server instructions establish workflow expectations, client docs provide persistent reference, and RAG + triage provide authoritative knowledge on demand. No single layer is sufficient alone — the reinforcement comes from consistent, contextual repetition across all interaction surfaces.
 
 ### Where Things Run
 
