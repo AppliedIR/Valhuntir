@@ -275,6 +275,8 @@ if [[ -f "$HOME/.zshrc" ]]; then SHELL_RC="$HOME/.zshrc";
 elif [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc"; fi
 
 if [[ -n "$SHELL_RC" ]]; then
+    # Clean up old naming from prior installs
+    sed -i '' '/^export Valhuntir_EXAMINER=/d' "$SHELL_RC" 2>/dev/null || true
     if grep -q "VHIR_EXAMINER" "$SHELL_RC" 2>/dev/null; then
         sed -i '' "s/^export VHIR_EXAMINER=.*/export VHIR_EXAMINER=\"$EXAMINER_NAME\"/" "$SHELL_RC"
     else

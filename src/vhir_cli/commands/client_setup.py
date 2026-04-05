@@ -543,7 +543,7 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
         cmd.extend(["-H", f"{k}: {v}"])
     cmd.append(name)
     cmd.append(url)
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")[:200]
         print(

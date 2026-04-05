@@ -456,21 +456,27 @@ def cmd_update(args, identity: dict) -> None:
             text=True,
             timeout=30,
         )
-        if result.returncode == 0:
+        restart_ok = result.returncode == 0
+        if restart_ok:
             print("done")
         else:
             print(f"failed ({result.stderr.strip()})")
             print("  Check with: systemctl --user status vhir-gateway")
+            restart_ok = False
 
     # Step 8: Smoke test (wait for gateway to bind port after restart)
-    if not no_restart:
+    run_test = not no_restart
+    if not no_restart and not restart_ok:
+        print("  Skipping connectivity test (restart failed)")
+        run_test = False
+    if run_test:
         import time as _time
 
         _time.sleep(3)
-    print("  Running connectivity test...")
-    from vhir_cli.commands.setup import _run_connectivity_test
+        print("  Running connectivity test...")
+        from vhir_cli.commands.setup import _run_connectivity_test
 
-    _run_connectivity_test()
+        _run_connectivity_test()
 
     # Step 9: Summary
     hashes = manifest.get("git", {})
