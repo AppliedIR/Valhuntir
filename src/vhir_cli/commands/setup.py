@@ -203,8 +203,8 @@ def _run_connectivity_test() -> None:
     urlopen_kwargs = {"timeout": 15}
     if ssl_ctx is not None:
         urlopen_kwargs["context"] = ssl_ctx
-    # Poll every 2s for up to 16s — RAG model loading takes ~12s after restart
-    max_attempts = 8
+    # Poll every 2s for up to 30s — backends need time to start after reinstall
+    max_attempts = 15
     for attempt in range(max_attempts):
         try:
             req = urllib.request.Request(health_url)
