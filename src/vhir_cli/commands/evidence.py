@@ -182,9 +182,13 @@ def register_evidence_data(
         ):
             raise ValueError(
                 f"Evidence path must be within the case directory.\n"
-                f"  Evidence file:     {evidence_path}\n"
-                f"  Resolved to:       {resolved}\n"
-                f"  Case evidence dir: {case_dir / 'evidence'}"
+                f"  Path:     {evidence_path}\n"
+                f"  Resolved: {resolved}\n"
+                f"  Case dir: {case_resolved}\n"
+                f"Copy evidence into the case evidence directory first:\n"
+                f"  cp {evidence_path} {case_dir / 'evidence' / evidence_path.name}\n"
+                f"Or create a symlink:\n"
+                f"  ln -s {resolved} {case_dir / 'evidence' / evidence_path.name}"
             )
 
     # Compute SHA256
