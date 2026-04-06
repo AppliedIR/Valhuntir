@@ -669,6 +669,9 @@ def _setup_samba_share(join_code: str) -> str:
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to set SMB password: {e}") from e
 
+    # Push updated SMB credentials to wintools-mcp if configured
+    _push_smb_credentials(derived_password)
+
     # Prompt for wintools IP
     import ipaddress
 
@@ -872,7 +875,49 @@ def _wintools_ssl_context():
     return ctx
 
 
-def notify_wintools_case_activated(case_id: str) -> None:
+def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
+    """Push updated SMB credentials to wintools-mcp after smbpasswd change."""
+    import urllib.request
+    from urllib.parse import urlparse, urlunparse
+
+    gateway_config = Path.home() / ".vhir" / "gateway.yaml"
+    if not gateway_config.is_file():
+        return
+    try:
+        config = yaml.safe_load(gateway_config.read_text())
+    except Exception:
+        return
+    wt = config.get("backends", {}).get("wintools-mcp", {})
+    url = wt.get("url", "")
+    token = wt.get("bearer_token", "")
+    if not url or not token:
+        return  # wintools not configured
+
+    parsed = urlparse(url)
+    update_url = urlunparse(parsed._replace(path="/config/update-smb"))
+
+    payload = json.dumps({"smb_user": smb_user, "smb_password": password}).encode()
+    req = urllib.request.Request(
+        update_url,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    try:
+        kwargs: dict = {"timeout": 10}
+        if update_url.startswith("https"):
+            kwargs["context"] = _wintools_ssl_context()
+        with urllib.request.urlopen(req, **kwargs):
+            print("  SMB credentials pushed to wintools-mcp")
+    except (ConnectionError, OSError):
+        print("  WARNING: Could not reach wintools-mcp to push SMB credentials")
+    except Exception as e:
+        print(f"  WARNING: Failed to push SMB credentials: {e}", file=sys.stderr)
+
+
+def notify_wintools_case_activated(case_id: str) -> bool:
     """Notify wintools-mcp of case activation. Non-fatal on failure."""
     import urllib.request
     from urllib.parse import urlparse, urlunparse
@@ -908,10 +953,12 @@ def notify_wintools_case_activated(case_id: str) -> None:
             kwargs["context"] = _wintools_ssl_context()
         with urllib.request.urlopen(req, **kwargs):
             pass
+        return True
     except (ConnectionError, OSError):
-        pass  # wintools unreachable — non-fatal
+        return False
     except Exception as e:
         print(f"Warning: failed to notify wintools of activation: {e}", file=sys.stderr)
+        return False
 
 
 def notify_wintools_case_deactivated() -> None:
