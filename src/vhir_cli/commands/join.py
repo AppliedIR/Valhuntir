@@ -918,22 +918,26 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
 
 
 def notify_wintools_case_activated(case_id: str) -> bool:
-    """Notify wintools-mcp of case activation. Non-fatal on failure."""
+    """Notify wintools-mcp of case activation. Non-fatal on failure.
+
+    Returns True if notification succeeded or wintools is not configured.
+    Returns False only on actual communication failure.
+    """
     import urllib.request
     from urllib.parse import urlparse, urlunparse
 
     gateway_config = Path.home() / ".vhir" / "gateway.yaml"
     if not gateway_config.is_file():
-        return
+        return True  # not configured -- not a failure
     try:
         config = yaml.safe_load(gateway_config.read_text())
     except Exception:
-        return
+        return True  # can't read config -- not a wintools failure
     wt = config.get("backends", {}).get("wintools-mcp", {})
     url = wt.get("url", "")
     token = wt.get("bearer_token", "")
     if not url or not token:
-        return
+        return True  # wintools not configured -- not a failure
 
     parsed = urlparse(url)
     activate_url = urlunparse(parsed._replace(path="/cases/activate"))
