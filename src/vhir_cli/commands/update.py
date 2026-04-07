@@ -517,7 +517,7 @@ def cmd_update(args, identity: dict) -> None:
             ["systemctl", "--user", "restart", "vhir-gateway"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
         restart_ok = result.returncode == 0
         if restart_ok:
