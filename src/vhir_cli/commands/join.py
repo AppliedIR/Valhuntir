@@ -905,16 +905,21 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
             "Authorization": f"Bearer {token}",
         },
     )
-    try:
-        kwargs: dict = {"timeout": 5}
-        if update_url.startswith("https"):
-            kwargs["context"] = _wintools_ssl_context()
-        with urllib.request.urlopen(req, **kwargs):
-            print("  SMB credentials pushed to wintools-mcp")
-    except Exception:
-        # Best-effort: wintools may not be running yet (normal during first setup).
-        # The Windows installer derives the same password from the join code.
-        pass
+    import time as _time
+
+    kwargs: dict = {"timeout": 5}
+    if update_url.startswith("https"):
+        kwargs["context"] = _wintools_ssl_context()
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, **kwargs):
+                print("  SMB credentials pushed to wintools-mcp")
+                return
+        except Exception:
+            if attempt < 2:
+                _time.sleep(5)
+    # Best-effort: wintools may not be running yet (normal during first setup).
+    # The Windows installer derives the same password from the join code.
 
 
 def notify_wintools_case_activated(case_id: str) -> bool:
@@ -965,23 +970,27 @@ def notify_wintools_case_activated(case_id: str) -> bool:
         return False
 
 
-def notify_wintools_case_deactivated() -> None:
-    """Notify wintools-mcp of case deactivation. Non-fatal on failure."""
+def notify_wintools_case_deactivated() -> bool:
+    """Notify wintools-mcp of case deactivation. Non-fatal on failure.
+
+    Returns True if notification succeeded or wintools is not configured.
+    Returns False only on actual communication failure.
+    """
     import urllib.request
     from urllib.parse import urlparse, urlunparse
 
     gateway_config = Path.home() / ".vhir" / "gateway.yaml"
     if not gateway_config.is_file():
-        return
+        return True  # not configured
     try:
         config = yaml.safe_load(gateway_config.read_text())
     except Exception:
-        return
+        return True
     wt = config.get("backends", {}).get("wintools-mcp", {})
     url = wt.get("url", "")
     token = wt.get("bearer_token", "")
     if not url or not token:
-        return
+        return True  # not configured
 
     parsed = urlparse(url)
     deactivate_url = urlunparse(parsed._replace(path="/cases/deactivate"))
@@ -1000,13 +1009,14 @@ def notify_wintools_case_deactivated() -> None:
         if deactivate_url.startswith("https"):
             kwargs["context"] = _wintools_ssl_context()
         with urllib.request.urlopen(req, **kwargs):
-            pass
+            return True
     except (ConnectionError, OSError):
-        pass  # wintools unreachable — non-fatal
+        return False  # wintools unreachable
     except Exception as e:
         print(
             f"Warning: failed to notify wintools of deactivation: {e}", file=sys.stderr
         )
+        return False
 
 
 def _repoint_samba_share(case_dir: Path | None) -> None:
