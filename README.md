@@ -169,11 +169,7 @@ sequenceDiagram
     Human->>Case: vhir report --full
 ```
 
-The **Examiner Portal** is the primary review interface with 8 tabs: Overview (investigation progress and getting started guide), Findings (the core review workflow with provenance chain display), Timeline (chronological events with a color-coded ruler), Hosts (systems involved, aggregated from findings), Accounts (user/service accounts involved), Evidence (registered files with SHA-256 integrity verification), IOCs (indicators extracted from findings with category/status filters), and TODOs (outstanding tasks).
-
-Examiners review findings and timeline events, edit fields (confidence, justification, observation, interpretation, MITRE IDs, IOCs, tags), approve or reject items, and commit decisions — all in the browser. Each finding displays its evidence artifacts with a provenance chain showing which registered evidence files were input, which tools processed them, and what output was extracted. Keyboard shortcuts (`1`-`8` tabs, `j`/`k` navigate, `a` approve, `r` reject, `e` edit, `Shift+C` commit) enable fast review. The sidebar is resizable, and search matches across title, observation, host, and account fields. Light and dark themes are supported.
-
-The Commit button (`Shift+C`) uses challenge-response authentication: the browser derives a PBKDF2 key from the examiner's password and proves knowledge via HMAC — the password never leaves the browser. Timeline events auto-created from findings follow the finding's approval status unless manually edited. IOCs auto-extracted from findings cascade when all source findings reach the same status. The CLI's `vhir approve` provides the same functionality from the terminal. Open the portal with `vhir portal`.
+The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Commit button requires the examiner's password. The CLI's `vhir approve` provides the same capability from the terminal.
 
 Examiners review findings in the Examiner Portal — validating artifacts, observations, and interpretations, with the full command audit trail from original evidence to final result.
 
@@ -187,19 +183,14 @@ The timeline view places findings and other observables in chronological context
 
 Valhuntir reinforces forensic discipline through multiple layers built into the MCP servers, client configuration, and gateway — not through a single system prompt that the LLM can drift from during long sessions.
 
-**Forensic Knowledge (FK) package** — A shared YAML data package (`forensic-knowledge`) used by forensic-mcp and sift-mcp. Contains tool catalogs with forensic context (caveats, common mistakes, interpretation guidance), artifact descriptions, and discipline rules. When sift-mcp executes a forensic tool, the FK package enriches the response with tool-specific guidance — the LLM receives not just the output but context on how to interpret it correctly. This is injected at the MCP response level, not in the system prompt, so it arrives exactly when the LLM needs it.
+- **Forensic Knowledge (FK) package** — When a forensic tool is executed, the response is enriched with tool-specific caveats, corroboration suggestions, and field interpretation guidance. Delivered at the MCP response level, not in the system prompt, so it arrives exactly when the LLM needs it.
+- **Discipline reminders** — Each tool response includes a rotating forensic methodology reminder. Finding validation checks submissions against methodology standards and returns actionable feedback.
+- **MCP server instructions** — Each backend provides structured instructions during session initialization. The gateway aggregates them into a single coherent briefing.
+- **Client configuration** — For Claude Code, `vhir setup client` deploys forensic discipline docs, investigation rules, and tool reference guides as persistent context. Other clients receive guidance through MCP server instructions.
+- **Forensic RAG** — Semantic search across 22,000+ records from 23 authoritative sources (Sigma, MITRE ATT&CK, LOLBAS, Atomic Red Team, and more). Grounds LLM analysis in authoritative references rather than training data.
+- **Windows triage baseline** — Offline validation against 2.6 million known-good records. No network calls required.
 
-**Rotating discipline reminders** — Each sift-mcp tool response includes a rotating forensic discipline reminder selected from the FK rules. These are short, contextual nudges ("Evidence guides theory, never the reverse", "Absence of evidence is not evidence of absence", etc.) that reinforce methodology throughout the session without consuming a fixed block of the context window. forensic-mcp reinforces discipline through finding validation — when the LLM records a finding, the server checks it against methodology standards and returns actionable feedback.
-
-**MCP server instructions** — Each MCP server provides structured instructions via the MCP protocol's `instructions` field, delivered during session initialization. These describe the server's tools, expected workflows, and constraints. The gateway aggregates instructions from all backends into a single coherent briefing.
-
-**Client configuration** — For Claude Code, `vhir setup client` deploys `CLAUDE.md` (investigation rules and MCP backend descriptions), `FORENSIC_DISCIPLINE.md` (evidence standards, confidence levels, checkpoint requirements), and `TOOL_REFERENCE.md` (tool selection workflows and score interpretation) as persistent context. `AGENTS.md` (MCP server descriptions, recording requirements, provenance rules, adversarial evidence handling) is deployed as a rules file for Claude Code and is available for other MCP clients to load as project instructions. For clients that don't support project instructions, the MCP server instructions delivered via the protocol carry the core guidance.
-
-**Forensic RAG** — The `forensic-rag-mcp` server provides semantic search across 22,000+ records from 23 authoritative sources: Sigma rules, MITRE ATT&CK techniques, MITRE D3FEND countermeasures, Atomic Red Team tests, KAPE targets, Velociraptor artifacts, forensic artifact definitions, LOLBAS/LOLDrivers, CISA KEV, and more. The LLM queries this during investigation to ground its analysis in authoritative references rather than training data.
-
-**Windows triage baseline** — The `windows-triage-mcp` server provides offline validation against 2.6 million known Windows file and process baseline records. The LLM can check whether a file, service, scheduled task, or registry entry is expected, suspicious, or unknown — without any network call.
-
-These layers work together: FK enriches tool responses in real-time, discipline reminders maintain methodology awareness, server instructions establish workflow expectations, client docs provide persistent reference, and RAG + triage provide authoritative knowledge on demand. No single layer is sufficient alone — the reinforcement comes from consistent, contextual repetition across all interaction surfaces.
+These layers reinforce each other through consistent, contextual repetition across all interaction surfaces. See the [Architecture documentation](https://appliedir.github.io/Valhuntir/architecture/) for full details.
 
 ### Where Things Run
 
@@ -215,7 +206,7 @@ These layers work together: FK enriches tool responses in real-time, discipline 
 | windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation (13 tools) |
 | opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (8 tools) |
 | OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
-| Examiner Portal | SIFT | (via gateway) | 8-tab browser UI: overview, findings with provenance chains, timeline with ruler, hosts, accounts, evidence verification, IOCs, TODOs. Primary review UI. |
+| Examiner Portal | SIFT | (via gateway) | Browser-based review and approval. Primary review UI. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (10 tools) |
 | vhir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via Examiner Portal. Remote examiners need SSH only for CLI-exclusive operations. |
 | forensic-knowledge | anywhere | -- | Shared YAML data package (tools, artifacts, discipline) |
@@ -247,7 +238,7 @@ graph LR
         CASE1["Case Directory"]
 
         CC1 -->|"streamable-http"| GW1
-        BR1 -->|"HTTPS"| GW1
+        BR1 -->|"HTTP"| GW1
         GW1 -->|stdio| MCPs1
         MCPs1 --> CASE1
         CLI1 --> CASE1
@@ -262,7 +253,7 @@ graph LR
         CASE2["Case Directory"]
 
         CC2 -->|"streamable-http"| GW2
-        BR2 -->|"HTTPS"| GW2
+        BR2 -->|"HTTP"| GW2
         GW2 -->|stdio| MCPs2
         MCPs2 --> CASE2
         CLI2 --> CASE2
@@ -276,7 +267,7 @@ graph LR
 ```
 cases/INC-2026-0219/
 ├── CASE.yaml                    # Case metadata (name, status, examiner)
-├── evidence/                    # Original evidence (read-only after registration)
+├── evidence/                    # Original evidence (lock with vhir evidence lock)
 ├── extractions/                 # Extracted artifacts
 ├── reports/                     # Generated reports
 ├── findings.json                # F-alice-001, F-alice-002, ...
@@ -359,7 +350,7 @@ Any data loaded into the system or its component VMs, computers, or instances ru
 
 Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
 
-Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) can also operate outside MCP, but `vhir setup client` deploys forensic controls for Claude Code: a kernel-level sandbox restricts Bash writes, deny rules block Edit/Write to case data files, a PreToolUse hook guards against Bash redirections to protected files, a PostToolUse hook captures every Bash command to the audit trail, provenance enforcement ensures findings are traceable to evidence, and an HMAC verification ledger provides cryptographic proof that approved findings haven't been tampered with. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy.
+Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) get additional forensic controls deployed by `vhir setup client` — sandbox, deny rules, audit hooks, and provenance enforcement. The password-gated approval system (HMAC-signed) is the primary security control and applies to all clients. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy. See the [Security Model](https://appliedir.github.io/Valhuntir/security/) for details.
 
 ## Commands
 
@@ -441,7 +432,7 @@ The remaining commands can also be performed through MCP tools (case-mcp, forens
 vhir portal                                              # Open the Examiner Portal in your browser
 ```
 
-Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `vhir approve --review` applies pending edits from the CLI.
+Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Commit button (Shift+C) requires the examiner's password. Alternatively, `vhir approve --review` applies pending edits from the CLI.
 
 #### backup
 
