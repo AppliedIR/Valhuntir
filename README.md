@@ -5,15 +5,16 @@
 [![Docs](https://img.shields.io/badge/docs-appliedir.github.io-blue)](https://appliedir.github.io/Valhuntir/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/AppliedIR/Valhuntir/blob/main/LICENSE)
 
-Valhuntir forensic investigation platform — AI-assisted investigation with structural human-in-the-loop review, cryptographic signing, and complete audit trails. CLI and architecture reference.
+Valhuntir turns a single incident response analyst into the manager of an agentic AI incident response team. A host of MCP tools allows the AI to quickly ingest, process, and analyze massive amounts of digital forensic artifacts while keeping the human in control of the investigation and decision making process. Curated forensic knowledge bases, guidance and context hints, and processing suggestions are built into the system, but ultimately the human examiner drives the response.
 
 **[Platform Documentation](https://appliedir.github.io/Valhuntir/)** ·
 [CLI Reference](https://appliedir.github.io/Valhuntir/cli-reference/)
 
-> **Public Beta** — This project is undergoing active feature development.
-> Backward compatibility with future releases is not guaranteed. Consider
-> this a public beta for feature testing and evaluation rather than a
-> production-ready tool for real case data.
+> **Important Note** — While extensively tested, this is a new platform.
+> ALWAYS verify results and guide the investigative process. If you just
+> tell Valhuntir to "Find Evil" it will more than likely hallucinate
+> rather than provide meaningful results. The AI can accelerate, but the
+> human must guide it and review all decisions.
 
 ## Valhuntir — AI-Assisted Forensic Investigation
 
@@ -29,7 +30,7 @@ With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is 
 
 15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, and Prefetch/SRUM (via Plaso or wintools-mcp).
 
-Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`), and proper `@timestamp` with timezone handling.
+Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`), and proper `@timestamp` with timezone handling. Hayabusa auto-detection runs after EVTX ingest, applying 3,700+ Sigma rules and indexing alerts for structured querying.
 
 ### Investigation Workflow
 
@@ -45,15 +46,17 @@ Every parser produces deterministic content-based document IDs (re-ingest = zero
 
 Without OpenSearch, steps 3-6 are replaced by direct tool execution and manual analysis. Findings, timeline, approval workflow, and reporting are identical either way.
 
-### Deployment Configurations
+### Required Resources
 
-| Configuration | What runs on SIFT | RAM (min) | RAM (recommended) | Best for |
-|---|---|---|---|---|
-| **Valhuntir** | Gateway + 8 backends + OpenSearch (Docker) | 24 GB | 32 GB | Solo analyst, lab environments |
-| **Valhuntir (remote OpenSearch)** | Gateway + 8 backends; OpenSearch on separate host | 16 GB SIFT, 8 GB OS host | 16 GB SIFT, 16 GB OS host | Larger cases, persistent clusters |
-| **Valhuntir + Windows** | Above + wintools-mcp on Windows VM | +8 GB Windows | +8 GB Windows | Full artifact coverage |
-| **Valhuntir + REMnux** | Above + remnux-mcp on REMnux VM | +4 GB REMnux | +8 GB REMnux | Malware analysis |
-| **[Valhuntir Lite](#valhuntir-lite)** | No gateway, no OpenSearch — stdio MCPs only | 8 GB | 16 GB | Quick setup, smaller investigations |
+| Component | Role | RAM (min) | RAM (rec) | Disk | Notes |
+|-----------|------|-----------|-----------|------|-------|
+| **Valhuntir with sift-mcp** | Gateway + 8 MCP backends | 16 GB | 16 GB | 50 GB + evidence/extractions | SIFT Workstation (Ubuntu). Gateway capped at 4 GB. 24 GB for memory analysis with Volatility 3. |
+| **Valhuntir + OpenSearch** | Above + evidence indexing | 32 GB | 32 GB | 100 GB + evidence/extractions/indices | OpenSearch JVM 6 GB, container 8 GB. Can run on separate host. |
+| **Valhuntir Lite** | Stdio MCPs only, no gateway | 8 GB | 16 GB | 30 GB + evidence/extractions | No OpenSearch. Direct MCP from LLM client. |
+| **OpenSearch (remote)** | Dedicated indexing host | 12 GB | 16 GB | 100 GB + indices | Alternative to co-located. Connects via HTTPS. |
+| **wintools-mcp** | Windows forensic tools | 8 GB | 16 GB | 60 GB | Separate Windows VM to run Windows-only tools. |
+| **REMnux** | Malware analysis | 4 GB | 8 GB | 100 GB | Optional. Separate VM. [Docs](https://docs.remnux.org). |
+| **OpenCTI** | Threat intelligence | 16 GB | 32 GB | 50 GB SSD | Optional. Separate host. [Docs](https://docs.opencti.io). |
 
 ## Platform Architecture
 
@@ -104,7 +107,7 @@ graph TB
     GW -.->|"HTTP(S)"| OCTI
 ```
 
-REMnux, Windows, and OpenSearch are optional. SIFT alone provides 73 MCP tools across 7 backends (90 with opensearch-mcp), the Examiner Portal, and full case management.
+REMnux, Windows, and OpenSearch are optional. SIFT alone provides 73 MCP tools across 7 backends (90 with opensearch-mcp, 100 with wintools-mcp), the Examiner Portal, and full case management.
 
 ### SIFT Platform Components
 
@@ -118,7 +121,7 @@ graph LR
     CM["case-mcp<br/>15 tools · case management,<br/>audit queries, backup"]
     RM["report-mcp<br/>6 tools · report generation,<br/>IOC aggregation"]
     SM["sift-mcp<br/>5 tools · Linux forensic<br/>tool execution"]
-    RAG["forensic-rag<br/>3 tools · semantic search<br/>23K records"]
+    RAG["forensic-rag<br/>3 tools · semantic search<br/>22K records"]
     WT["windows-triage<br/>13 tools · offline baseline<br/>validation"]
     OC["opencti<br/>8 tools · threat<br/>intelligence"]
     OS["opensearch-mcp<br/>17 tools · evidence indexing,<br/>query, enrichment"]
@@ -192,7 +195,7 @@ Valhuntir reinforces forensic discipline through multiple layers built into the 
 
 **Client configuration** — For Claude Code, `vhir setup client` deploys `CLAUDE.md` (investigation rules and MCP backend descriptions), `FORENSIC_DISCIPLINE.md` (evidence standards, confidence levels, checkpoint requirements), and `TOOL_REFERENCE.md` (tool selection workflows and score interpretation) as persistent context. `AGENTS.md` (MCP server descriptions, recording requirements, provenance rules, adversarial evidence handling) is deployed as a rules file for Claude Code and is available for other MCP clients to load as project instructions. For clients that don't support project instructions, the MCP server instructions delivered via the protocol carry the core guidance.
 
-**Forensic RAG** — The `forensic-rag-mcp` server provides semantic search across 23,000+ records from 23 authoritative sources: Sigma rules, MITRE ATT&CK techniques, MITRE D3FEND countermeasures, Atomic Red Team tests, KAPE targets, Velociraptor artifacts, forensic artifact definitions, LOLBAS/LOLDrivers, CISA KEV, and more. The LLM queries this during investigation to ground its analysis in authoritative references rather than training data.
+**Forensic RAG** — The `forensic-rag-mcp` server provides semantic search across 22,000+ records from 23 authoritative sources: Sigma rules, MITRE ATT&CK techniques, MITRE D3FEND countermeasures, Atomic Red Team tests, KAPE targets, Velociraptor artifacts, forensic artifact definitions, LOLBAS/LOLDrivers, CISA KEV, and more. The LLM queries this during investigation to ground its analysis in authoritative references rather than training data.
 
 **Windows triage baseline** — The `windows-triage-mcp` server provides offline validation against 2.6 million known Windows file and process baseline records. The LLM can check whether a file, service, scheduled task, or registry entry is expected, suspicious, or unknown — without any network call.
 
@@ -213,7 +216,7 @@ These layers work together: FK enriches tool responses in real-time, discipline 
 | opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (8 tools) |
 | OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
 | Examiner Portal | SIFT | (via gateway) | 8-tab browser UI: overview, findings with provenance chains, timeline with ruler, hosts, accounts, evidence verification, IOCs, TODOs. Primary review UI. |
-| wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (7 tools) |
+| wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (10 tools) |
 | vhir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via Examiner Portal. Remote examiners need SSH only for CLI-exclusive operations. |
 | forensic-knowledge | anywhere | -- | Shared YAML data package (tools, artifacts, discipline) |
 
@@ -456,7 +459,6 @@ Creates a timestamped backup with SHA-256 manifest. Verification checks every fi
 
 ```
 vhir case init "Ransomware Investigation"                # Create a new case
-vhir case init "Investigation" --case-id INC-2026-001    # Create with custom case ID
 vhir case activate INC-2026-02191200                     # Set active case
 vhir case close INC-2026-02191200                        # Close a case by ID
 vhir case reopen INC-2026-02191200                       # Reopen a closed case
@@ -637,7 +639,7 @@ Every approval, rejection, and command execution is logged with examiner identit
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
 | [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (17 tools, 15 parsers). Optional. |
-| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (7 tools, 31 catalog entries) |
+| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (10 tools, 31 catalog entries) |
 | [Valhuntir](https://github.com/AppliedIR/Valhuntir) | CLI, architecture reference |
 
 ## Updating
@@ -650,9 +652,9 @@ vhir update --check      # Check for updates without applying
 vhir update --no-restart # Update without restarting the gateway
 ```
 
-The update command pulls the latest code from both repos (sift-mcp and vhir),
-reinstalls all packages, redeploys forensic controls, restarts the gateway,
-and runs a connectivity smoke test.
+The update command pulls the latest code from all configured repos (sift-mcp, vhir,
+opensearch-mcp, wintools-mcp), reinstalls all packages, redeploys forensic controls,
+restarts the gateway, and runs a connectivity smoke test.
 
 ## Valhuntir Lite
 

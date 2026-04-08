@@ -73,22 +73,20 @@ The LLM will use MCP tools to execute forensic tools, record findings, and build
 
 ### 4. Review and Approve
 
-Findings stage as DRAFT. Review them:
+Findings stage as DRAFT. Open the Examiner Portal to review:
 
 ```bash
-vhir review --findings
+vhir portal
 ```
 
-Approve individual findings:
+The portal provides an 8-tab browser UI for reviewing findings, timeline events, evidence, IOCs, and more. Approve, reject, and commit decisions directly in the browser.
+
+Or use the CLI:
 
 ```bash
-vhir approve F-alice-001 F-alice-002
-```
-
-Or use interactive review mode:
-
-```bash
-vhir approve
+vhir review --findings            # View findings
+vhir approve                      # Interactive review
+vhir approve F-alice-001 F-alice-002  # Approve specific findings
 ```
 
 ### 5. Generate a Report

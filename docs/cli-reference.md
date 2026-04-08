@@ -311,6 +311,30 @@ Merge incoming JSON into local findings and timeline.
 vhir merge --file findings-bob.json
 ```
 
+## Backup
+
+### `vhir backup`
+
+Back up case data for archival, legal preservation, or disaster recovery.
+
+```bash
+vhir backup /path/to/destination                     # Case data only (interactive)
+vhir backup /path/to/destination --include-evidence   # Include evidence files
+vhir backup /path/to/destination --include-extractions # Include extractions
+vhir backup /path/to/destination --all               # Everything
+vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
+```
+
+| Argument/Option | Description |
+|-----------------|-------------|
+| `destination` | Backup destination directory |
+| `--include-evidence` | Include evidence files |
+| `--include-extractions` | Include extraction files |
+| `--all` | Include evidence + extractions |
+| `--verify BACKUP_PATH` | Verify an existing backup's integrity |
+
+Creates a timestamped directory with all case metadata, findings, timeline, audit trails, and a `backup-manifest.json` with SHA-256 hashes. The `--verify` option re-hashes every file and reports mismatches or missing files.
+
 ## Execution
 
 ### `vhir exec`
