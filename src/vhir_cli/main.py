@@ -127,7 +127,10 @@ def build_parser() -> argparse.ArgumentParser:
     case_sub = p_case.add_subparsers(dest="case_action", help="Case actions")
 
     p_case_init = case_sub.add_parser("init", help="Initialize a new case")
-    p_case_init.add_argument("name", help="Case name")
+    p_case_init.add_argument("name", nargs="?", default=None, help="Case name")
+    p_case_init.add_argument(
+        "--case-id", default=None, help="Override auto-generated case ID"
+    )
     p_case_init.add_argument("--description", default="", help="Case description")
     p_case_init.add_argument(
         "--cases-dir",
@@ -948,14 +951,49 @@ def _gateway_has_wintools() -> bool:
 
 def _case_init(args, identity: dict) -> None:
     """CLI wrapper — creates case and prints summary."""
+    import os
     from pathlib import Path
+
+    name = args.name
+    case_id = getattr(args, "case_id", None)
+    description = getattr(args, "description", "")
+    cases_dir = getattr(args, "cases_dir", None)
+
+    if name is None:
+        if not sys.stdin.isatty():
+            print(
+                "Error: case name required. Usage: vhir case init <name>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            name = input("Case name: ").strip()
+            while not name:
+                name = input("Case name (required): ").strip()
+
+            from datetime import datetime, timezone
+
+            ts = datetime.now(timezone.utc)
+            default_id = f"INC-{ts.strftime('%Y')}-{ts.strftime('%m%d%H%M%S')}"
+            id_input = input(f"Case ID [{default_id}]: ").strip()
+            case_id = id_input if id_input else default_id
+
+            default_dir = os.environ.get("VHIR_CASES_DIR", str(Path.home() / "cases"))
+            dir_input = input(f"Cases directory [{default_dir}]: ").strip()
+            cases_dir = dir_input if dir_input else default_dir
+
+            description = input("Description (optional): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.", file=sys.stderr)
+            sys.exit(1)
 
     try:
         data = _case_init_data(
-            name=args.name,
+            name=name,
             examiner=identity["examiner"],
-            description=getattr(args, "description", ""),
-            cases_dir=getattr(args, "cases_dir", None),
+            description=description,
+            cases_dir=cases_dir,
+            case_id=case_id,
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -965,7 +1003,7 @@ def _case_init(args, identity: dict) -> None:
         sys.exit(1)
 
     print(f"Case initialized: {data['case_id']}")
-    print(f"  Name: {args.name}")
+    print(f"  Name: {name}")
     print(f"  Examiner: {data['examiner']}")
     print(f"  Path: {data['case_dir']}")
     if data.get("fs_warning"):
