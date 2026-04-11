@@ -50,10 +50,10 @@ The Windows installer generates a bearer token. Copy it to your SIFT gateway con
 ### 1. Initialize a Case
 
 ```bash
-vhir case init "Suspicious Activity Investigation"
+vhir case init
 ```
 
-This creates a case directory under `~/.vhir/cases/` with a unique case ID (e.g., `INC-2026-0225`) and activates it.
+This prompts for case name, case ID (with auto-generated default), cases directory, and description. Or provide a name directly: `vhir case init "Suspicious Activity Investigation"`. Either way, a case directory is created under `~/.vhir/cases/` with a unique ID and activated for the session.
 
 ### 2. Connect Your LLM Client
 

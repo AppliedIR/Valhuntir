@@ -36,8 +36,9 @@ Without OpenSearch, steps 3-7 are replaced by direct tool execution (`run_comman
 From the CLI:
 
 ```bash
-vhir case init "Suspicious Activity Investigation"
-vhir case init "Ransomware Response" --description "Finance server, Feb 2026"
+vhir case init                                           # Interactive — prompts for name, ID, directory
+vhir case init "Suspicious Activity Investigation"       # Auto-generated case ID
+vhir case init "Ransomware Response" --case-id INC-2026-001 --description "Finance server, Feb 2026"
 ```
 
 Or ask the LLM to create a case — it uses the `case_init` tool on case-mcp.

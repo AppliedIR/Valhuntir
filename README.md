@@ -449,7 +449,9 @@ Creates a timestamped backup with SHA-256 manifest. Verification checks every fi
 #### case
 
 ```
-vhir case init "Ransomware Investigation"                # Create a new case
+vhir case init                                           # Interactive — prompts for name, ID, directory
+vhir case init "Ransomware Investigation"                # Create with name, auto-generated ID
+vhir case init "Investigation" --case-id INC-2026-001    # Create with custom case ID
 vhir case activate INC-2026-02191200                     # Set active case
 vhir case close INC-2026-02191200                        # Close a case by ID
 vhir case reopen INC-2026-02191200                       # Reopen a closed case

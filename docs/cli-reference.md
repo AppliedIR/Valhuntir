@@ -13,16 +13,19 @@ The `vhir` CLI handles all human-only operations: case management, approval, rep
 
 ### `vhir case init`
 
-Initialize a new case.
+Initialize a new case. Run with no arguments for interactive mode.
 
 ```bash
-vhir case init "Ransomware Investigation"
+vhir case init                                           # Interactive — prompts for name, ID, directory
+vhir case init "Ransomware Investigation"                # Create with auto-generated ID
+vhir case init "Investigation" --case-id INC-2026-001    # Create with custom case ID
 vhir case init "Phishing Campaign" --description "CEO spearphish, Feb 2026"
 ```
 
 | Argument/Option | Description |
 |-----------------|-------------|
-| `name` | Case name (required) |
+| `name` | Case name (optional — interactive prompts if omitted on TTY) |
+| `--case-id` | Override auto-generated case ID |
 | `--description` | Case description |
 
 ### `vhir case activate`
