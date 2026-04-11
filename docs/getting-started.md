@@ -53,7 +53,7 @@ The Windows installer generates a bearer token. Copy it to your SIFT gateway con
 vhir case init
 ```
 
-This prompts for case name, case ID (with auto-generated default), cases directory, and description. Or provide a name directly: `vhir case init "Suspicious Activity Investigation"`. Either way, a case directory is created under `~/.vhir/cases/` with a unique ID and activated for the session.
+This prompts for case name, case ID (with auto-generated default), cases directory, and description. Or provide a name directly: `vhir case init "Suspicious Activity Investigation"`. Either way, a case directory is created under `~/cases/` with a unique ID and activated for the session.
 
 ### 2. Connect Your LLM Client
 
@@ -62,7 +62,7 @@ If you ran `vhir setup client` during installation, your LLM client is already c
 **Claude Code:** Launch from the case directory so forensic controls and the sandbox apply:
 
 ```bash
-cd ~/.vhir/cases/INC-2026-0225
+cd ~/cases/INC-2026-0225
 claude
 ```
 

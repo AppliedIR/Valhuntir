@@ -43,7 +43,7 @@ vhir case init "Ransomware Response" --case-id INC-2026-001 --description "Finan
 
 Or ask the LLM to create a case — it uses the `case_init` tool on case-mcp.
 
-Both paths create a case directory under `~/.vhir/cases/` with a unique ID (e.g., `INC-2026-0225`) and activate it for the session.
+Both paths create a case directory under `~/cases/` with a unique ID (e.g., `INC-2026-0225`) and activate it for the session.
 
 **Claude Code users:** Launch Claude Code from the case directory so forensic controls and the sandbox apply. Other MCP clients connect to the gateway over HTTP and don't need to be launched from any specific directory — the active case is resolved from `~/.vhir/active_case`.
 
