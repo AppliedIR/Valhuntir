@@ -19,7 +19,7 @@ from vhir_cli import __version__
 from vhir_cli.case_io import DEFAULT_CASES_DIR, CaseError
 from vhir_cli.commands.approve import cmd_approve
 from vhir_cli.commands.audit_cmd import cmd_audit
-from vhir_cli.commands.backup import cmd_backup
+from vhir_cli.commands.backup import cmd_backup, cmd_restore
 from vhir_cli.commands.config import cmd_config
 from vhir_cli.commands.dashboard import cmd_dashboard, cmd_portal
 from vhir_cli.commands.evidence import (
@@ -61,10 +61,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_backup.add_argument("--include-evidence", action="store_true")
     p_backup.add_argument("--include-extractions", action="store_true")
     p_backup.add_argument(
-        "--all", action="store_true", help="Include evidence + extractions"
+        "--all",
+        action="store_true",
+        help="Include evidence + extractions + OpenSearch (if available)",
     )
+    p_backup.add_argument("--include-opensearch", action="store_true")
     p_backup.add_argument(
         "--verify", metavar="BACKUP_PATH", help="Verify backup integrity"
+    )
+
+    # restore
+    p_restore = sub.add_parser("restore", help="Restore a case from backup")
+    p_restore.add_argument("backup_path", help="Path to backup directory")
+    p_restore.add_argument(
+        "--skip-opensearch", action="store_true", help="Skip OpenSearch index restore"
+    )
+    p_restore.add_argument(
+        "--skip-ledger",
+        action="store_true",
+        help="Skip verification ledger + password hash restore",
     )
 
     # approve
@@ -525,6 +540,7 @@ def main() -> None:
 
     dispatch = {
         "backup": cmd_backup,
+        "restore": cmd_restore,
         "approve": cmd_approve,
         "reject": cmd_reject,
         "review": cmd_review,

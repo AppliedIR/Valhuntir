@@ -438,13 +438,24 @@ Opens the Examiner Portal for the active case. The portal is the primary review 
 
 ```
 vhir backup /path/to/destination                         # Back up case data (interactive)
-vhir backup /path/to/destination --all                   # Include evidence + extractions
+vhir backup /path/to/destination --all                   # Evidence + extractions + OpenSearch
+vhir backup /path/to/destination --include-opensearch    # Include OpenSearch indices
 vhir backup /path/to/destination --include-evidence      # Include evidence files
 vhir backup /path/to/destination --include-extractions   # Include extraction files
 vhir backup --verify /path/to/backup/                    # Verify backup integrity
 ```
 
-Creates a timestamped backup with SHA-256 manifest. Verification checks every file hash against the manifest. The `--all` flag includes evidence and extraction files (which can be large). Without flags, interactive mode prompts per category with size estimates.
+Creates a timestamped backup with SHA-256 manifest. Password hash files are always included for HMAC verification. The `--all` flag includes evidence, extractions, and OpenSearch indices (if available). Without flags, interactive mode prompts per category with size estimates.
+
+#### restore
+
+```
+vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Restore from backup
+vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch restore
+vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger
+```
+
+Restores a case from backup to its original path. Includes case files, verification ledger, password hashes, and OpenSearch indices (if present in backup). Prompts for the examiner password to verify HMAC integrity. Never auto-activates — run `vhir case activate` after restore.
 
 #### case
 

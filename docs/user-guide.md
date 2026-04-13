@@ -107,17 +107,28 @@ vhir evidence unlock              # Restore write access for re-extraction
 
 The LLM can register and verify evidence through case-mcp. Evidence lock/unlock requires the CLI (terminal confirmation).
 
-### Case Backup
+### Case Backup and Restore
 
 Back up case data (metadata, findings, timeline, audit trails) for archival or disaster recovery:
 
 ```bash
 vhir backup /path/to/destination                     # Case data only (interactive)
-vhir backup /path/to/destination --all               # Include evidence + extractions
+vhir backup /path/to/destination --all               # Evidence + extractions + OpenSearch
+vhir backup /path/to/destination --include-opensearch # Include OpenSearch indices only
 vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
 ```
 
-The LLM can also create case-data-only backups at investigation checkpoints — it uses the `backup_case` tool on case-mcp.
+Backups include password hash files for HMAC verification and the verification ledger. After backup, a warning reminds you to remember the examiner password — it's needed to verify findings on restore.
+
+The LLM can create case-data-only backups at investigation checkpoints — it uses the `backup_case` tool on case-mcp. OpenSearch indices are not included in MCP backups.
+
+To restore a case from backup:
+
+```bash
+vhir restore /path/to/backup/INC-2026-0411-2026-04-13
+```
+
+Restore enforces the original case path for audit trail integrity. After restoring, the case must be activated manually (`vhir case activate`). The restore wizard prompts for the examiner password to verify HMAC integrity. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
 
 ## Evidence Indexing with OpenSearch
 

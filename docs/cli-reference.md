@@ -324,7 +324,8 @@ Back up case data for archival, legal preservation, or disaster recovery.
 vhir backup /path/to/destination                     # Case data only (interactive)
 vhir backup /path/to/destination --include-evidence   # Include evidence files
 vhir backup /path/to/destination --include-extractions # Include extractions
-vhir backup /path/to/destination --all               # Everything
+vhir backup /path/to/destination --include-opensearch # Include OpenSearch indices
+vhir backup /path/to/destination --all               # Everything (evidence + extractions + OpenSearch)
 vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
 ```
 
@@ -333,10 +334,29 @@ vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
 | `destination` | Backup destination directory |
 | `--include-evidence` | Include evidence files |
 | `--include-extractions` | Include extraction files |
-| `--all` | Include evidence + extractions |
+| `--include-opensearch` | Include OpenSearch index snapshot (local Docker only) |
+| `--all` | Include evidence + extractions + OpenSearch (if available) |
 | `--verify BACKUP_PATH` | Verify an existing backup's integrity |
 
-Creates a timestamped directory with all case metadata, findings, timeline, audit trails, and a `backup-manifest.json` with SHA-256 hashes. The `--verify` option re-hashes every file and reports mismatches or missing files.
+Creates a timestamped directory with all case metadata, findings, timeline, audit trails, and a `backup-manifest.json` with SHA-256 hashes. Password hash files are always included for HMAC verification on restore. The `--verify` option re-hashes every file and reports mismatches or missing files.
+
+### `vhir restore`
+
+Restore a case from a backup directory. Enforces the original case path for audit trail integrity.
+
+```bash
+vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Full restore
+vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch index restore
+vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger + password hash
+```
+
+| Argument/Option | Description |
+|-----------------|-------------|
+| `backup_path` | Path to backup directory (contains backup-manifest.json) |
+| `--skip-opensearch` | Skip OpenSearch index restore |
+| `--skip-ledger` | Skip verification ledger and password hash restore |
+
+Restore always uses the original case path from the backup manifest. If the path can't be created (permission denied), prints exact `mkdir`/`chown` commands to fix it. Never auto-activates the case — prints activation instructions after restore. Prompts for the examiner password to verify HMAC integrity.
 
 ## Execution
 
