@@ -979,6 +979,16 @@ def cmd_restore(args, identity: dict) -> None:
                     timeout=10,
                 )
                 if result.returncode == 0:
+                    # Fix ownership — sudo cp creates root-owned files
+                    import getpass
+
+                    user = getpass.getuser()
+                    ledger_dest = VERIFICATION_DIR / f"{case_id}.jsonl"
+                    subprocess.run(
+                        ["sudo", "chown", f"{user}:{user}", str(ledger_dest)],
+                        capture_output=True,
+                        timeout=10,
+                    )
                     print("  Verification ledger... restored (sudo)")
                 else:
                     print(
@@ -1012,6 +1022,20 @@ def cmd_restore(args, identity: dict) -> None:
                         timeout=10,
                     )
                     if result.returncode == 0:
+                        # Fix ownership — sudo cp creates root-owned files
+                        import getpass
+
+                        user = getpass.getuser()
+                        subprocess.run(
+                            [
+                                "sudo",
+                                "chown",
+                                f"{user}:{user}",
+                                str(_PASSWORDS_DIR / pw_file.name),
+                            ],
+                            capture_output=True,
+                            timeout=10,
+                        )
                         pw_restored.append(examiner_name)
                     else:
                         print(
@@ -1157,12 +1181,26 @@ def _restore_opensearch_snapshot(
     _acquire_lock(lock_path)
 
     try:
-        # Copy snapshot to staging
+        # Copy snapshot to staging (use sudo — staging dir is owned by UID 1000)
         if staging.exists():
-            shutil.rmtree(staging)
+            subprocess.run(
+                ["sudo", "rm", "-rf", str(staging)],
+                capture_output=True,
+                timeout=60,
+            )
         if progress_fn:
             progress_fn("Copying snapshot to staging", 0, 1)
-        shutil.copytree(str(snapshot_dir), str(staging))
+        subprocess.run(
+            ["sudo", "cp", "-r", str(snapshot_dir), str(staging)],
+            capture_output=True,
+            timeout=600,
+            check=True,
+        )
+        subprocess.run(
+            ["sudo", "chown", "-R", "1000:1000", str(staging)],
+            capture_output=True,
+            timeout=30,
+        )
 
         # Register repo
         container_path = f"/usr/share/opensearch/snapshots/{repo_name}"
@@ -1195,5 +1233,9 @@ def _restore_opensearch_snapshot(
         except Exception:
             pass
         if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+            subprocess.run(
+                ["sudo", "rm", "-rf", str(staging)],
+                capture_output=True,
+                timeout=60,
+            )
         _release_lock(lock_path)
