@@ -203,8 +203,8 @@ def _run_connectivity_test() -> None:
     urlopen_kwargs = {"timeout": 15}
     if ssl_ctx is not None:
         urlopen_kwargs["context"] = ssl_ctx
-    # Poll every 2s for up to 30s — backends need time to start after reinstall
-    max_attempts = 15
+    # Poll every 2s for up to 60s — backends need time to start (triage DB ~37s)
+    max_attempts = 30
     for attempt in range(max_attempts):
         try:
             req = urllib.request.Request(health_url)
@@ -217,6 +217,8 @@ def _run_connectivity_test() -> None:
             if attempt < max_attempts - 1:
                 if attempt == 0:
                     print("  Gateway starting up, waiting...")
+                if attempt == 15:
+                    print("  Still waiting for gateway (loading databases)...")
                 time.sleep(2)
             else:
                 print("  Gateway: OFFLINE — is the gateway running?")
