@@ -38,7 +38,7 @@ Repository = "https://github.com/AppliedIR/Valhuntir"
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
-    "ruff>=0.4",
+    "ruff>=0.15.10",
 ]
 
 [tool.hatch.build.targets.wheel]
