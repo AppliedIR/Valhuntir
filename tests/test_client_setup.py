@@ -8,6 +8,7 @@ import pytest
 
 from vhir_cli.commands.client_setup import (
     _MSLEARN_MCP,
+    _claude_mcp_add,
     _cmd_setup_client_remote,
     _ensure_mcp_path,
     _format_server_entry,
@@ -764,3 +765,99 @@ class TestUninstallHelpers:
         assert result["permissions"]["defaultMode"] == "ask"
         # sandbox removed
         assert "sandbox" not in result
+
+
+# ---------------------------------------------------------------------------
+# Regression guard — `claude mcp add` argv order (CRITICAL, 2026-04-22)
+#
+# Test agent (2026-04-22) observed `vhir setup client --client=claude-code`
+# silently wiping 10 of 11 existing MCP registrations on a SIFT with a
+# pre-existing healthy ~/.claude.json. Root cause: Claude Code CLI 2.1.116's
+# `-H / --header` option is variadic (commander.js). When `-H` precedes
+# positional args, the parser consumes `<name>` and `<url>` as additional
+# header values, leaving zero positionals — the CLI errors AND wipes.
+# The pre-fix code appended `-H` flags BEFORE name+url. The fix reorders
+# so positionals come first; these tests catch any future reorder.
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeMcpAddArgvOrder:
+    def test_positional_name_and_url_appear_before_any_header(self):
+        """Regression: commander.js variadic `-H` eats name+url when
+        headers precede positionals. Positional name+url MUST come first."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            # The remove-first call has a different shape; skip it.
+            if cmd[:3] == ["claude", "mcp", "remove"]:
+                result = type("R", (), {"returncode": 0, "stderr": b""})()
+                return result
+            captured["cmd"] = list(cmd)
+            return type("R", (), {"returncode": 0, "stderr": b""})()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _claude_mcp_add(
+                "forensic-mcp",
+                {
+                    "url": "http://127.0.0.1:4508/mcp/forensic-mcp",
+                    "headers": {"Authorization": "Bearer vhir_gw_abc"},
+                },
+            )
+
+        cmd = captured["cmd"]
+        # Find indices of name, url, and first -H.
+        name_idx = cmd.index("forensic-mcp")
+        url_idx = cmd.index("http://127.0.0.1:4508/mcp/forensic-mcp")
+        h_idx = cmd.index("-H")
+        assert name_idx < h_idx, (
+            f"name ({name_idx}) must come BEFORE -H ({h_idx}) — "
+            f"commander.js variadic -H eats positionals. cmd={cmd}"
+        )
+        assert url_idx < h_idx, (
+            f"url ({url_idx}) must come BEFORE -H ({h_idx}). cmd={cmd}"
+        )
+        # Also: name and url adjacent (standard positional order).
+        assert url_idx == name_idx + 1, (
+            "url must immediately follow name in positional order"
+        )
+
+    def test_raises_runtime_error_on_cli_failure(self):
+        """Silent-continue was the multiplier on the original bug
+        (partial wipes with "Registered N servers" banner lying).
+        Helper must raise so the caller can abort + restore snapshot."""
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["claude", "mcp", "remove"]:
+                return type("R", (), {"returncode": 0, "stderr": b""})()
+            # Simulate the post-2.1.116 variadic failure.
+            return type(
+                "R",
+                (),
+                {"returncode": 1, "stderr": b"error: missing required argument 'name'"},
+            )()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            with pytest.raises(
+                RuntimeError, match="claude mcp add forensic-mcp failed"
+            ):
+                _claude_mcp_add(
+                    "forensic-mcp",
+                    {
+                        "url": "http://127.0.0.1:4508/mcp/forensic-mcp",
+                        "headers": {"Authorization": "Bearer vhir_gw_abc"},
+                    },
+                )
+
+    def test_no_url_is_noop(self):
+        """Entries without a url (e.g., stdio-only configs) are
+        skipped silently — this predates the variadic fix and must
+        continue working."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return type("R", (), {"returncode": 0, "stderr": b""})()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _claude_mcp_add("some-stdio", {"headers": {}})
+        assert calls == []  # no subprocess invocation at all

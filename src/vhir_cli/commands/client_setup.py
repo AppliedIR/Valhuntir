@@ -527,7 +527,22 @@ def _claude_mcp_add_available() -> bool:
 
 
 def _claude_mcp_add(name: str, entry: dict) -> None:
-    """Register one MCP server via claude mcp add."""
+    """Register one MCP server via claude mcp add.
+
+    ARGV ORDER IS LOAD-BEARING. Claude Code CLI's ``-H / --header``
+    option is variadic. When ``-H`` precedes the positional name/url,
+    commander.js consumes those values as additional header strings,
+    leaving the command with zero positionals — the CLI errors out,
+    and on some versions silently wipes existing entries before
+    erroring. Name and url MUST appear before the first ``-H``.
+
+    Raises ``RuntimeError`` on any CLI failure so the caller can
+    abort the rest of the registration loop and restore the
+    ``~/.claude.json`` snapshot it took. Silently continuing on
+    failure (pre-fix behavior) resulted in partial-wipe states where
+    the visible "Registered N MCP servers" banner lied about how many
+    actually landed.
+    """
     import subprocess
 
     url = entry.get("url", "")
@@ -539,12 +554,10 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
         capture_output=True,
         stdin=subprocess.DEVNULL,
     )
-    cmd = ["claude", "mcp", "add", "-t", "http", "-s", "user"]
-    headers = entry.get("headers", {})
-    for k, v in headers.items():
+    # Positional name + url BEFORE any -H flags (see docstring).
+    cmd = ["claude", "mcp", "add", "-t", "http", "-s", "user", name, url]
+    for k, v in entry.get("headers", {}).items():
         cmd.extend(["-H", f"{k}: {v}"])
-    cmd.append(name)
-    cmd.append(url)
     result = subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")[:200]
@@ -552,6 +565,7 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
             f"  WARNING: claude mcp add {name} failed: {stderr}",
             file=sys.stderr,
         )
+        raise RuntimeError(f"claude mcp add {name} failed: {stderr}")
 
 
 def _cleanup_duplicate_backends(servers: dict) -> None:
@@ -607,9 +621,50 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         if sift:
             # SIFT: prefer claude mcp add (canonical, reliable)
             if _claude_mcp_add_available():
-                for name, entry in servers.items():
-                    _claude_mcp_add(name, entry)
-                print(f"  Registered {len(servers)} MCP servers via claude mcp add")
+                # Snapshot ~/.claude.json before mutation so a mid-loop
+                # failure (claude CLI bump changing argv semantics,
+                # auth issue, etc.) can be rolled back. Without this,
+                # a failed run leaves the operator with fewer MCP
+                # registrations than they started with — the CRITICAL
+                # regression Test observed after Claude Code 2.1.116.
+                claude_config = Path.home() / ".claude.json"
+                snapshot: bytes | None = None
+                if claude_config.is_file():
+                    try:
+                        snapshot = claude_config.read_bytes()
+                    except OSError as e:
+                        print(
+                            f"  WARNING: could not snapshot {claude_config}: {e}",
+                            file=sys.stderr,
+                        )
+
+                registered = 0
+                try:
+                    for name, entry in servers.items():
+                        _claude_mcp_add(name, entry)
+                        registered += 1
+                except RuntimeError as e:
+                    # Restore snapshot so the operator isn't left in a
+                    # worse state than before.
+                    if snapshot is not None:
+                        try:
+                            claude_config.write_bytes(snapshot)
+                            print(
+                                f"  Restored {claude_config} from pre-run snapshot.",
+                                file=sys.stderr,
+                            )
+                        except OSError as restore_err:
+                            print(
+                                f"  WARNING: snapshot restore failed: {restore_err}",
+                                file=sys.stderr,
+                            )
+                    print(
+                        f"  Registered {registered} of {len(servers)} MCP servers before "
+                        f"aborting: {e}",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1) from e
+                print(f"  Registered {registered} MCP servers via claude mcp add")
             else:
                 global_config = Path.home() / ".claude.json"
                 _merge_and_write(global_config, {"mcpServers": servers})
