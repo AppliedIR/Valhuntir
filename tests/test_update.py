@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +12,8 @@ import pytest
 from vhir_cli.commands.update import (
     _INSTALL_ORDER,
     _PACKAGE_PATHS,
+    _opensearch_mcp_installed_but_missing,
+    _resolve_opensearch_mcp_repo,
     cmd_update,
 )
 
@@ -300,3 +303,101 @@ def test_old_manifest_no_client(manifest_dir, capsys):
 
     out = capsys.readouterr().out
     assert "vhir setup client" in out
+
+
+# ---------------------------------------------------------------------------
+# Regression guard — opensearch-mcp update silent-skip fix (2026-04-22)
+#
+# Prior bug: the two-candidate fallback list in `cmd_update` and
+# `_check_opensearch_version` both resolved to `~/.vhir/src/opensearch-mcp`
+# when `source = ~/.vhir/src/sift-mcp`, producing a dead-duplicate.
+# Operators with opensearch-mcp at any non-default layout (e.g.
+# `/home/sansforensics/opensearch-mcp/`) were silently skipped —
+# no warning, no pull, no reinstall. This defeats `vhir update`
+# precisely when opensearch-mcp has critical fixes to distribute.
+# The three tests below guard against a future refactor re-introducing
+# the bug.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_opensearch_mcp_via_importlib(tmp_path, monkeypatch):
+    """When opensearch-mcp is editable-installed at an arbitrary path,
+    the helper resolves to the repo root via `importlib.util.find_spec`
+    regardless of the default-layout candidates."""
+    repo = tmp_path / "arbitrary-location" / "opensearch-mcp"
+    (repo / "src" / "opensearch_mcp").mkdir(parents=True)
+    (repo / ".git").mkdir()
+    init_file = repo / "src" / "opensearch_mcp" / "__init__.py"
+    init_file.write_text("")
+
+    fake_spec = SimpleNamespace(origin=str(init_file))
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: fake_spec if name == "opensearch_mcp" else None,
+    )
+    # Ensure the default-candidate path does NOT exist so we can
+    # prove the importlib path is what succeeded.
+    source = tmp_path / ".vhir" / "src" / "sift-mcp"
+    source.mkdir(parents=True)
+
+    result = _resolve_opensearch_mcp_repo(source)
+    assert result == repo.resolve()
+
+
+def test_resolve_opensearch_mcp_fallback_to_candidates(tmp_path, monkeypatch):
+    """When import machinery reports the package unavailable, helper
+    falls back through the candidate layout list. Proves the
+    dead-duplicate bug is gone — default layout resolves correctly."""
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+
+    source = tmp_path / ".vhir" / "src" / "sift-mcp"
+    source.mkdir(parents=True)
+    os_repo = tmp_path / ".vhir" / "src" / "opensearch-mcp"
+    (os_repo / ".git").mkdir(parents=True)
+
+    result = _resolve_opensearch_mcp_repo(source)
+    assert result == os_repo.resolve()
+
+
+def test_resolve_opensearch_mcp_none_when_nothing_found(tmp_path, monkeypatch):
+    """Returns None when neither import machinery nor candidate paths
+    locate a repo — the precondition for the installed-but-missing
+    warning branch."""
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    # Point home() at an empty tmp_path so no ~/-based candidates hit.
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "empty-home")
+    source = tmp_path / ".vhir" / "src" / "sift-mcp"
+    source.mkdir(parents=True)
+
+    assert _resolve_opensearch_mcp_repo(source) is None
+
+
+def test_installed_but_missing_detects_silent_staleness(tmp_path, monkeypatch):
+    """The exact silent-staleness condition Test agent flagged: the
+    opensearch_mcp package imports fine (package installed in venv) but
+    no git repo exists on disk (e.g., operator deleted or moved the
+    clone). `_opensearch_mcp_installed_but_missing` must return True so
+    `cmd_update` can emit its actionable stderr warning instead of
+    silently skipping."""
+    # Package appears installed (find_spec returns a spec with no origin —
+    # mimics a site-packages install with no editable source).
+    monkeypatch.setattr(
+        "importlib.util.find_spec",
+        lambda name: SimpleNamespace(origin=None) if name == "opensearch_mcp" else None,
+    )
+    # No candidates exist on disk.
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "empty-home")
+    source = tmp_path / ".vhir" / "src" / "sift-mcp"
+    source.mkdir(parents=True)
+
+    assert _opensearch_mcp_installed_but_missing(source) is True
+
+
+def test_installed_but_missing_false_when_package_absent(tmp_path, monkeypatch):
+    """If the package is not installed at all, return False — nothing
+    to warn about, `vhir update` correctly skips without noise."""
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
+    source = tmp_path / ".vhir" / "src" / "sift-mcp"
+    source.mkdir(parents=True)
+
+    assert _opensearch_mcp_installed_but_missing(source) is False

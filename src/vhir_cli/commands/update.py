@@ -205,28 +205,91 @@ def _ensure_password_dir() -> None:
         )
 
 
+def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
+    """Locate the opensearch-mcp repo on disk.
+
+    opensearch-mcp lives in its own git repo (AppliedIR/opensearch-mcp),
+    separate from the sift-mcp monorepo. Operators install it in a
+    variety of non-standard layouts (sibling of home dir, under
+    ~/.vhir/src/, custom paths). Prior code hard-coded two candidate
+    paths that both resolved to ~/.vhir/src/opensearch-mcp when
+    source=~/.vhir/src/sift-mcp (dead duplicate), silently skipping
+    `vhir update` for operators using any other layout.
+
+    Resolution order:
+    1. Python import machinery (`importlib.util.find_spec`) —
+       self-discovers wherever `uv pip install -e` placed the repo,
+       regardless of install-tool (pip or uv) or filesystem layout.
+    2. Well-known candidate paths, expanded.
+    """
+    # Step 1: installed-package lookup (editable-install metadata).
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("opensearch_mcp")
+        if spec and spec.origin:
+            # spec.origin = .../opensearch-mcp/src/opensearch_mcp/__init__.py
+            # three levels up from __init__.py = repo root
+            pkg_root = Path(spec.origin).resolve().parent.parent.parent
+            if (pkg_root / ".git").is_dir():
+                return pkg_root
+    except Exception:  # noqa: BLE001 — any import-machinery failure falls through
+        pass
+
+    # Step 2: known candidates. source.parent is typically ~/.vhir/src,
+    # so source.parent/"opensearch-mcp" covers the default layout.
+    # Home-level and ~/code/ are common alternates.
+    candidates = [
+        source.parent / "opensearch-mcp",
+        Path.home() / "opensearch-mcp",
+        Path.home() / "code" / "opensearch-mcp",
+        Path.home() / ".vhir" / "src" / "opensearch-mcp",
+    ]
+    # Dedupe while preserving order.
+    seen: set[Path] = set()
+    for c in candidates:
+        try:
+            resolved = c.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.is_dir() and (resolved / ".git").is_dir():
+            return resolved
+    return None
+
+
+def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
+    """True when the opensearch-mcp package is installed in the venv
+    but no git repo was found on disk — a silent-staleness condition
+    that `vhir update` cannot recover from and should warn about."""
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("opensearch_mcp") is None:
+            return False  # not installed at all → legitimate skip
+    except Exception:  # noqa: BLE001
+        return False
+    return _resolve_opensearch_mcp_repo(source) is None
+
+
 def _check_opensearch_version(source: Path) -> None:
     """Warn if running OpenSearch container doesn't match pinned version."""
     import re
 
-    # Find pinned version from docker-compose.yml
-    for os_path in [
-        source.parent / "opensearch-mcp" / "docker" / "docker-compose.yml",
-        Path.home()
-        / ".vhir"
-        / "src"
-        / "opensearch-mcp"
-        / "docker"
-        / "docker-compose.yml",
-    ]:
-        if os_path.is_file():
-            text = os_path.read_text()
-            m = re.search(r"opensearchproject/opensearch:(\S+)", text)
-            if m:
-                pinned = m.group(1)
-                break
-    else:
-        return  # No docker-compose found — opensearch not installed
+    repo = _resolve_opensearch_mcp_repo(source)
+    if repo is None:
+        return  # No opensearch-mcp repo found — opensearch not installed
+
+    os_path = repo / "docker" / "docker-compose.yml"
+    if not os_path.is_file():
+        return
+    text = os_path.read_text()
+    m = re.search(r"opensearchproject/opensearch:(\S+)", text)
+    if not m:
+        return
+    pinned = m.group(1)
 
     # Check running container version
     result = subprocess.run(
@@ -324,13 +387,19 @@ def cmd_update(args, identity: dict) -> None:
     repos = [("sift-mcp", source), ("vhir", vhir_dir)]
 
     # Add opensearch-mcp if installed (external repo, not in sift-mcp monorepo)
-    for os_candidate in [
-        source.parent / "opensearch-mcp",
-        Path.home() / ".vhir" / "src" / "opensearch-mcp",
-    ]:
-        if os_candidate.is_dir() and (os_candidate / ".git").is_dir():
-            repos.append(("opensearch-mcp", os_candidate))
-            break
+    os_repo = _resolve_opensearch_mcp_repo(source)
+    if os_repo is not None:
+        repos.append(("opensearch-mcp", os_repo))
+    elif _opensearch_mcp_installed_but_missing(source):
+        # Package is installed in the venv but no git repo found anywhere.
+        # Silent skip was the v0.6.1 bug — make it visibly actionable.
+        print(
+            "\n  WARNING: opensearch-mcp package is installed but its git repo\n"
+            "  was not found in any known location. `vhir update` cannot\n"
+            "  pull or reinstall it automatically. Update manually:\n"
+            "    cd <path-to-opensearch-mcp> && git pull && uv pip install -e .\n",
+            file=sys.stderr,
+        )
 
     # Step 2: Fetch + compare
     for name, path in repos:
@@ -429,14 +498,12 @@ def cmd_update(args, identity: dict) -> None:
         if pkg_name == "vhir-cli":
             pkg_path = str(vhir_dir)
         elif pkg_name == "opensearch-mcp":
-            # External repo — check sibling of sift-mcp, then default
-            candidates = [
-                source.parent / "opensearch-mcp",
-                Path.home() / ".vhir" / "src" / "opensearch-mcp",
-            ]
-            pkg_path = next((str(p) for p in candidates if p.is_dir()), None)
-            if not pkg_path:
-                continue
+            # External repo — self-discover wherever the operator cloned
+            # it (editable-install metadata, then well-known candidates).
+            os_repo = _resolve_opensearch_mcp_repo(source)
+            if os_repo is None:
+                continue  # warning already emitted earlier in cmd_update
+            pkg_path = str(os_repo)
         else:
             rel = _PACKAGE_PATHS.get(pkg_name)
             if not rel:
