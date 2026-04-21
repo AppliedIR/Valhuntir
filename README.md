@@ -637,6 +637,18 @@ Every approval, rejection, and command execution is logged with examiner identit
 | 4 | `VHIR_ANALYST` env var | Deprecated fallback |
 | 5 | OS username | Warns if unconfigured |
 
+## Operator environment variables (opensearch-mcp ingest resilience)
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `HAYABUSA_RULES_DIR` | *(autodetect)* | Path to hayabusa-rules directory (must contain a `config/` subdirectory). Set when hayabusa rules are installed outside the default locations (`/usr/local/share/hayabusa-rules`, `/usr/share/hayabusa-rules`, `/opt/hayabusa*/rules`). Example: `Environment=HAYABUSA_RULES_DIR=/srv/forensics/hayabusa-rules` in the gateway systemd unit file. |
+| `VHIR_SHARD_BREAKER_THRESHOLD` | `3` | Consecutive shard-limit batch failures before the bulk-write circuit breaker halts ingest. |
+| `VHIR_INTEL_BREAKER_THRESHOLD` | `10` | Consecutive non-rate-limit OpenCTI errors before enrichment halts. |
+| `VHIR_INTEL_RATE_LIMIT_RETRIES` | `5` | Per-IOC retry cap when OpenCTI rate-limits. |
+| `VHIR_INTEL_MIN_INTERVAL_MS` | `100` | Minimum milliseconds between OpenCTI requests (default ~10 QPS). Prevents self-inflicted rate limits. Clamped to a 10ms floor. |
+
+All thresholds clamp to a sane lower bound (operator typo of `0` won't disable safety).
+
 ## Repo Map
 
 | Repo | Purpose |
