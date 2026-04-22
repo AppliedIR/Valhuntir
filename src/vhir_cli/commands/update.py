@@ -517,10 +517,21 @@ def cmd_update(args, identity: dict) -> None:
         pkg_paths.append(pkg_path)
 
     cmd = ["uv", "pip", "install", "--python", venv_python, "--quiet"]
-    # Force re-resolution of opentelemetry exporter when both RAG and opencti
-    # are installed (prevents sdk/exporter version mismatch on update)
+    # Auto-detect dependencies whose version constraints changed in
+    # the pulled commits and mark them for --reinstall-package so the
+    # resolver honors tightened pins (e.g. `uv pip` otherwise leaves
+    # a package already installed at a version the new constraint
+    # forbids). UAT 2026-04-23 B81.
+    reinstall = _detect_constraint_changed_packages(repos, pre_update_git)
+    # Belt-and-suspenders: the opentelemetry exporter's sdk/exporter
+    # version mismatch is driven by the combination of RAG + opencti
+    # both being installed, NOT by a constraint line change in our
+    # pyproject.toml — so it won't be caught by the auto-detector.
+    # Keep the hand-maintained case.
     if "rag-mcp" in installed and "opencti-mcp" in installed:
-        cmd.extend(["--reinstall-package", "opentelemetry-exporter-otlp-proto-grpc"])
+        reinstall.add("opentelemetry-exporter-otlp-proto-grpc")
+    for pkg in sorted(reinstall):
+        cmd.extend(["--reinstall-package", pkg])
     for p in pkg_paths:
         cmd.extend(["-e", p])
 
@@ -628,6 +639,99 @@ def _git_head(path: Path) -> str:
         timeout=10,
     )
     return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def _detect_constraint_changed_packages(
+    repos: list[tuple[str, Path]], pre_update_git: dict[str, str]
+) -> set[str]:
+    """Return package names whose version constraints changed in any
+    pyproject.toml pulled during this update.
+
+    Closes B81 (UAT 2026-04-23): `uv pip install -e ...` does not
+    force-downgrade a package already installed at a version the
+    updated pyproject.toml now forbids. Adding `--reinstall-package
+    <name>` for every dep whose line changed makes the resolver
+    re-evaluate that package and honor the new constraint. The
+    existing hand-maintained case for `opentelemetry-exporter-otlp-
+    proto-grpc` is kept as belt-and-suspenders in cmd_update.
+
+    Approach: for each repo that advanced during `git pull`, diff
+    pyproject.toml files old..new and collect package names from
+    added/removed lines. PEP 508 dep strings at the start of a quoted
+    line are matched; extras (`pycti[foo]`) and markers are tolerated
+    (regex captures the leading identifier only). Over-reinstalling
+    is safe — uv treats --reinstall-package as a no-op when the pin
+    already matches; under-reinstalling is the bug we're closing.
+    """
+    import re
+
+    # Identifier inside a quoted PEP 508 dep string — anywhere on the
+    # line, since pyproject.toml sometimes uses single-line
+    # `dependencies = ["pycti>=6.0"]` and sometimes one-per-line. The
+    # lookahead requires a PEP 508 separator (`[`, `=`, `<`, `>`,
+    # `!`, `~`, `;`, whitespace, closing quote) after the identifier
+    # to avoid matching prose in table names or comments. PEP 503
+    # normalisation (lower, `-`/`_`/`.` equivalence) is the
+    # resolver's job — we pass the spelling as it appears.
+    DEP_LINE = re.compile(r'["\']([A-Za-z][A-Za-z0-9_.\-]*)(?=[\[=<>!~; \t"\'])')
+    changed: set[str] = set()
+
+    for name, path in repos:
+        if not path.is_dir():
+            continue
+        old = pre_update_git.get(name, "")
+        new = _git_head(path)
+        if not old or old == new or new == "unknown":
+            continue
+        # Whole-repo diff (monorepos like sift-mcp have many
+        # pyproject.toml — packages/*/pyproject.toml + root). Git's
+        # `**` pathspec glob behavior is fragile across configs, so
+        # we skip pathspec entirely and filter on file headers in
+        # the diff output below. --unified=0 drops hunk context so
+        # the dep-line regex only sees +/- lines of changed content.
+        result = subprocess.run(
+            ["git", "-C", str(path), "diff", "--unified=0", f"{old}..{new}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            # Soft-fail: a broken diff invocation must not block the
+            # install. Worst case: no auto-reinstall, operator drifts
+            # on one package. Fall back to the hand-maintained list.
+            continue
+        # State machine: only process +/- lines when the current hunk
+        # belongs to a pyproject.toml file. `diff --git a/... b/...`
+        # lines switch the current file.
+        in_pyproject = False
+        for line in result.stdout.splitlines():
+            if line.startswith("diff --git "):
+                # `diff --git a/path/to/file b/path/to/file` — take
+                # the b-path (post-change filename) and check suffix.
+                parts = line.split()
+                b_path = (
+                    parts[-1][2:]
+                    if len(parts) >= 4 and parts[-1].startswith("b/")
+                    else ""
+                )
+                in_pyproject = b_path.endswith("pyproject.toml")
+                continue
+            if not in_pyproject:
+                continue
+            # Only process actual change lines (+/-) — headers (+++/---)
+            # and context lines (which don't exist under --unified=0,
+            # but belt-and-suspenders) are skipped.
+            if not line or line[0] not in "+-":
+                continue
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            # findall: single-line deps like `dependencies =
+            # ["pycti>=6.0"]` have the quoted identifier mid-line;
+            # multi-line deps have it near the start. Both work.
+            for match in DEP_LINE.findall(line):
+                changed.add(match)
+
+    return changed
 
 
 def _git_branch(path: Path) -> str:

@@ -401,3 +401,285 @@ def test_installed_but_missing_false_when_package_absent(tmp_path, monkeypatch):
     source.mkdir(parents=True)
 
     assert _opensearch_mcp_installed_but_missing(source) is False
+
+
+# ---------------------------------------------------------------------------
+# _detect_constraint_changed_packages — B81 UAT 2026-04-23
+# ---------------------------------------------------------------------------
+
+
+class TestDetectConstraintChangedPackages:
+    """Auto-detect packages whose version constraints moved in pulled
+    commits so `uv pip install -e` can re-resolve them. Covers the
+    pycti<7.0 class of footguns — changing a ceiling in pyproject.toml
+    has no effect on an already-installed package without an explicit
+    --reinstall-package hint."""
+
+    @staticmethod
+    def _init_repo(repo):
+        import subprocess as _sp
+
+        _sp.run(["git", "init", "-q", str(repo)], check=True)
+        _sp.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True)
+        _sp.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+
+    @staticmethod
+    def _commit(repo, msg):
+        import subprocess as _sp
+
+        _sp.run(["git", "-C", str(repo), "add", "."], check=True)
+        _sp.run(["git", "-C", str(repo), "commit", "-q", "-m", msg], check=True)
+
+    @staticmethod
+    def _sha(repo):
+        import subprocess as _sp
+
+        return _sp.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def test_detects_changed_version_constraint(self, tmp_path):
+        """Constraint tightened on an existing package → package name
+        returned for --reinstall-package."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "pkg"
+        repo.mkdir()
+        self._init_repo(repo)
+        py = repo / "pyproject.toml"
+        py.write_text(
+            '[project]\nname="x"\ndependencies = [\n    "pycti>=6.0",\n    "mcp>=1.26",\n]\n'
+        )
+        self._commit(repo, "init")
+        old_sha = self._sha(repo)
+        py.write_text(
+            '[project]\nname="x"\ndependencies = [\n    "pycti>=6.0,<7.0",\n    "mcp>=1.26",\n]\n'
+        )
+        self._commit(repo, "tighten pycti")
+
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": old_sha}
+        )
+        assert "pycti" in changed
+        # Unchanged line must NOT appear.
+        assert "mcp" not in changed
+
+    def test_detects_added_and_removed_packages(self, tmp_path):
+        """Package added or removed between commits must also appear —
+        resolver needs the hint on either direction."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "pkg"
+        repo.mkdir()
+        self._init_repo(repo)
+        py = repo / "pyproject.toml"
+        py.write_text(
+            '[project]\ndependencies = [\n    "oldpkg>=1.0",\n    "stable>=2.0",\n]\n'
+        )
+        self._commit(repo, "init")
+        old_sha = self._sha(repo)
+        py.write_text(
+            '[project]\ndependencies = [\n    "newpkg>=3.0",\n    "stable>=2.0",\n]\n'
+        )
+        self._commit(repo, "swap")
+
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": old_sha}
+        )
+        assert "oldpkg" in changed  # removed
+        assert "newpkg" in changed  # added
+        assert "stable" not in changed  # unchanged
+
+    def test_handles_extras_and_markers(self, tmp_path):
+        """Extras like pycti[foo] and markers like `; python_version>='3.10'`
+        must not break the regex — leading identifier is extracted cleanly."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "pkg"
+        repo.mkdir()
+        self._init_repo(repo)
+        py = repo / "pyproject.toml"
+        py.write_text(
+            "[project]\ndependencies = [\n"
+            "    \"pycti[extra]>=6.0; python_version>='3.10'\",\n"
+            "]\n"
+        )
+        self._commit(repo, "init")
+        old_sha = self._sha(repo)
+        py.write_text(
+            "[project]\ndependencies = [\n"
+            "    \"pycti[extra]>=6.0,<7.0; python_version>='3.10'\",\n"
+            "]\n"
+        )
+        self._commit(repo, "tighten")
+
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": old_sha}
+        )
+        assert "pycti" in changed
+        # Extras/markers must not leak into package-name set.
+        assert "extra" not in changed
+        assert "python_version" not in changed
+
+    def test_unchanged_repo_yields_empty(self, tmp_path):
+        """No changes between old and new → empty set, no redundant
+        --reinstall-package entries on the uv command line."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "pkg"
+        repo.mkdir()
+        self._init_repo(repo)
+        py = repo / "pyproject.toml"
+        py.write_text('[project]\ndependencies = ["pycti>=6.0"]\n')
+        self._commit(repo, "init")
+        sha = self._sha(repo)
+
+        # Pre-update SHA == current HEAD → no pull happened → no changes.
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": sha}
+        )
+        assert changed == set()
+
+    def test_monorepo_scans_all_pyproject_tomls(self, tmp_path):
+        """sift-mcp has packages/*/pyproject.toml — every one must be
+        scanned, not just the repo-root one."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "monorepo"
+        repo.mkdir()
+        (repo / "packages" / "alpha").mkdir(parents=True)
+        (repo / "packages" / "beta").mkdir(parents=True)
+        self._init_repo(repo)
+        (repo / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["root_dep>=1.0"]\n'
+        )
+        (repo / "packages" / "alpha" / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["alpha_dep>=1.0"]\n'
+        )
+        (repo / "packages" / "beta" / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["beta_dep>=1.0"]\n'
+        )
+        self._commit(repo, "init")
+        old_sha = self._sha(repo)
+        # Tighten constraint only in packages/beta/pyproject.toml.
+        (repo / "packages" / "beta" / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["beta_dep>=1.0,<2.0"]\n'
+        )
+        self._commit(repo, "tighten beta")
+
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": old_sha}
+        )
+        assert "beta_dep" in changed
+        # Other files unchanged → their deps should not appear.
+        assert "root_dep" not in changed
+        assert "alpha_dep" not in changed
+
+    # -------------------------------------------------------------------
+    # UAT 2026-04-23 — adversarial inputs + soft-fail isolation. Dev's
+    # 5 tests above cover the golden shapes; these probe edge cases
+    # that would silently drop packages from the reinstall set or
+    # crash the walker across sibling repos. Landing alongside the
+    # fix per "tests land with the fix" discipline.
+    # -------------------------------------------------------------------
+
+    def test_detects_deps_with_trailing_comments(self, tmp_path):
+        """Operators often annotate dep pins with rationale comments
+        (`"pycti>=6.0",  # pin for compat`). The leading-identifier
+        regex must still match the capture group; comments after the
+        quoted string must not prevent detection."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "pkg"
+        repo.mkdir()
+        self._init_repo(repo)
+        py = repo / "pyproject.toml"
+        py.write_text(
+            "[project]\ndependencies = [\n"
+            '    "pycti>=6.0",  # permissive — runtime-gate handles skew\n'
+            "]\n"
+        )
+        self._commit(repo, "init")
+        old_sha = self._sha(repo)
+        py.write_text(
+            "[project]\ndependencies = [\n"
+            '    "pycti>=6.0,<7.0",  # pin for OpenCTI 6.x compat\n'
+            "]\n"
+        )
+        self._commit(repo, "tighten pycti")
+
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": old_sha}
+        )
+        assert "pycti" in changed
+
+    def test_detects_git_url_source_deps(self, tmp_path):
+        """PEP 508 allows `"name @ git+https://..."` sources. The
+        identifier-capture regex stops at whitespace, so the leading
+        package name should still be extracted cleanly when the
+        source line changes."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        repo = tmp_path / "pkg"
+        repo.mkdir()
+        self._init_repo(repo)
+        py = repo / "pyproject.toml"
+        py.write_text(
+            "[project]\ndependencies = [\n"
+            '    "customlib @ git+https://example.com/org/customlib.git@v1.0",\n'
+            "]\n"
+        )
+        self._commit(repo, "init")
+        old_sha = self._sha(repo)
+        py.write_text(
+            "[project]\ndependencies = [\n"
+            '    "customlib @ git+https://example.com/org/customlib.git@v2.0",\n'
+            "]\n"
+        )
+        self._commit(repo, "bump customlib ref")
+
+        changed = _detect_constraint_changed_packages(
+            [("test-repo", repo)], {"test-repo": old_sha}
+        )
+        assert "customlib" in changed
+
+    def test_soft_fails_on_broken_repo_and_continues_with_siblings(self, tmp_path):
+        """Per-repo isolation — if one repo's git diff invocation fails
+        (missing SHA, corrupted state), the helper must continue with
+        the remaining repos. Closes the "one dead repo blocks the
+        whole install" failure mode. Backstop for the `continue`
+        path in _detect_constraint_changed_packages:703-707."""
+        from vhir_cli.commands.update import _detect_constraint_changed_packages
+
+        # Broken repo: real path, but the claimed pre-update SHA
+        # doesn't exist in that repo's history. `git diff a..b`
+        # returns non-zero, helper must soft-fail on this repo.
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        self._init_repo(broken)
+        (broken / "pyproject.toml").write_text('[project]\ndependencies = ["x>=1.0"]\n')
+        self._commit(broken, "init")
+
+        # Healthy sibling repo with a real constraint change that
+        # should still be detected.
+        healthy = tmp_path / "healthy"
+        healthy.mkdir()
+        self._init_repo(healthy)
+        py = healthy / "pyproject.toml"
+        py.write_text('[project]\ndependencies = ["pycti>=6.0"]\n')
+        self._commit(healthy, "init")
+        old_sha_healthy = self._sha(healthy)
+        py.write_text('[project]\ndependencies = ["pycti>=6.0,<7.0"]\n')
+        self._commit(healthy, "tighten")
+
+        changed = _detect_constraint_changed_packages(
+            [("broken", broken), ("healthy", healthy)],
+            # 40-hex SHA that doesn't exist in broken's history.
+            {"broken": "0" * 40, "healthy": old_sha_healthy},
+        )
+        # Broken repo yielded no findings (soft-fail) — no exception
+        # escaped — AND healthy repo's changes still made it through.
+        assert "pycti" in changed
