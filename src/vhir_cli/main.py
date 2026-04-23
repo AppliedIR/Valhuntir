@@ -181,6 +181,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--import-all", action="store_true", help="Re-ID and merge all examiners' data"
     )
 
+    p_case_prune = case_sub.add_parser(
+        "prune-ingest-manifests",
+        help="Remove ingest manifests from evidence registry (clean up pollution)",
+    )
+    p_case_prune.add_argument(
+        "case_id",
+        nargs="?",
+        default=None,
+        help="Case ID to prune (default: active case)",
+    )
+
     # review
     p_review = sub.add_parser("review", help="Review case status and audit trail")
     p_review.add_argument("--audit", action="store_true", help="Show audit log")
@@ -597,13 +608,17 @@ def _cmd_case(args, identity: dict) -> None:
         _case_reopen(args, identity)
     elif action == "migrate":
         cmd_migrate(args, identity)
+    elif action == "prune-ingest-manifests":
+        from vhir_cli.commands.prune_manifests import cmd_prune_ingest_manifests
+
+        cmd_prune_ingest_manifests(args, identity)
     elif action == "status":
         _case_status(args, identity)
     elif action == "list":
         _case_list(args, identity)
     else:
         print(
-            "Usage: vhir case {init|activate|close|reopen|status|list|migrate}",
+            "Usage: vhir case {init|activate|close|reopen|status|list|migrate|prune-ingest-manifests}",
             file=sys.stderr,
         )
         sys.exit(1)
