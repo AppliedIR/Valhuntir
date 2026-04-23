@@ -11,6 +11,7 @@ This command is idempotent: run-twice is a no-op once the case is clean.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -46,12 +47,25 @@ def cmd_prune_ingest_manifests(args, identity: dict) -> None:
         print(f"Unexpected evidence.json shape in {evidence_file}", file=sys.stderr)
         sys.exit(1)
 
-    evidence_prefix = str(evidence_dir) + "/"
+    # evidence_register stores str(evidence_path.resolve()) — if
+    # `case/evidence/` is a symlink to `/mnt/evidence/` (the documented
+    # pattern per evidence_register's error message), stored paths are
+    # resolved-target paths. We must match against BOTH the unresolved
+    # prefix (plain case) AND the resolved prefix (symlinked mount) to
+    # avoid silent false negatives on symlinked-evidence cases.
+    prefixes = {str(evidence_dir) + os.sep}
+    try:
+        prefixes.add(str(evidence_dir.resolve()) + os.sep)
+    except OSError:
+        pass  # symlink target missing — stick with the literal prefix
+
     manifests_removed = []
     retained = []
     for entry in files:
         path = entry.get("path", "") if isinstance(entry, dict) else ""
-        if path.endswith(".manifest.json") and path.startswith(evidence_prefix):
+        if path.endswith(".manifest.json") and any(
+            path.startswith(p) for p in prefixes
+        ):
             manifests_removed.append(path)
         else:
             retained.append(entry)
@@ -64,12 +78,32 @@ def cmd_prune_ingest_manifests(args, identity: dict) -> None:
 
     moved_count = 0
     missing_count = 0
+    overflow_count = 0
     for src_path in manifests_removed:
         src = Path(src_path)
         if not src.exists():
             missing_count += 1
             continue
+        # Collision-safe: pre-fix `_write_ingest_manifest` used a 50-char
+        # stem truncation that collided on Windows EVTX channel names
+        # (e.g. TerminalServices-LocalSessionManager Admin vs Operational),
+        # so multiple source paths can share a manifest filename. Disambiguate
+        # the move target rather than silently overwriting.
         dest = audit_manifests_dir / src.name
+        if dest.exists():
+            stem = src.name.removesuffix(".manifest.json")
+            for counter in range(1, 1000):
+                candidate = audit_manifests_dir / f"{stem}-{counter}.manifest.json"
+                if not candidate.exists():
+                    dest = candidate
+                    break
+            else:
+                print(
+                    f"  WARNING: >999 collisions for {src.name}; skipping",
+                    file=sys.stderr,
+                )
+                overflow_count += 1
+                continue
         try:
             shutil.move(str(src), str(dest))
             moved_count += 1
@@ -85,4 +119,6 @@ def cmd_prune_ingest_manifests(args, identity: dict) -> None:
     print(f"  Manifest files moved: {moved_count}")
     if missing_count:
         print(f"  Manifest files missing on disk: {missing_count}")
+    if overflow_count:
+        print(f"  Manifest files skipped (>999 collisions): {overflow_count}")
     print(f"  Real evidence entries retained: {len(retained)}")
