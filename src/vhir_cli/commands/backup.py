@@ -611,6 +611,17 @@ def scan_case_dir(case_dir: Path) -> dict:
     # otherwise copy this machine's file as evidence.
     roots = {os.path.realpath(case_dir), *registered}
 
+    # (st_dev, st_ino) of every directory from case_dir down to the current
+    # root, keyed by the path os.walk yields. A directory symlink pointing back
+    # at one of them (evidence/ is normally itself a symlink to a collection
+    # mount) is re-entered until the kernel's symlink limit bites, so the same
+    # subtree gets listed — and copied and hashed — up to 41 times.
+    try:
+        case_st = case_dir.stat()
+        chains = {str(case_dir): ((case_st.st_dev, case_st.st_ino),)}
+    except OSError:
+        chains = {}
+
     def _leaves_case(path: Path) -> bool:
         if not os.path.islink(path):  # False, not EACCES, in a dir we can't search
             return False
@@ -645,6 +656,23 @@ def scan_case_dir(case_dir: Path) -> dict:
             and not _leaves_case(root_path / d)
             and not _loops(root_path / d)
         ]
+
+        # Drop subdirectories that loop back onto the path we came in by
+        chain = chains.pop(str(root), ())
+        kept = []
+        for d in dirs:
+            sub = os.path.join(str(root), d)
+            try:
+                sub_st = os.stat(sub)
+            except OSError:
+                kept.append(d)  # unreadable: os.walk's onerror lists it
+                continue
+            key = (sub_st.st_dev, sub_st.st_ino)
+            if key in chain:
+                continue
+            chains[sub] = chain + (key,)
+            kept.append(d)
+        dirs[:] = kept
 
         for fname in files:
             if fname in _SKIP_NAMES:
