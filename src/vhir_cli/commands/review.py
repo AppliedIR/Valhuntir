@@ -224,7 +224,10 @@ def _show_findings_detail(case_dir: Path) -> None:
         print("No findings recorded.")
         return
 
-    audit_index = load_audit_index(case_dir)
+    # Only the audit_ids these findings cite are ever resolved below, so keep
+    # the index bounded by that instead of by the whole audit trail.
+    wanted = {eid for f in findings for eid in (f.get("audit_ids") or [])}
+    audit_index = load_audit_index(case_dir, wanted)
 
     for raw in findings:
         f = display_safe(raw)  # for printing inline
