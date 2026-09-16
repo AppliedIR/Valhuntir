@@ -111,6 +111,43 @@ class TestMergeAndWrite:
         _merge_and_write(path, config)
         assert path.is_file()
 
+    def test_unreadable_existing_file_is_not_clobbered(self, tmp_path):
+        path = tmp_path / "config.json"
+        existing = {"mcpServers": {"custom": {"type": "stdio", "command": "test"}}}
+        path.write_text(json.dumps(existing))
+
+        config = {
+            "mcpServers": {
+                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+            }
+        }
+        raised = False
+        with patch.object(
+            Path, "read_text", side_effect=PermissionError(13, "Permission denied")
+        ):
+            try:
+                _merge_and_write(path, config)
+            except OSError:
+                raised = True
+
+        assert json.loads(path.read_text()) == existing
+        assert raised
+
+    def test_invalid_json_existing_file_is_backed_up(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("{not json")
+
+        config = {
+            "mcpServers": {
+                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+            }
+        }
+        _merge_and_write(path, config)
+
+        backup = path.with_name(path.name + ".bak")
+        assert backup.read_text() == "{not json"
+        assert "vhir" in json.loads(path.read_text())["mcpServers"]
+
 
 class TestIsSift:
     def test_true_when_gateway_yaml_exists(self, tmp_path, monkeypatch):

@@ -1423,15 +1423,27 @@ def _merge_and_write(path: Path, config: dict) -> None:
     existing = {}
     if path.is_file():
         try:
-            existing = json.loads(path.read_text())
+            raw = path.read_text()
+        except OSError as e:
+            # An unreadable file is not an empty one — overwriting it would
+            # destroy MCP registrations we cannot see. Abort instead.
+            print(f"Failed to read existing config {path}: {e}", file=sys.stderr)
+            raise
+        try:
+            existing = json.loads(raw)
         except json.JSONDecodeError as e:
+            # Keep the unparseable original so the operator can recover any
+            # registrations it held.
+            backup = path.with_name(path.name + ".bak")
+            try:
+                _write_600(backup, raw)
+            except OSError as backup_err:
+                print(f"Failed to back up {path}: {backup_err}", file=sys.stderr)
+                raise
+            print(f"  Backed up: {path.name} -> {backup.name}", file=sys.stderr)
             print(
                 f"Warning: existing config {path} has invalid JSON ({e}), overwriting.",
                 file=sys.stderr,
-            )
-        except OSError as e:
-            print(
-                f"Warning: could not read existing config {path}: {e}", file=sys.stderr
             )
 
     # Merge: existing servers are preserved, Valhuntir servers overwritten
