@@ -1,7 +1,7 @@
 """Evidence management commands: lock, unlock, register, list, verify, log.
 
 Subcommand group:
-  vhir evidence register <path> [--description]
+  vhir evidence register <path> [--description] [--force-reregister]
   vhir evidence list
   vhir evidence verify
   vhir evidence log [--path <filter>]
@@ -123,7 +123,11 @@ def cmd_unlock_evidence(args, identity: dict) -> None:
 
 
 def register_evidence_data(
-    case_dir, path: str, examiner: str, description: str = ""
+    case_dir,
+    path: str,
+    examiner: str,
+    description: str = "",
+    force_reregister: bool = False,
 ) -> dict:
     """Register an evidence file and return structured data.
 
@@ -134,13 +138,16 @@ def register_evidence_data(
         path: Path to the evidence file.
         examiner: Examiner identity slug.
         description: Optional description.
+        force_reregister: Allow re-registering a file whose hash changed.
 
     Returns:
         Dict with path, sha256, description, registered_at, registered_by.
 
     Raises:
         FileNotFoundError: If evidence file doesn't exist.
-        ValueError: If path is outside the case directory.
+        ValueError: If path is outside the case directory, or the file is
+            already registered with a different hash and force_reregister
+            is not set.
         OSError: If registry write fails.
     """
     from vhir_cli.case_io import _atomic_write
@@ -217,7 +224,32 @@ def register_evidence_data(
                     "note": "already registered (same path and hash)",
                 }
             else:
-                # Same path, different hash — file changed. Update entry.
+                # Same path, different hash — the file changed after it was
+                # registered. Overwriting sha256 would move the integrity
+                # baseline that 'vhir evidence verify' compares against, so
+                # refuse unless the examiner explicitly asks for it.
+                if not force_reregister:
+                    raise ValueError(
+                        f"Evidence already registered with a different hash — "
+                        f"the file changed since registration.\n"
+                        f"  Path:       {resolved}\n"
+                        f"  Registered: {existing.get('sha256')}\n"
+                        f"  Current:    {file_hash}\n"
+                        f"Run 'vhir evidence verify' to review the case, then "
+                        f"re-register with --force-reregister if the new "
+                        f"content is the intended evidence."
+                    )
+                # Keep the superseded hash so the original baseline stays
+                # recoverable from evidence.json.
+                existing.setdefault("previous_hashes", []).append(
+                    {
+                        "sha256": existing.get("sha256"),
+                        "registered_at": existing.get("registered_at"),
+                        "registered_by": existing.get("registered_by"),
+                        "superseded_at": datetime.now(timezone.utc).isoformat(),
+                        "superseded_by": examiner,
+                    }
+                )
                 existing["sha256"] = file_hash
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
                 existing["registered_by"] = examiner
@@ -256,6 +288,7 @@ def cmd_register_evidence(args, identity: dict) -> None:
             path=args.path,
             examiner=identity.get("examiner", identity.get("analyst", "")),
             description=args.description,
+            force_reregister=getattr(args, "force_reregister", False),
         )
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
@@ -273,6 +306,9 @@ def cmd_register_evidence(args, identity: dict) -> None:
     )
 
     print(f"Registered: {data['path']}")
+    if data.get("note") == "updated (same path, hash changed)":
+        prior = data["previous_hashes"][-1]["sha256"]
+        print(f"  WARNING: hash changed since registration (was {prior})")
     print(f"  SHA256: {data['sha256']}")
     print("  Integrity: SHA-256 hash recorded")
 
