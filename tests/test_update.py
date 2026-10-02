@@ -695,3 +695,29 @@ class TestDetectConstraintChangedPackages:
         # Broken repo yielded no findings (soft-fail) — no exception
         # escaped — AND healthy repo's changes still made it through.
         assert "pycti" in changed
+
+
+def test_locked_install_is_not_cut_off_by_a_timeout(manifest_dir):
+    """The first locked install can download gigabytes; uv's own network timeouts end a stall."""
+    tmp_path, _ = manifest_dir
+    locked = []
+
+    def mock_run(cmd, **kwargs):
+        result = MagicMock(returncode=0, stdout="0", stderr="")
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
+            result.stdout = "main"
+        elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
+            locked.append(kwargs)
+        return result
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("subprocess.run", side_effect=mock_run),
+        patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
+        patch("vhir_cli.commands.setup._run_connectivity_test"),
+    ):
+        cmd_update(_make_args(no_restart=True), {})
+
+    assert len(locked) == 1 and locked[0].get("timeout") is None

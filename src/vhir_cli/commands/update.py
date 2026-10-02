@@ -617,7 +617,7 @@ def cmd_update(args, identity: dict) -> None:
     for p in pkg_paths:
         cmd.extend(["-e", p])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(
             f"  Package install failed: {result.stderr.strip()}",
