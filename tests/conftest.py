@@ -15,31 +15,55 @@ import sys
 import pytest
 
 _ROOT = "/var/lib/vhir"
+# Operations on a path, and the argument positions that hold paths.
 _EVENTS = {
-    "open",
-    "os.listdir",
-    "os.scandir",
-    "os.mkdir",
-    "os.rename",
-    "os.replace",
-    "os.remove",
-    "os.rmdir",
-    "os.chmod",
-    "shutil.copyfile",
-    "shutil.rmtree",
+    "open": (0,),
+    "os.listdir": (0,),
+    "os.scandir": (0,),
+    "os.mkdir": (0,),
+    "os.rename": (0, 1),
+    "os.replace": (0, 1),
+    "os.remove": (0,),
+    "os.rmdir": (0,),
+    "os.chmod": (0,),
+    "os.chown": (0,),
+    "os.utime": (0,),
+    "os.truncate": (0,),
+    "os.link": (0, 1),
+    "os.symlink": (0, 1),
+    "shutil.copyfile": (0, 1),
+    "shutil.rmtree": (0,),
 }
 _HITS: list[str] = []
 
 
+def _under_root(value) -> str | None:
+    if isinstance(value, (str, bytes, os.PathLike)):
+        p = os.path.abspath(os.fsdecode(value))
+        if p == _ROOT or p.startswith(_ROOT + "/"):
+            return p
+    return None
+
+
 def _audit(event, args):
-    if event not in _EVENTS:
-        return
-    for a in args:
-        if isinstance(a, (str, bytes, os.PathLike)):
-            p = os.path.abspath(os.fsdecode(a))
-            if p == _ROOT or p.startswith(_ROOT + "/"):
-                _HITS.append(f"{event} {p}")
-                raise PermissionError(f"test touched {p}")
+    hit = None
+    if event in _EVENTS:
+        hit = next(
+            filter(
+                None, (_under_root(args[i]) for i in _EVENTS[event] if i < len(args))
+            ),
+            None,
+        )
+    elif event == "subprocess.Popen":
+        # The installer and backup reach it through cp and chown.
+        argv = args[1]
+        argv = (
+            [argv] if isinstance(argv, (str, bytes, os.PathLike)) else list(argv or ())
+        )
+        hit = next((os.fsdecode(a) for a in argv if _ROOT in os.fsdecode(a)), None)
+    if hit:
+        _HITS.append(f"{event} {hit}")
+        raise PermissionError(f"test touched {hit}")
 
 
 sys.addaudithook(_audit)
