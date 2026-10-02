@@ -473,17 +473,26 @@ def human_size(nbytes: int) -> str:
 
 
 def _registered_paths(case_dir: Path) -> set[str]:
-    """Resolved paths of the case's registered evidence (evidence.json)."""
+    """Resolved paths of the case's registered evidence (evidence.json);
+    a relative entry is relative to the case directory."""
+    registry = case_dir / "evidence.json"
+    if not registry.exists():
+        return set()
     try:
-        files = json.loads((case_dir / "evidence.json").read_text()).get("files", [])
-    except (OSError, ValueError, AttributeError):
+        files = json.loads(registry.read_text()).get("files", [])
+    except (OSError, ValueError, AttributeError) as e:
+        print(
+            f"Warning: can't read {registry} ({e}); registered evidence outside "
+            "evidence/ can't be excluded, so this backup may include it.",
+            file=sys.stderr,
+        )
         return set()
     paths = set()
     for f in files if isinstance(files, list) else []:
         p = f.get("path") if isinstance(f, dict) else None
         if isinstance(p, str) and p:
             try:
-                paths.add(str(Path(p).resolve()))
+                paths.add(str((case_dir / p).resolve()))  # an absolute p stands
             except (OSError, RuntimeError):
                 continue
     return paths

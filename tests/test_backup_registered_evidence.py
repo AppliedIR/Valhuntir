@@ -78,3 +78,28 @@ def test_a_case_without_a_registry_backs_up_as_before(tmp_path):
     (case / "evidence.json").unlink()
     scan = scan_case_dir(case)
     assert {"root.img", "work/mem.img", "work/notes.txt"} <= _rels(scan["case_data"])
+
+
+def test_an_unreadable_registry_is_said_and_the_backup_goes_on(tmp_path, capsys):
+    case = _case(tmp_path / "real")
+    (case / "evidence.json").write_text("{not json")
+    scan = scan_case_dir(case)
+    assert "can't read" in capsys.readouterr().err
+    assert {"root.img", "work/mem.img"} <= _rels(scan["case_data"])
+
+
+def test_an_absent_registry_is_silent(tmp_path, capsys):
+    case = _case(tmp_path / "real")
+    (case / "evidence.json").unlink()
+    scan_case_dir(case)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("cwd", ["/", "case"])
+def test_a_relative_registry_entry_is_relative_to_the_case(tmp_path, monkeypatch, cwd):
+    case = _case(tmp_path / "real")
+    (case / "evidence.json").write_text(
+        json.dumps({"files": [{"path": "work/mem.img"}, {"path": "./root.img"}]})
+    )
+    monkeypatch.chdir("/" if cwd == "/" else case)
+    assert {"root.img", "work/mem.img"} <= _rels(scan_case_dir(case)["evidence"])
