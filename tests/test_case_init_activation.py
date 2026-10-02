@@ -83,3 +83,13 @@ def test_a_pointer_that_cannot_be_written_is_not_reported_as_a_switch(
     out = capsys.readouterr().out
     assert "Active case is now" not in out
     assert "could not be made the active case" in out
+
+
+def test_an_undecodable_pointer_is_still_switched(home):
+    pointer = home / ".vhir" / "active_case"
+    pointer.write_bytes(b"/home/x/cases/\xff\xfe-CASE-A")
+    data = main._case_init_data(
+        name="b", examiner="tester", cases_dir=str(home / "cases"), case_id="CASE-B"
+    )
+    assert data["activation"] == {"active": "CASE-B", "previous": None}
+    assert pointer.read_text() == str((home / "cases" / "CASE-B").resolve())

@@ -922,8 +922,8 @@ def _case_init_data(
         pointer = vhir_dir / "active_case"
         try:
             previous = pointer.read_text().strip()
-        except OSError:
-            previous = ""
+        except (OSError, UnicodeDecodeError):
+            previous = ""  # unreadable: it is still replaced, but names no case
         _atomic_write(pointer, str(case_dir.resolve()))
         activation = {
             "active": case_id,
