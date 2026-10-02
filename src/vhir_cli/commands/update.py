@@ -598,6 +598,22 @@ def cmd_update(args, identity: dict) -> None:
     reinstall = _detect_constraint_changed_packages(repos, pre_update_git)
     for pkg in sorted(reinstall):
         cmd.extend(["--reinstall-package", pkg])
+    # Packages already in the venv that the lock names (pip's seeds, what
+    # OpenCTI's client pulled in) join the install, so -c moves them too.
+    held = subprocess.run(
+        [venv_python, str(checker), "--installed", "--lock", str(lock)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if held.returncode != 0:
+        print(
+            f"  Cannot read the venv's packages against the dependency lock: "
+            f"{held.stderr.strip()}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    cmd.extend(held.stdout.split())
     for p in pkg_paths:
         cmd.extend(["-e", p])
 

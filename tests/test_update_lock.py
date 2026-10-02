@@ -2,7 +2,8 @@
 
 Every package but OpenCTI's goes through one locked install (`-c`/`-b` with
 `deps/vhir.lock`), opensearch-mcp included whenever it's installed, even
-though the installer never put it in the manifest. The venv is checked
+though the installer never put it in the manifest, and so are the installed
+packages the lock names (`check-lock.py --installed`), so that it moves them. The venv is checked
 against the lock (`deps/check-lock.py --strict`), OpenCTI's client is then
 installed unlocked, and the venv is checked again (`--final`). uv older than
 0.6.0 ignores the lock's hashes, so update refuses it before pulling.
@@ -95,6 +96,7 @@ def _update(
             result.stdout = "main"
         elif len(cmd) > 2 and str(cmd[1]).endswith("check-lock.py"):
             result.returncode = check_rc.get(cmd[2], 0)
+            result.stdout = "setuptools starlette" if cmd[2] == "--installed" else ""
         return result
 
     exited = None
@@ -124,13 +126,23 @@ def test_one_locked_install_then_opencti_unlocked_with_checks_between(box):
     calls, exited = _update(box)
     assert exited is None
     steps = _steps(calls)
+    # The contract: --strict passes immediately before the unlocked OpenCTI
+    # step, and --final runs right after it.
     assert [s[0] if s[0] == "install" else s[1] for s in steps] == [
+        "--installed",
         "install",
         "--strict",
         "install",
         "--final",
     ]
-    locked, opencti = steps[0][1], steps[2][1]
+    locked, opencti = steps[1][1], steps[3][1]
+    # What the venv already has that the lock names goes into the locked
+    # install, as plain requirements; the unlocked step doesn't get them.
+    assert locked[locked.index("-b") + 2 : locked.index("-b") + 4] == [
+        "setuptools",
+        "starlette",
+    ]
+    assert "starlette" not in opencti
     lock = str(box.lock)
     assert (
         locked[locked.index("-c") + 1] == lock
@@ -152,14 +164,15 @@ def test_one_locked_install_then_opencti_unlocked_with_checks_between(box):
 def test_installed_opensearch_mcp_is_reinstalled_though_not_in_the_manifest(box):
     calls, exited = _update(box, opensearch=True)
     assert exited is None
-    locked = _steps(calls)[0][1]
+    locked = next(c for kind, c in _steps(calls) if kind == "install")
     assert str(box.home / "opensearch-mcp") in locked
     assert locked.index(str(box.home / "opensearch-mcp")) > locked.index("-c")
 
 
 def test_opensearch_mcp_not_installed_is_left_alone(box):
     calls, _ = _update(box, opensearch=False)
-    assert not any("opensearch-mcp" in a for a in _steps(calls)[0][1])
+    locked = next(c for kind, c in _steps(calls) if kind == "install")
+    assert not any("opensearch-mcp" in a for a in locked)
 
 
 def test_without_opencti_both_checks_still_run(box):
@@ -171,19 +184,20 @@ def test_without_opencti_both_checks_still_run(box):
     assert exited is None
     steps = _steps(calls)
     assert [s[0] if s[0] == "install" else s[1] for s in steps] == [
+        "--installed",
         "install",
         "--strict",
         "--final",
     ]
 
 
-@pytest.mark.parametrize("mode", ["--strict", "--final"])
+@pytest.mark.parametrize("mode", ["--installed", "--strict", "--final"])
 def test_a_failed_check_stops_the_update(box, capsys, mode):
     calls, exited = _update(box, check_rc={mode: 1})
     assert exited is not None and exited.code == 1
     assert "dependency lock" in capsys.readouterr().err
     steps = _steps(calls)
-    assert steps[-1] == ("check", mode)  # nothing after it
+    assert steps[-1] == ("check", mode)  # nothing after it, not even an install
     assert not any(c[:2] == ["systemctl", "--user"] for c in calls)
 
 
@@ -227,9 +241,10 @@ def test_opencti_installed_but_not_in_the_manifest_still_gets_its_step(box):
     assert exited is None
     steps = _steps(calls)
     assert [s[0] if s[0] == "install" else s[1] for s in steps] == [
+        "--installed",
         "install",
         "--strict",
         "install",
         "--final",
     ]
-    assert "-c" not in steps[2][1] and steps[2][1][-1].endswith("packages/opencti")
+    assert "-c" not in steps[3][1] and steps[3][1][-1].endswith("packages/opencti")
