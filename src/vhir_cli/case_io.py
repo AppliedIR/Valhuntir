@@ -483,8 +483,23 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
 # --- Export / Merge ---
 
 
+# The form forensic-mcp accepts for event timestamps; `since` is compared
+# with stored timestamps as a string, so another form filters silently wrong.
+_ISO_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+
 def export_bundle(case_dir: Path, since: str = "") -> dict:
-    """Export findings + timeline as JSON for sharing."""
+    """Export findings + timeline as JSON for sharing.
+
+    Raises ValueError if `since` is given and isn't ISO 8601 or a date.
+    """
+    if since and not _ISO_TIMESTAMP_RE.match(since):
+        raise ValueError(
+            f"since '{since}' is not valid ISO 8601. "
+            "Use format like '2026-01-24T15:00:41Z' or '2026-01-24'."
+        )
     meta = load_case_meta(case_dir)
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
