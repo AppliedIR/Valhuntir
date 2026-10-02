@@ -93,3 +93,35 @@ def test_an_undecodable_pointer_is_still_switched(home):
     )
     assert data["activation"] == {"active": "CASE-B", "previous": None}
     assert pointer.read_text() == str((home / "cases" / "CASE-B").resolve())
+
+
+def _init_cli(home, capsys, case_id):
+    args = argparse.Namespace(
+        name="x", case_id=case_id, description="", cases_dir=str(home / "cases")
+    )
+    main._case_init(args, {"examiner": "tester"})
+    return capsys.readouterr().out.splitlines()
+
+
+def test_an_override_naming_another_case_is_said_to_still_apply(
+    home, capsys, monkeypatch
+):
+    """get_case_dir() reads VHIR_CASE_DIR before the pointer, so the shell
+    keeps working on that case after the switch."""
+    other = home / "cases" / "CASE-A"
+    other.mkdir(parents=True)
+    monkeypatch.setenv("VHIR_CASE_DIR", str(other))
+    lines = _init_cli(home, capsys, "CASE-B")
+    assert "Active case is now CASE-B" in lines
+    (note,) = [x for x in lines if "VHIR_CASE_DIR" in x]
+    assert str(other) in note and "still overrides" in note
+    assert case_io.get_case_dir() == other  # what the note warns about
+
+
+def test_an_override_naming_the_new_case_or_none_says_nothing(
+    home, capsys, monkeypatch
+):
+    monkeypatch.delenv("VHIR_CASE_DIR", raising=False)
+    assert not [x for x in _init_cli(home, capsys, "CASE-B") if "VHIR_CASE_DIR" in x]
+    monkeypatch.setenv("VHIR_CASE_DIR", str(home / "cases" / "CASE-C"))
+    assert not [x for x in _init_cli(home, capsys, "CASE-C") if "VHIR_CASE_DIR" in x]

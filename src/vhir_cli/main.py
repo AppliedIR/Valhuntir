@@ -1065,6 +1065,11 @@ def _case_init(args, identity: dict) -> None:
     if activation:
         was = f" (was {activation['previous']})" if activation["previous"] else ""
         print(f"Active case is now {activation['active']}{was}")
+        override = os.environ.get("VHIR_CASE_DIR")
+        if override and Path(override).resolve() != Path(data["case_dir"]).resolve():
+            print(
+                f"  VHIR_CASE_DIR={override} is set and still overrides it in this shell"
+            )
     else:
         print("Warning: the new case could not be made the active case")
     if data.get("fs_warning"):
