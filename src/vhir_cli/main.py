@@ -913,13 +913,24 @@ def _case_init_data(
             except OSError:
                 pass
 
-    # Set active case pointer
+    # Set the active case pointer. Every session sharing it switches too, so
+    # the result says which case was active before.
+    activation = None
     try:
         vhir_dir = Path.home() / ".vhir"
         vhir_dir.mkdir(exist_ok=True)
-        _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
+        pointer = vhir_dir / "active_case"
+        try:
+            previous = pointer.read_text().strip()
+        except OSError:
+            previous = ""
+        _atomic_write(pointer, str(case_dir.resolve()))
+        activation = {
+            "active": case_id,
+            "previous": Path(previous).name if previous else None,
+        }
     except OSError:
-        pass  # non-fatal — CLI wrapper will warn
+        pass  # the case exists but isn't active: the result has no "activation"
 
     result = {
         "case_id": case_id,
@@ -929,6 +940,8 @@ def _case_init_data(
     }
     if fs_warning:
         result["fs_warning"] = fs_warning
+    if activation:
+        result["activation"] = activation
     return result
 
 
@@ -1048,6 +1061,12 @@ def _case_init(args, identity: dict) -> None:
     print(f"  Name: {name}")
     print(f"  Examiner: {data['examiner']}")
     print(f"  Path: {data['case_dir']}")
+    activation = data.get("activation")
+    if activation:
+        was = f" (was {activation['previous']})" if activation["previous"] else ""
+        print(f"Active case is now {activation['active']}{was}")
+    else:
+        print("Warning: the new case could not be made the active case")
     if data.get("fs_warning"):
         print(f"  WARNING: {data['fs_warning']}")
 
