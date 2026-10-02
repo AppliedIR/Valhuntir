@@ -483,11 +483,30 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
 # --- Export / Merge ---
 
 
-# The form forensic-mcp accepts for event timestamps; `since` is compared
-# with stored timestamps as a string, so another form filters silently wrong.
+# The form forensic-mcp accepts for event timestamps; `since` in another form
+# is refused rather than compared.
 _ISO_TIMESTAMP_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
 )
+
+
+def _utc(ts: object) -> datetime | None:
+    """An ISO timestamp as an aware UTC datetime (naive read as UTC), or None."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(ts[:-1] + "+00:00" if ts.endswith("Z") else ts)
+    except ValueError:
+        return None
+    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _at_or_after(ts: object, since: str) -> bool:
+    """Compare instants; when either side doesn't parse, compare as text, as before."""
+    bound, value = _utc(since), _utc(ts)
+    if bound is None or value is None:
+        return ts >= since
+    return value >= bound
 
 
 def export_bundle(case_dir: Path, since: str = "") -> dict:
@@ -506,10 +525,14 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
 
     if since:
         findings = [
-            f for f in findings if f.get("modified_at", f.get("staged", "")) >= since
+            f
+            for f in findings
+            if _at_or_after(f.get("modified_at", f.get("staged", "")), since)
         ]
         timeline = [
-            t for t in timeline if t.get("modified_at", t.get("staged", "")) >= since
+            t
+            for t in timeline
+            if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
         ]
 
     return {
