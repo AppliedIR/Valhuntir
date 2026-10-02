@@ -1066,7 +1066,14 @@ def _case_init(args, identity: dict) -> None:
         was = f" (was {activation['previous']})" if activation["previous"] else ""
         print(f"Active case is now {activation['active']}{was}")
         override = os.environ.get("VHIR_CASE_DIR")
-        if override and Path(override).resolve() != Path(data["case_dir"]).resolve():
+        try:  # the case is made and active: an unresolvable override can't undo that
+            elsewhere = (
+                override
+                and Path(override).resolve() != Path(data["case_dir"]).resolve()
+            )
+        except (OSError, RuntimeError):
+            elsewhere = True  # can't tell it's the new case, so say it's set
+        if elsewhere:
             print(
                 f"  VHIR_CASE_DIR={override} is set and still overrides it in this shell"
             )

@@ -125,3 +125,35 @@ def test_an_override_naming_the_new_case_or_none_says_nothing(
     assert not [x for x in _init_cli(home, capsys, "CASE-B") if "VHIR_CASE_DIR" in x]
     monkeypatch.setenv("VHIR_CASE_DIR", str(home / "cases" / "CASE-C"))
     assert not [x for x in _init_cli(home, capsys, "CASE-C") if "VHIR_CASE_DIR" in x]
+
+
+@pytest.mark.parametrize("spelling", ["trailing slash", "through a symlink"])
+def test_the_new_case_spelled_differently_says_nothing(
+    home, capsys, monkeypatch, spelling
+):
+    new = home / "cases" / "CASE-D"
+    if spelling == "trailing slash":
+        override = f"{new}/"
+    else:
+        (home / "alias").symlink_to(home / "cases", target_is_directory=True)
+        override = str(home / "alias" / "CASE-D")
+    monkeypatch.setenv("VHIR_CASE_DIR", override)
+    assert not [x for x in _init_cli(home, capsys, "CASE-D") if "VHIR_CASE_DIR" in x]
+
+
+def test_an_override_that_cannot_be_resolved_still_lets_init_finish(
+    home, capsys, monkeypatch
+):
+    """A symlink loop: resolve() raises after the case exists and is active."""
+    monkeypatch.setenv("VHIR_CASE_DIR", str(home / "loop"))
+    real = main.Path.resolve
+
+    def resolve(self, *a, **k):
+        if self.name == "loop":
+            raise RuntimeError("Symlink loop from 'loop'")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(main.Path, "resolve", resolve)
+    lines = _init_cli(home, capsys, "CASE-E")
+    assert "Active case is now CASE-E" in lines
+    assert [x for x in lines if "VHIR_CASE_DIR" in x]
