@@ -63,6 +63,7 @@ STORED = [
         ("2026-10-02", ["x", "y"]),
         ("2026-10-03", []),
         ("2026-13-01", []),  # date-shaped but not a date: compared as text
+        ("2026-00-01", ["x", "y"]),  # date-shaped, month 0: compared as text
     ],
 )
 def test_stored_format_and_unparseable_values_are_unchanged(export, since, want):
