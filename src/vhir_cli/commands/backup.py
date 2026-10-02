@@ -472,6 +472,23 @@ def human_size(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
+def _registered_paths(case_dir: Path) -> set[str]:
+    """Resolved paths of the case's registered evidence (evidence.json)."""
+    try:
+        files = json.loads((case_dir / "evidence.json").read_text()).get("files", [])
+    except (OSError, ValueError, AttributeError):
+        return set()
+    paths = set()
+    for f in files if isinstance(files, list) else []:
+        p = f.get("path") if isinstance(f, dict) else None
+        if isinstance(p, str) and p:
+            try:
+                paths.add(str(Path(p).resolve()))
+            except (OSError, RuntimeError):
+                continue
+    return paths
+
+
 def scan_case_dir(case_dir: Path) -> dict:
     """Scan case directory and categorize files.
 
@@ -482,6 +499,8 @@ def scan_case_dir(case_dir: Path) -> dict:
     evidence = []
     extractions = []
     symlinks = []
+    # Registered evidence is evidence wherever it sits (the case root, work/).
+    registered = _registered_paths(case_dir)
 
     for root, dirs, files in os.walk(case_dir, followlinks=True):
         # Filter out skip names
@@ -510,7 +529,9 @@ def scan_case_dir(case_dir: Path) -> dict:
             entry = (str(rel_path), str(abs_path), size)
             parts = rel_path.parts
 
-            if parts and parts[0] == "evidence":
+            if (parts and parts[0] == "evidence") or (
+                registered and str(abs_path.resolve()) in registered
+            ):
                 evidence.append(entry)
             elif parts and parts[0] == "extractions":
                 extractions.append(entry)
