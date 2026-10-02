@@ -491,14 +491,25 @@ _ISO_TIMESTAMP_RE = re.compile(
 
 
 def _utc(ts: object) -> datetime | None:
-    """An ISO timestamp as an aware UTC datetime (naive read as UTC), or None."""
+    """An ISO timestamp as an aware UTC datetime (naive read as UTC), or None.
+
+    Python 3.10's fromisoformat takes only 3- or 6-digit fractions and
+    ±HH:MM offsets, so the fraction is made 6 digits and ±HHMM gets its colon.
+    """
     if not isinstance(ts, str):
         return None
+    s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+    s = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], s, count=1)
+    s = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", s)
     try:
-        dt = datetime.fromisoformat(ts[:-1] + "+00:00" if ts.endswith("Z") else ts)
-    except ValueError:
+        dt = datetime.fromisoformat(s)
+        return (
+            dt.astimezone(timezone.utc)
+            if dt.tzinfo
+            else dt.replace(tzinfo=timezone.utc)
+        )
+    except (ValueError, OverflowError):  # out of range at year 1 or 9999
         return None
-    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _at_or_after(ts: object, since: str) -> bool:
