@@ -260,6 +260,49 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
     return None
 
 
+def _module_installed(module: str) -> bool:
+    """True when the package is in this venv (vhir runs from it). The
+    manifest can't say: the installer never recorded opensearch-mcp, and
+    OpenCTI's client may have been added after it was written."""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec(module) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_UV_FLOOR = (0, 6, 0)
+
+
+def _uv_version() -> tuple[int, int, int] | None:
+    """uv's version, or None when it can't be read."""
+    import re
+
+    try:
+        out = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"uv (\d+)\.(\d+)\.(\d+)", out.stdout or "")
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def _check_lock(venv_python: str, checker: Path, lock: Path, mode: str) -> None:
+    """Run the venv against the lock (deps/check-lock.py, from the pulled
+    sift-mcp); it prints what it finds. Exits when the check fails."""
+    result = subprocess.run(
+        [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
+    )
+    if result.returncode != 0:
+        print(
+            "  The installed packages don't match the dependency lock (above).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
     """True when the opensearch-mcp package is installed in the venv
     but no git repo was found on disk — a silent-staleness condition
@@ -443,6 +486,19 @@ def cmd_update(args, identity: dict) -> None:
         print("\n  Run 'vhir update' to apply.")
         return
 
+    # Older uv installs from the lock without checking its hashes, and says
+    # nothing. (A failed `uv self update` above is otherwise ignored.)
+    uv_version = _uv_version()
+    if uv_version is None or uv_version < _UV_FLOOR:
+        shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
+        print(
+            f"uv {shown} is older than 0.6.0, which doesn't check package hashes.\n"
+            "Update it: uv self update   (or reinstall: "
+            "curl -LsSf https://astral.sh/uv/install.sh | sh)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Step 3: Record pre-update state + pull
     pre_update_git = {}
     for name, path in repos:
@@ -489,11 +545,27 @@ def cmd_update(args, identity: dict) -> None:
         else:
             print(f"  Pulling {name}... already up to date")
 
-    # Step 4: Reinstall packages (batched for unified dependency resolution)
+    # Step 4: Reinstall packages (batched for unified dependency resolution).
+    # Every third-party package comes from the lock in the freshly pulled
+    # sift-mcp, except what OpenCTI's client pins: it installs afterwards,
+    # unlocked, as the installer does.
+    lock = source / "deps" / "vhir.lock"
+    checker = source / "deps" / "check-lock.py"
+    if not lock.is_file() or not checker.is_file():
+        print(
+            f"Dependency lock not found in {source / 'deps'}.\n"
+            "The sift-mcp checkout is older than this vhir-cli; pull it to main.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     installed = manifest.get("packages", {})
     pkg_paths = []
     for pkg_name in _INSTALL_ORDER:
-        if pkg_name not in installed:
+        if pkg_name == "opencti-mcp":
+            continue  # unlocked, after the rest
+        if pkg_name not in installed and not (
+            pkg_name == "opensearch-mcp" and _module_installed("opensearch_mcp")
+        ):
             continue
         if pkg_name == "vhir-cli":
             pkg_path = str(vhir_dir)
@@ -517,19 +589,13 @@ def cmd_update(args, identity: dict) -> None:
         pkg_paths.append(pkg_path)
 
     cmd = ["uv", "pip", "install", "--python", venv_python, "--quiet"]
+    cmd += ["-c", str(lock), "-b", str(lock)]
     # Auto-detect dependencies whose version constraints changed in
     # the pulled commits and mark them for --reinstall-package so the
     # resolver honors tightened pins (e.g. `uv pip` otherwise leaves
     # a package already installed at a version the new constraint
     # forbids). UAT 2026-04-23 B81.
     reinstall = _detect_constraint_changed_packages(repos, pre_update_git)
-    # Belt-and-suspenders: the opentelemetry exporter's sdk/exporter
-    # version mismatch is driven by the combination of RAG + opencti
-    # both being installed, NOT by a constraint line change in our
-    # pyproject.toml — so it won't be caught by the auto-detector.
-    # Keep the hand-maintained case.
-    if "rag-mcp" in installed and "opencti-mcp" in installed:
-        reinstall.add("opentelemetry-exporter-otlp-proto-grpc")
     for pkg in sorted(reinstall):
         cmd.extend(["--reinstall-package", pkg])
     for p in pkg_paths:
@@ -543,6 +609,27 @@ def cmd_update(args, identity: dict) -> None:
         )
         sys.exit(1)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
+    _check_lock(venv_python, checker, lock, "--strict")
+
+    opencti = source / _PACKAGE_PATHS["opencti-mcp"]
+    if (
+        "opencti-mcp" in installed or _module_installed("opencti_mcp")
+    ) and opencti.is_dir():
+        result = subprocess.run(
+            ["uv", "pip", "install", "--python", venv_python, "--quiet"]
+            + ["-e", str(opencti)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            print(
+                f"  opencti-mcp install failed: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print("  Reinstalling opencti-mcp (outside the dependency lock)... done")
+    _check_lock(venv_python, checker, lock, "--final")
 
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
@@ -651,9 +738,7 @@ def _detect_constraint_changed_packages(
     force-downgrade a package already installed at a version the
     updated pyproject.toml now forbids. Adding `--reinstall-package
     <name>` for every dep whose line changed makes the resolver
-    re-evaluate that package and honor the new constraint. The
-    existing hand-maintained case for `opentelemetry-exporter-otlp-
-    proto-grpc` is kept as belt-and-suspenders in cmd_update.
+    re-evaluate that package and honor the new constraint.
 
     Approach: for each repo that advanced during `git pull`, diff
     pyproject.toml files old..new and collect package names from
