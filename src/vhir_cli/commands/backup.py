@@ -493,7 +493,7 @@ def _registered_paths(case_dir: Path) -> set[str]:
         if isinstance(p, str) and p:
             try:
                 paths.add(str((case_dir / p).resolve()))  # an absolute p stands
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, ValueError):  # ValueError: a NUL in p
                 continue
     return paths
 

@@ -103,3 +103,13 @@ def test_a_relative_registry_entry_is_relative_to_the_case(tmp_path, monkeypatch
     )
     monkeypatch.chdir("/" if cwd == "/" else case)
     assert {"root.img", "work/mem.img"} <= _rels(scan_case_dir(case)["evidence"])
+
+
+def test_a_registry_path_with_a_nul_is_skipped_and_the_scan_goes_on(tmp_path):
+    case = _case(tmp_path / "real")
+    (case / "evidence.json").write_text(
+        json.dumps({"files": [{"path": "work/a\u0000b"}, {"path": "work/mem.img"}]})
+    )
+    scan = scan_case_dir(case)
+    assert "work/mem.img" in _rels(scan["evidence"])
+    assert "root.img" in _rels(scan["case_data"])  # no longer registered
