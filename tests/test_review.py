@@ -601,6 +601,7 @@ def ledger_case(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ver, "VERIFICATION_DIR", tmp_path / "ledger")
     monkeypatch.setattr(auth, "get_analyst_salt", lambda cfg, ex, **k: b"\x01" * 16)
+    monkeypatch.setattr(auth, "verify_password", lambda *a, **k: True)
     prompts = []
     monkeypatch.setattr(auth, "getpass_prompt", lambda p: (prompts.append(p), "pw")[1])
     monkeypatch.setattr(approve, "require_confirmation", lambda cfg, ex: ("pw", "pw"))
