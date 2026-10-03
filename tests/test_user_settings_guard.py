@@ -66,10 +66,10 @@ def _git(repo, *args):
 
 
 @pytest.fixture
-def box(tmp_path, monkeypatch):
+def box(tmp_path, monkeypatch, request):
     """A SIFT box: HOME, a gateway.yaml, and the claude-code assets in a git
     checkout whose history holds two versions of case-dir-check.sh."""
-    home = tmp_path / "home"
+    home = tmp_path / getattr(request, "param", "home")
     (home / ".claude").mkdir(parents=True)
     repo = tmp_path / "sift-mcp"
     full = repo / "claude-code" / "full"
@@ -548,6 +548,7 @@ def test_the_undo_block_prints_even_after_an_error(box, setup, monkeypatch, caps
     )
     with pytest.raises(RuntimeError):
         setup()
+    assert cs._APPLIED is None  # reset even after the error
     assert [
         ln for ln in _undo_lines(capsys.readouterr().out) if str(box.settings) in ln
     ]
@@ -581,25 +582,32 @@ def test_anchor_a_fresh_file_is_created_with_no_undo_line(box, setup, capsys):
     assert not [ln for ln in _undo_lines(out) if str(box.settings) in ln]
 
 
-def test_y_installs_the_product_agents_md_not_the_cwds(box, setup, monkeypatch):
+def test_y_leaves_the_projects_agents_md_and_installs_the_product_rule(
+    box, setup, monkeypatch
+):
     (box.repo / "AGENTS.md").write_text("PRODUCT AGENTS\n")
-    monkeypatch.setattr(  # where an install finds it: after any cwd candidate
+    monkeypatch.setattr(  # where an install finds it: after the cwd candidate
         cs,
         "_AGENTS_MD_CANDIDATES",
         cs._AGENTS_MD_CANDIDATES + [lambda: box.repo / "AGENTS.md"],
     )
-    (box.home.parent / "AGENTS.md").write_text(
-        "SOME REPO'S AGENT INSTRUCTIONS\n"
-    )  # the cwd
+    project = box.home.parent / "AGENTS.md"  # the cwd: some repo's own file
+    project.write_text("SOME REPO'S AGENT INSTRUCTIONS\n")
     setup()
+    assert project.read_text() == "SOME REPO'S AGENT INSTRUCTIONS\n"
     rule = box.home / ".claude" / "rules" / "AGENTS.md"
     assert rule.read_text() == "PRODUCT AGENTS\n"
 
 
-def test_the_cwd_is_not_an_agents_md_candidate(box, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "AGENTS.md").write_text("cwd\n")
-    assert all(fn() != tmp_path / "AGENTS.md" for fn in cs._AGENTS_MD_CANDIDATES)
+@pytest.mark.parametrize("box", ["my home"], indirect=True)
+def test_the_undo_works_with_a_space_in_the_path(box, setup, capsys):
+    before = _write_user(box.settings)
+    setup()
+    (undo,) = [
+        ln for ln in _undo_lines(capsys.readouterr().out) if "settings.json" in ln
+    ]
+    subprocess.run(undo, shell=True, check=True)
+    assert box.settings.read_bytes() == before
 
 
 def test_the_y_flag_is_reset_after_setup(box, setup):

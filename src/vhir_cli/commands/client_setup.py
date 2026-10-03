@@ -1163,7 +1163,7 @@ def _deploy_global_rules(
     for src, name in [
         (discipline_src, "FORENSIC_DISCIPLINE.md"),
         (toolref_src, "TOOL_REFERENCE.md"),
-        (_find_agents_md(), "AGENTS.md"),  # independent lookup
+        (_find_agents_md(global_rule=True), "AGENTS.md"),  # never the cwd's
     ]:
         _deploy_copy(src, rules_dir / name)
 
@@ -1517,8 +1517,8 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     _write_600(path, "\n".join(lines) + "\n")
 
 
-# Not the cwd's AGENTS.md: any repo's instructions would become global rules.
 _AGENTS_MD_CANDIDATES = [
+    lambda: Path.cwd() / "AGENTS.md",
     lambda: Path.home() / ".vhir" / "src" / "sift-mcp" / "AGENTS.md",
     lambda: Path.home() / "vhir" / "sift-mcp" / "AGENTS.md",
     lambda: Path.home() / "vhir" / "forensic-mcp" / "AGENTS.md",
@@ -1527,9 +1527,13 @@ _AGENTS_MD_CANDIDATES = [
 ]
 
 
-def _find_agents_md() -> Path | None:
-    """Find AGENTS.md from known locations. Returns path or None."""
-    for candidate_fn in _AGENTS_MD_CANDIDATES:
+def _find_agents_md(global_rule: bool = False) -> Path | None:
+    """Find AGENTS.md from known locations. Returns path or None. For the
+    global rule, never the cwd's: any repo's instructions would become a rule
+    in every Claude session."""
+    for candidate_fn in (
+        _AGENTS_MD_CANDIDATES[1:] if global_rule else _AGENTS_MD_CANDIDATES
+    ):
         src = candidate_fn()
         if src.is_file():
             return src
