@@ -9,6 +9,7 @@ gateway / wintools / REMnux endpoints wherever they are.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -677,14 +678,17 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             _merge_and_write(output, {"mcpServers": servers})
             print(f"  Generated: {output}")
 
-        _deploy_claude_code_assets(Path.cwd())
+        settings = _deploy_claude_code_assets(Path.cwd())
         print(f"  Examiner:  {examiner}")
         print("")
-        print("  Forensic controls deployed:")
-        print("    Sandbox:     enabled (Bash writes restricted)")
-        print("    Audit hook:  forensic-audit.sh (captures all Bash commands)")
-        print("    Provenance:  enforced (findings require evidence trail)")
-        print("    Discipline:  FORENSIC_DISCIPLINE.md + TOOL_REFERENCE.md")
+        if settings and settings[1] != "kept":
+            print("  Forensic controls deployed:")
+            print("    Sandbox:     enabled (Bash writes restricted)")
+            print("    Audit hook:  forensic-audit.sh (captures all Bash commands)")
+            print("    Provenance:  enforced (findings require evidence trail)")
+            print("    Discipline:  FORENSIC_DISCIPLINE.md + TOOL_REFERENCE.md")
+        elif settings:
+            print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
 
         if sift:
             print("")
@@ -762,22 +766,165 @@ def _find_claude_code_assets() -> Path | None:
     return None
 
 
-def _merge_settings(target: Path, source: Path) -> None:
-    """Deep-merge hooks, permissions, and sandbox keys from source into target."""
-    existing = {}
-    if target.is_file():
-        try:
-            existing = json.loads(target.read_text())
-        except json.JSONDecodeError:
-            pass
-        except OSError:
-            pass
+_PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
 
+
+def _backup(path: Path) -> Path:
+    """Copy path's bytes to <name>.vhir-backup-<UTC stamp> beside it (never *.md)."""
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    bak = path.with_name(f"{path.name}.vhir-backup-{stamp}")
+    n = 1
+    while bak.exists():
+        n += 1
+        bak = path.with_name(f"{path.name}.vhir-backup-{stamp}-{n}")
+    shutil.copy2(path, bak)
+    print(f"  Backed up: {path} -> {bak}")
+    return bak
+
+
+def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
+    """Atomically replace dst's content; a symlink is kept and its target written."""
+    real = dst.resolve() if dst.is_symlink() else dst
+    real.parent.mkdir(parents=True, exist_ok=True)
+    tmp = real.with_name(f".{real.name}.vhir-tmp")
+    tmp.write_bytes(data)
+    tmp.chmod(mode)
+    os.replace(tmp, real)
+
+
+def _shipped(dst: Path, src: Path) -> bool:
+    """Whether dst's bytes are a version of src the product shipped: dst's
+    blob id appears in the history of src's checkout (HEAD, following
+    renames). Without git or a checkout: False, so the user is asked."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, timeout=30
+        )
+
+    try:
+        top = git("-C", str(src.parent), "rev-parse", "--show-toplevel")
+        if top.returncode:
+            return False
+        root = Path(top.stdout.strip()).resolve()
+        rel = src.resolve().relative_to(root)
+        log = git(
+            "-C",
+            str(root),
+            "log",
+            "HEAD",
+            "--follow",
+            "--format=",
+            "--raw",
+            "--no-abbrev",
+            "--",
+            str(rel),
+        )
+        blob = git("hash-object", str(dst))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    ids = {
+        f
+        for ln in log.stdout.splitlines()
+        if ln.startswith(":")
+        for f in ln.split()[2:4]
+    }
+    return blob.returncode == 0 and blob.stdout.strip() in ids
+
+
+def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> str:
+    """Write a file the user may have edited, only with their consent.
+
+    Returns "created" (no file was there), "unchanged" (nothing would change),
+    "written" (they said yes; a backup was made first) or "kept". Asks only on
+    a terminal (default No); otherwise prints the change and keeps the file.
+    """
+    if not path.exists():
+        _replace_bytes(path, new.encode(), 0o600 if as_json else 0o644)
+        return "created"
+    old = path.read_text()
+    if as_json:
+        try:
+            before, after = json.loads(old), json.loads(new)
+        except json.JSONDecodeError as e:
+            print(f"  Not changed: {path} isn't valid JSON ({e}); fix it and re-run.")
+            return "kept"
+        if before == after:
+            return "unchanged"
+        old = json.dumps(before, indent=2, sort_keys=True) + "\n"
+        new_view = json.dumps(after, indent=2, sort_keys=True) + "\n"
+    elif old == new:
+        return "unchanged"
+    else:
+        new_view = new
+    import difflib
+
+    print(f"\n  vhir would change {path} ({why}):")
+    diff = difflib.unified_diff(
+        old.splitlines(), new_view.splitlines(), "current", "proposed", lineterm=""
+    )
+    for line in diff:
+        print(f"    {line}")
+    if not sys.stdin.isatty():
+        print(
+            f"  Not changed: {path}. To review and apply, re-run `vhir update` "
+            "or `vhir setup client` in a terminal."
+        )
+        return "kept"
+    if input(f"  Apply these changes to {path}? [y/N] ").strip().lower() not in (
+        "y",
+        "yes",
+    ):
+        print(f"  Kept: {path} unchanged.")
+        return "kept"
+    _backup(path)
+    _replace_bytes(path, new.encode(), path.stat().st_mode & 0o777)
+    return "written"
+
+
+def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
+    """Deploy a product file: create it, leave it, update a version the
+    product shipped ("updated", with a notice), or ask about anything the
+    user wrote (see _write_user_file)."""
+    if not src or not src.is_file():
+        return "missing"
+    if not dst.exists():
+        _replace_bytes(dst, src.read_bytes(), mode)
+        print(f"  Deployed:  {dst}")
+        return "created"
+    if dst.read_bytes() == src.read_bytes():
+        return "unchanged"
+    if _shipped(dst, src):
+        _replace_bytes(dst, src.read_bytes(), mode)
+        print(f"  Updated:   {dst} (an earlier version vhir shipped)")
+        return "updated"
+    why = "it differs from every version vhir shipped, so it may hold your edits"
+    return _write_user_file(dst, src.read_text(), why)
+
+
+def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict | None:
+    """The settings target would hold after merging source in: lists keep the
+    user's order with missing entries appended. hooks_dir rewrites the
+    product hooks' commands to it (global deployment). None if unreadable."""
+    try:
+        existing = json.loads(target.read_text()) if target.is_file() else {}
+    except json.JSONDecodeError as e:
+        print(f"  Not changed: {target} isn't valid JSON ({e}); fix it and re-run.")
+        return None
+    except OSError as e:
+        print(f"  Not changed: {target} can't be read ({e}).")
+        return None
     try:
         incoming = json.loads(source.read_text())
     except (json.JSONDecodeError, OSError) as e:
         print(f"  Warning: could not read source settings: {e}", file=sys.stderr)
-        return
+        return None
+
+    def add_missing(current: list, extra: list) -> list:
+        return current + [x for x in extra if x not in current]
 
     # Deep-merge hooks: merge arrays for each hook type
     if "hooks" in incoming:
@@ -824,65 +971,71 @@ def _merge_settings(target: Path, source: Path) -> None:
             if not existing["hooks"][hook_type]:
                 del existing["hooks"][hook_type]
 
+    # Global deployment: the product hooks run from hooks_dir
+    if hooks_dir:
+        for entries in existing.get("hooks", {}).values():
+            for entry in entries:
+                for h in entry.get("hooks", []):
+                    name = h.get("command", "").rsplit("/", 1)[-1]
+                    if name in _PRODUCT_HOOKS:
+                        h["command"] = str(hooks_dir / name)
+
     # Merge permissions (additive, preserve ask/defaultMode)
     if "permissions" in incoming:
         existing_perms = existing.setdefault("permissions", {})
-        if "allow" in incoming["permissions"]:
-            existing_allow = set(existing_perms.get("allow", []))
-            for rule in incoming["permissions"]["allow"]:
-                existing_allow.add(rule)
-            existing_perms["allow"] = sorted(existing_allow)
-        if "deny" in incoming["permissions"]:
-            existing_deny = set(existing_perms.get("deny", []))
-            existing_deny -= _OLD_FORENSIC_DENY_RULES  # Remove old forensic rules
-            for rule in incoming["permissions"]["deny"]:
-                existing_deny.add(rule)
-            existing_perms["deny"] = sorted(existing_deny)
+        for key in ("allow", "deny"):
+            if key in incoming["permissions"]:
+                current = existing_perms.get(key, [])
+                if key == "deny":  # Remove old forensic rules
+                    current = [r for r in current if r not in _OLD_FORENSIC_DENY_RULES]
+                existing_perms[key] = add_missing(current, incoming["permissions"][key])
 
     # Merge sandbox config (deep-merge filesystem.denyWrite)
     if "sandbox" in incoming:
         existing_sandbox = existing.setdefault("sandbox", {})
         incoming_sandbox = incoming["sandbox"]
-        # Deep-merge filesystem.denyWrite: append + deduplicate
         if "filesystem" in incoming_sandbox:
             existing_fs = existing_sandbox.setdefault("filesystem", {})
-            if "denyWrite" in incoming_sandbox["filesystem"]:
-                existing_dw = set(existing_fs.get("denyWrite", []))
-                for path in incoming_sandbox["filesystem"]["denyWrite"]:
-                    existing_dw.add(path)
-                existing_fs["denyWrite"] = sorted(existing_dw)
-            # Merge other filesystem keys (if any future additions)
             for k, v in incoming_sandbox["filesystem"].items():
-                if k != "denyWrite":
+                if k == "denyWrite":
+                    existing_fs[k] = add_missing(existing_fs.get(k, []), v)
+                else:
                     existing_fs[k] = v
         # Merge top-level sandbox keys (enabled, allowUnsandboxedCommands)
         for k, v in incoming_sandbox.items():
             if k != "filesystem":
                 existing_sandbox[k] = v
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _write_600(target, json.dumps(existing, indent=2) + "\n")
+    return existing
 
 
-def _deploy_hook(source: Path, target: Path) -> None:
-    """Copy hook script and set executable permissions."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    target.chmod(0o755)
+def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -> str:
+    """Merge the product's hooks, permissions and sandbox into target, only
+    with the user's consent (see _write_user_file). Returns its status."""
+    merged = _merged_settings(target, source, hooks_dir)
+    if merged is None:
+        return "kept"
+    why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
+    return _write_user_file(
+        target, json.dumps(merged, indent=2) + "\n", why, as_json=True
+    )
 
 
-def _deploy_claude_md(src: Path | None, target: Path) -> None:
-    """Copy CLAUDE.md to target location."""
+def _deploy_hook(source: Path, target: Path) -> str:
+    """Deploy a hook script (executable)."""
+    return _deploy_copy(source, target, 0o755)
+
+
+def _deploy_claude_md(src: Path | None, target: Path) -> str:
+    """Deploy CLAUDE.md; the first copy of a user's own file stays as .md.bak."""
     if not src or not src.is_file():
         print("  Warning: CLAUDE.md not found in assets.", file=sys.stderr)
-        return
-    if target.is_file():
-        backup = target.with_suffix(".md.bak")
-        shutil.copy2(target, backup)
-        print(f"  Backed up: {target.name} -> {backup.name}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, target)
-    print(f"  Deployed:  CLAUDE.md -> {target}")
+        return "missing"
+    bak = target.with_suffix(".md.bak")
+    original = target.read_bytes() if target.is_file() and not bak.exists() else None
+    status = _deploy_copy(src, target)
+    if status == "written" and original is not None:
+        bak.write_bytes(original)
+    return status
 
 
 def _deploy_global_rules(
@@ -891,24 +1044,15 @@ def _deploy_global_rules(
 ) -> None:
     """Deploy discipline docs to ~/.claude/rules/ (SIFT only)."""
     rules_dir = Path.home() / ".claude" / "rules"
-    rules_dir.mkdir(parents=True, exist_ok=True)
-
     for src, name in [
         (discipline_src, "FORENSIC_DISCIPLINE.md"),
         (toolref_src, "TOOL_REFERENCE.md"),
+        (_find_agents_md(), "AGENTS.md"),  # independent lookup
     ]:
-        if src and src.is_file():
-            shutil.copy2(src, rules_dir / name)
-            print(f"  Copied:    {name} -> {rules_dir}")
-
-    # AGENTS.md — independent lookup
-    agents = _find_agents_md()
-    if agents:
-        shutil.copy2(agents, rules_dir / "AGENTS.md")
-        print(f"  Copied:    AGENTS.md -> {rules_dir}")
+        _deploy_copy(src, rules_dir / name)
 
 
-def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
+def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
     """Deploy settings.json, hooks, skills, and doc files for Claude Code.
 
     Sources from sift-mcp/claude-code/ directory (shared/ + full/).
@@ -917,6 +1061,9 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
 
     project_dir is optional on SIFT (global deployment doesn't need it).
     When None, project-level doc copies are skipped.
+
+    A file the user may have edited changes only with their consent (see
+    _write_user_file). Returns (settings path, its status) or None.
     """
     assets_dir = _find_claude_code_assets()
     if not assets_dir:
@@ -924,7 +1071,7 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
             "  Note: sift-mcp claude-code assets not found. "
             "Hook and settings deployment skipped."
         )
-        return
+        return None
 
     # Resolve shared and mode directories (new layout: shared/ + full/)
     shared_dir = assets_dir / "shared"
@@ -959,21 +1106,18 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         settings_src = _find_asset("settings.json")
         if settings_src:
             settings_target = Path.home() / ".claude" / "settings.json"
-            _merge_settings(settings_target, settings_src)
-            print(f"  Merged:    settings.json -> {settings_target}")
-            _fixup_global_hook_path(settings_target)
+            hooks_dir = Path.home() / ".vhir" / "hooks"
+            settings = (
+                settings_target,
+                _merge_settings(settings_target, settings_src, hooks_dir),
+            )
+            _report_settings(*settings)
 
         # Deploy hook scripts to ~/.vhir/hooks/
-        for hook_name in (
-            "forensic-audit.sh",
-            "case-dir-check.sh",
-            "case-data-guard.sh",
-        ):
-            hook_src = _find_hook(hook_name)
-            if hook_src:
-                hook_target = Path.home() / ".vhir" / "hooks" / hook_name
-                _deploy_hook(hook_src, hook_target)
-                print(f"  Deployed:  {hook_name} -> {hook_target}")
+        for hook_name in _PRODUCT_HOOKS:
+            _deploy_hook(
+                _find_hook(hook_name), Path.home() / ".vhir" / "hooks" / hook_name
+            )
 
         # Remove deprecated hook files
         hooks_dir = Path.home() / ".vhir" / "hooks"
@@ -999,20 +1143,16 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = Path.home() / ".claude" / "commands"
-            commands_target.mkdir(parents=True, exist_ok=True)
             for skill_file in commands_src.glob("*.md"):
-                shutil.copy2(skill_file, commands_target / skill_file.name)
-                print(f"  Deployed:  {skill_file.name} -> {commands_target}")
+                _deploy_copy(skill_file, commands_target / skill_file.name)
 
         # Also deploy docs to project root (contextual, harmless)
         if project_dir:
             for doc_name in ("FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
-                doc_src = _find_asset(doc_name)
-                if doc_src:
-                    shutil.copy2(doc_src, project_dir / doc_name)
-                    print(f"  Copied:    {doc_name}")
+                _deploy_copy(_find_asset(doc_name), project_dir / doc_name)
 
             _copy_agents_md(project_dir / "AGENTS.md")
+        return settings if settings_src else None
 
     else:
         # --- Non-SIFT project-level deployment ---
@@ -1021,20 +1161,14 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         settings_src = _find_asset("settings.json")
         if settings_src:
             settings_target = project_dir / ".claude" / "settings.json"
-            _merge_settings(settings_target, settings_src)
-            print(f"  Merged:    settings.json -> {settings_target}")
+            settings = (settings_target, _merge_settings(settings_target, settings_src))
+            _report_settings(*settings)
 
         # Deploy hook scripts to project
-        for hook_name in (
-            "forensic-audit.sh",
-            "case-dir-check.sh",
-            "case-data-guard.sh",
-        ):
-            hook_src = _find_hook(hook_name)
-            if hook_src:
-                hook_target = project_dir / ".claude" / "hooks" / hook_name
-                _deploy_hook(hook_src, hook_target)
-                print(f"  Deployed:  {hook_name} -> {hook_target}")
+        for hook_name in _PRODUCT_HOOKS:
+            _deploy_hook(
+                _find_hook(hook_name), project_dir / ".claude" / "hooks" / hook_name
+            )
 
         # Remove deprecated hook files from project
         proj_hooks_dir = project_dir / ".claude" / "hooks"
@@ -1054,57 +1188,24 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> None:
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = project_dir / ".claude" / "commands"
-            commands_target.mkdir(parents=True, exist_ok=True)
             for skill_file in commands_src.glob("*.md"):
-                shutil.copy2(skill_file, commands_target / skill_file.name)
-                print(f"  Deployed:  {skill_file.name} -> {commands_target}")
+                _deploy_copy(skill_file, commands_target / skill_file.name)
 
         # Copy AGENTS.md to project root
         _copy_agents_md(project_dir / "AGENTS.md")
 
-        # Deploy FORENSIC_DISCIPLINE.md
-        discipline_src = _find_asset("FORENSIC_DISCIPLINE.md")
-        if discipline_src:
-            shutil.copy2(discipline_src, project_dir / "FORENSIC_DISCIPLINE.md")
-            print("  Copied:    FORENSIC_DISCIPLINE.md")
-
-        # Deploy TOOL_REFERENCE.md
-        toolref_src = _find_asset("TOOL_REFERENCE.md")
-        if toolref_src:
-            shutil.copy2(toolref_src, project_dir / "TOOL_REFERENCE.md")
-            print("  Copied:    TOOL_REFERENCE.md")
+        # Deploy FORENSIC_DISCIPLINE.md and TOOL_REFERENCE.md
+        for doc_name in ("FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
+            _deploy_copy(_find_asset(doc_name), project_dir / doc_name)
+        return settings if settings_src else None
 
 
-def _fixup_global_hook_path(settings_path: Path) -> None:
-    """Replace $CLAUDE_PROJECT_DIR hook paths with absolute ~/.vhir/hooks/ path."""
-    try:
-        data = json.loads(settings_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return
-
-    hooks_dir = Path.home() / ".vhir" / "hooks"
-    changed = False
-
-    for hook_type in (
-        "SessionStart",
-        "PreToolUse",
-        "PostToolUse",
-        "UserPromptSubmit",
-    ):
-        entries = data.get("hooks", {}).get(hook_type, [])
-        for entry in entries:
-            for h in entry.get("hooks", []):
-                cmd = h.get("command", "")
-                if cmd.endswith(".sh"):
-                    script_name = cmd.rsplit("/", 1)[-1]
-                    correct_path = str(hooks_dir / script_name)
-                    if cmd != correct_path:
-                        # Rewrite $CLAUDE_PROJECT_DIR paths AND stale .aiir paths
-                        h["command"] = correct_path
-                        changed = True
-
-    if changed:
-        _write_600(settings_path, json.dumps(data, indent=2) + "\n")
+def _report_settings(path: Path, status: str) -> None:
+    """Say what happened to a settings file, truthfully."""
+    if status in ("created", "written"):
+        print(f"  Merged:    settings.json -> {path}")
+    elif status == "kept":
+        print(f"  Forensic controls NOT applied to {path}; see above.")
 
 
 def _merge_and_write(path: Path, config: dict) -> None:
@@ -1325,8 +1426,7 @@ def _copy_agents_md(target: Path) -> None:
             if src.resolve() == Path(target).resolve():
                 pass  # Already in place
             else:
-                shutil.copy2(src, target)
-                print(f"  Copied:    {src.name} -> {target.name}")
+                _deploy_copy(src, Path(target))
         except OSError as e:
             print(f"  Warning: failed to copy {src} to {target}: {e}", file=sys.stderr)
     else:
@@ -1408,12 +1508,7 @@ def _uninstall_sift() -> None:
                 print(f"      {p}")
         if _prompt_yn_strict("      Remove?"):
             if claude_md.is_file():
-                claude_md.unlink()
-                # Restore backup if exists
-                bak = claude_md.with_suffix(".md.bak")
-                if bak.is_file():
-                    bak.rename(claude_md)
-                    print("      Restored CLAUDE.md from backup.")
+                _remove_claude_md(claude_md, "      ")
             for name in ("FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md", "AGENTS.md"):
                 p = rules_dir / name
                 if p.is_file():
@@ -1447,13 +1542,10 @@ def _uninstall_sift() -> None:
         if _prompt_yn_strict("      Remove?"):
             for f in existing_project:
                 p = Path.cwd() / f
-                p.unlink()
-                # Restore backup if exists
                 if f == "CLAUDE.md":
-                    bak = p.with_suffix(".md.bak")
-                    if bak.is_file():
-                        bak.rename(p)
-                        print("      Restored CLAUDE.md from backup.")
+                    _remove_claude_md(p, "      ")
+                else:
+                    p.unlink()
             print("      Removed.")
         else:
             print("      Skipped.")
@@ -1493,8 +1585,6 @@ def _uninstall_project() -> None:
 
     claude_md = project_dir / "CLAUDE.md"
     has_claude_md = claude_md.is_file()
-    if has_claude_md:
-        files_to_remove.append(claude_md)
 
     has_mcp_json = mcp_json.is_file()
 
@@ -1525,6 +1615,8 @@ def _uninstall_project() -> None:
     print("  Files to remove:")
     for p in files_to_remove:
         print(f"    {p}")
+    if has_claude_md:
+        print(f"    {claude_md} (only if it's a version vhir shipped)")
     if has_mcp_json:
         print(f"    {mcp_json} (Valhuntir entries only)")
     for p in claude_files_to_remove:
@@ -1536,12 +1628,8 @@ def _uninstall_project() -> None:
         # Surgical .mcp.json removal — only Valhuntir entries
         if has_mcp_json:
             _remove_vhir_mcp_entries(mcp_json)
-        # Restore CLAUDE.md backup if exists
         if has_claude_md:
-            bak = claude_md.with_suffix(".md.bak")
-            if bak.is_file():
-                bak.rename(claude_md)
-                print("  Restored CLAUDE.md from backup.")
+            _remove_claude_md(claude_md, "  ")
         # Surgical settings removal instead of rmtree
         for p in claude_files_to_remove:
             if p.name == "settings.json":
@@ -1579,6 +1667,28 @@ def _remove_vhir_mcp_entries(path: Path) -> None:
         if name in _VHIR_BACKEND_NAMES:
             del servers[name]
     _write_600(path, json.dumps(data, indent=2) + "\n")
+
+
+def _remove_claude_md(path: Path, indent: str) -> None:
+    """Remove a CLAUDE.md vhir deployed and restore the user's .md.bak; one
+    vhir didn't ship (the user's own, or kept at their choice) stays."""
+    assets = _find_claude_code_assets()
+    src = next(
+        (
+            d / "CLAUDE.md"
+            for d in (assets / "full", assets / "shared", assets)
+            if assets and (d / "CLAUDE.md").is_file()
+        ),
+        None,
+    )
+    if not src or (path.read_bytes() != src.read_bytes() and not _shipped(path, src)):
+        print(f"{indent}Kept {path}: it isn't a version vhir shipped.")
+        return
+    path.unlink()
+    bak = path.with_suffix(".md.bak")
+    if bak.is_file():
+        bak.rename(path)
+        print(f"{indent}Restored CLAUDE.md from backup.")
 
 
 def _remove_forensic_settings(path: Path) -> None:
@@ -1632,7 +1742,8 @@ def _remove_forensic_settings(path: Path) -> None:
     # Remove sandbox
     data.pop("sandbox", None)
 
-    _write_600(path, json.dumps(data, indent=2) + "\n")
+    _backup(path)
+    _replace_bytes(path, (json.dumps(data, indent=2) + "\n").encode(), 0o600)
 
 
 # ---------------------------------------------------------------------------
