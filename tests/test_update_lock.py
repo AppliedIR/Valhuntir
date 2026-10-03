@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -82,6 +83,8 @@ def _update(
     leftovers="",
     install_rc=0,
     after_check_rc=0,
+    uninstall="ok",
+    smi_hangs=False,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
@@ -111,6 +114,14 @@ def _update(
     def run(cmd, **kw):
         calls.append([str(c) for c in cmd])
         result = MagicMock(returncode=0, stdout="0", stderr="")
+        if cmd[0] == "nvidia-smi" and smi_hangs:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        if cmd[:3] == ["uv", "pip", "uninstall"] and uninstall != "ok":
+            if uninstall == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 600)
+            if kw.get("check"):  # as subprocess.run does with check=True
+                raise subprocess.CalledProcessError(2, cmd)
+            result.returncode = 2
         if len(cmd) > 2 and cmd[1] == "-c" and "torch" in cmd[2]:
             result.returncode, result.stdout = (0, torch) if torch else (1, "")
         elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
@@ -130,7 +141,10 @@ def _update(
 
     def ask(prompt=""):
         calls.append(["input", prompt])
-        return replies.pop(0) if replies else ""
+        reply = replies.pop(0) if replies else ""
+        if reply is EOFError:  # end of input at this prompt
+            raise EOFError
+        return reply
 
     exited = None
     with (
@@ -140,7 +154,9 @@ def _update(
         patch("builtins.input", side_effect=ask),
         patch("sys.stdin.isatty", return_value=tty),
         patch("sys.platform", platform),
-        patch("shutil.which", return_value=None),
+        patch(
+            "shutil.which", return_value="/usr/bin/nvidia-smi" if smi_hangs else None
+        ),
     ):
         try:
             # A MagicMock's unset attributes are truthy: the flags are set.
@@ -446,7 +462,10 @@ def test_yes_removes_them_after_the_final_check_and_cleans_the_cache(box, capsys
     clean = _index(calls, ["uv", "cache", "clean"])
     assert final < uninstall < clean
     assert calls[uninstall][-3:] == NAMES  # requirers first, as check-lock orders them
-    assert calls[clean][3:] == [*NAMES, "torch"] and "--force" not in calls[clean]
+    # Only what was uninstalled: cleaning torch's cache would break a venv
+    # that links its CPU torch there (uv --link-mode symlink).
+    assert calls[clean][3:] == NAMES and "--force" not in calls[clean]
+    assert "check none are yours" in out
     assert any(c[:3] == ["uv", "pip", "check"] for c in calls[clean:])
 
 
@@ -470,3 +489,45 @@ def test_a_removal_that_did_not_finish_prints_how_to_finish(box, capsys):
     assert exited is None
     err = capsys.readouterr().err
     assert "Finish it: uv pip uninstall" in err and "nvidia-cudnn-cu12" in err
+
+
+# --- Nothing in the new steps stops an update it shouldn't --------------------
+
+
+def test_a_hanging_gpu_probe_means_no_gpu_and_the_update_goes_on(box, capsys):
+    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[""], smi_hangs=True)
+    assert exited is None and "no NVIDIA GPU was found" in capsys.readouterr().out
+    assert _lock_of(calls) == str(box.cpu_lock)
+
+
+def test_no_answer_at_the_variant_question_installs_nothing(box, capsys):
+    """End of input mustn't become a silent swap to the CPU default."""
+    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[EOFError])
+    assert exited is not None and exited.code == 1
+    assert "nothing installed" in capsys.readouterr().err
+    assert not _steps(calls)
+
+
+def _finished(box, calls, exited):
+    """The update went on past the clean-up: manifest written, no restart asked."""
+    assert exited is None
+    assert "updated_at" in _manifest(box)
+
+
+def test_no_answer_at_the_clean_up_keeps_them_and_the_update_goes_on(box, capsys):
+    calls, exited = _cleanup(box, answers=[EOFError])
+    _finished(box, calls, exited)
+    assert (
+        "Clean-up not finished; the commands above complete it"
+        in capsys.readouterr().out
+    )
+    assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
+
+
+@pytest.mark.parametrize("uninstall", ["failed", "timeout"])
+def test_an_uninstall_that_fails_skips_the_cache_clean(box, capsys, uninstall):
+    """The cache copies stay while the venv still links them."""
+    calls, exited = _cleanup(box, answers=["y"], uninstall=uninstall)
+    _finished(box, calls, exited)
+    assert "Clean-up not finished" in capsys.readouterr().out
+    assert not any(c[:3] == ["uv", "cache", "clean"] for c in calls)

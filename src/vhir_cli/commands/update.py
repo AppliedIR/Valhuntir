@@ -350,11 +350,14 @@ def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
 
         found = "no NVIDIA GPU was found"
         if shutil.which("nvidia-smi"):
-            smi = subprocess.run(
-                ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
-            )
-            if smi.returncode == 0 and smi.stdout.startswith("GPU"):
-                found = "an NVIDIA GPU was found"
+            try:
+                smi = subprocess.run(
+                    ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
+                )
+                if smi.returncode == 0 and smi.stdout.startswith("GPU"):
+                    found = "an NVIDIA GPU was found"
+            except (OSError, subprocess.SubprocessError):
+                pass  # a probe that fails or hangs: no GPU detected
         print(f"\n  PyTorch for knowledge search ({found}):")
         if installed:
             print(
@@ -370,9 +373,16 @@ def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
             " builds; needs an NVIDIA GPU"
         )
         while True:
-            answer = (
-                input("    PyTorch build (cpu/gpu) [cpu]: ").strip().lower() or "cpu"
-            )
+            try:
+                answer = input("    PyTorch build (cpu/gpu) [cpu]: ")
+            except EOFError:  # no answer mustn't become a silent swap to CPU
+                print(
+                    "\nNo answer to the PyTorch question; nothing installed."
+                    " Re-run with: vhir update --cpu or --gpu",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            answer = answer.strip().lower() or "cpu"
             if answer in ("cpu", "gpu"):
                 return answer, answer
             print("    Please enter cpu or gpu.")
@@ -382,7 +392,16 @@ def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
 
 def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     """After the CPU build is in and --final passed: offer to remove the CUDA
-    packages it doesn't use. Asks first, loudly; the default is No."""
+    packages it doesn't use. Asks first, loudly; the default is No. Nothing
+    here stops the update: no answer, a timeout or a failed step leaves the
+    commands it printed to finish by hand."""
+    try:
+        _cleanup(venv_python, checker, lock)
+    except (EOFError, OSError, subprocess.SubprocessError):
+        print("\n  Clean-up not finished; the commands above complete it.")
+
+
+def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     out = subprocess.run(
         [venv_python, str(checker), "--cuda-leftovers", "--lock", str(lock)],
         capture_output=True,
@@ -395,13 +414,15 @@ def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     names = [r[0] for r in rows]
     total = sum(int(r[1]) for r in rows)
     print("\n  " + "=" * 66)
-    print("  CUDA packages from GPU PyTorch that the CPU build doesn't use:")
+    print(
+        "  CUDA-family packages the chosen lock doesn't install (check none are yours):"
+    )
     for name, size in rows:
         print(f"    {name:<34} {int(size) / 1e9:6.2f} GB")
     print(f"    {'total in the venv':<34} {total / 1e9:6.2f} GB")
     print("  Removing them runs:")
     print(f"    uv pip uninstall --python {venv_python} {' '.join(names)}")
-    print(f"    uv cache clean {' '.join(names)} torch")
+    print(f"    uv cache clean {' '.join(names)}")
     print(
         "  This changes only Valhuntir's environment and uv's download cache,\n"
         "  and any other uv environment installed with --link-mode symlink that\n"
@@ -414,8 +435,10 @@ def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
         print("  Kept. The commands above remove them later.")
         return
     py = ["--python", venv_python]
-    subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600)
-    subprocess.run(["uv", "cache", "clean", *names, "torch"], timeout=600)
+    # check=True: a failed uninstall must not reach the cache clean, which
+    # would break a venv that links those files from the cache.
+    subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
+    subprocess.run(["uv", "cache", "clean", *names], timeout=600)
     check = subprocess.run(
         ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
     )
