@@ -124,7 +124,7 @@ def _update(
             if kw.get("check"):  # as subprocess.run does with check=True
                 raise subprocess.CalledProcessError(2, cmd)
             result.returncode = 2
-        if len(cmd) > 2 and cmd[1] == "-c" and "torch" in cmd[2]:
+        if "-c" in cmd[1:3] and "torch" in cmd[-1]:  # the probe: python [-I] -c …
             result.returncode, result.stdout = (0, torch) if torch else (1, "")
         elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
             result.returncode = install_rc

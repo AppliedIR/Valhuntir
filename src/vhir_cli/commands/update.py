@@ -334,6 +334,7 @@ def _torch_installed(venv_python: str) -> str:
         out = subprocess.run(
             [
                 venv_python,
+                "-I",
                 "-c",
                 'import importlib.metadata as m; print(m.version("torch"))',
             ],

@@ -258,7 +258,7 @@ def _setup_client(args, identity: dict) -> None:
         servers["opensearch-mcp"] = {
             "type": "stdio",
             "command": sys.executable,
-            "args": ["-m", "opensearch_mcp"],
+            "args": ["-I", "-m", "opensearch_mcp"],
         }
 
     if not servers:
