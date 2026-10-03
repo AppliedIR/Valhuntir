@@ -487,7 +487,7 @@ def _setup_args(**kw):
 
     base = dict(
         client="claude-code",
-        sift="http://127.0.0.1:4508",
+        sift="http://127.0.0.1:9",  # nothing listens: never a live gateway
         windows=None,
         windows_token=None,
         remnux=None,

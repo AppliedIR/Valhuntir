@@ -192,7 +192,7 @@ class TestCmdSetupClient:
 
         defaults = {
             "client": "claude-code",
-            "sift": "http://127.0.0.1:4508",
+            "sift": "http://127.0.0.1:9",  # nothing listens: never a live gateway
             "windows": None,
             "windows_token": None,
             "remnux": None,
@@ -220,7 +220,7 @@ class TestCmdSetupClient:
         assert config_path.is_file()
         data = json.loads(config_path.read_text())
         assert "vhir" in data["mcpServers"]
-        assert data["mcpServers"]["vhir"]["url"] == "http://127.0.0.1:4508/mcp"
+        assert data["mcpServers"]["vhir"]["url"] == "http://127.0.0.1:9/mcp"
         assert data["mcpServers"]["vhir"]["type"] == "http"
         # Zeltser included by default
         assert "zeltser-ir-writing" in data["mcpServers"]
@@ -352,7 +352,7 @@ class TestCmdSetupClient:
         content = config_path.read_text()
         assert "mcpServers:" in content
         assert 'type: "streamable-http"' in content
-        assert 'url: "http://127.0.0.1:4508/mcp"' in content
+        assert 'url: "http://127.0.0.1:9/mcp"' in content
         assert 'url: "https://192.168.1.20:4624/mcp"' in content
         assert "timeout: 60000" in content
         assert "zeltser-ir-writing" in content
