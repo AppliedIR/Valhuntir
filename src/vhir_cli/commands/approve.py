@@ -165,6 +165,8 @@ def _approve_specific(
             continue
         if tl_event.get("examiner_modifications"):
             continue
+        if tl_event.get("status") != "DRAFT":  # an explicit reject wins
+            continue
         tl_event["status"] = "APPROVED"
         tl_event["approved_at"] = now
         tl_event["approved_by"] = identity["examiner"]
@@ -415,7 +417,7 @@ def _interactive_review(
         source = finding_by_id.get(auto_from)
         if not source:
             continue
-        if source["id"] in approvals:
+        if source["id"] in approvals and tl_event.get("status") == "DRAFT":
             tl_event["status"] = "APPROVED"
             tl_event["approved_at"] = now
             tl_event["approved_by"] = identity["examiner"]
@@ -1246,7 +1248,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         source = item_by_id.get(auto_from)
         if not source:
             continue
-        if source.get("status") == "APPROVED":
+        if source.get("status") == "APPROVED" and tl_event.get("status") == "DRAFT":
             tl_event["status"] = "APPROVED"
             tl_event["approved_at"] = now
             tl_event["approved_by"] = identity["examiner"]
