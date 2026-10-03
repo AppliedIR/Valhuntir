@@ -537,11 +537,11 @@ $githubRaw = "https://raw.githubusercontent.com/AppliedIR"
 $errors = 0
 
 $assets = @(
-    @{ Name = "CLAUDE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/CLAUDE.md"; Dest = (Join-Path $deployDir "CLAUDE.md") },
+    @{ Name = "CLAUDE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/CLAUDE.md"; Dest = (Join-Path $deployDir "CLAUDE.md") },
     @{ Name = "AGENTS.md"; Url = "$githubRaw/sift-mcp/main/AGENTS.md"; Dest = (Join-Path $deployDir "AGENTS.md") },
-    @{ Name = "FORENSIC_DISCIPLINE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/FORENSIC_DISCIPLINE.md"; Dest = (Join-Path $deployDir "FORENSIC_DISCIPLINE.md") },
-    @{ Name = "TOOL_REFERENCE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/TOOL_REFERENCE.md"; Dest = (Join-Path $deployDir "TOOL_REFERENCE.md") },
-    @{ Name = "forensic-audit.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/hooks/forensic-audit.sh"; Dest = $hookPath }
+    @{ Name = "FORENSIC_DISCIPLINE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/FORENSIC_DISCIPLINE.md"; Dest = (Join-Path $deployDir "FORENSIC_DISCIPLINE.md") },
+    @{ Name = "TOOL_REFERENCE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/TOOL_REFERENCE.md"; Dest = (Join-Path $deployDir "TOOL_REFERENCE.md") },
+    @{ Name = "forensic-audit.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/shared/hooks/forensic-audit.sh"; Dest = $hookPath }
 )
 
 foreach ($asset in $assets) {
