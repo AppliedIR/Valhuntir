@@ -623,8 +623,7 @@ def cmd_update(args, identity: dict) -> None:
         )
         if result.returncode != 0:
             print(
-                f"Cannot reach remote for {name}: {result.stderr.strip()}\n"
-                "Check network and try again.",
+                f"git fetch failed for {name}: {result.stderr.strip()}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -672,11 +671,9 @@ def cmd_update(args, identity: dict) -> None:
         if path.is_dir():
             pre_update_git[name] = _git_head(path)
 
+    # Every repo's branch before any pull, so a wrong one changes nothing.
     for name, path in repos:
-        if not path.is_dir():
-            continue
-        # Verify on main branch before pulling
-        branch = _git_branch(path)
+        branch = _git_branch(path) if path.is_dir() else ""
         if branch and branch != "main":
             print(
                 f"{name} is on branch '{branch}', expected 'main'.\n"
@@ -684,23 +681,36 @@ def cmd_update(args, identity: dict) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        result = subprocess.run(
-            ["git", "-C", str(path), "pull", "--ff-only"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+    pulled = False  # a repo's HEAD moved in this run
+    for name, path in repos:
+        if not path.is_dir():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), "pull", "--ff-only"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Pulling {name} timed out after 60 seconds.", file=sys.stderr)
+            if pulled:
+                _stop_part_way(args)
+            sys.exit(1)
         if result.returncode != 0:
             print(
                 f"Failed to pull {name}: {result.stderr.strip()}\n"
                 f"Resolve conflicts in {path} or re-run setup-sift.sh.",
                 file=sys.stderr,
             )
+            if pulled:
+                _stop_part_way(args)
             sys.exit(1)
         # Count new commits
         old = pre_update_git.get(name, "")
         new = _git_head(path)
         if old and old != new:
+            pulled = True
             count_result = subprocess.run(
                 ["git", "-C", str(path), "rev-list", f"{old}..{new}", "--count"],
                 capture_output=True,
@@ -776,12 +786,19 @@ def cmd_update(args, identity: dict) -> None:
         cmd.extend(["--reinstall-package", pkg])
     # Packages already in the venv that the lock names (pip's seeds, what
     # OpenCTI's client pulled in) join the install, so -c moves them too.
-    held = subprocess.run(
-        [venv_python, str(checker), "--installed", "--lock", str(lock)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    try:
+        held = subprocess.run(
+            [venv_python, str(checker), "--installed", "--lock", str(lock)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "  Reading the venv's packages timed out after 120 seconds.",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
     if held.returncode != 0:
         print(
             f"  Cannot read the venv's packages against the dependency lock: "
