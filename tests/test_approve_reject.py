@@ -1,7 +1,9 @@
 """Tests for approve and reject commands (hardened with mandatory password)."""
 
 import json
+import sys
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -554,3 +556,381 @@ class TestReject:
         f002 = next(f for f in findings if f["id"] == "F-tester-002")
         assert f001["status"] == "REJECTED"
         assert f002["status"] == "DRAFT"
+
+
+# --- approve saves what's on disk after the wait, not what it read before ----
+# All three modes read findings/timeline (review mode: iocs too) before the
+# password prompt, $EDITOR or the per-item prompts, then wrote those lists
+# back: anything forensic-mcp staged meanwhile was deleted. The concurrent
+# writer here writes what record_finding writes: a finding, its auto event
+# and an IOC.
+
+from vhir_cli.case_io import hmac_text  # noqa: E402
+from vhir_cli.commands import approve as approve_mod  # noqa: E402
+
+_NOW = "2026-01-01T00:00:00+00:00"
+_CORRUPT = '{"broken": '
+_IDENT = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
+
+
+def _f(fid, title, tid):
+    return {
+        "id": fid,
+        "title": title,
+        "observation": "obs",
+        "interpretation": "interp",
+        "confidence": "MEDIUM",
+        "type": "finding",
+        "status": "DRAFT",
+        "staged": _NOW,
+        "modified_at": _NOW,
+        "created_by": "steve",
+        "examiner": "steve",
+        "timeline_event_id": tid,
+        "content_hash": "x",
+    }
+
+
+def _t(tid, fid=None, desc="event"):
+    t = {
+        "id": tid,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "description": desc,
+        "status": "DRAFT",
+        "staged": _NOW,
+        "modified_at": _NOW,
+        "created_by": "steve",
+        "examiner": "steve",
+        "content_hash": "y",
+    }
+    if fid:
+        t["auto_created_from"] = fid
+        t["related_findings"] = [fid]
+    return t
+
+
+def _ioc(iid, value, fid):
+    """The record forensic-mcp's record_finding writes for a new IOC."""
+    return {
+        "id": iid,
+        "value": value,
+        "type": "ipv4",
+        "category": "network",
+        "description": "",
+        "status": "DRAFT",
+        "confidence": "MEDIUM",
+        "source_findings": [fid],
+        "sightings": [{"host": "", "finding_id": fid}],
+        "mitre_techniques": [],
+        "tags": [],
+        "manually_reviewed": False,
+        "examiner": "steve",
+        "created_at": _NOW,
+        "modified_at": _NOW,
+        "content_hash": "z",
+    }
+
+
+def _write(path, data):
+    if path.exists():
+        path.chmod(0o644)
+    path.write_text(json.dumps(data))
+
+
+def _stage_concurrently(case):
+    """What record_finding writes for a new finding; returns the records."""
+    recs = {
+        "F": _f("F-steve-002", "Staged during wait", "T-steve-003"),
+        "T": _t("T-steve-003", "F-steve-002", "Staged during wait"),
+        "I": _ioc("IOC-steve-002", "10.9.9.9", "F-steve-002"),
+    }
+    for name, key in (
+        ("findings.json", "F"),
+        ("timeline.json", "T"),
+        ("iocs.json", "I"),
+    ):
+        path = case / name
+        _write(path, json.loads(path.read_text()) + [recs[key]])
+    return recs
+
+
+STAGE_SCRIPT = """
+import json, sys
+from pathlib import Path
+case = Path(sys.argv[1])
+recs = json.loads(sys.argv[2])
+for name, key in (("findings.json", "F"), ("timeline.json", "T"), ("iocs.json", "I")):
+    p = case / name
+    p.chmod(0o644)
+    p.write_text(json.dumps(json.loads(p.read_text()) + [recs[key]]))
+"""
+
+
+@pytest.fixture
+def wait_case(tmp_path, monkeypatch):
+    """F1 with its auto event T1 and IOC-1, plus a manual event TM."""
+    case = tmp_path / "K-case"
+    case.mkdir()
+    (case / "CASE.yaml").write_text("case_id: K-case\nstatus: open\n")
+    (case / "findings.json").write_text(
+        json.dumps([_f("F-steve-001", "First", "T-steve-001")])
+    )
+    (case / "timeline.json").write_text(
+        json.dumps(
+            [
+                _t("T-steve-001", "F-steve-001", "First"),
+                _t("T-steve-002", desc="manual"),
+            ]
+        )
+    )
+    (case / "iocs.json").write_text(
+        json.dumps([_ioc("IOC-steve-001", "10.1.2.3", "F-steve-001")])
+    )
+    return case
+
+
+def _run(
+    case, monkeypatch, mode, hook, *, ids=("F-steve-001",), answers=(), texts=None, **kw
+):
+    """Runs a mode with `hook` during the wait; returns (exit code, signed ids).
+    `texts`, if given, receives each signed item's HMAC text by id."""
+    signed = []
+    state = {"first": True}
+
+    def confirm(cfg, examiner):
+        if mode != "int":
+            hook()
+        return ("pw", "pw")
+
+    def ledger(case_dir, items, *a, **k):
+        signed.extend(i["id"] for i in items)
+        if texts is not None:
+            texts.update((i["id"], hmac_text(i)) for i in items)
+        return []
+
+    replies = iter(answers)
+
+    def ask(prompt=""):
+        if state["first"]:
+            state["first"] = False
+            hook()
+        return next(replies, "q")
+
+    monkeypatch.setattr(approve_mod, "require_confirmation", confirm)
+    monkeypatch.setattr(approve_mod, "_write_verification_entries", ledger)
+    monkeypatch.setattr("builtins.input", ask)
+    try:
+        if mode == "ids":
+            approve_mod._approve_specific(case, list(ids), _IDENT, Path("cfg"), **kw)
+        elif mode == "rev":
+            (case / "pending-reviews.json").write_text(
+                json.dumps(
+                    {
+                        "case_id": "K-case",
+                        "items": [{"id": i, "action": "approve"} for i in ids],
+                    }
+                )
+            )
+            approve_mod._review_mode(case, _IDENT, Path("cfg"))
+        else:
+            approve_mod._interactive_review(case, _IDENT, Path("cfg"))
+    except SystemExit as e:
+        return e.code, signed
+    return 0, signed
+
+
+def _on_disk(case):
+    def by_id(name):
+        p = case / name
+        return {x["id"]: x for x in json.loads(p.read_text())} if p.exists() else {}
+
+    return by_id("findings.json"), by_id("timeline.json"), by_id("iocs.json")
+
+
+def _concurrent_kept(case, recs, *, ioc):
+    F, T, iocs = _on_disk(case)
+    ok = F.get("F-steve-002") == recs["F"] and T.get("T-steve-003") == recs["T"]
+    return ok and (iocs.get("IOC-steve-002") == recs["I"] if ioc else True)
+
+
+@pytest.mark.parametrize(
+    "mode,answers,ioc",
+    [("ids", (), False), ("rev", (), True), ("int", ("a", "s"), False)],
+    ids=["ids", "review", "interactive"],
+)
+def test_records_staged_during_the_wait_are_kept(
+    wait_case, monkeypatch, mode, answers, ioc
+):
+    recs = {}
+    _run(
+        wait_case,
+        monkeypatch,
+        mode,
+        lambda: recs.update(_stage_concurrently(wait_case)),
+        answers=answers,
+    )
+    assert _concurrent_kept(wait_case, recs, ioc=ioc)
+    assert _on_disk(wait_case)[0]["F-steve-001"]["status"] == "APPROVED"
+
+
+def test_records_staged_while_editor_is_open_are_kept(wait_case, monkeypatch, tmp_path):
+    recs = {
+        "F": _f("F-steve-002", "Staged during wait", "T-steve-003"),
+        "T": _t("T-steve-003", "F-steve-002", "Staged during wait"),
+        "I": _ioc("IOC-steve-002", "10.9.9.9", "F-steve-002"),
+    }
+    script = tmp_path / "stage.py"
+    script.write_text(STAGE_SCRIPT)
+    editor = tmp_path / "editor.sh"
+    editor.write_text(
+        f"#!/bin/sh\n{sys.executable} {script} {wait_case} '{json.dumps(recs)}'\n"
+    )
+    editor.chmod(0o755)
+    monkeypatch.setenv("EDITOR", str(editor))
+    _run(wait_case, monkeypatch, "ids", lambda: None, edit=True)
+    assert _concurrent_kept(wait_case, recs, ioc=False)
+
+
+def _vanish(case):
+    _write(case / "findings.json", [])
+
+
+@pytest.mark.parametrize(
+    "mode,answers",
+    [("ids", ()), ("int", ("a", "s")), ("rev", ())],
+    ids=["ids", "int", "rev"],
+)
+def test_anchor_an_item_deleted_during_the_wait_is_written_back_as_today(
+    wait_case, monkeypatch, mode, answers
+):
+    """Only records new on disk are added; nothing else about the write changes."""
+    _run(wait_case, monkeypatch, mode, lambda: _vanish(wait_case), answers=answers)
+    F, T, _ = _on_disk(wait_case)
+    assert (
+        F["F-steve-001"]["status"] == "APPROVED"
+        and T["T-steve-001"]["status"] == "APPROVED"
+    )
+
+
+def test_note_and_interpretation_are_saved_with_the_concurrent_records(
+    wait_case, monkeypatch
+):
+    recs = {}
+    _run(
+        wait_case,
+        monkeypatch,
+        "ids",
+        lambda: recs.update(_stage_concurrently(wait_case)),
+        note="EXAMINER-NOTE",
+        interpretation="EXAMINER-INTERP",
+    )
+    f = _on_disk(wait_case)[0]["F-steve-001"]
+    assert "EXAMINER-NOTE" in [n.get("note") for n in f.get("examiner_notes", [])]
+    assert f["interpretation"] == "EXAMINER-INTERP" and _concurrent_kept(
+        wait_case, recs, ioc=False
+    )
+
+
+def test_an_edit_is_saved_with_the_concurrent_records(wait_case, monkeypatch, tmp_path):
+    editor = tmp_path / "edit.sh"
+    editor.write_text(
+        "#!/bin/sh\nsed -i 's/^title: .*/title: EXAMINER-EDITED-TITLE/' \"$1\"\n"
+    )
+    editor.chmod(0o755)
+    monkeypatch.setenv("EDITOR", str(editor))
+    recs = {}
+    _run(
+        wait_case,
+        monkeypatch,
+        "ids",
+        lambda: recs.update(_stage_concurrently(wait_case)),
+        edit=True,
+    )
+    assert _on_disk(wait_case)[0]["F-steve-001"]["title"] == "EXAMINER-EDITED-TITLE"
+    assert _concurrent_kept(wait_case, recs, ioc=False)
+
+
+def test_an_interactive_note_is_saved_with_the_concurrent_records(
+    wait_case, monkeypatch
+):
+    recs = {}
+    _run(
+        wait_case,
+        monkeypatch,
+        "int",
+        lambda: recs.update(_stage_concurrently(wait_case)),
+        answers=("n", "INT-NOTE", "s"),
+    )
+    f = _on_disk(wait_case)[0]["F-steve-001"]
+    assert "INT-NOTE" in [n.get("note") for n in f.get("examiner_notes", [])]
+    assert f["status"] == "APPROVED" and _concurrent_kept(wait_case, recs, ioc=False)
+
+
+@pytest.mark.parametrize(
+    "mode,answers", [("ids", ()), ("int", ("s", "s", "a"))], ids=["ids", "interactive"]
+)
+def test_a_manual_event_is_approved_and_signed_with_the_concurrent_records(
+    wait_case, monkeypatch, mode, answers
+):
+    recs = {}
+    _, signed = _run(
+        wait_case,
+        monkeypatch,
+        mode,
+        lambda: recs.update(_stage_concurrently(wait_case)),
+        ids=("T-steve-002",),
+        answers=answers,
+    )
+    assert _on_disk(wait_case)[1]["T-steve-002"]["status"] == "APPROVED"
+    assert "T-steve-002" in signed and _concurrent_kept(wait_case, recs, ioc=False)
+
+
+def _corrupt(case, name):
+    p = case / name
+    p.chmod(0o644)
+    p.write_text(_CORRUPT)
+
+
+@pytest.mark.parametrize("name", ["findings.json", "timeline.json"])
+@pytest.mark.parametrize(
+    "mode,answers",
+    [("ids", ()), ("int", ("a", "s")), ("rev", ())],
+    ids=["ids", "int", "rev"],
+)
+def test_a_corrupt_file_at_the_re_read_gets_a_loud_line_then_todays_write(
+    wait_case, monkeypatch, capsys, mode, answers, name
+):
+    rc, signed = _run(
+        wait_case, monkeypatch, mode, lambda: _corrupt(wait_case, name), answers=answers
+    )
+    err = capsys.readouterr().err
+    assert f"could not check {name} for items added during approval" in err
+    assert rc == 0 and (wait_case / name).read_text() != _CORRUPT
+    F, T, _ = _on_disk(wait_case)
+    assert F["F-steve-001"]["status"] == "APPROVED" and "F-steve-001" in signed
+
+
+@pytest.mark.parametrize(
+    "mode,answers",
+    [("ids", ()), ("rev", ()), ("int", ("a", "s"))],
+    ids=["ids", "rev", "int"],
+)
+def test_without_a_concurrent_write_the_outcome_is_unchanged(
+    wait_case, monkeypatch, mode, answers, capsys
+):
+    _, signed = _run(wait_case, monkeypatch, mode, lambda: None, answers=answers)
+    print(
+        "CAPTURED-STDOUT-BEGIN",
+        capsys.readouterr().out,
+        "CAPTURED-STDOUT-END",
+        sep="\n",
+        file=sys.stderr,
+    )
+    F, T, iocs = _on_disk(wait_case)
+    assert F["F-steve-001"]["status"] == "APPROVED"
+    assert (
+        T["T-steve-001"]["status"] == "APPROVED"
+        and T["T-steve-002"]["status"] == "DRAFT"
+    )
+    assert iocs["IOC-steve-001"]["status"] == "APPROVED"
+    assert sorted(signed) == ["F-steve-001", "IOC-steve-001", "T-steve-001"]
