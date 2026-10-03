@@ -516,6 +516,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip gateway restart",
     )
+    torch_build = p_update.add_mutually_exclusive_group()
+    torch_build.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Install CPU PyTorch for knowledge search (~0.7 GB)",
+    )
+    torch_build.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Install GPU (CUDA) PyTorch for knowledge search (~5.4 GB)",
+    )
 
     # portal / dashboard
     sub.add_parser("portal", help="Open the Examiner Portal in your browser")

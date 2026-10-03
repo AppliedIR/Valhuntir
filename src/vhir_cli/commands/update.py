@@ -272,7 +272,14 @@ def _module_installed(module: str) -> bool:
         return False
 
 
-_UV_FLOOR = (0, 6, 0)
+# 0.6.9 is the first with --torch-backend, which the CPU PyTorch lock needs;
+# hash checks of the lock need 0.6.0.
+_UV_FLOOR = (0, 6, 9)
+
+_TORCH_INDEX_HINT = (
+    "  CPU PyTorch comes from download.pytorch.org; if you use a package mirror,"
+    " re-run with --gpu."
+)
 
 
 def _uv_version() -> tuple[int, int, int] | None:
@@ -301,6 +308,123 @@ def _check_lock(venv_python: str, checker: Path, lock: Path, mode: str) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _torch_installed(venv_python: str) -> str:
+    """The venv's torch version ("2.14.0+cpu" for the CPU build), or ""."""
+    try:
+        out = subprocess.run(
+            [
+                venv_python,
+                "-c",
+                'import importlib.metadata as m; print(m.version("torch"))',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
+    """(the build to install, the record to keep). The flag, else the build
+    already in the venv, else CPU. Asked only on a terminal, with no flag,
+    when the venv has torch but was never asked (no record), or forensic-rag
+    is to be installed without it. macOS has one build (PyPI's) and no record."""
+    flag = "cpu" if args.cpu else "gpu" if args.gpu else ""
+    record = manifest.get("torch_variant", "")
+    if sys.platform == "darwin":
+        if flag:
+            print(
+                f"  --{flag} is not applicable on macOS (PyPI's PyTorch has no CUDA)."
+            )
+        return "pypi", record
+    if flag:
+        return flag, flag
+    variant = "cpu" if installed.endswith("+cpu") or not installed else "gpu"
+    rag = "rag-mcp" in manifest.get("packages", {})
+    if sys.stdin.isatty() and ((installed and not record) or (rag and not installed)):
+        import shutil
+
+        found = "no NVIDIA GPU was found"
+        if shutil.which("nvidia-smi"):
+            smi = subprocess.run(
+                ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
+            )
+            if smi.returncode == 0 and smi.stdout.startswith("GPU"):
+                found = "an NVIDIA GPU was found"
+        print(f"\n  PyTorch for knowledge search ({found}):")
+        if installed:
+            print(
+                f"    Installed now: the {variant.upper()} build (torch {installed})."
+            )
+            print(
+                "    Choosing the other build replaces it; CUDA packages it leaves"
+                " are listed after the install."
+            )
+        print("    cpu  about 0.2 GB download, 0.7 GB on disk; slower index builds")
+        print(
+            "    gpu  about 3 GB download, 5.4 GB on disk; much faster index"
+            " builds; needs an NVIDIA GPU"
+        )
+        while True:
+            answer = (
+                input("    PyTorch build (cpu/gpu) [cpu]: ").strip().lower() or "cpu"
+            )
+            if answer in ("cpu", "gpu"):
+                return answer, answer
+            print("    Please enter cpu or gpu.")
+    print(f"  PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)")
+    return variant, record
+
+
+def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    """After the CPU build is in and --final passed: offer to remove the CUDA
+    packages it doesn't use. Asks first, loudly; the default is No."""
+    out = subprocess.run(
+        [venv_python, str(checker), "--cuda-leftovers", "--lock", str(lock)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    rows = [line.split() for line in out.stdout.splitlines() if line.strip()]
+    if out.returncode != 0 or not rows:
+        return
+    names = [r[0] for r in rows]
+    total = sum(int(r[1]) for r in rows)
+    print("\n  " + "=" * 66)
+    print("  CUDA packages from GPU PyTorch that the CPU build doesn't use:")
+    for name, size in rows:
+        print(f"    {name:<34} {int(size) / 1e9:6.2f} GB")
+    print(f"    {'total in the venv':<34} {total / 1e9:6.2f} GB")
+    print("  Removing them runs:")
+    print(f"    uv pip uninstall --python {venv_python} {' '.join(names)}")
+    print(f"    uv cache clean {' '.join(names)} torch")
+    print(
+        "  This changes only Valhuntir's environment and uv's download cache,\n"
+        "  and any other uv environment installed with --link-mode symlink that\n"
+        "  uses these packages: such an environment would need a reinstall.\n"
+        "  The disk comes back only with the cache clean (the venv's files are\n"
+        "  links into it). A later GPU install downloads them again (~3 GB)."
+    )
+    print("  " + "=" * 66)
+    if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("  Kept. The commands above remove them later.")
+        return
+    py = ["--python", venv_python]
+    subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600)
+    subprocess.run(["uv", "cache", "clean", *names, "torch"], timeout=600)
+    check = subprocess.run(
+        ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
+    )
+    if check.returncode != 0:
+        print(
+            f"  The removal didn't finish ({(check.stdout + check.stderr).strip()}).\n"
+            f"  Finish it: uv pip uninstall --python {venv_python} {' '.join(names)}",
+            file=sys.stderr,
+        )
 
 
 def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
@@ -492,7 +616,8 @@ def cmd_update(args, identity: dict) -> None:
     if uv_version is None or uv_version < _UV_FLOOR:
         shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
         print(
-            f"uv {shown} is older than 0.6.0, which doesn't check package hashes.\n"
+            f"uv {shown} is older than 0.6.9, which vhir update needs for"
+            " --torch-backend and hash checks.\n"
             "Update it: uv self update   (or reinstall: "
             "curl -LsSf https://astral.sh/uv/install.sh | sh)",
             file=sys.stderr,
@@ -549,7 +674,9 @@ def cmd_update(args, identity: dict) -> None:
     # Every third-party package comes from the lock in the freshly pulled
     # sift-mcp, except what OpenCTI's client pins: it installs afterwards,
     # unlocked, as the installer does.
-    lock = source / "deps" / "vhir.lock"
+    torch_installed = _torch_installed(venv_python)
+    variant, torch_record = _torch_variant(args, manifest, torch_installed)
+    lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
     checker = source / "deps" / "check-lock.py"
     if not lock.is_file() or not checker.is_file():
         print(
@@ -590,6 +717,13 @@ def cmd_update(args, identity: dict) -> None:
 
     cmd = ["uv", "pip", "install", "--python", venv_python, "--quiet"]
     cmd += ["-c", str(lock), "-b", str(lock)]
+    # The CPU lock's torch is on the PyTorch index, which only --torch-backend
+    # reaches; 2.14.0+cpu satisfies the GPU lock's ==2.14.0, so a switch to GPU
+    # has to reinstall it.
+    if variant == "cpu":
+        cmd += ["--torch-backend", "cpu"]
+    elif variant == "gpu" and torch_installed.endswith("+cpu"):
+        cmd += ["--reinstall-package", "torch"]
     # Auto-detect dependencies whose version constraints changed in
     # the pulled commits and mark them for --reinstall-package so the
     # resolver honors tightened pins (e.g. `uv pip` otherwise leaves
@@ -623,6 +757,8 @@ def cmd_update(args, identity: dict) -> None:
             f"  Package install failed: {result.stderr.strip()}",
             file=sys.stderr,
         )
+        if variant == "cpu":
+            print(_TORCH_INDEX_HINT, file=sys.stderr)
         sys.exit(1)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
     _check_lock(venv_python, checker, lock, "--strict")
@@ -646,6 +782,8 @@ def cmd_update(args, identity: dict) -> None:
             sys.exit(1)
         print("  Reinstalling opencti-mcp (outside the dependency lock)... done")
     _check_lock(venv_python, checker, lock, "--final")
+    if variant == "cpu" and sys.stdin.isatty():
+        _offer_cuda_cleanup(venv_python, checker, lock)
 
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
@@ -683,6 +821,8 @@ def cmd_update(args, identity: dict) -> None:
         if path.is_dir():
             git_hashes[name] = _git_head(path)
     manifest["git"] = git_hashes
+    if torch_record:  # the user chose (asked, or --cpu/--gpu)
+        manifest["torch_variant"] = torch_record
     try:
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         print("  Updating manifest... done")

@@ -40,6 +40,7 @@ def manifest_dir(tmp_path):
         (src / rel).mkdir(parents=True, exist_ok=True)
     (src / "deps").mkdir()
     (src / "deps" / "vhir.lock").write_text("# lock\n")
+    (src / "deps" / "vhir-cpu.lock").write_text("# variant cpu\n")
     (src / "deps" / "check-lock.py").write_text("")
 
     manifest = {
@@ -69,6 +70,9 @@ def _make_args(**kwargs):
     args = MagicMock()
     args.check = kwargs.get("check", False)
     args.no_restart = kwargs.get("no_restart", False)
+    # A MagicMock's unset attributes are truthy: --cpu/--gpu must be set.
+    args.cpu = kwargs.get("cpu", False)
+    args.gpu = kwargs.get("gpu", False)
     return args
 
 
