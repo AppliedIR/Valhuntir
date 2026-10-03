@@ -625,6 +625,9 @@ def _merge_items(
         "created_by",
         "examiner",
         "provenance",
+        # Approval couples an event to its finding by this; only forensic-mcp's
+        # auto-timeline sets it, never an import.
+        "auto_created_from",
     }
 
     for item in incoming:
