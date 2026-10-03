@@ -263,3 +263,53 @@ def test_anchor_plain_files_named_like_the_control_dirs(box):
     assert r["includes_verification_ledger"] and r["password_examiners"] == ["steve"]
     assert len((path / "verification" / "backups.jsonl").read_text().splitlines()) == 2
     assert (path / "passwords" / "steve.json").is_file()
+
+
+# --- created_by is collected only when it is a well-formed examiner name -----
+# The backup took created_by as given: "./steve" read steve's hash, declared
+# "./steve", and so slipped past restore's control set (the hash was copied
+# into the case dir); "../x" read a file outside the password store.
+
+
+def test_a_dotted_alias_of_an_examiner_is_not_collected(box):
+    case = box.make_case(examiners=())
+    (case / "findings.json").write_text(
+        json.dumps([{"id": "F-1", "created_by": "./steve"}])
+    )
+    box.pwfile("steve", "aa" * 16)
+    box.ledger(1)
+    r = box.backup()
+    path = B.Path(r["backup_path"])
+    assert r["password_examiners"] == [] and not (path / "passwords").exists()
+    box.lose_case()
+    box.restore(path)
+    assert box.control_in_case() == [] and "steve.json" not in box.installed
+
+
+def test_the_alias_beside_the_real_name_changes_nothing(box):
+    case = box.make_case(examiners=("steve",))
+    findings = json.loads((case / "findings.json").read_text())
+    findings.append({"id": "F-2", "created_by": "./steve"})
+    (case / "findings.json").write_text(json.dumps(findings))
+    box.pwfile("steve", "aa" * 16)
+    box.ledger(1)
+    r = box.backup()
+    assert r["password_examiners"] == ["steve"]
+    box.lose_case()
+    (box.pw_dir / "steve.json").unlink()
+    box.restore(r["backup_path"])
+    assert box.control_in_case() == [] and box.salt("steve") == "aa" * 16
+
+
+@pytest.mark.parametrize("created_by", ["../x", "/etc/x", "Steve", 7, ""])
+def test_a_malformed_created_by_reads_nothing(box, created_by):
+    case = box.make_case(examiners=())
+    (case / "findings.json").write_text(
+        json.dumps([{"id": "F-1", "created_by": created_by}])
+    )
+    (box.pw_dir.parent / "x.json").write_text('{"salt": "outside the store"}')
+    box.ledger(1)
+    r = box.backup()
+    path = B.Path(r["backup_path"])
+    assert r["password_examiners"] == []
+    assert not (path / "x.json").exists() and not (path / "passwords").exists()

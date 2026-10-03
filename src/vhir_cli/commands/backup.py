@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir, load_case_meta
+from vhir_cli.case_io import _EXAMINER_RE, get_case_dir, load_case_meta
 from vhir_cli.verification import VERIFICATION_DIR
 
 _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
@@ -269,8 +269,13 @@ def create_backup_data(
         if findings_file.exists():
             findings = json.loads(findings_file.read_text())
             if isinstance(findings, list):
+                # Only well-formed examiner names: "./steve" or "../x" would
+                # alias a control path or read outside the password store.
                 examiners_in_case = {
-                    f.get("created_by", "") for f in findings if f.get("created_by")
+                    f.get("created_by")
+                    for f in findings
+                    if isinstance(f.get("created_by"), str)
+                    and _EXAMINER_RE.match(f["created_by"])
                 }
                 pw_dir = backup_dir / "passwords"
                 for ex in sorted(examiners_in_case):
