@@ -1044,17 +1044,19 @@ def cmd_restore(args, identity: dict) -> None:
                 # Never replace a different (or unreadable) hash on this box:
                 # the examiner may have changed their password since the backup.
                 current = _PASSWORDS_DIR / pw_file.name
+                why = ""
                 try:
-                    keep = (
+                    if (
                         current.exists()
                         and current.read_bytes() != pw_file.read_bytes()
-                    )
-                except OSError:
-                    keep = True
-                if keep:
+                    ):
+                        why = "kept the existing, different hash"
+                except OSError as e:
+                    why = f"couldn't check for an existing hash ({e})"
+                if why:
                     print(
-                        f"  Password hash ({examiner_name})... kept the existing, different "
-                        f"hash; the backup's copy was not installed ({pw_file})",
+                        f"  Password hash ({examiner_name})... {why}; "
+                        f"the backup's copy was not installed ({pw_file})",
                         file=sys.stderr,
                     )
                     continue

@@ -218,3 +218,30 @@ def test_an_unreadable_hash_is_kept_and_warned(box, capsys):
     finally:
         (box.pw_dir / "steve.json").chmod(0o600)
     assert box.salt("steve") == NEW and _warned(capsys.readouterr().err)
+
+
+def test_an_unsearchable_store_is_reported_as_unchecked(box, capsys):
+    """The restoring user can't search the password directory: whether a
+    hash exists is unknown, so nothing is installed and the message says so
+    (not "existing, different")."""
+    path = box.backup()
+    (box.pw_dir / "steve.json").unlink()
+    box.pw_dir.chmod(0)
+    try:
+        try:
+            (box.pw_dir / "steve.json").exists()
+            searchable = True
+        except PermissionError:
+            searchable = False
+        if searchable:
+            pytest.skip("this Python or user can still search a mode-000 directory")
+        assert box.restore(path, ["y"]) == 0
+    finally:
+        box.pw_dir.chmod(0o755)
+    err = capsys.readouterr().err
+    assert box.salt("steve") is None
+    assert (
+        "(steve)... couldn't check for an existing hash" in err
+        and "not installed" in err
+    )
+    assert "existing, different" not in err
