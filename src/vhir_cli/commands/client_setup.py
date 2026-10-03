@@ -592,6 +592,8 @@ def _duplicate_backends(servers: dict) -> list[str]:
         existing = json.loads((Path.home() / ".claude.json").read_text())["mcpServers"]
     except (OSError, ValueError, KeyError, TypeError):
         return []
+    if not isinstance(existing, dict):
+        return []
     return [
         name
         for name, entry in existing.items()
@@ -627,6 +629,8 @@ def _claude_json_plan(path: Path, servers: dict) -> tuple[list, list] | None:
         )
     except (ValueError, OSError, AttributeError):
         return None
+    if not isinstance(current, dict):  # e.g. "mcpServers": null
+        current = {}
 
     def same(have, want):
         if not isinstance(have, dict):  # e.g. null: replace it
@@ -688,9 +692,11 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                             file=sys.stderr,
                         )
 
-                plan = _claude_json_plan(claude_config, servers) or (list(servers), [])
+                # Only what `claude mcp add` registers: entries with a url
+                cli = {n: e for n, e in servers.items() if e.get("url")}
+                plan = _claude_json_plan(claude_config, cli) or (list(cli), [])
                 _announce_claude_json(claude_config, plan, _duplicate_backends(servers))
-                todo = {n: servers[n] for n in plan[0] + plan[1]}
+                todo = {n: cli[n] for n in plan[0] + plan[1]}
                 registered = 0
                 try:
                     for name, entry in todo.items():

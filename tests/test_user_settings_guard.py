@@ -366,7 +366,9 @@ def claude_json(box, monkeypatch):
     def fake_add(name, entry):  # what `claude mcp add -s user` stores
         calls.append(name)
         data = json.loads(path.read_text()) if path.exists() else {}
-        data.setdefault("mcpServers", {})[name] = {
+        if not isinstance(data.get("mcpServers"), dict):  # as the real CLI does
+            data["mcpServers"] = {}
+        data["mcpServers"][name] = {
             k: entry[k] for k in ("type", "url", "headers") if k in entry
         }
         path.write_text(json.dumps(data))
@@ -452,3 +454,25 @@ def test_setup_claims_global_controls_only_when_applied(
     out = capsys.readouterr().out
     assert ("Forensic controls deployed globally." in out) is claims
     assert ("will always apply" in out) is claims
+
+
+def test_a_null_mcpservers_map_is_registered_into_not_a_crash(claude_json, capsys):
+    claude_json.path.write_text(json.dumps({"projects": {}, "mcpServers": None}))
+    claude_json.setup(cli=True)
+    out = capsys.readouterr().out
+    assert "entries added: vhir" in out and len(_backups(claude_json.path)) == 1
+    assert json.loads(claude_json.path.read_text())["mcpServers"]["vhir"]["url"]
+
+
+def test_a_stdio_entry_does_not_back_up_and_announce_on_every_run(claude_json, capsys):
+    stdio = {"opensearch-mcp": {"command": "/x/opensearch-mcp", "args": []}}
+    claude_json.setup(cli=True)
+    capsys.readouterr()
+    for _ in range(2):
+        cs._generate_config(
+            "claude-code", {**json.loads(json.dumps(SERVERS)), **stdio}, "s"
+        )
+    assert (
+        _backups(claude_json.path) == []
+        and "entries added" not in capsys.readouterr().out
+    )
