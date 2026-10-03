@@ -633,3 +633,25 @@ def test_the_claude_json_backup_is_in_the_undo_block(box, setup, capsys):
     assert note.startswith("#") and "Claude Code" in note and "close" in note
     subprocess.run(undo, shell=True, check=True)
     assert path.read_bytes() == before
+
+
+# --- -y's undo also restores the deprecated hook it removed -------------------
+
+
+def test_y_undo_also_restores_the_deprecated_hook(box, setup, capsys):
+    hook = _with_deprecated_hook(box)
+    hook.chmod(0o755)
+    before = box.settings.read_bytes(), hook.read_bytes()
+    setup(sift="http://127.0.0.1:9")  # -y, no terminal; no gateway
+    assert not hook.exists()
+    for ln in _undo_lines(capsys.readouterr().out):
+        subprocess.run(ln, shell=True, check=True)
+    assert (box.settings.read_bytes(), hook.read_bytes()) == before
+    assert os.access(hook, os.X_OK)  # a backup that lost its mode can't run
+
+
+def test_anchor_no_deprecated_hook_no_backup_and_no_undo_line(box, setup, capsys):
+    setup(sift="http://127.0.0.1:9")
+    out = capsys.readouterr().out
+    assert "pre-bash-guard" not in out
+    assert not list(box.home.rglob("pre-bash-guard.sh*"))

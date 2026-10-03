@@ -1404,6 +1404,8 @@ def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
     for old_hook in ("pre-bash-guard.sh",):
         old_path = hooks_dir / old_hook
         if old_path.is_file() and old_hook not in text:
+            if _APPLIED is not None:  # -y: the undo restores it with the settings
+                _APPLIED.append((_backup(old_path), old_path))
             old_path.unlink()
             print(f"  Removed:   {old_hook} (deprecated)")
 
