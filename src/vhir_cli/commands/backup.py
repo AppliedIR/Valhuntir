@@ -863,6 +863,7 @@ def cmd_restore(args, identity: dict) -> None:
         and (backup_path / "opensearch-snapshot").is_dir()
     )
     restore_ledger = not skip_ledger and manifest.get("includes_verification_ledger")
+    ledger_declined = False
 
     if sys.stdin.isatty():
         if restore_opensearch:
@@ -873,6 +874,7 @@ def cmd_restore(args, identity: dict) -> None:
             resp = input("Restore verification ledger? [Y/n] ").strip().lower()
             if resp in ("n", "no"):
                 restore_ledger = False
+                ledger_declined = True
 
     # Conflict checks
     if target_dir.exists():
@@ -1039,6 +1041,23 @@ def cmd_restore(args, identity: dict) -> None:
         if pw_dir.is_dir():
             for pw_file in pw_dir.glob("*.json"):
                 examiner_name = pw_file.stem
+                # Never replace a different (or unreadable) hash on this box:
+                # the examiner may have changed their password since the backup.
+                current = _PASSWORDS_DIR / pw_file.name
+                try:
+                    keep = (
+                        current.exists()
+                        and current.read_bytes() != pw_file.read_bytes()
+                    )
+                except OSError:
+                    keep = True
+                if keep:
+                    print(
+                        f"  Password hash ({examiner_name})... kept the existing, different "
+                        f"hash; the backup's copy was not installed ({pw_file})",
+                        file=sys.stderr,
+                    )
+                    continue
                 try:
                     result = subprocess.run(
                         [
@@ -1143,7 +1162,7 @@ def cmd_restore(args, identity: dict) -> None:
         print("  OpenSearch: not included in backup")
     if restore_ledger:
         print("  Ledger: restored")
-    elif skip_ledger:
+    elif skip_ledger or ledger_declined:
         print("  Ledger: skipped")
     else:
         print("  Ledger: not included in backup")
