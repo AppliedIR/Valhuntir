@@ -284,7 +284,14 @@ def create_backup_data(
 
     # Copy files
     total_files = len(files_to_copy)
+    # A case file at a control path this backup just wrote (e.g. a copy left
+    # in the case dir by an older restore) must not replace the live copy.
+    written = {f"passwords/{ex}.json" for ex in password_examiners}
+    if ledger_included:
+        written.add(f"verification/{case_id}.jsonl")
     for i, (rel_path, abs_path, _size) in enumerate(files_to_copy, 1):
+        if rel_path in written:
+            continue
         dst = backup_dir / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(abs_path), str(dst))
@@ -983,11 +990,25 @@ def cmd_restore(args, identity: dict) -> None:
     print("Restoring...")
     files = manifest.get("files", [])
     total = len(files)
+    # The declared ledger, hashes and snapshot stay out of the case directory
+    # (hash material is kept from the LLM); they're installed or used from
+    # the backup.
+    pw_names = manifest.get("password_examiners") or []
+    control = {f"passwords/{ex}.json" for ex in pw_names}
+    if manifest.get("includes_verification_ledger"):
+        control.add(f"verification/{case_id}.jsonl")
+
+    def _is_control(rel: str) -> bool:
+        return rel in control or (
+            bool(manifest.get("includes_opensearch"))
+            and rel.startswith("opensearch-snapshot/")
+        )
+
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         src = backup_path / rel
         dst = target_dir / rel
-        if src.exists():
+        if src.exists() and not _is_control(rel):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
         progress("Copying files", i, total)
@@ -1041,6 +1062,8 @@ def cmd_restore(args, identity: dict) -> None:
         if pw_dir.is_dir():
             for pw_file in pw_dir.glob("*.json"):
                 examiner_name = pw_file.stem
+                if examiner_name not in pw_names:
+                    continue  # only the hashes the backup declared
                 # Never replace a different (or unreadable) hash on this box:
                 # the examiner may have changed their password since the backup.
                 current = _PASSWORDS_DIR / pw_file.name
@@ -1127,7 +1150,7 @@ def cmd_restore(args, identity: dict) -> None:
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         expected = entry["sha256"]
-        fpath = target_dir / rel
+        fpath = (backup_path if _is_control(rel) else target_dir) / rel
         if not fpath.exists():
             missing_count += 1
         elif sha256_file(fpath) != expected:
