@@ -253,6 +253,13 @@ def _show_findings_verify(
     results = verify_approval_integrity(case_dir)
     if not results:
         print("No findings recorded.")
+        # No findings but ledger entries (findings.json removed, emptied or
+        # corrupt; or only timeline events approved): still check the ledger.
+        from vhir_cli.verification import read_ledger
+
+        if read_ledger(load_case_meta(case_dir).get("case_id", case_dir.name)):
+            _show_ledger_reconciliation(case_dir)
+            _show_hmac_verification(case_dir, identity=identity, mine_only=mine_only)
         return
 
     # --- Content hash verification (existing) ---
