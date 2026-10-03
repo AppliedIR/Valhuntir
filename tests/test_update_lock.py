@@ -87,6 +87,8 @@ def _update(
     after_check_rc=0,
     uninstall="ok",
     smi_hangs=False,
+    check=False,
+    no_restart=True,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
@@ -168,7 +170,7 @@ def _update(
     ):
         try:
             # A MagicMock's unset attributes are truthy: the flags are set.
-            args = MagicMock(check=False, no_restart=True, cpu=cpu, gpu=gpu)
+            args = MagicMock(check=check, no_restart=no_restart, cpu=cpu, gpu=gpu)
             cmd_update(args, {})
         except SystemExit as e:
             exited = e
@@ -591,3 +593,45 @@ def test_no_answer_to_the_pytorch_question_prints_the_part_way_block(box, capsys
     assert exited is not None and exited.code == 1
     err = capsys.readouterr().err
     assert "Re-run with: vhir update --cpu or --gpu" in err and PART_WAY in err
+
+
+# --- The gateway's own launch lines get -I before the restart -----------------
+
+
+def _launchers(box):
+    script = box.home / ".vhir" / "start-gateway.sh"
+    unit = box.home / ".config" / "systemd" / "user" / "vhir-gateway.service"
+    unit.parent.mkdir(parents=True)
+    script.write_text(
+        '#!/usr/bin/env bash\nexec "/v/bin/python" -m sift_gateway --config "/c.yaml"\n'
+    )
+    script.chmod(0o755)
+    unit.write_text(
+        "[Service]\nExecStart=/v/bin/python -m sift_gateway --config /c.yaml\n"
+    )
+    return script, unit
+
+
+def test_update_isolates_the_launch_lines_before_the_restart(box):
+    script, unit = _launchers(box)
+    calls, exited = _update(box, no_restart=False)
+    assert exited is None
+    assert '"/v/bin/python" -I -m sift_gateway' in script.read_text()
+    assert "python -I -m sift_gateway" in unit.read_text()
+    order = [c[1:3] for c in calls if c[:1] == ["systemctl"]]
+    assert order.index(["--user", "daemon-reload"]) < order.index(["--user", "restart"])
+
+
+def test_no_restart_still_rewrites_and_says_when_it_applies(box, capsys):
+    script, unit = _launchers(box)
+    calls, exited = _update(box, no_restart=True)
+    assert exited is None and "python -I -m" in unit.read_text()
+    assert ["systemctl", "--user", "restart", "vhir-gateway"] not in calls
+    assert "takes effect at the next gateway restart" in capsys.readouterr().out
+
+
+def test_check_writes_nothing(box):
+    script, unit = _launchers(box)
+    before = (script.read_bytes(), unit.read_bytes())
+    _update(box, check=True)
+    assert (script.read_bytes(), unit.read_bytes()) == before

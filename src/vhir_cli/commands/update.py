@@ -875,6 +875,13 @@ def cmd_update(args, identity: dict) -> None:
     except OSError as e:
         print(f"  Warning: could not update manifest: {e}", file=sys.stderr)
 
+    # Step 6.5: the gateway's own launch lines run python -I (other clients;
+    # claude-code installs had it at Step 5, so this finds nothing to do)
+    from vhir_cli.commands.client_setup import _isolate_gateway_launchers
+
+    if _isolate_gateway_launchers() and no_restart:
+        print("  The updated launch line takes effect at the next gateway restart.")
+
     # Step 7: Restart gateway
     if no_restart:
         print("  Gateway restart skipped (--no-restart)")

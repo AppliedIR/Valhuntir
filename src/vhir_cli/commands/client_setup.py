@@ -909,6 +909,76 @@ def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
         raise
 
 
+def _isolate_gateway_launchers() -> list[Path]:
+    """Add -I to the gateway launch line in the files setup-sift.sh writes
+    (~/.vhir/start-gateway.sh and the user unit), so the gateway never imports
+    from the directory it starts in. setup-sift.sh rewrites both files whole
+    on every run; here only the generated line changes. A line that differs
+    (edited by the user) is left with a notice. Keeps the file's mode and a
+    symlink. Never raises: an older vhir update runs this unguarded.
+    Returns the files rewritten."""
+    import re
+    import subprocess
+
+    forms = (  # (file, the generated line); the paths vary per install
+        (
+            Path.home() / ".vhir" / "start-gateway.sh",
+            re.compile(r'(exec "[^"]+/bin/python") (-m sift_gateway --config "[^"]+")'),
+        ),
+        (
+            Path.home() / ".config" / "systemd" / "user" / "vhir-gateway.service",
+            re.compile(r"(ExecStart=\S+/bin/python) (-m sift_gateway --config \S+)"),
+        ),
+    )
+    updated = []
+    for path, generated in forms:
+        try:
+            if not path.is_file():
+                continue
+            lines = path.read_bytes().decode().splitlines(keepends=True)
+            launch = [i for i, ln in enumerate(lines) if "-m sift_gateway" in ln]
+            if not launch or all(
+                " -I " in lines[i].split("-m sift_gateway")[0] for i in launch
+            ):
+                continue  # no launch line, or already isolated
+            changed = False
+            for i in launch:
+                body = lines[i].rstrip("\n")
+                m = generated.fullmatch(body)
+                if m:
+                    lines[i] = f"{m[1]} -I {m[2]}" + lines[i][len(body) :]
+                    changed = True
+            if not changed:
+                print(
+                    f"  Note: {path} has a gateway launch line Valhuntir didn't write;"
+                    " add -I after its python (python -I -m sift_gateway) so the gateway"
+                    " never imports from the directory it starts in."
+                )
+                continue
+            mode = (
+                path.resolve() if path.is_symlink() else path
+            ).stat().st_mode & 0o7777
+            _replace_bytes(path, "".join(lines).encode(), mode)
+            updated.append(path)
+            print(f"  Updated: {path} (added -I to the gateway launch line)")
+            if path.suffix == ".service":
+                try:
+                    subprocess.run(
+                        ["systemctl", "--user", "daemon-reload"],
+                        capture_output=True,
+                        timeout=30,
+                        check=True,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    print(
+                        "  Note: run `systemctl --user daemon-reload` so the next"
+                        " gateway restart uses the updated unit."
+                    )
+        except Exception as e:  # noqa: BLE001 - never stop an update over this
+            print(f"  Note: could not check {path}: {e}")
+    return updated
+
+
 def _shipped(dst: Path, src: Path) -> bool:
     """Whether dst's bytes are a version of src the product shipped: dst's
     blob id appears in the history of src's checkout (HEAD, following
@@ -1188,6 +1258,9 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
     A file the user may have edited changes only with their consent (see
     _write_user_file). Returns (settings path, its status) or None.
     """
+    # Here, not only in update: an older vhir update reaches the new code
+    # only through this call, between its pull and its gateway restart.
+    _isolate_gateway_launchers()
     assets_dir = _find_claude_code_assets()
     if not assets_dir:
         print(
