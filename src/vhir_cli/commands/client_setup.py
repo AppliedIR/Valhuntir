@@ -142,6 +142,11 @@ def cmd_setup_client(args, identity: dict) -> None:
             )
             print("  normal terminal (not inside a Claude session):")
             for bak, path in changed:
+                if path.name == ".claude.json":
+                    print(
+                        "    # This also reverts what Claude Code saved there since;"
+                        " close Claude Code first."
+                    )
                 print(f"    cp -p {shlex.quote(str(bak))} {shlex.quote(str(path))}")
 
 
@@ -673,7 +678,9 @@ def _announce_claude_json(path: Path, plan: tuple, removed: list) -> None:
     added, changed = plan
     if not (added or changed or removed) or not path.is_file():
         return
-    _backup(path)
+    bak = _backup(path)
+    if _APPLIED is not None:  # -y: in the undo block too
+        _APPLIED.append((bak, path))
     for label, names in (("added", added), ("removed (duplicates)", removed)):
         if names:
             print(f"  Valhuntir MCP entries {label}: {', '.join(names)}")

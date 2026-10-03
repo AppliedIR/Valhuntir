@@ -616,3 +616,20 @@ def test_the_y_flag_is_reset_after_setup(box, setup):
     before = _write_user(box.settings)
     box.run()  # a later deploy without -y, no terminal: keeps
     assert box.settings.read_bytes() == before
+
+
+def test_the_claude_json_backup_is_in_the_undo_block(box, setup, capsys):
+    path = box.home / ".claude.json"
+    path.write_text(json.dumps({"projects": {"x": 1}, "mcpServers": {"old": {}}}))
+    before = path.read_bytes()
+    setup()  # -y, no terminal; the fallback registers the MCP entries
+    assert path.read_bytes() != before
+    out = capsys.readouterr().out
+    lines = [ln.strip() for ln in out.splitlines()]
+    (undo,) = [
+        ln for ln in lines if ln.startswith("cp -p ") and ln.endswith(".claude.json")
+    ]
+    note = lines[lines.index(undo) - 1]
+    assert note.startswith("#") and "Claude Code" in note and "close" in note
+    subprocess.run(undo, shell=True, check=True)
+    assert path.read_bytes() == before
