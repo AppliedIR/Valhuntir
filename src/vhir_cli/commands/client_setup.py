@@ -569,8 +569,8 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
         raise RuntimeError(f"claude mcp add {name} failed: {stderr}")
 
 
-def _cleanup_duplicate_backends(servers: dict) -> None:
-    """Remove per-backend entries that duplicate gateway routing."""
+def _duplicate_backends(servers: dict) -> list[str]:
+    """Per-backend ~/.claude.json entries that duplicate gateway routing."""
     _BACKEND_NAMES = {
         "forensic-mcp",
         "case-mcp",
@@ -586,26 +586,73 @@ def _cleanup_duplicate_backends(servers: dict) -> None:
     }
     gw_url = servers.get("vhir", {}).get("url", "")
     if not gw_url:
-        return
+        return []
     gw_base = gw_url.rsplit("/mcp/", 1)[0]
+    try:
+        existing = json.loads((Path.home() / ".claude.json").read_text())["mcpServers"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    return [
+        name
+        for name, entry in existing.items()
+        if name in _BACKEND_NAMES
+        and isinstance(entry, dict)
+        and entry.get("url", "").startswith(gw_base)
+    ]
+
+
+def _cleanup_duplicate_backends(servers: dict) -> None:
+    """Remove per-backend entries that duplicate gateway routing."""
     claude_json = Path.home() / ".claude.json"
-    if not claude_json.is_file():
+    removed = _duplicate_backends(servers)
+    if not removed:
         return
     try:
         data = json.loads(claude_json.read_text())
-        existing = data.get("mcpServers", {})
-        removed = []
-        for name in list(existing):
-            if name in _BACKEND_NAMES:
-                entry_url = existing[name].get("url", "")
-                if entry_url.startswith(gw_base):
-                    del existing[name]
-                    removed.append(name)
-        if removed:
-            _write_600(claude_json, json.dumps(data, indent=2) + "\n")
-            print(f"  Cleaned up {len(removed)} duplicate backend entries")
-    except (json.JSONDecodeError, OSError):
+        for name in removed:
+            del data["mcpServers"][name]
+        _write_600(claude_json, json.dumps(data, indent=2) + "\n")
+        print(f"  Removed duplicate backend entries: {', '.join(removed)}")
+    except (json.JSONDecodeError, OSError, KeyError):
         pass
+
+
+def _claude_json_plan(path: Path, servers: dict) -> tuple[list, list] | None:
+    """The Valhuntir entries registering `servers` would add to and change in
+    path (an entry differing from what Valhuntir writes, e.g. the user's
+    edit, is a change). None if path isn't valid JSON."""
+    try:
+        current = (
+            json.loads(path.read_text()).get("mcpServers", {}) if path.is_file() else {}
+        )
+    except (ValueError, OSError, AttributeError):
+        return None
+
+    def same(have, want):
+        if "url" not in want:
+            return have == want
+        keys = ("type", "url", "headers")
+        return all((have.get(k) or None) == (want.get(k) or None) for k in keys)
+
+    added = [n for n in servers if n not in current]
+    changed = [n for n in servers if n in current and not same(current[n], servers[n])]
+    return added, changed
+
+
+def _announce_claude_json(path: Path, plan: tuple, removed: list) -> None:
+    """Back up ~/.claude.json before Valhuntir changes it, and say what changes."""
+    added, changed = plan
+    if not (added or changed or removed) or not path.is_file():
+        return
+    _backup(path)
+    for label, names in (("added", added), ("removed (duplicates)", removed)):
+        if names:
+            print(f"  Valhuntir MCP entries {label}: {', '.join(names)}")
+    if changed:
+        print(
+            f"  Valhuntir MCP entries updated: {', '.join(changed)} (they differed "
+            "from what Valhuntir writes; the previous version is in the backup)"
+        )
 
 
 def _generate_config(client: str, servers: dict, examiner: str) -> None:
@@ -639,9 +686,12 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                             file=sys.stderr,
                         )
 
+                plan = _claude_json_plan(claude_config, servers) or (list(servers), [])
+                _announce_claude_json(claude_config, plan, _duplicate_backends(servers))
+                todo = {n: servers[n] for n in plan[0] + plan[1]}
                 registered = 0
                 try:
-                    for name, entry in servers.items():
+                    for name, entry in todo.items():
                         _claude_mcp_add(name, entry)
                         registered += 1
                 except RuntimeError as e:
@@ -660,7 +710,7 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                                 file=sys.stderr,
                             )
                     print(
-                        f"  Registered {registered} of {len(servers)} MCP servers before "
+                        f"  Registered {registered} of {len(todo)} MCP servers before "
                         f"aborting: {e}",
                         file=sys.stderr,
                     )
@@ -668,9 +718,20 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                 print(f"  Registered {registered} MCP servers via claude mcp add")
             else:
                 global_config = Path.home() / ".claude.json"
-                _merge_and_write(global_config, {"mcpServers": servers})
-                print(f"  Generated: {global_config} (global MCP servers)")
-                print("  NOTE: If tools don't load, try: claude mcp add ...")
+                plan = _claude_json_plan(global_config, servers)
+                if plan is None:
+                    print(
+                        f"  Not changed: {global_config} isn't valid JSON; MCP servers NOT "
+                        "registered. Fix it and re-run `vhir setup client`.",
+                        file=sys.stderr,
+                    )
+                else:
+                    _announce_claude_json(
+                        global_config, plan, _duplicate_backends(servers)
+                    )
+                    _merge_and_write(global_config, {"mcpServers": servers})
+                    print(f"  Generated: {global_config} (global MCP servers)")
+                    print("  NOTE: If tools don't load, try: claude mcp add ...")
             # Clean up per-backend duplicates from prior installs
             _cleanup_duplicate_backends(servers)
         else:

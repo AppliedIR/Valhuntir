@@ -340,3 +340,81 @@ def test_a_claude_md_that_isnt_utf8_is_kept_and_the_rest_deploys(box, capsys):
         and "can't be compared as text" in capsys.readouterr().out
     )
     assert (box.home / ".claude" / "rules" / "FORENSIC_DISCIPLINE.md").is_file()
+
+
+# --- ~/.claude.json ----------------------------------------------------------
+# Valhuntir's own MCP entries are still registered without a prompt, but with
+# a timestamped backup first and a notice of exactly what changed; the
+# fallback never overwrites an unparseable file.
+
+SERVERS = {
+    "vhir": {
+        "type": "http",
+        "url": "http://127.0.0.1:4508/mcp/vhir",
+        "headers": {"A": "1"},
+    },
+    "mslearn": {"type": "http", "url": "https://learn.example/mcp"},
+}
+
+
+@pytest.fixture
+def claude_json(box, monkeypatch):
+    path = box.home / ".claude.json"
+    monkeypatch.setattr(cs, "_deploy_claude_code_assets", lambda project_dir=None: None)
+    calls = []
+
+    def fake_add(name, entry):  # what `claude mcp add -s user` stores
+        calls.append(name)
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data.setdefault("mcpServers", {})[name] = {
+            k: entry[k] for k in ("type", "url", "headers") if k in entry
+        }
+        path.write_text(json.dumps(data))
+
+    monkeypatch.setattr(cs, "_claude_mcp_add", fake_add)
+
+    def setup(cli=True):
+        monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: cli)
+        cs._generate_config("claude-code", json.loads(json.dumps(SERVERS)), "steve")
+
+    return types.SimpleNamespace(path=path, setup=setup, calls=calls)
+
+
+def _backups(path):
+    return sorted(path.parent.glob(path.name + ".vhir-backup-*"))
+
+
+@pytest.mark.parametrize("cli", [True, False], ids=["claude-cli", "fallback"])
+def test_a_backup_and_a_notice_before_changing_claude_json(claude_json, capsys, cli):
+    edited = dict(
+        SERVERS["vhir"], url="http://10.0.0.9:4508/mcp/vhir"
+    )  # the user's edit
+    claude_json.path.write_text(
+        json.dumps({"projects": {"x": 1}, "mcpServers": {"vhir": edited}})
+    )
+    before = claude_json.path.read_bytes()
+    claude_json.setup(cli)
+    out = capsys.readouterr().out
+    baks = _backups(claude_json.path)
+    assert len(baks) == 1 and baks[0].read_bytes() == before and str(baks[0]) in out
+    assert "entries added: mslearn" in out and "entries updated: vhir" in out
+    data = json.loads(claude_json.path.read_text())
+    assert data["mcpServers"]["vhir"]["url"] == SERVERS["vhir"]["url"]  # still updated
+    assert data["projects"] == {"x": 1}
+
+
+def test_the_fallback_never_overwrites_an_unparseable_claude_json(claude_json, capsys):
+    claude_json.path.write_text('{"projects": {"x": 1},}')
+    before = claude_json.path.read_bytes()
+    claude_json.setup(cli=False)
+    assert claude_json.path.read_bytes() == before
+    assert "isn't valid JSON" in capsys.readouterr().err
+
+
+def test_nothing_to_change_means_no_write_and_no_backup(claude_json):
+    claude_json.setup()
+    claude_json.calls.clear()
+    before = claude_json.path.read_bytes()
+    claude_json.setup()
+    assert claude_json.path.read_bytes() == before and not claude_json.calls
+    assert _backups(claude_json.path) == []
