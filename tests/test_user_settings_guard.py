@@ -476,3 +476,135 @@ def test_a_stdio_entry_does_not_back_up_and_announce_on_every_run(claude_json, c
         _backups(claude_json.path) == []
         and "entries added" not in capsys.readouterr().out
     )
+
+
+# --- `vhir setup client -y` applies, with a backup, an alert and
+# an undo block printed at exit; --ask-user-files keeps asking ----------------
+
+
+def _setup_args(**kw):
+    import argparse
+
+    base = dict(
+        client="claude-code",
+        sift="http://127.0.0.1:4508",
+        windows=None,
+        windows_token=None,
+        remnux=None,
+        remnux_token=None,
+        examiner="steve",
+        no_mslearn=True,
+        yes=True,
+        uninstall=False,
+    )
+    return argparse.Namespace(**{**base, **kw})
+
+
+@pytest.fixture
+def setup(box, monkeypatch):
+    monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: False)
+
+    def run(answer=None, **kw):
+        tty = answer is not None
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: tty))
+        asked = []
+        monkeypatch.setattr("builtins.input", lambda p="": (asked.append(p), answer)[1])
+        cs.cmd_setup_client(_setup_args(**kw), {"examiner": "steve"})
+        return asked
+
+    return run
+
+
+def _undo_lines(out):
+    return [ln.strip() for ln in out.splitlines() if ln.strip().startswith("cp -p ")]
+
+
+def test_y_applies_with_a_backup_an_alert_and_a_working_undo(box, setup, capsys):
+    before = _write_user(box.settings)
+    asked = setup()  # -y, no terminal
+    cap = capsys.readouterr()
+    data = json.loads(box.settings.read_text())
+    assert data["sandbox"]["enabled"] is True and not asked
+    assert "Read(~/.ssh/**)" in data["permissions"]["deny"]  # the user's own rule kept
+    (bak,) = box.settings.parent.glob("settings.json.vhir-backup-*")
+    assert bak.read_bytes() == before
+    assert f"*** -y: vhir CHANGED {box.settings}" in cap.err
+    assert "not inside a Claude session" in cap.out
+    undo = [ln for ln in _undo_lines(cap.out) if str(box.settings) in ln]
+    assert len(undo) == 1
+    subprocess.run(undo[0], shell=True, check=True)
+    assert box.settings.read_bytes() == before  # the undo restores it exactly
+
+
+def test_the_undo_block_prints_even_after_an_error(box, setup, monkeypatch, capsys):
+    _write_user(box.settings)
+
+    def boom(*a, **k):
+        raise RuntimeError("late failure")
+
+    real = cs._deploy_claude_code_assets
+    monkeypatch.setattr(
+        cs, "_deploy_claude_code_assets", lambda p=None: (real(p), boom())[0]
+    )
+    with pytest.raises(RuntimeError):
+        setup()
+    assert [
+        ln for ln in _undo_lines(capsys.readouterr().out) if str(box.settings) in ln
+    ]
+
+
+def test_ask_user_files_asks_on_a_terminal_even_with_y(box, setup, capsys):
+    before = _write_user(box.settings)
+    asked = setup("n", ask_user_files=True)
+    assert box.settings.read_bytes() == before and any("[y/N]" in p for p in asked)
+    assert not _undo_lines(capsys.readouterr().out)
+
+
+def test_ask_user_files_without_a_terminal_keeps_the_file(box, setup):
+    before = _write_user(box.settings)
+    setup(ask_user_files=True)
+    assert box.settings.read_bytes() == before
+
+
+def test_anchor_vhir_update_without_a_terminal_still_keeps(box, capsys):
+    before = _write_user(box.settings)
+    box.run()  # _deploy_claude_code_assets alone, as `vhir update` calls it
+    assert (
+        box.settings.read_bytes() == before and "NOT applied" in capsys.readouterr().out
+    )
+
+
+def test_anchor_a_fresh_file_is_created_with_no_undo_line(box, setup, capsys):
+    setup()
+    out = capsys.readouterr().out
+    assert box.settings.is_file()
+    assert not [ln for ln in _undo_lines(out) if str(box.settings) in ln]
+
+
+def test_y_installs_the_product_agents_md_not_the_cwds(box, setup, monkeypatch):
+    (box.repo / "AGENTS.md").write_text("PRODUCT AGENTS\n")
+    monkeypatch.setattr(  # where an install finds it: after any cwd candidate
+        cs,
+        "_AGENTS_MD_CANDIDATES",
+        cs._AGENTS_MD_CANDIDATES + [lambda: box.repo / "AGENTS.md"],
+    )
+    (box.home.parent / "AGENTS.md").write_text(
+        "SOME REPO'S AGENT INSTRUCTIONS\n"
+    )  # the cwd
+    setup()
+    rule = box.home / ".claude" / "rules" / "AGENTS.md"
+    assert rule.read_text() == "PRODUCT AGENTS\n"
+
+
+def test_the_cwd_is_not_an_agents_md_candidate(box, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("cwd\n")
+    assert all(fn() != tmp_path / "AGENTS.md" for fn in cs._AGENTS_MD_CANDIDATES)
+
+
+def test_the_y_flag_is_reset_after_setup(box, setup):
+    setup()
+    assert cs._APPLIED is None
+    before = _write_user(box.settings)
+    box.run()  # a later deploy without -y, no terminal: keeps
+    assert box.settings.read_bytes() == before

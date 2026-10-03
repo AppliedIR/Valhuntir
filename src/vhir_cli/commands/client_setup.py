@@ -122,7 +122,30 @@ _VHIR_BACKEND_NAMES = {
 
 
 def cmd_setup_client(args, identity: dict) -> None:
-    """Generate LLM client configuration for Valhuntir endpoints."""
+    """Generate LLM client configuration for Valhuntir endpoints.
+
+    With -y (unless --ask-user-files), a user file that would change is
+    changed after a backup, with an alert, and the commands that undo it are
+    printed at exit, even after an error."""
+    global _APPLIED
+    auto = getattr(args, "yes", False) and not getattr(args, "ask_user_files", False)
+    _APPLIED = [] if auto else None
+    try:
+        _setup_client(args, identity)
+    finally:
+        changed, _APPLIED = _APPLIED or [], None
+        if changed:
+            import shlex
+
+            print(
+                "\n  vhir setup client -y changed these files. To undo, run these in a"
+            )
+            print("  normal terminal (not inside a Claude session):")
+            for bak, path in changed:
+                print(f"    cp -p {shlex.quote(str(bak))} {shlex.quote(str(path))}")
+
+
+def _setup_client(args, identity: dict) -> None:
     if getattr(args, "uninstall", False):
         _cmd_uninstall(args)
         return
@@ -839,6 +862,9 @@ def _find_claude_code_assets() -> Path | None:
 
 
 _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
+# `vhir setup client -y`: (backup, path) of each user file it changed. None
+# when a change is asked about on a terminal, or kept, instead.
+_APPLIED: list | None = None
 
 
 def _backup(path: Path) -> Path:
@@ -921,8 +947,9 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
     """Write a file the user may have edited, only with their consent.
 
     Returns "created" (no file was there), "unchanged" (nothing would change),
-    "written" (they said yes; a backup was made first) or "kept". Asks only on
-    a terminal (default No); otherwise prints the change and keeps the file.
+    "written" (they said yes, or `vhir setup client -y`; a backup was made
+    first) or "kept". Asks only on a terminal (default No); otherwise prints
+    the change and keeps the file.
     """
     if not path.exists():
         _replace_bytes(path, new.encode(), 0o600 if as_json else 0o644)
@@ -954,20 +981,23 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
     )
     for line in diff:
         print(f"    {line}")
-    if not sys.stdin.isatty():
+    if _APPLIED is None and not sys.stdin.isatty():
         print(
             f"  Not changed: {path}. To review and apply, re-run `vhir update` "
             "or `vhir setup client` in a terminal."
         )
         return "kept"
-    if input(f"  Apply these changes to {path}? [y/N] ").strip().lower() not in (
-        "y",
-        "yes",
-    ):
+    if _APPLIED is None and input(
+        f"  Apply these changes to {path}? [y/N] "
+    ).strip().lower() not in ("y", "yes"):
         print(f"  Kept: {path} unchanged.")
         return "kept"
-    _backup(path)
+    bak = _backup(path)
     _replace_bytes(path, new.encode(), path.stat().st_mode & 0o777)
+    if _APPLIED is not None:  # -y: applied without asking; say so loudly
+        _APPLIED.append((bak, path))
+        print(f"\n  *** -y: vhir CHANGED {path}\n  *** ({why})", file=sys.stderr)
+        print(f"  *** Your previous version: {bak}\n", file=sys.stderr)
     return "written"
 
 
@@ -1487,8 +1517,8 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     _write_600(path, "\n".join(lines) + "\n")
 
 
+# Not the cwd's AGENTS.md: any repo's instructions would become global rules.
 _AGENTS_MD_CANDIDATES = [
-    lambda: Path.cwd() / "AGENTS.md",
     lambda: Path.home() / ".vhir" / "src" / "sift-mcp" / "AGENTS.md",
     lambda: Path.home() / "vhir" / "sift-mcp" / "AGENTS.md",
     lambda: Path.home() / "vhir" / "forensic-mcp" / "AGENTS.md",

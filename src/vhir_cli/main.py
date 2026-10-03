@@ -353,6 +353,12 @@ def build_parser() -> argparse.ArgumentParser:
         "-y", "--yes", action="store_true", help="Accept defaults, no prompts"
     )
     p_client.add_argument(
+        "--ask-user-files",
+        action="store_true",
+        help="With -y, still ask (on a terminal) before changing your own "
+        "Claude settings, rules or commands",
+    )
+    p_client.add_argument(
         "--remote",
         action="store_true",
         help="Remote setup mode (gateway on another host)",
