@@ -82,6 +82,7 @@ def _update(
     platform="linux",
     leftovers="",
     install_rc=0,
+    opencti_rc=0,
     after_check_rc=0,
     uninstall="ok",
     smi_hangs=False,
@@ -126,6 +127,8 @@ def _update(
             result.returncode, result.stdout = (0, torch) if torch else (1, "")
         elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
             result.returncode = install_rc
+        elif cmd[:3] == ["uv", "pip", "install"]:  # opencti-mcp, unlocked
+            result.returncode = opencti_rc
         elif cmd[:3] == ["uv", "pip", "check"]:
             result.returncode = after_check_rc
         elif cmd[:2] == ["uv", "--version"]:
@@ -531,3 +534,39 @@ def test_an_uninstall_that_fails_skips_the_cache_clean(box, capsys, uninstall):
     _finished(box, calls, exited)
     assert "Clean-up not finished" in capsys.readouterr().out
     assert not any(c[:3] == ["uv", "cache", "clean"] for c in calls)
+
+
+# --- An update that stops after the pull says so and how to finish ------------
+
+PART_WAY = "Update stopped part-way: the code was pulled and packages may have changed"
+
+
+@pytest.mark.parametrize(
+    "stop",
+    ["lock missing", "--installed", "install", "--strict", "opencti", "--final"],
+)
+@pytest.mark.parametrize("flag", ["", "cpu", "gpu"])
+def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
+    box, capsys, stop, flag
+):
+    if stop == "lock missing":
+        (box.cpu_lock if flag == "cpu" else box.lock).unlink()
+    _, exited = _update(
+        box,
+        cpu=flag == "cpu",
+        gpu=flag == "gpu",
+        opencti=True,
+        install_rc=1 if stop == "install" else 0,
+        opencti_rc=1 if stop == "opencti" else 0,
+        check_rc={stop: 1} if stop.startswith("--") else None,
+    )
+    assert exited is not None and exited.code == 1
+    err = capsys.readouterr().err
+    assert PART_WAY in err and "the gateway wasn't restarted" in err
+    finish = err.rstrip().splitlines()[-1]
+    assert finish.endswith("finish with: vhir update" + (f" --{flag}" if flag else ""))
+
+
+def test_anchor_a_clean_update_prints_no_part_way_block(box, capsys):
+    _, exited = _update(box, opencti=True)
+    assert exited is None and PART_WAY not in capsys.readouterr().err

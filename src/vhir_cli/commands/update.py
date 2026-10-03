@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Install order matches setup-sift.sh dependency chain.
 # vhir-cli must come before case-mcp/report-mcp.
@@ -296,9 +297,22 @@ def _uv_version() -> tuple[int, int, int] | None:
     return (int(m[1]), int(m[2]), int(m[3])) if m else None
 
 
-def _check_lock(venv_python: str, checker: Path, lock: Path, mode: str) -> None:
+def _stop_part_way(args) -> NoReturn:
+    """Exit after the pull: say what state that leaves and how to finish."""
+    flag = " --cpu" if args.cpu else " --gpu" if args.gpu else ""
+    print(
+        "\n  Update stopped part-way: the code was pulled and packages may have"
+        " changed, but the forensic controls weren't redeployed and the gateway"
+        " wasn't restarted.\n  Fix the problem above, then finish with:"
+        f" vhir update{flag}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _check_lock(args, venv_python: str, checker: Path, lock: Path, mode: str) -> None:
     """Run the venv against the lock (deps/check-lock.py, from the pulled
-    sift-mcp); it prints what it finds. Exits when the check fails."""
+    sift-mcp); it prints what it finds. Stops the update when the check fails."""
     result = subprocess.run(
         [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
     )
@@ -307,7 +321,7 @@ def _check_lock(venv_python: str, checker: Path, lock: Path, mode: str) -> None:
             "  The installed packages don't match the dependency lock (above).",
             file=sys.stderr,
         )
-        sys.exit(1)
+        _stop_part_way(args)
 
 
 def _torch_installed(venv_python: str) -> str:
@@ -707,7 +721,7 @@ def cmd_update(args, identity: dict) -> None:
             "The sift-mcp checkout is older than this vhir-cli; pull it to main.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        _stop_part_way(args)
     installed = manifest.get("packages", {})
     pkg_paths = []
     for pkg_name in _INSTALL_ORDER:
@@ -769,7 +783,7 @@ def cmd_update(args, identity: dict) -> None:
             f"{held.stderr.strip()}",
             file=sys.stderr,
         )
-        sys.exit(1)
+        _stop_part_way(args)
     cmd.extend(held.stdout.split())
     for p in pkg_paths:
         cmd.extend(["-e", p])
@@ -782,9 +796,9 @@ def cmd_update(args, identity: dict) -> None:
         )
         if variant == "cpu":
             print(_TORCH_INDEX_HINT, file=sys.stderr)
-        sys.exit(1)
+        _stop_part_way(args)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
-    _check_lock(venv_python, checker, lock, "--strict")
+    _check_lock(args, venv_python, checker, lock, "--strict")
 
     opencti = source / _PACKAGE_PATHS["opencti-mcp"]
     if (
@@ -802,9 +816,9 @@ def cmd_update(args, identity: dict) -> None:
                 f"  opencti-mcp install failed: {result.stderr.strip()}",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            _stop_part_way(args)
         print("  Reinstalling opencti-mcp (outside the dependency lock)... done")
-    _check_lock(venv_python, checker, lock, "--final")
+    _check_lock(args, venv_python, checker, lock, "--final")
     if variant == "cpu" and sys.stdin.isatty():
         _offer_cuda_cleanup(venv_python, checker, lock)
 
