@@ -679,6 +679,7 @@ SETTINGS
         info "Existing settings.json found. Merging..."
         # Use Python for JSON merge (available on most Linux systems)
         MERGE_RC=0
+        rm -f "$SETTINGS_FILE.vhir-new"  # only this run's merge is ever installed
         SETTINGS_FILE="$SETTINGS_FILE" SETTINGS_CONTENT="$SETTINGS_CONTENT" python3 << 'PYMERGE' || MERGE_RC=$?
 import json, sys, os
 
@@ -744,14 +745,15 @@ with open(target_path + ".vhir-new", "w") as f:
     f.write("\n")
 sys.exit(2 if unparseable else 0)
 PYMERGE
-        if [[ ! -f "$SETTINGS_FILE.vhir-new" ]]; then
-            warn "settings.json merge failed: NOT changed."
-        elif [[ $MERGE_RC -eq 2 ]]; then
+        if [[ $MERGE_RC -eq 0 && -f "$SETTINGS_FILE.vhir-new" ]]; then
+            replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+            ok "settings.json (merged)"
+        elif [[ $MERGE_RC -eq 2 && -f "$SETTINGS_FILE.vhir-new" ]]; then
             replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
             warn "settings.json wasn't valid JSON: replaced (backed up above)."
         else
-            replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
-            ok "settings.json (merged)"
+            rm -f "$SETTINGS_FILE.vhir-new"
+            warn "settings.json merge failed (exit $MERGE_RC): NOT changed."
         fi
     elif [[ -f "$SETTINGS_FILE" ]]; then
         warn "python3 not found. Replacing the existing settings.json."

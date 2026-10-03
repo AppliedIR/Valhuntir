@@ -46,23 +46,28 @@ function Backup-UserFile {
     $base = "$Path.vhir-backup-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))"
     $bak = $base; $n = 1
     while (Test-Path -LiteralPath $bak) { $n++; $bak = "$base-$n" }
-    Copy-Item -LiteralPath $Path -Destination $bak
+    Copy-Item -LiteralPath $Path -Destination $bak -ErrorAction Stop
     Write-Warn "Backed up $Path -> $bak"
     $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
     Write-Host "    To undo: Copy-Item -LiteralPath $(& $q $bak) -Destination $(& $q $Path) -Force"
 }
 # Write new text over a file, backing the file up first if that changes it.
+# Returns whether it was written: not when the backup fails.
 function Set-UserFile {
     param([string]$Path, [string]$Text)
     $tmp = "$Path.vhir-new"
     $Text | Set-Content -LiteralPath $tmp -Encoding UTF8
     $new = [IO.File]::ReadAllBytes($tmp)
+    Remove-Item -LiteralPath $tmp
     if ((Test-Path -LiteralPath $Path) -and
         (($new -join ',') -ne ([IO.File]::ReadAllBytes($Path) -join ','))) {
-        Backup-UserFile $Path
+        try { Backup-UserFile $Path } catch {
+            Write-Warn "Could not back up ${Path}: $($_.Exception.Message). NOT changed."
+            return $false
+        }
     }
     [IO.File]::WriteAllBytes($Path, $new)
-    Remove-Item -LiteralPath $tmp
+    return $true
 }
 
 function Prompt-YN {
@@ -341,7 +346,7 @@ $clientType = switch ($clientChoice) {
 switch ($clientType) {
     "claude-code" {
         $mcpJsonPath = Join-Path $deployDir ".mcp.json"
-        Set-UserFile $mcpJsonPath ($mcpConfig | ConvertTo-Json -Depth 5)
+        if (-not (Set-UserFile $mcpJsonPath ($mcpConfig | ConvertTo-Json -Depth 5))) { break }
         $acl = Get-Acl $mcpJsonPath
         $acl.SetAccessRuleProtection($true, $false)
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -379,8 +384,9 @@ switch ($clientType) {
                     foreach ($name in $mcpServersStdio.Keys) {
                         $cur.mcpServers | Add-Member -NotePropertyName $name -NotePropertyValue $mcpServersStdio[$name] -Force
                     }
-                    Set-UserFile $configPath ($cur | ConvertTo-Json -Depth 100)
-                    Write-Ok "Merged into: $configPath (stdio via mcp-remote)"
+                    if (Set-UserFile $configPath ($cur | ConvertTo-Json -Depth 100)) {
+                        Write-Ok "Merged into: $configPath (stdio via mcp-remote)"
+                    }
                 }
             }
         }
@@ -563,12 +569,14 @@ if (Test-Path $settingsPath) {
             $existing | Add-Member -NotePropertyName sandbox -NotePropertyValue $settingsObj.sandbox
         }
 
-        Set-UserFile $settingsPath ($existing | ConvertTo-Json -Depth 10)
-        Write-Ok "settings.json (merged)"
+        if (Set-UserFile $settingsPath ($existing | ConvertTo-Json -Depth 10)) {
+            Write-Ok "settings.json (merged)"
+        }
     } catch {
         Write-Warn "Could not merge existing settings. Replacing them."
-        Set-UserFile $settingsPath ($settingsObj | ConvertTo-Json -Depth 10)
-        Write-Ok "settings.json (replaced)"
+        if (Set-UserFile $settingsPath ($settingsObj | ConvertTo-Json -Depth 10)) {
+            Write-Ok "settings.json (replaced)"
+        }
     }
 } else {
     $settingsObj | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsPath -Encoding UTF8

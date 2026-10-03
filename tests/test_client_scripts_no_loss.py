@@ -256,6 +256,31 @@ def test_win_unparseable_desktop_config_is_left(tmp_path):
     assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
 
 
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_win_a_failed_backup_leaves_the_file(tmp_path):
+    """A copy that fails (non-terminating, as Copy-Item's errors are) stops the
+    write: no "Backed up", no undo line, the original byte-unchanged."""
+    before = json.dumps(USER, indent=2)
+    appdata = tmp_path / "App Data"
+    cfg = appdata / "Claude" / "claude_desktop_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(before)
+    servers = json.dumps(GENERATED["mcpServers"])
+    body = (
+        "function Copy-Item { [CmdletBinding()] param($LiteralPath, $Destination)"
+        ' Write-Error "disk full" }\n'
+        f"$mcpServersStdio = @{{}}\n"
+        f"($('{servers}') | ConvertFrom-Json -AsHashtable).GetEnumerator() |"
+        " ForEach-Object { $mcpServersStdio[$_.Key] = $_.Value }\n"
+        "$mcpConfigStdio = @{ mcpServers = $mcpServersStdio }\n" + WIN_DESKTOP
+    )
+    rc, out = _pwsh(tmp_path, body, appdata)
+    assert cfg.read_text() == before, out
+    assert "disk full" in out and "NOT changed" in out
+    assert "Backed up" not in out and "To undo" not in out and "Merged" not in out
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
+
+
 # --- The workspace .mcp.json and settings.json --------------------------------
 
 
@@ -335,6 +360,44 @@ def test_settings_writes_are_backed_up(tmp_path, script, existing, python3, said
     assert bak.read_bytes() == before and _mode(bak) == 0o600
     assert not (tmp_path / "settings.json.vhir-new").exists()
     assert _restored(out, settings, before)
+
+
+@pytest.mark.parametrize("script", [MAC, LINUX], ids=["macos", "linux"])
+@pytest.mark.parametrize(
+    "how",
+    ["stale staging file", "stale, python3 exits 0 unwritten", "killed mid-write"],
+)
+def test_a_failed_merge_leaves_settings(tmp_path, script, how):
+    """Only this run's merge output is installed: a staging file left by an
+    interrupted earlier run, or a partial one from a killed merge, never is."""
+    settings = tmp_path / "settings.json"
+    settings.write_text("[1]\n")  # valid JSON, not an object: the merge fails
+    before = settings.read_bytes()
+    staging = tmp_path / "settings.json.vhir-new"
+    path = _bin(tmp_path, SH_TOOLS + ["python3"])
+    stub = {
+        "stale, python3 exits 0 unwritten": "exit 0",  # a broken shim
+        "killed mid-write": 'printf \'{"hoo\' > "$SETTINGS_FILE.vhir-new"; kill -9 $$',
+    }.get(how)
+    if how.startswith("stale"):
+        staging.write_text('{"stale": 1}\n')
+    if stub:
+        python3 = Path(path) / "python3"
+        python3.unlink()
+        python3.write_text(f"#!/bin/bash\n{stub}\n")
+        python3.chmod(0o755)
+    rc, out = _bash(
+        script,
+        _settings_block(script),
+        tmp_path,
+        path,
+        SETTINGS_FILE=str(settings),
+        SETTINGS_CONTENT=json.dumps(INCOMING),
+    )
+    assert rc == 0, out
+    assert settings.read_bytes() == before, out
+    assert "settings.json (merged)" not in out and "NOT changed" in out
+    assert not staging.exists() and not list(tmp_path.glob("*.vhir-backup-*"))
 
 
 @pytest.mark.skipif(not PWSH, reason="pwsh not installed")
