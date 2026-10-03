@@ -844,6 +844,9 @@ def cmd_update(args, identity: dict) -> None:
             pass  # non-fatal
 
     # Step 5: Redeploy forensic controls
+    from vhir_cli.commands import client_setup
+
+    client_setup._LAUNCHERS_UPDATED.clear()  # what this update rewrites
     client = manifest.get("client")
     if client == "claude-code":
         from vhir_cli.commands.client_setup import _deploy_claude_code_assets
@@ -877,9 +880,8 @@ def cmd_update(args, identity: dict) -> None:
 
     # Step 6.5: the gateway's own launch lines run python -I (other clients;
     # claude-code installs had it at Step 5, so this finds nothing to do)
-    from vhir_cli.commands.client_setup import _isolate_gateway_launchers
-
-    if _isolate_gateway_launchers() and no_restart:
+    client_setup._isolate_gateway_launchers()
+    if client_setup._LAUNCHERS_UPDATED and no_restart:
         print("  The updated launch line takes effect at the next gateway restart.")
 
     # Step 7: Restart gateway

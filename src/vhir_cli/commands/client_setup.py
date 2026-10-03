@@ -872,6 +872,8 @@ _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh"
 # `vhir setup client -y`: (backup, path) of each user file it changed. None
 # when a change is asked about on a terminal, or kept, instead.
 _APPLIED: list | None = None
+# Launcher files _isolate_gateway_launchers rewrote in this process.
+_LAUNCHERS_UPDATED: list[Path] = []
 
 
 def _backup(path: Path) -> Path:
@@ -960,6 +962,7 @@ def _isolate_gateway_launchers() -> list[Path]:
             ).stat().st_mode & 0o7777
             _replace_bytes(path, "".join(lines).encode(), mode)
             updated.append(path)
+            _LAUNCHERS_UPDATED.append(path)
             print(f"  Updated: {path} (added -I to the gateway launch line)")
             if path.suffix == ".service":
                 try:

@@ -635,3 +635,26 @@ def test_check_writes_nothing(box):
     before = (script.read_bytes(), unit.read_bytes())
     _update(box, check=True)
     assert (script.read_bytes(), unit.read_bytes()) == before
+
+
+def test_no_restart_says_when_it_applies_after_the_client_deploy_rewrote(
+    box, capsys, monkeypatch
+):
+    """claude-code: Step 5's deploy rewrites the lines, so Step 6.5 finds
+    nothing; the note still has to be printed."""
+    from vhir_cli.commands import client_setup
+
+    script, unit = _launchers(box)
+    monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
+    _update(box, no_restart=True, manifest=lambda m: {**m, "client": "claude-code"})
+    out = capsys.readouterr().out
+    assert "python -I -m" in unit.read_text() and f"Updated: {unit}" in out
+    assert "takes effect at the next gateway restart" in out
+
+
+def test_no_note_when_nothing_was_rewritten(box, capsys):
+    script, unit = _launchers(box)
+    _update(box, no_restart=True)  # rewrites
+    capsys.readouterr()
+    _update(box, no_restart=True)  # nothing left to do
+    assert "takes effect at the next gateway restart" not in capsys.readouterr().out
