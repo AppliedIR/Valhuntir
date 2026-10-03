@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -675,3 +676,17 @@ def test_a_user_edited_launcher_is_noted_once_per_update(box, capsys, monkeypatc
     _update(box, manifest=lambda m: {**m, "client": "claude-code"})  # a later update
     out = capsys.readouterr().out
     assert out.count(f"Note: {unit} has a gateway launch line") == 1  # noted again
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 file")
+def test_an_unreadable_launcher_is_noted_once_per_update(box, capsys, monkeypatch):
+    from vhir_cli.commands import client_setup
+
+    script, unit = _launchers(box)
+    monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
+    unit.chmod(0)
+    try:
+        _update(box, manifest=lambda m: {**m, "client": "claude-code"})
+    finally:
+        unit.chmod(0o644)
+    assert capsys.readouterr().out.count(f"Note: could not check {unit}") == 1
