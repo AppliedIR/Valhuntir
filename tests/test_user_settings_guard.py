@@ -284,3 +284,59 @@ def test_the_default_answer_is_no(box):
     before = _write_user(box.settings)
     box.run("")
     assert box.settings.read_bytes() == before
+
+
+# --- CORRECTION 1 -------------------------------------------------------------
+
+
+def test_a_planted_temp_symlink_is_not_followed(box):
+    _write_user(box.settings)
+    victim = box.home / "victim.txt"
+    victim.write_text("precious\n")
+    (box.settings.parent / ".settings.json.vhir-tmp").symlink_to(victim)
+    box.run("y")
+    assert victim.read_text() == "precious\n" and not box.settings.is_symlink()
+    assert json.loads(box.settings.read_text())["sandbox"]["enabled"] is True
+
+
+def _with_deprecated_hook(box):
+    hook = box.home / ".vhir" / "hooks" / "pre-bash-guard.sh"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("#!/bin/bash\n")
+    data = json.loads(json.dumps(USER))
+    data["hooks"]["PreToolUse"] = [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": str(hook)}]}
+    ]
+    box.settings.write_text(json.dumps(data, indent=2))
+    return hook
+
+
+def test_a_hook_kept_settings_still_run_is_not_deleted(box):
+    hook = _with_deprecated_hook(box)
+    box.run()  # no terminal: the settings are kept
+    assert "pre-bash-guard.sh" in box.settings.read_text() and hook.is_file()
+
+
+def test_anchor_the_hook_goes_once_the_settings_drop_it(box):
+    hook = _with_deprecated_hook(box)
+    box.run("y")
+    assert "pre-bash-guard.sh" not in box.settings.read_text() and not hook.exists()
+
+
+def test_uninstall_without_the_assets_keeps_claude_md(box, monkeypatch, capsys):
+    md = box.home / ".claude" / "CLAUDE.md"
+    md.write_text("PRODUCT CLAUDE.md\n")
+    monkeypatch.setattr(cs, "_find_claude_code_assets", lambda: None)
+    cs._remove_claude_md(md, "")
+    assert md.is_file() and "Kept" in capsys.readouterr().out
+
+
+def test_a_claude_md_that_isnt_utf8_is_kept_and_the_rest_deploys(box, capsys):
+    md = box.home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"caf\xe9\n")
+    box.run()
+    assert (
+        md.read_bytes() == b"caf\xe9\n"
+        and "can't be compared as text" in capsys.readouterr().out
+    )
+    assert (box.home / ".claude" / "rules" / "FORENSIC_DISCIPLINE.md").is_file()

@@ -785,13 +785,23 @@ def _backup(path: Path) -> Path:
 
 
 def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
-    """Atomically replace dst's content; a symlink is kept and its target written."""
+    """Atomically replace dst's content; a symlink is kept and its target
+    written. The temp file is unpredictable and created with mode."""
+    import tempfile
+
     real = dst.resolve() if dst.is_symlink() else dst
     real.parent.mkdir(parents=True, exist_ok=True)
-    tmp = real.with_name(f".{real.name}.vhir-tmp")
-    tmp.write_bytes(data)
-    tmp.chmod(mode)
-    os.replace(tmp, real)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(real.parent), prefix=f".{real.name}.", suffix=".tmp"
+    )
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, real)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _shipped(dst: Path, src: Path) -> bool:
@@ -845,7 +855,11 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
     if not path.exists():
         _replace_bytes(path, new.encode(), 0o600 if as_json else 0o644)
         return "created"
-    old = path.read_text()
+    try:
+        old = path.read_text()
+    except (UnicodeDecodeError, OSError) as e:
+        print(f"  Not changed: {path} can't be compared as text ({e}); kept.")
+        return "kept"
     if as_json:
         try:
             before, after = json.loads(old), json.loads(new)
@@ -1104,8 +1118,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
 
         # Deploy settings.json to ~/.claude/settings.json
         settings_src = _find_asset("settings.json")
+        settings_target = Path.home() / ".claude" / "settings.json"
         if settings_src:
-            settings_target = Path.home() / ".claude" / "settings.json"
             hooks_dir = Path.home() / ".vhir" / "hooks"
             settings = (
                 settings_target,
@@ -1119,13 +1133,7 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
                 _find_hook(hook_name), Path.home() / ".vhir" / "hooks" / hook_name
             )
 
-        # Remove deprecated hook files
-        hooks_dir = Path.home() / ".vhir" / "hooks"
-        for old_hook in ("pre-bash-guard.sh",):
-            old_path = hooks_dir / old_hook
-            if old_path.is_file():
-                old_path.unlink()
-                print(f"  Removed:   {old_hook} (deprecated)")
+        _drop_deprecated_hooks(Path.home() / ".vhir" / "hooks", settings_target)
 
         # Deploy CLAUDE.md globally
         _deploy_claude_md(
@@ -1159,8 +1167,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
 
         # Deploy settings.json to project
         settings_src = _find_asset("settings.json")
+        settings_target = project_dir / ".claude" / "settings.json"
         if settings_src:
-            settings_target = project_dir / ".claude" / "settings.json"
             settings = (settings_target, _merge_settings(settings_target, settings_src))
             _report_settings(*settings)
 
@@ -1170,13 +1178,7 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
                 _find_hook(hook_name), project_dir / ".claude" / "hooks" / hook_name
             )
 
-        # Remove deprecated hook files from project
-        proj_hooks_dir = project_dir / ".claude" / "hooks"
-        for old_hook in ("pre-bash-guard.sh",):
-            old_path = proj_hooks_dir / old_hook
-            if old_path.is_file():
-                old_path.unlink()
-                print(f"  Removed:   {old_hook} (deprecated)")
+        _drop_deprecated_hooks(project_dir / ".claude" / "hooks", settings_target)
 
         # Deploy CLAUDE.md to project root
         _deploy_claude_md(
@@ -1198,6 +1200,20 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         for doc_name in ("FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
             _deploy_copy(_find_asset(doc_name), project_dir / doc_name)
         return settings if settings_src else None
+
+
+def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
+    """Remove deprecated hook files, but only once the settings no longer
+    run them (a kept settings file may still)."""
+    try:
+        text = settings.read_text()
+    except (OSError, UnicodeDecodeError):
+        return
+    for old_hook in ("pre-bash-guard.sh",):
+        old_path = hooks_dir / old_hook
+        if old_path.is_file() and old_hook not in text:
+            old_path.unlink()
+            print(f"  Removed:   {old_hook} (deprecated)")
 
 
 def _report_settings(path: Path, status: str) -> None:
@@ -1673,14 +1689,8 @@ def _remove_claude_md(path: Path, indent: str) -> None:
     """Remove a CLAUDE.md vhir deployed and restore the user's .md.bak; one
     vhir didn't ship (the user's own, or kept at their choice) stays."""
     assets = _find_claude_code_assets()
-    src = next(
-        (
-            d / "CLAUDE.md"
-            for d in (assets / "full", assets / "shared", assets)
-            if assets and (d / "CLAUDE.md").is_file()
-        ),
-        None,
-    )
+    dirs = (assets / "full", assets / "shared", assets) if assets else ()
+    src = next((d / "CLAUDE.md" for d in dirs if (d / "CLAUDE.md").is_file()), None)
     if not src or (path.read_bytes() != src.read_bytes() and not _shipped(path, src)):
         print(f"{indent}Kept {path}: it isn't a version vhir shipped.")
         return
