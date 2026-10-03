@@ -166,7 +166,7 @@ When Claude Code is the LLM client, `vhir setup client --client=claude-code` dep
 
 - **Kernel-level sandbox**: Restricts Bash writes and network access via bubblewrap (L9). On Ubuntu 24.04+, requires AppArmor profile installed by `setup-sift.sh`
 - **Case data deny rules**: 41 rules blocking Read/Edit/Write to protected case files, evidence registry, verification ledger, and control files (L3)
-- **PreToolUse hook**: Blocks Bash redirections targeting protected files (L4)
+- **PreToolUse case-data guard**: Refuses Bash commands that would delete or overwrite case records (findings, timeline, approvals, IOCs, evidence registry, TODOs, CASE.yaml, actions, pending reviews), `audit/` or evidence files: `rm`, `mv`, `cp`, `truncate`, `shred`, `unlink`, redirections and `find -delete`, seen through `sudo`, `env`, chains, newlines and `cd`. Moving other files into `DELETE/`, filing new evidence and work in `reports/` are allowed. It is a best-effort check of those commands, not a security boundary: it does not see into `bash -c`, `xargs`, scripts, `git clean`, `rsync --delete`, `dd of=`, brace expansion or variables, and it guards only cases under `$VHIR_CASES_DIR` (default `~/cases`)
 - **PostToolUse audit hook**: Captures every Bash command and output to `audit/claude-code.jsonl`
 - **Provenance enforcement**: Findings without an evidence trail are rejected
 - **Password-gated human approval**: Approval requires the examiner's password + writes HMAC ledger entry (L2)
