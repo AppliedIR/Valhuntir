@@ -59,6 +59,24 @@ NC='\033[0m'
 info()   { echo -e "${BLUE}[INFO]${NC} $*"; }
 ok()     { echo -e "${GREEN}[OK]${NC} $*"; }
 warn()   { echo -e "${YELLOW}[WARN]${NC} $*"; }
+
+# A user's file is backed up (mode kept) before it's changed or removed, with
+# the command that puts it back.
+backup_file() {
+    local f="$1" base bak n=1
+    base="$f.vhir-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+    bak="$base"
+    while [[ -e "$bak" ]]; do n=$((n + 1)); bak="$base-$n"; done
+    cp -p "$f" "$bak"
+    warn "Backed up $f -> $bak"
+    printf '    To undo: cp -p %q %q\n' "$bak" "$f"
+}
+# Move a new version ($1) over a file ($2), backing the file up if that changes it.
+replace_file() {
+    if [[ -f "$2" ]] && ! cmp -s "$1" "$2"; then backup_file "$2"; fi
+    cat "$1" > "$2"
+    rm -f "$1"
+}
 err()    { echo -e "${RED}[ERROR]${NC} $*"; }
 header() { echo -e "\n${BOLD}=== $* ===${NC}\n"; }
 
@@ -163,6 +181,7 @@ if $UNINSTALL; then
         echo ""
         echo "  Claude Desktop config: $CLAUDE_DESKTOP_CFG"
         if prompt_yn_strict "  Remove Claude Desktop config?"; then
+            backup_file "$CLAUDE_DESKTOP_CFG"
             rm -f "$CLAUDE_DESKTOP_CFG"
             ok "Removed $CLAUDE_DESKTOP_CFG"
         fi
@@ -412,7 +431,8 @@ esac
 case "$CLIENT" in
     claude-code)
         CONFIG_FILE="$DEPLOY_DIR/.mcp.json"
-        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
+        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE.vhir-new" &&
+            replace_file "$CONFIG_FILE.vhir-new" "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE"
         ;;
     claude-desktop)
@@ -424,8 +444,27 @@ case "$CLIENT" in
             CONFIG_DIR="$HOME/Library/Application Support/Claude"
             mkdir -p "$CONFIG_DIR"
             CONFIG_FILE="$CONFIG_DIR/claude_desktop_config.json"
-            (umask 077 && echo "$MCP_JSON_STDIO" > "$CONFIG_FILE")
-            ok "Written: $CONFIG_FILE (stdio via mcp-remote)"
+            if [[ ! -s "$CONFIG_FILE" ]]; then
+                (umask 077 && echo "$MCP_JSON_STDIO" > "$CONFIG_FILE")
+                ok "Written: $CONFIG_FILE (stdio via mcp-remote)"
+            elif echo "$MCP_JSON_STDIO" | node -e '
+const fs = require("fs");
+let cur;
+try { cur = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(3); }
+const s = cur && typeof cur === "object" && !Array.isArray(cur) ? cur.mcpServers : null;
+if (s === null || (s !== undefined && (typeof s !== "object" || Array.isArray(s)))) process.exit(3);
+cur.mcpServers = Object.assign({}, s, JSON.parse(fs.readFileSync(0, "utf8")).mcpServers);
+fs.writeFileSync(process.argv[2], JSON.stringify(cur, null, 2) + "\n", { mode: 0o600 });
+' "$CONFIG_FILE" "$CONFIG_FILE.vhir-new"; then
+                # vhir's entries replace same-named ones; every other key stays
+                replace_file "$CONFIG_FILE.vhir-new" "$CONFIG_FILE"
+                ok "Merged into: $CONFIG_FILE (stdio via mcp-remote)"
+            else
+                rm -f "$CONFIG_FILE.vhir-new"
+                warn "$CONFIG_FILE isn't valid JSON: NOT changed."
+                warn "Add these to its \"mcpServers\" by hand:"
+                echo "$MCP_JSON_STDIO"
+            fi
         fi
         ;;
     librechat)
@@ -561,7 +600,8 @@ SETTINGS
 
 if [[ -f "$SETTINGS_FILE" ]] && command -v python3 &>/dev/null; then
     info "Existing settings.json found. Merging..."
-    SETTINGS_FILE="$SETTINGS_FILE" SETTINGS_CONTENT="$SETTINGS_CONTENT" python3 << 'PYMERGE'
+    MERGE_RC=0
+    SETTINGS_FILE="$SETTINGS_FILE" SETTINGS_CONTENT="$SETTINGS_CONTENT" python3 << 'PYMERGE' || MERGE_RC=$?
 import json, sys, os
 
 target_path = os.environ.get("SETTINGS_FILE", "")
@@ -569,12 +609,16 @@ incoming_str = os.environ.get("SETTINGS_CONTENT", "{}")
 
 if not target_path:
     sys.exit(1)
+unparseable = False
 
 try:
     with open(target_path) as f:
         existing = json.load(f)
-except (json.JSONDecodeError, FileNotFoundError):
+except FileNotFoundError:
     existing = {}
+except json.JSONDecodeError:  # replaced, with a backup; never reported as merged
+    existing = {}
+    unparseable = True
 
 try:
     incoming = json.loads(incoming_str)
@@ -614,15 +658,25 @@ if "permissions" in incoming:
 if "sandbox" in incoming:
     existing.setdefault("sandbox", {}).update(incoming["sandbox"])
 
-with open(target_path, "w") as f:
+with open(target_path + ".vhir-new", "w") as f:
     json.dump(existing, f, indent=2)
     f.write("\n")
+sys.exit(2 if unparseable else 0)
 PYMERGE
-    ok "settings.json (merged)"
+    if [[ ! -f "$SETTINGS_FILE.vhir-new" ]]; then
+        warn "settings.json merge failed: NOT changed."
+    elif [[ $MERGE_RC -eq 2 ]]; then
+        replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+        warn "settings.json wasn't valid JSON: replaced (backed up above)."
+    else
+        replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+        ok "settings.json (merged)"
+    fi
 elif [[ -f "$SETTINGS_FILE" ]]; then
-    warn "python3 not found. Overwriting existing settings.json."
-    echo "$SETTINGS_CONTENT" > "$SETTINGS_FILE"
-    ok "settings.json (overwritten)"
+    warn "python3 not found. Replacing the existing settings.json."
+    echo "$SETTINGS_CONTENT" > "$SETTINGS_FILE.vhir-new"
+    replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+    ok "settings.json (replaced)"
 else
     echo "$SETTINGS_CONTENT" > "$SETTINGS_FILE"
     ok "settings.json (hooks + permissions + sandbox)"

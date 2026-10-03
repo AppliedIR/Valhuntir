@@ -40,6 +40,31 @@ function Write-Ok    { param([string]$Msg) Write-Host "[OK] $Msg" -ForegroundCol
 function Write-Warn  { param([string]$Msg) Write-Host "[WARN] $Msg" -ForegroundColor Yellow }
 function Write-Err   { param([string]$Msg) Write-Host "[ERROR] $Msg" -ForegroundColor Red }
 
+# A user's file is backed up before it's changed, with the command that puts it back.
+function Backup-UserFile {
+    param([string]$Path)
+    $base = "$Path.vhir-backup-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))"
+    $bak = $base; $n = 1
+    while (Test-Path -LiteralPath $bak) { $n++; $bak = "$base-$n" }
+    Copy-Item -LiteralPath $Path -Destination $bak
+    Write-Warn "Backed up $Path -> $bak"
+    $q = { param($s) "'" + ($s -replace "'", "''") + "'" }
+    Write-Host "    To undo: Copy-Item -LiteralPath $(& $q $bak) -Destination $(& $q $Path) -Force"
+}
+# Write new text over a file, backing the file up first if that changes it.
+function Set-UserFile {
+    param([string]$Path, [string]$Text)
+    $tmp = "$Path.vhir-new"
+    $Text | Set-Content -LiteralPath $tmp -Encoding UTF8
+    $new = [IO.File]::ReadAllBytes($tmp)
+    if ((Test-Path -LiteralPath $Path) -and
+        (($new -join ',') -ne ([IO.File]::ReadAllBytes($Path) -join ','))) {
+        Backup-UserFile $Path
+    }
+    [IO.File]::WriteAllBytes($Path, $new)
+    Remove-Item -LiteralPath $tmp
+}
+
 function Prompt-YN {
     param([string]$Msg, [bool]$Default = $true)
     if ($Default) { $suffix = "[Y/n]" } else { $suffix = "[y/N]" }
@@ -316,7 +341,7 @@ $clientType = switch ($clientChoice) {
 switch ($clientType) {
     "claude-code" {
         $mcpJsonPath = Join-Path $deployDir ".mcp.json"
-        $mcpConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $mcpJsonPath -Encoding UTF8
+        Set-UserFile $mcpJsonPath ($mcpConfig | ConvertTo-Json -Depth 5)
         $acl = Get-Acl $mcpJsonPath
         $acl.SetAccessRuleProtection($true, $false)
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -337,8 +362,27 @@ switch ($clientType) {
                 New-Item -ItemType Directory -Path $claudeDir2 -Force | Out-Null
             }
             $configPath = Join-Path $claudeDir2 "claude_desktop_config.json"
-            $mcpConfigStdio | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
-            Write-Ok "Written: $configPath (stdio via mcp-remote)"
+            $raw = if (Test-Path -LiteralPath $configPath) { Get-Content -LiteralPath $configPath -Raw } else { "" }
+            if (-not $raw) {
+                $mcpConfigStdio | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
+                Write-Ok "Written: $configPath (stdio via mcp-remote)"
+            } else {
+                try { $cur = $raw | ConvertFrom-Json -ErrorAction Stop } catch { $cur = $null }
+                $servers = if ($cur -is [pscustomobject]) { $cur.PSObject.Properties['mcpServers'] }
+                if ($cur -isnot [pscustomobject] -or ($servers -and $servers.Value -isnot [pscustomobject])) {
+                    Write-Warn "$configPath isn't valid JSON: NOT changed."
+                    Write-Warn 'Add these to its "mcpServers" by hand:'
+                    Write-Host ($mcpConfigStdio | ConvertTo-Json -Depth 100)
+                } else {
+                    # vhir's entries replace same-named ones; every other key stays
+                    if (-not $servers) { $cur | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) }
+                    foreach ($name in $mcpServersStdio.Keys) {
+                        $cur.mcpServers | Add-Member -NotePropertyName $name -NotePropertyValue $mcpServersStdio[$name] -Force
+                    }
+                    Set-UserFile $configPath ($cur | ConvertTo-Json -Depth 100)
+                    Write-Ok "Merged into: $configPath (stdio via mcp-remote)"
+                }
+            }
         }
     }
     "librechat" {
@@ -519,12 +563,12 @@ if (Test-Path $settingsPath) {
             $existing | Add-Member -NotePropertyName sandbox -NotePropertyValue $settingsObj.sandbox
         }
 
-        $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsPath -Encoding UTF8
+        Set-UserFile $settingsPath ($existing | ConvertTo-Json -Depth 10)
         Write-Ok "settings.json (merged)"
     } catch {
-        Write-Warn "Could not merge existing settings. Overwriting."
-        $settingsObj | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsPath -Encoding UTF8
-        Write-Ok "settings.json (overwritten)"
+        Write-Warn "Could not merge existing settings. Replacing them."
+        Set-UserFile $settingsPath ($settingsObj | ConvertTo-Json -Depth 10)
+        Write-Ok "settings.json (replaced)"
     }
 } else {
     $settingsObj | ConvertTo-Json -Depth 10 | Set-Content -Path $settingsPath -Encoding UTF8
