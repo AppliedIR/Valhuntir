@@ -694,7 +694,11 @@ def cmd_update(args, identity: dict) -> None:
             )
         except subprocess.TimeoutExpired:
             print(f"Pulling {name} timed out after 60 seconds.", file=sys.stderr)
-            if pulled:
+            # this repo too: a pull can merge, then fail or hang in a hook
+            if pulled or _git_head(path) not in (
+                "unknown",
+                pre_update_git.get(name, ""),
+            ):
                 _stop_part_way(args)
             sys.exit(1)
         if result.returncode != 0:
@@ -703,7 +707,10 @@ def cmd_update(args, identity: dict) -> None:
                 f"Resolve conflicts in {path} or re-run setup-sift.sh.",
                 file=sys.stderr,
             )
-            if pulled:
+            if pulled or _git_head(path) not in (
+                "unknown",
+                pre_update_git.get(name, ""),
+            ):
                 _stop_part_way(args)
             sys.exit(1)
         # Count new commits

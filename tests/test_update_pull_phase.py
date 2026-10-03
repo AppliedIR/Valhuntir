@@ -67,9 +67,15 @@ def _run(world, *, fetch_err="", installed_timeout=False):
         elif repo and cmd[3:5] == ["rev-parse", "HEAD"]:
             r.stdout = repo["head"]
         elif repo and cmd[3] == "pull":
+            if repo["pull"] == "merge-then-timeout":  # a slow post-merge hook
+                repo["head"] = repo["name"] + "-new"
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
             if repo["pull"] == "timeout":
                 raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-            if repo["pull"] == "fail":
+            if repo["pull"] == "merge-then-fail":  # a post-merge hook failed
+                repo["head"] = repo["name"] + "-new"
+                r.returncode, r.stderr = 1, "error: post-merge hook failed"
+            elif repo["pull"] == "fail":
                 r.returncode, r.stderr = (
                     1,
                     "fatal: Not possible to fast-forward, aborting.",
@@ -170,3 +176,19 @@ def test_anchor_a_clean_update_has_no_block(world, capsys):
     out = capsys.readouterr()
     assert code is None and PART_WAY not in out.err
     assert set(heads.values()) == {"sift-mcp-new", "vhir-new", "opensearch-mcp-new"}
+
+
+def test_a_first_pull_that_merged_then_timed_out_is_part_way(world, capsys):
+    _repo(world, "sift-mcp")["pull"] = "merge-then-timeout"
+    code, heads = _run(world)
+    err = capsys.readouterr().err
+    assert code == 1 and heads["sift-mcp"] == "sift-mcp-new"
+    assert "Pulling sift-mcp timed out after 60 seconds." in err and PART_WAY in err
+
+
+def test_a_first_pull_that_merged_then_failed_is_part_way(world, capsys):
+    _repo(world, "sift-mcp")["pull"] = "merge-then-fail"
+    code, heads = _run(world)
+    err = capsys.readouterr().err
+    assert code == 1 and heads["sift-mcp"] == "sift-mcp-new"
+    assert "post-merge hook failed" in err and PART_WAY in err
