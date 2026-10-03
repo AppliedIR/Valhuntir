@@ -9,7 +9,9 @@ from the user's directory.
 
 import argparse
 import importlib.util
+import json
 import sys
+from pathlib import Path
 
 from vhir_cli.commands import client_setup as cs
 from vhir_cli.commands import update
@@ -17,7 +19,13 @@ from vhir_cli.commands import update
 REAL_FIND_SPEC = importlib.util.find_spec
 
 
-def test_the_opensearch_entry_runs_isolated(monkeypatch):
+def test_the_opensearch_entry_runs_isolated(tmp_path, monkeypatch):
+    # setup client records the client in ~/.vhir/manifest.json: keep it here
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert Path.home() == tmp_path
+    manifest = tmp_path / ".vhir" / "manifest.json"
+    manifest.parent.mkdir()
+    manifest.write_text('{"client": "codex"}')
     seen = {}
     monkeypatch.setattr(cs, "_discover_services", lambda url, token: [])
     monkeypatch.setattr(cs, "_read_local_token", lambda: None)
@@ -48,6 +56,7 @@ def test_the_opensearch_entry_runs_isolated(monkeypatch):
     entry = seen["opensearch-mcp"]
     assert entry["command"] == sys.executable
     assert entry["args"] == ["-I", "-m", "opensearch_mcp"]
+    assert json.loads(manifest.read_text())["client"] == "claude-code"  # here only
 
 
 def test_the_pytorch_probe_never_imports_from_the_cwd(tmp_path, monkeypatch):
