@@ -366,7 +366,11 @@ def _show_hmac_verification(
 ) -> None:
     """Perform full HMAC verification with password prompt."""
     try:
-        from vhir_cli.approval_auth import get_analyst_salt, getpass_prompt
+        from vhir_cli.approval_auth import (
+            get_analyst_salt,
+            getpass_prompt,
+            verify_password,
+        )
         from vhir_cli.verification import read_ledger, verify_items
     except ImportError:
         return
@@ -397,6 +401,12 @@ def _show_hmac_verification(
             print(f"\n  Verifying entries for examiner '{examiner}':")
             password = getpass_prompt(f"  Enter password for '{examiner}': ")
             salt = get_analyst_salt(config_path, examiner)
+            if not verify_password(config_path, examiner, password):
+                # A typo isn't tampering: verifying would fail every entry.
+                print(
+                    f"  Wrong password for '{examiner}'; their entries were not verified."
+                )
+                continue
             results = verify_items(case_id, password, salt, examiner)
 
             confirmed = sum(1 for r in results if r["verified"])
