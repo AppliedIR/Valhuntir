@@ -313,9 +313,13 @@ def _stop_part_way(args) -> NoReturn:
 def _check_lock(args, venv_python: str, checker: Path, lock: Path, mode: str) -> None:
     """Run the venv against the lock (deps/check-lock.py, from the pulled
     sift-mcp); it prints what it finds. Stops the update when the check fails."""
-    result = subprocess.run(
-        [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
-    )
+    try:
+        result = subprocess.run(
+            [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        print("  The dependency check timed out after 120 seconds.", file=sys.stderr)
+        _stop_part_way(args)
     if result.returncode != 0:
         print(
             "  The installed packages don't match the dependency lock (above).",
@@ -395,7 +399,7 @@ def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
                     " Re-run with: vhir update --cpu or --gpu",
                     file=sys.stderr,
                 )
-                sys.exit(1)
+                _stop_part_way(args)
             answer = answer.strip().lower() or "cpu"
             if answer in ("cpu", "gpu"):
                 return answer, answer
@@ -804,13 +808,17 @@ def cmd_update(args, identity: dict) -> None:
     if (
         "opencti-mcp" in installed or _module_installed("opencti_mcp")
     ) and opencti.is_dir():
-        result = subprocess.run(
-            ["uv", "pip", "install", "--python", venv_python, "--quiet"]
-            + ["-e", str(opencti)],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        try:
+            result = subprocess.run(
+                ["uv", "pip", "install", "--python", venv_python, "--quiet"]
+                + ["-e", str(opencti)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            print("  opencti-mcp install timed out after 300 seconds.", file=sys.stderr)
+            _stop_part_way(args)
         if result.returncode != 0:
             print(
                 f"  opencti-mcp install failed: {result.stderr.strip()}",

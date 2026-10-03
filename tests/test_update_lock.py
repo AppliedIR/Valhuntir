@@ -83,6 +83,7 @@ def _update(
     leftovers="",
     install_rc=0,
     opencti_rc=0,
+    hangs=(),
     after_check_rc=0,
     uninstall="ok",
     smi_hangs=False,
@@ -128,6 +129,8 @@ def _update(
         elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
             result.returncode = install_rc
         elif cmd[:3] == ["uv", "pip", "install"]:  # opencti-mcp, unlocked
+            if "opencti" in hangs:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
             result.returncode = opencti_rc
         elif cmd[:3] == ["uv", "pip", "check"]:
             result.returncode = after_check_rc
@@ -136,6 +139,8 @@ def _update(
         elif "symbolic-ref" in cmd:
             result.stdout = "main"
         elif len(cmd) > 2 and str(cmd[1]).endswith("check-lock.py"):
+            if cmd[2] in hangs:
+                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
             result.returncode = check_rc.get(cmd[2], 0)
             result.stdout = {"--installed": "setuptools starlette"}.get(cmd[2], "")
             if cmd[2] == "--cuda-leftovers":
@@ -570,3 +575,19 @@ def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
 def test_anchor_a_clean_update_prints_no_part_way_block(box, capsys):
     _, exited = _update(box, opencti=True)
     assert exited is None and PART_WAY not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("hang", ["--strict", "opencti", "--final"])
+def test_a_timeout_after_the_pull_prints_the_part_way_block(box, capsys, hang):
+    _, exited = _update(box, opencti=True, hangs=(hang,))
+    assert exited is not None and exited.code == 1  # not a traceback
+    err = capsys.readouterr().err
+    assert "timed out" in err and PART_WAY in err
+    assert err.rstrip().endswith("finish with: vhir update")
+
+
+def test_no_answer_to_the_pytorch_question_prints_the_part_way_block(box, capsys):
+    _, exited = _update(box, torch="2.10.0", tty=True, answers=[EOFError])
+    assert exited is not None and exited.code == 1
+    err = capsys.readouterr().err
+    assert "Re-run with: vhir update --cpu or --gpu" in err and PART_WAY in err
