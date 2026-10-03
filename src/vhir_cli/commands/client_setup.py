@@ -874,6 +874,8 @@ _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh"
 _APPLIED: list | None = None
 # Launcher files _isolate_gateway_launchers rewrote in this process.
 _LAUNCHERS_UPDATED: list[Path] = []
+# Launcher files already noted in this process (an update reaches them twice).
+_LAUNCHERS_NOTED: set[Path] = set()
 
 
 def _backup(path: Path) -> Path:
@@ -951,6 +953,9 @@ def _isolate_gateway_launchers() -> list[Path]:
                     lines[i] = f"{m[1]} -I {m[2]}" + lines[i][len(body) :]
                     changed = True
             if not changed:
+                if path in _LAUNCHERS_NOTED:
+                    continue
+                _LAUNCHERS_NOTED.add(path)
                 print(
                     f"  Note: {path} has a gateway launch line Valhuntir didn't write;"
                     " add -I after its python (python -I -m sift_gateway) so the gateway"
@@ -978,7 +983,9 @@ def _isolate_gateway_launchers() -> list[Path]:
                         " gateway restart uses the updated unit."
                     )
         except Exception as e:  # noqa: BLE001 - never stop an update over this
-            print(f"  Note: could not check {path}: {e}")
+            if path not in _LAUNCHERS_NOTED:
+                _LAUNCHERS_NOTED.add(path)
+                print(f"  Note: could not check {path}: {e}")
     return updated
 
 

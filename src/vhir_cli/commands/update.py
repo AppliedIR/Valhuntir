@@ -847,6 +847,7 @@ def cmd_update(args, identity: dict) -> None:
     from vhir_cli.commands import client_setup
 
     client_setup._LAUNCHERS_UPDATED.clear()  # what this update rewrites
+    client_setup._LAUNCHERS_NOTED.clear()
     client = manifest.get("client")
     if client == "claude-code":
         from vhir_cli.commands.client_setup import _deploy_claude_code_assets

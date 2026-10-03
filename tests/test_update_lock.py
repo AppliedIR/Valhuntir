@@ -658,3 +658,20 @@ def test_no_note_when_nothing_was_rewritten(box, capsys):
     capsys.readouterr()
     _update(box, no_restart=True)  # nothing left to do
     assert "takes effect at the next gateway restart" not in capsys.readouterr().out
+
+
+def test_a_user_edited_launcher_is_noted_once_per_update(box, capsys, monkeypatch):
+    """claude-code: Step 5's deploy and Step 6.5 both reach the launchers."""
+    from vhir_cli.commands import client_setup
+
+    script, unit = _launchers(box)
+    script.write_text(script.read_text().replace('exec "', 'exec nice -n 5 "'))
+    unit.write_text(unit.read_text().replace("--config", "--port 4600 --config"))
+    monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
+    _update(box, manifest=lambda m: {**m, "client": "claude-code"})
+    out = capsys.readouterr().out
+    for path in (script, unit):
+        assert out.count(f"Note: {path} has a gateway launch line") == 1, path
+    _update(box, manifest=lambda m: {**m, "client": "claude-code"})  # a later update
+    out = capsys.readouterr().out
+    assert out.count(f"Note: {unit} has a gateway launch line") == 1  # noted again
