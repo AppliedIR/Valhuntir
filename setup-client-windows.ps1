@@ -56,7 +56,11 @@ function Backup-UserFile {
 function Set-UserFile {
     param([string]$Path, [string]$Text)
     $tmp = "$Path.vhir-new"
-    $Text | Set-Content -LiteralPath $tmp -Encoding UTF8
+    Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue  # only this run's text
+    try { $Text | Set-Content -LiteralPath $tmp -Encoding UTF8 -ErrorAction Stop } catch {
+        Write-Warn "Could not write ${tmp}: $($_.Exception.Message). $Path NOT changed."
+        return $false
+    }
     $new = [IO.File]::ReadAllBytes($tmp)
     Remove-Item -LiteralPath $tmp
     if ((Test-Path -LiteralPath $Path) -and

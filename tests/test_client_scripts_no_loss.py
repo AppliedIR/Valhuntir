@@ -281,6 +281,42 @@ def test_win_a_failed_backup_leaves_the_file(tmp_path):
     assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
 
 
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_win_a_failed_staging_write_leaves_the_file(tmp_path):
+    """A staging write that fails (non-terminating) with an older staging file
+    in place: nothing installed, the file byte-unchanged, the old one gone."""
+    before = json.dumps(USER, indent=2)
+    appdata = tmp_path / "App Data"
+    cfg = appdata / "Claude" / "claude_desktop_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(before)
+    (cfg.parent / (cfg.name + ".vhir-new")).write_text('{"STALE": true}')
+    servers = json.dumps(GENERATED["mcpServers"])
+    body = (
+        "function Set-Content { [CmdletBinding()] param("
+        "[Parameter(ValueFromPipeline)]$Value, $LiteralPath, $Encoding)"
+        ' Write-Error "disk full" }\n'
+        f"$mcpServersStdio = @{{}}\n"
+        f"($('{servers}') | ConvertFrom-Json -AsHashtable).GetEnumerator() |"
+        " ForEach-Object { $mcpServersStdio[$_.Key] = $_.Value }\n"
+        "$mcpConfigStdio = @{ mcpServers = $mcpServersStdio }\n" + WIN_DESKTOP
+    )
+    rc, out = _pwsh(tmp_path, body, appdata)
+    assert cfg.read_text() == before, out
+    assert "disk full" in out and "NOT changed" in out
+    assert "Backed up" not in out and "Merged" not in out
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
+    rc, out = _pwsh(
+        tmp_path,
+        "function Set-Content { [CmdletBinding()] param("
+        "[Parameter(ValueFromPipeline)]$Value, $LiteralPath, $Encoding)"
+        ' Write-Error "disk full" }\n'
+        f"Write-Output \"returned=$(Set-UserFile '{cfg}' 'x')\"",
+        appdata,
+    )
+    assert "returned=False" in out and cfg.read_text() == before, out
+
+
 # --- The workspace .mcp.json and settings.json --------------------------------
 
 
