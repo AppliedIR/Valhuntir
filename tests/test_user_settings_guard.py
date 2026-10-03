@@ -435,3 +435,20 @@ def test_a_null_entry_is_replaced_with_a_notice(claude_json, capsys, cli):
     data = json.loads(claude_json.path.read_text())["mcpServers"]
     assert data["vhir"]["url"] == SERVERS["vhir"]["url"]
     assert "entries updated: vhir" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status,claims", [("kept", False), ("written", True)])
+def test_setup_claims_global_controls_only_when_applied(
+    box, monkeypatch, capsys, status, claims
+):
+    monkeypatch.setattr(
+        cs,
+        "_deploy_claude_code_assets",
+        lambda project_dir=None: (box.settings, status),
+    )
+    monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: False)
+    monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: None)
+    cs._generate_config("claude-code", {}, "steve")
+    out = capsys.readouterr().out
+    assert ("Forensic controls deployed globally." in out) is claims
+    assert ("will always apply" in out) is claims

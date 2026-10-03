@@ -756,7 +756,7 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         elif settings:
             print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
 
-        if sift:
+        if sift and settings and settings[1] != "kept":
             print("")
             print("  Forensic controls deployed globally.")
             print("  Claude Code can be launched from any directory on this machine.")
