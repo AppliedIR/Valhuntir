@@ -418,3 +418,20 @@ def test_nothing_to_change_means_no_write_and_no_backup(claude_json):
     claude_json.setup()
     assert claude_json.path.read_bytes() == before and not claude_json.calls
     assert _backups(claude_json.path) == []
+
+
+def test_the_fallback_keeps_fields_the_user_added_to_an_unchanged_entry(claude_json):
+    mine = dict(SERVERS["mslearn"], oauth={"client": "mine"})
+    claude_json.path.write_text(json.dumps({"mcpServers": {"mslearn": mine}}))
+    claude_json.setup(cli=False)
+    data = json.loads(claude_json.path.read_text())["mcpServers"]
+    assert data["mslearn"]["oauth"] == {"client": "mine"} and "vhir" in data
+
+
+@pytest.mark.parametrize("cli", [True, False], ids=["claude-cli", "fallback"])
+def test_a_null_entry_is_replaced_with_a_notice(claude_json, capsys, cli):
+    claude_json.path.write_text(json.dumps({"mcpServers": {"vhir": None}}))
+    claude_json.setup(cli)
+    data = json.loads(claude_json.path.read_text())["mcpServers"]
+    assert data["vhir"]["url"] == SERVERS["vhir"]["url"]
+    assert "entries updated: vhir" in capsys.readouterr().out

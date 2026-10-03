@@ -629,6 +629,8 @@ def _claude_json_plan(path: Path, servers: dict) -> tuple[list, list] | None:
         return None
 
     def same(have, want):
+        if not isinstance(have, dict):  # e.g. null: replace it
+            return False
         if "url" not in want:
             return have == want
         keys = ("type", "url", "headers")
@@ -729,7 +731,10 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                     _announce_claude_json(
                         global_config, plan, _duplicate_backends(servers)
                     )
-                    _merge_and_write(global_config, {"mcpServers": servers})
+                    # Only the entries that change: an unchanged entry keeps
+                    # any fields the user added to it.
+                    todo = {n: servers[n] for n in plan[0] + plan[1]}
+                    _merge_and_write(global_config, {"mcpServers": todo})
                     print(f"  Generated: {global_config} (global MCP servers)")
                     print("  NOTE: If tools don't load, try: claude mcp add ...")
             # Clean up per-backend duplicates from prior installs
