@@ -167,7 +167,6 @@ if $UNINSTALL; then
         sed -i '' '/# Valhuntir Platform/d' "$SHELL_RC"
         sed -i '' '/Valhuntir_EXAMINER/d' "$SHELL_RC"
         sed -i '' '/# vhir-path/d' "$SHELL_RC"
-        sed -i '' '\|\.vhir/venv/bin|d' "$SHELL_RC"
         sed -i '' '/register-python-argcomplete vhir/d' "$SHELL_RC"
         ok "Removed Valhuntir lines from $SHELL_RC"
     fi
@@ -296,9 +295,10 @@ elif [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc"; fi
 if [[ -n "$SHELL_RC" ]]; then
     # Clean up old naming from prior installs
     sed -i '' '/^export Valhuntir_EXAMINER=/d' "$SHELL_RC" 2>/dev/null || true
-    if grep -q "VHIR_EXAMINER" "$SHELL_RC" 2>/dev/null; then
+    if grep -q '^export VHIR_EXAMINER=' "$SHELL_RC" 2>/dev/null; then
         sed -i '' "s/^export VHIR_EXAMINER=.*/export VHIR_EXAMINER=\"$EXAMINER_NAME\"/" "$SHELL_RC"
     else
+        [[ -s "$SHELL_RC" && -n "$(tail -c1 "$SHELL_RC")" ]] && echo >> "$SHELL_RC"
         echo "export VHIR_EXAMINER=\"$EXAMINER_NAME\"" >> "$SHELL_RC"
     fi
 fi

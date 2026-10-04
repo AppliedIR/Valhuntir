@@ -479,3 +479,144 @@ def test_uninstall_backs_up_the_desktop_config(tmp_path, script, rel):
     rc, out = _bash(script, block, tmp_path, _bin(tmp_path, SH_TOOLS))  # "y" (stub)
     assert rc == 0 and not cfg.exists(), out
     assert _restored(out, cfg, before)
+
+
+# --- The shell rc: install writes our export; uninstall keeps a user's lines ----
+
+RC_INSTALL = {
+    s: _between(
+        t,
+        "# Write VHIR_EXAMINER to shell profile",
+        'export VHIR_EXAMINER="$EXAMINER_NAME"',
+    )
+    for s, t in (("linux", LINUX), ("macos", MAC))
+}
+RC_UNINSTALL = {
+    s: _between(t, "    # Clean shell profile", "    # Remove empty ~/.vhir/")
+    for s, t in (("linux", LINUX), ("macos", MAC))
+}
+USER_EXAMINER = [
+    "alias who-ir='echo \"$VHIR_EXAMINER\"'",
+    'if [ -n "${SUDO_USER:-}" ]; then',
+    '    export VHIR_EXAMINER="$SUDO_USER"',
+    "fi",
+]
+# the same block, unindented: a line start can't show who wrote it
+USER_EXAMINER_COL0 = [
+    'if [ -n "${SUDO_USER:-}" ]; then',
+    'export VHIR_EXAMINER="$SUDO_USER"',
+    "fi",
+]
+USER_PATH = 'export PATH="$HOME/.vhir/venv/bin:$HOME/go/bin:$PATH"'
+OLDER = '# Valhuntir Platform\nexport Valhuntir_EXAMINER="old"\n'  # what v0.5.4 left
+
+
+def _rc_bin(tmp_path, script):
+    """grep and sed for the rc blocks; on macOS a sed that reads BSD's `-i ''`."""
+    path = _bin(tmp_path, ["grep", "cat", "rmdir", "tail"])
+    if script == "linux":
+        _bin(tmp_path, ["sed", "readlink"])
+    else:
+        sed = Path(path) / "sed"
+        sed.write_text(
+            '#!/bin/bash\nif [[ "$1" == -i && "$2" == "" ]]; then shift 2; '
+            f'exec {shutil.which("sed")} -i "$@"; fi\nexec {shutil.which("sed")} "$@"\n'
+        )
+        sed.chmod(0o755)
+    return path
+
+
+def _rc_step(tmp_path, script, step, examiner="alice"):
+    text = LINUX if script == "linux" else MAC
+    block = (RC_INSTALL if step == "install" else RC_UNINSTALL)[script]
+    if step == "uninstall":
+        block = "{\n" + block + "\n}\n"  # an indented block from inside a function
+    rc, out = _bash(
+        text, block, tmp_path, _rc_bin(tmp_path, script), EXAMINER_NAME=examiner
+    )
+    assert rc == 0, (step, out)
+    return out
+
+
+def _block_in(lines, block):
+    return any(lines[i : i + len(block)] == block for i in range(len(lines)))
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_install_keeps_a_users_examiner_lines_and_writes_ours(tmp_path, script):
+    rc = tmp_path / ".bashrc"
+    rc.write_text("\n".join(["# my stuff", *USER_EXAMINER]) + "\n")
+    _rc_step(tmp_path, script, "install")
+    lines = rc.read_text().splitlines()
+    assert _block_in(lines, USER_EXAMINER) and 'export VHIR_EXAMINER="alice"' in lines
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_uninstall_keeps_a_users_examiner_block_and_venv_path_line(tmp_path, script):
+    # an older install's lines make the cleanup run; the user's own lines stay
+    rc = tmp_path / ".bashrc"
+    user = "\n".join(["# my stuff", *USER_EXAMINER_COL0, USER_PATH]) + "\n"
+    rc.write_text(user + OLDER)
+    _rc_step(tmp_path, script, "uninstall")
+    assert rc.read_text() == user
+    syntax = subprocess.run(["bash", "-n", str(rc)], capture_output=True, text=True)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_anchor_an_older_install_s_examiner_line_is_still_removed(tmp_path, script):
+    rc = tmp_path / ".bashrc"
+    rc.write_text('# my stuff\n# Valhuntir Platform\nexport Valhuntir_EXAMINER="old"\n')
+    _rc_step(tmp_path, script, "uninstall")
+    assert rc.read_text() == "# my stuff\n"
+
+
+def test_linux_keeps_a_symlinked_rc_a_symlink(tmp_path):
+    target = tmp_path / "dotfiles" / "bashrc"
+    target.parent.mkdir()
+    target.write_text("# my stuff\n")
+    rc = tmp_path / ".bashrc"
+    rc.symlink_to("dotfiles/bashrc")
+    _rc_step(tmp_path, "linux", "install")
+    _rc_step(tmp_path, "linux", "install", examiner="bob")
+    assert rc.is_symlink()
+    assert target.read_text() == '# my stuff\nexport VHIR_EXAMINER="bob"\n'
+    # the cleanup runs only on an older install's lines
+    target.write_text("# my stuff\n" + OLDER)
+    _rc_step(tmp_path, "linux", "uninstall")
+    assert rc.is_symlink() and target.read_text() == "# my stuff\n"
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_anchor_install_appends_then_updates_in_place(tmp_path, script):
+    rc = tmp_path / ".bashrc"
+    rc.write_text("# my stuff\n")
+    _rc_step(tmp_path, script, "install")
+    assert rc.read_text() == '# my stuff\nexport VHIR_EXAMINER="alice"\n'
+    _rc_step(tmp_path, script, "install", examiner="bob")
+    assert rc.read_text() == '# my stuff\nexport VHIR_EXAMINER="bob"\n'
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_anchor_uninstall_with_nothing_of_ours_leaves_the_file(tmp_path, script):
+    # the user's own lines mention VHIR_EXAMINER and the venv, but none is ours
+    rc = tmp_path / ".bashrc"
+    lines = ["# my stuff", *USER_EXAMINER, *USER_EXAMINER_COL0, USER_PATH]
+    content = "\n".join(lines) + "\n"
+    rc.write_text(content)
+    inode = rc.stat().st_ino
+    out = _rc_step(tmp_path, script, "uninstall")
+    assert rc.read_text() == content and rc.stat().st_ino == inode  # not even rewritten
+    assert "Removed Valhuntir lines" not in out
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_install_starts_our_line_on_its_own_after_a_last_line_without_newline(
+    tmp_path, script
+):
+    # the user's last line mentions VHIR_EXAMINER and has no newline at the end
+    rc = tmp_path / ".bashrc"
+    last = "alias who-ir='echo \"$VHIR_EXAMINER\"'"
+    rc.write_text("# my stuff\n" + last)
+    _rc_step(tmp_path, script, "install")
+    assert rc.read_text() == f'# my stuff\n{last}\nexport VHIR_EXAMINER="alice"\n'
