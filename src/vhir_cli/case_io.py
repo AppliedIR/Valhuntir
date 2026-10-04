@@ -575,18 +575,67 @@ def tail_jsonl_entries(
 # --- Export / Merge ---
 
 
+# The form forensic-mcp accepts for event timestamps; `since` in another form
+# is refused rather than compared.
+_ISO_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+
+def _utc(ts: object) -> datetime | None:
+    """An ISO timestamp as an aware UTC datetime (naive read as UTC), or None.
+
+    Python 3.10's fromisoformat takes only 3- or 6-digit fractions and
+    ±HH:MM offsets, so the fraction is made 6 digits and ±HHMM gets its colon.
+    """
+    if not isinstance(ts, str):
+        return None
+    s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+    s = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], s, count=1)
+    s = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", s)
+    try:
+        dt = datetime.fromisoformat(s)
+        return (
+            dt.astimezone(timezone.utc)
+            if dt.tzinfo
+            else dt.replace(tzinfo=timezone.utc)
+        )
+    except (ValueError, OverflowError):  # out of range at year 1 or 9999
+        return None
+
+
+def _at_or_after(ts: object, since: str) -> bool:
+    """Compare instants; when either side doesn't parse, compare as text, as before."""
+    bound, value = _utc(since), _utc(ts)
+    if bound is None or value is None:
+        return ts >= since
+    return value >= bound
+
+
 def export_bundle(case_dir: Path, since: str = "") -> dict:
-    """Export findings + timeline as JSON for sharing."""
+    """Export findings + timeline as JSON for sharing.
+
+    Raises ValueError if `since` is given and isn't ISO 8601 or a date.
+    """
+    if since and not _ISO_TIMESTAMP_RE.match(since):
+        raise ValueError(
+            f"since '{since}' is not valid ISO 8601. "
+            "Use format like '2026-01-24T15:00:41Z' or '2026-01-24'."
+        )
     meta = load_case_meta(case_dir)
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
 
     if since:
         findings = [
-            f for f in findings if f.get("modified_at", f.get("staged", "")) >= since
+            f
+            for f in findings
+            if _at_or_after(f.get("modified_at", f.get("staged", "")), since)
         ]
         timeline = [
-            t for t in timeline if t.get("modified_at", t.get("staged", "")) >= since
+            t
+            for t in timeline
+            if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
         ]
 
     return {
@@ -668,6 +717,9 @@ def _merge_items(
         "created_by",
         "examiner",
         "provenance",
+        # Approval couples an event to its finding by this; only forensic-mcp's
+        # auto-timeline sets it, never an import.
+        "auto_created_from",
     }
 
     for item in incoming:
