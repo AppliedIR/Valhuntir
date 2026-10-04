@@ -1,7 +1,9 @@
 """Tests for review command views."""
 
 import json
+import re
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 import yaml
@@ -604,3 +606,128 @@ class TestShowAudit:
 
         output = capsys.readouterr().out
         assert "wintools-mcp" in output
+
+
+# --- --verify with no findings still checks the ledger ----------------------
+# load_findings returns [] when findings.json is absent, empty or corrupt;
+# the verifier then printed "No findings recorded." and stopped, skipping the
+# reconciliation that reports ledger entries without findings. The case
+# directory's name differs from its case_id: the ledger is under the case_id.
+
+
+@pytest.fixture
+def ledger_case(tmp_path, monkeypatch):
+    import vhir_cli.approval_auth as auth
+    import vhir_cli.verification as ver
+    from vhir_cli.commands import approve
+
+    monkeypatch.setattr(ver, "VERIFICATION_DIR", tmp_path / "ledger")
+    monkeypatch.setattr(auth, "get_analyst_salt", lambda cfg, ex, **k: b"\x01" * 16)
+    monkeypatch.setattr(auth, "verify_password", lambda *a, **k: True)
+    prompts = []
+    monkeypatch.setattr(auth, "getpass_prompt", lambda p: (prompts.append(p), "pw")[1])
+    monkeypatch.setattr(approve, "require_confirmation", lambda cfg, ex: ("pw", "pw"))
+    case = tmp_path / "V-case"
+    case.mkdir()
+    (case / "CASE.yaml").write_text(
+        "case_id: INC-REAL-1\nstatus: open\nexaminer: steve\n"
+    )
+    now = "2026-01-01T00:00:00+00:00"
+    common = {
+        "status": "DRAFT",
+        "staged": now,
+        "modified_at": now,
+        "created_by": "steve",
+    }
+    finding = {
+        "id": "F-steve-001",
+        "title": "First finding",
+        "observation": "obs",
+        "interpretation": "interp",
+        "confidence": "MEDIUM",
+        "type": "finding",
+        "examiner": "steve",
+        "timeline_event_id": "T-steve-001",
+        **common,
+    }
+    event = {
+        "id": "T-steve-001",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "description": "First finding",
+        "auto_created_from": "F-steve-001",
+        "examiner": "steve",
+        **common,
+    }
+    (case / "findings.json").write_text(json.dumps([finding]))
+    (case / "timeline.json").write_text(json.dumps([event]))
+    return case, prompts
+
+
+def _approve_and_verify(case, prompts, capsys, *, findings, mine=False, alice=False):
+    """The real approve (its ledger written for real), findings.json then set
+    to `findings` ("intact", "absent", "[]", "corrupt"), then --verify."""
+    import vhir_cli.verification as ver
+    from vhir_cli.commands import approve
+    from vhir_cli.commands.review import _show_findings_verify
+
+    ident = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
+    if findings != "none":
+        approve._approve_specific(case, ["F-steve-001"], ident, Path("cfg"))
+    if alice:  # another examiner's entry, correctly signed
+        snap = "F-alice-001 alice finding"
+        key = ver.derive_hmac_key("pw", b"\x01" * 16)
+        entry = {
+            "finding_id": "F-alice-001",
+            "type": "finding",
+            "hmac": ver.compute_hmac(key, snap),
+            "hmac_version": 2,
+            "content_snapshot": snap,
+            "approved_by": "alice",
+            "approved_at": "2026-01-01",
+            "case_id": "INC-REAL-1",
+        }
+        with open(ver.VERIFICATION_DIR / "INC-REAL-1.jsonl", "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    path = case / "findings.json"
+    path.chmod(0o644)  # approve leaves it read-only
+    if findings == "absent":
+        path.unlink()
+    elif findings in ("[]", "none"):
+        path.write_text("[]")
+    elif findings == "corrupt":
+        path.write_text('[{"id": "F-steve-001", "status": "APPRO')
+    capsys.readouterr()
+    prompts.clear()
+    _show_findings_verify(case, identity=ident, mine_only=mine)
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize("findings", ["absent", "[]", "corrupt"])
+def test_ledger_entries_without_findings_are_reported(ledger_case, capsys, findings):
+    case, prompts = ledger_case
+    out = _approve_and_verify(case, prompts, capsys, findings=findings)
+    assert re.search(r"F-steve-001\s+VERIFICATION_NO_FINDING", out), out
+
+
+def test_the_signatures_are_still_checked_without_findings(ledger_case, capsys):
+    case, prompts = ledger_case
+    out = _approve_and_verify(case, prompts, capsys, findings="absent")
+    assert len(prompts) == 1 and out.count("CONFIRMED") == 2, (prompts, out)
+
+
+def test_intact_findings_verify_as_before(ledger_case, capsys):
+    case, prompts = ledger_case
+    out = _approve_and_verify(case, prompts, capsys, findings="intact")
+    assert "VERIFIED" in out and out.count("CONFIRMED") == 2 and len(prompts) == 1
+
+
+def test_no_findings_and_no_ledger_says_only_that(ledger_case, capsys):
+    case, prompts = ledger_case
+    out = _approve_and_verify(case, prompts, capsys, findings="none")
+    assert out.strip() == "No findings recorded." and not prompts
+
+
+def test_mine_asks_only_for_the_callers_password(ledger_case, capsys):
+    case, prompts = ledger_case
+    _approve_and_verify(case, prompts, capsys, findings="absent", mine=True, alice=True)
+    assert len(prompts) == 1 and "'steve'" in prompts[0], prompts

@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Install order matches setup-sift.sh dependency chain.
 # vhir-cli must come before case-mcp/report-mcp.
@@ -260,6 +261,213 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
     return None
 
 
+def _module_installed(module: str) -> bool:
+    """True when the package is in this venv (vhir runs from it). The
+    manifest can't say: the installer never recorded opensearch-mcp, and
+    OpenCTI's client may have been added after it was written."""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec(module) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# 0.6.9 is the first with --torch-backend, which the CPU PyTorch lock needs;
+# hash checks of the lock need 0.6.0.
+_UV_FLOOR = (0, 6, 9)
+
+_TORCH_INDEX_HINT = (
+    "  CPU PyTorch comes from download.pytorch.org; if you use a package mirror,"
+    " re-run with --gpu."
+)
+
+
+def _uv_version() -> tuple[int, int, int] | None:
+    """uv's version, or None when it can't be read."""
+    import re
+
+    try:
+        out = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"uv (\d+)\.(\d+)\.(\d+)", out.stdout or "")
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def _stop_part_way(args) -> NoReturn:
+    """Exit after the pull: say what state that leaves and how to finish."""
+    flag = " --cpu" if args.cpu else " --gpu" if args.gpu else ""
+    print(
+        "\n  Update stopped part-way: the code was pulled and packages may have"
+        " changed, but the forensic controls weren't redeployed and the gateway"
+        " wasn't restarted.\n  Fix the problem above, then finish with:"
+        f" vhir update{flag}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _check_lock(args, venv_python: str, checker: Path, lock: Path, mode: str) -> None:
+    """Run the venv against the lock (deps/check-lock.py, from the pulled
+    sift-mcp); it prints what it finds. Stops the update when the check fails."""
+    try:
+        result = subprocess.run(
+            [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        print("  The dependency check timed out after 120 seconds.", file=sys.stderr)
+        _stop_part_way(args)
+    if result.returncode != 0:
+        print(
+            "  The installed packages don't match the dependency lock (above).",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
+
+
+def _torch_installed(venv_python: str) -> str:
+    """The venv's torch version ("2.14.0+cpu" for the CPU build), or ""."""
+    try:
+        out = subprocess.run(
+            [
+                venv_python,
+                "-c",
+                'import importlib.metadata as m; print(m.version("torch"))',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
+    """(the build to install, the record to keep). The flag, else the build
+    already in the venv, else CPU. Asked only on a terminal, with no flag,
+    when the venv has torch but was never asked (no record), or forensic-rag
+    is to be installed without it. macOS has one build (PyPI's) and no record."""
+    flag = "cpu" if args.cpu else "gpu" if args.gpu else ""
+    record = manifest.get("torch_variant", "")
+    if sys.platform == "darwin":
+        if flag:
+            print(
+                f"  --{flag} is not applicable on macOS (PyPI's PyTorch has no CUDA)."
+            )
+        return "pypi", record
+    if flag:
+        return flag, flag
+    variant = "cpu" if installed.endswith("+cpu") or not installed else "gpu"
+    rag = "rag-mcp" in manifest.get("packages", {})
+    if sys.stdin.isatty() and ((installed and not record) or (rag and not installed)):
+        import shutil
+
+        found = "no NVIDIA GPU was found"
+        if shutil.which("nvidia-smi"):
+            try:
+                smi = subprocess.run(
+                    ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
+                )
+                if smi.returncode == 0 and smi.stdout.startswith("GPU"):
+                    found = "an NVIDIA GPU was found"
+            except (OSError, subprocess.SubprocessError):
+                pass  # a probe that fails or hangs: no GPU detected
+        print(f"\n  PyTorch for knowledge search ({found}):")
+        if installed:
+            print(
+                f"    Installed now: the {variant.upper()} build (torch {installed})."
+            )
+            print(
+                "    Choosing the other build replaces it; CUDA packages it leaves"
+                " are listed after the install."
+            )
+        print("    cpu  about 0.2 GB download, 0.7 GB on disk; slower index builds")
+        print(
+            "    gpu  about 3 GB download, 5.4 GB on disk; much faster index"
+            " builds; needs an NVIDIA GPU"
+        )
+        while True:
+            try:
+                answer = input("    PyTorch build (cpu/gpu) [cpu]: ")
+            except EOFError:  # no answer mustn't become a silent swap to CPU
+                print(
+                    "\nNo answer to the PyTorch question; nothing installed."
+                    " Re-run with: vhir update --cpu or --gpu",
+                    file=sys.stderr,
+                )
+                _stop_part_way(args)
+            answer = answer.strip().lower() or "cpu"
+            if answer in ("cpu", "gpu"):
+                return answer, answer
+            print("    Please enter cpu or gpu.")
+    print(f"  PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)")
+    return variant, record
+
+
+def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    """After the CPU build is in and --final passed: offer to remove the CUDA
+    packages it doesn't use. Asks first, loudly; the default is No. Nothing
+    here stops the update: no answer, a timeout or a failed step leaves the
+    commands it printed to finish by hand."""
+    try:
+        _cleanup(venv_python, checker, lock)
+    except (EOFError, OSError, subprocess.SubprocessError):
+        print("\n  Clean-up not finished; the commands above complete it.")
+
+
+def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    out = subprocess.run(
+        [venv_python, str(checker), "--cuda-leftovers", "--lock", str(lock)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    rows = [line.split() for line in out.stdout.splitlines() if line.strip()]
+    if out.returncode != 0 or not rows:
+        return
+    names = [r[0] for r in rows]
+    total = sum(int(r[1]) for r in rows)
+    print("\n  " + "=" * 66)
+    print(
+        "  CUDA-family packages the chosen lock doesn't install (check none are yours):"
+    )
+    for name, size in rows:
+        print(f"    {name:<34} {int(size) / 1e9:6.2f} GB")
+    print(f"    {'total in the venv':<34} {total / 1e9:6.2f} GB")
+    print("  Removing them runs:")
+    print(f"    uv pip uninstall --python {venv_python} {' '.join(names)}")
+    print(f"    uv cache clean {' '.join(names)}")
+    print(
+        "  This changes only Valhuntir's environment and uv's download cache,\n"
+        "  and any other uv environment installed with --link-mode symlink that\n"
+        "  uses these packages: such an environment would need a reinstall.\n"
+        "  The disk comes back only with the cache clean (the venv's files are\n"
+        "  links into it). A later GPU install downloads them again (~3 GB)."
+    )
+    print("  " + "=" * 66)
+    if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("  Kept. The commands above remove them later.")
+        return
+    py = ["--python", venv_python]
+    # check=True: a failed uninstall must not reach the cache clean, which
+    # would break a venv that links those files from the cache.
+    subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
+    subprocess.run(["uv", "cache", "clean", *names], timeout=600)
+    check = subprocess.run(
+        ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
+    )
+    if check.returncode != 0:
+        print(
+            f"  The removal didn't finish ({(check.stdout + check.stderr).strip()}).\n"
+            f"  Finish it: uv pip uninstall --python {venv_python} {' '.join(names)}",
+            file=sys.stderr,
+        )
+
+
 def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
     """True when the opensearch-mcp package is installed in the venv
     but no git repo was found on disk — a silent-staleness condition
@@ -443,6 +651,20 @@ def cmd_update(args, identity: dict) -> None:
         print("\n  Run 'vhir update' to apply.")
         return
 
+    # Older uv installs from the lock without checking its hashes, and says
+    # nothing. (A failed `uv self update` above is otherwise ignored.)
+    uv_version = _uv_version()
+    if uv_version is None or uv_version < _UV_FLOOR:
+        shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
+        print(
+            f"uv {shown} is older than 0.6.9, which vhir update needs for"
+            " --torch-backend and hash checks.\n"
+            "Update it: uv self update   (or reinstall: "
+            "curl -LsSf https://astral.sh/uv/install.sh | sh)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Step 3: Record pre-update state + pull
     pre_update_git = {}
     for name, path in repos:
@@ -489,11 +711,29 @@ def cmd_update(args, identity: dict) -> None:
         else:
             print(f"  Pulling {name}... already up to date")
 
-    # Step 4: Reinstall packages (batched for unified dependency resolution)
+    # Step 4: Reinstall packages (batched for unified dependency resolution).
+    # Every third-party package comes from the lock in the freshly pulled
+    # sift-mcp, except what OpenCTI's client pins: it installs afterwards,
+    # unlocked, as the installer does.
+    torch_installed = _torch_installed(venv_python)
+    variant, torch_record = _torch_variant(args, manifest, torch_installed)
+    lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
+    checker = source / "deps" / "check-lock.py"
+    if not lock.is_file() or not checker.is_file():
+        print(
+            f"Dependency lock not found in {source / 'deps'}.\n"
+            "The sift-mcp checkout is older than this vhir-cli; pull it to main.",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
     installed = manifest.get("packages", {})
     pkg_paths = []
     for pkg_name in _INSTALL_ORDER:
-        if pkg_name not in installed:
+        if pkg_name == "opencti-mcp":
+            continue  # unlocked, after the rest
+        if pkg_name not in installed and not (
+            pkg_name == "opensearch-mcp" and _module_installed("opensearch_mcp")
+        ):
             continue
         if pkg_name == "vhir-cli":
             pkg_path = str(vhir_dir)
@@ -517,32 +757,78 @@ def cmd_update(args, identity: dict) -> None:
         pkg_paths.append(pkg_path)
 
     cmd = ["uv", "pip", "install", "--python", venv_python, "--quiet"]
+    cmd += ["-c", str(lock), "-b", str(lock)]
+    # The CPU lock's torch is on the PyTorch index, which only --torch-backend
+    # reaches; 2.14.0+cpu satisfies the GPU lock's ==2.14.0, so a switch to GPU
+    # has to reinstall it.
+    if variant == "cpu":
+        cmd += ["--torch-backend", "cpu"]
+    elif variant == "gpu" and torch_installed.endswith("+cpu"):
+        cmd += ["--reinstall-package", "torch"]
     # Auto-detect dependencies whose version constraints changed in
     # the pulled commits and mark them for --reinstall-package so the
     # resolver honors tightened pins (e.g. `uv pip` otherwise leaves
     # a package already installed at a version the new constraint
     # forbids). UAT 2026-04-23 B81.
     reinstall = _detect_constraint_changed_packages(repos, pre_update_git)
-    # Belt-and-suspenders: the opentelemetry exporter's sdk/exporter
-    # version mismatch is driven by the combination of RAG + opencti
-    # both being installed, NOT by a constraint line change in our
-    # pyproject.toml — so it won't be caught by the auto-detector.
-    # Keep the hand-maintained case.
-    if "rag-mcp" in installed and "opencti-mcp" in installed:
-        reinstall.add("opentelemetry-exporter-otlp-proto-grpc")
     for pkg in sorted(reinstall):
         cmd.extend(["--reinstall-package", pkg])
+    # Packages already in the venv that the lock names (pip's seeds, what
+    # OpenCTI's client pulled in) join the install, so -c moves them too.
+    held = subprocess.run(
+        [venv_python, str(checker), "--installed", "--lock", str(lock)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if held.returncode != 0:
+        print(
+            f"  Cannot read the venv's packages against the dependency lock: "
+            f"{held.stderr.strip()}",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
+    cmd.extend(held.stdout.split())
     for p in pkg_paths:
         cmd.extend(["-e", p])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(
             f"  Package install failed: {result.stderr.strip()}",
             file=sys.stderr,
         )
-        sys.exit(1)
+        if variant == "cpu":
+            print(_TORCH_INDEX_HINT, file=sys.stderr)
+        _stop_part_way(args)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
+    _check_lock(args, venv_python, checker, lock, "--strict")
+
+    opencti = source / _PACKAGE_PATHS["opencti-mcp"]
+    if (
+        "opencti-mcp" in installed or _module_installed("opencti_mcp")
+    ) and opencti.is_dir():
+        try:
+            result = subprocess.run(
+                ["uv", "pip", "install", "--python", venv_python, "--quiet"]
+                + ["-e", str(opencti)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            print("  opencti-mcp install timed out after 300 seconds.", file=sys.stderr)
+            _stop_part_way(args)
+        if result.returncode != 0:
+            print(
+                f"  opencti-mcp install failed: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            _stop_part_way(args)
+        print("  Reinstalling opencti-mcp (outside the dependency lock)... done")
+    _check_lock(args, venv_python, checker, lock, "--final")
+    if variant == "cpu" and sys.stdin.isatty():
+        _offer_cuda_cleanup(venv_python, checker, lock)
 
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
@@ -580,6 +866,8 @@ def cmd_update(args, identity: dict) -> None:
         if path.is_dir():
             git_hashes[name] = _git_head(path)
     manifest["git"] = git_hashes
+    if torch_record:  # the user chose (asked, or --cpu/--gpu)
+        manifest["torch_variant"] = torch_record
     try:
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         print("  Updating manifest... done")
@@ -651,9 +939,7 @@ def _detect_constraint_changed_packages(
     force-downgrade a package already installed at a version the
     updated pyproject.toml now forbids. Adding `--reinstall-package
     <name>` for every dep whose line changed makes the resolver
-    re-evaluate that package and honor the new constraint. The
-    existing hand-maintained case for `opentelemetry-exporter-otlp-
-    proto-grpc` is kept as belt-and-suspenders in cmd_update.
+    re-evaluate that package and honor the new constraint.
 
     Approach: for each repo that advanced during `git pull`, diff
     pyproject.toml files old..new and collect package names from
