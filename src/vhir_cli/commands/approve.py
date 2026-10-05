@@ -99,6 +99,32 @@ def cmd_approve(args, identity: dict) -> None:
         )
 
 
+def _keep_landed(case_dir: Path, *lists) -> None:
+    """Append the records on disk whose ids aren't in memory: forensic-mcp
+    staged them during the approval wait. Lists: findings, timeline, iocs."""
+    names = ("findings.json", "timeline.json", "iocs.json")
+    for name, items in zip(names, lists, strict=True):
+        if items is None:
+            continue
+        try:
+            on_disk = json.loads((case_dir / name).read_text() or "[]")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            on_disk = None
+        if not isinstance(on_disk, list):
+            print(
+                f"WARNING: could not check {name} for items added during "
+                "approval — re-run vhir review",
+                file=sys.stderr,
+            )
+            continue
+        known = {x.get("id") for x in items}
+        items += [
+            x for x in on_disk if isinstance(x, dict) and x.get("id") not in known
+        ]
+
+
 def _approve_specific(
     case_dir: Path,
     ids: list[str],
@@ -165,6 +191,8 @@ def _approve_specific(
             continue
         if tl_event.get("examiner_modifications"):
             continue
+        if tl_event.get("status") != "DRAFT":  # an explicit reject wins
+            continue
         tl_event["status"] = "APPROVED"
         tl_event["approved_at"] = now
         tl_event["approved_by"] = identity["examiner"]
@@ -202,6 +230,8 @@ def _approve_specific(
             ioc["modified_at"] = now
             iocs_modified = True
             coupled_events.append(ioc)
+
+    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
 
     # Step 1: Persist primary data FIRST
     try:
@@ -415,7 +445,7 @@ def _interactive_review(
         source = finding_by_id.get(auto_from)
         if not source:
             continue
-        if source["id"] in approvals:
+        if source["id"] in approvals and tl_event.get("status") == "DRAFT":
             tl_event["status"] = "APPROVED"
             tl_event["approved_at"] = now
             tl_event["approved_by"] = identity["examiner"]
@@ -459,6 +489,8 @@ def _interactive_review(
             ioc["modified_at"] = now
             iocs_modified = True
             coupled_ioc.append(ioc)
+
+    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
 
     # Step 1: Persist primary data FIRST
     try:
@@ -1236,27 +1268,17 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             item["manually_reviewed"] = True
         rejected_ids.append(item_id)
 
-    # Timeline approval coupling: auto-created events follow their finding.
-    # Couple only when the source finding was acted on in THIS invocation, and never
-    # override an event the examiner acted on directly in this delta. Keying off the
-    # persisted status instead would re-stamp previously coupled events on every run
-    # (destroying the original approval timestamp) and would flip an explicit
-    # rejection back to APPROVED. Matches _approve_specific/_interactive_review.
-    acted_approved = set(approved_ids)
-    acted_rejected = set(rejected_ids)
-    directly_acted = acted_approved | acted_rejected | set(edited_ids)
+    # Timeline approval coupling: auto-created events follow their finding
     for tl_event in timeline:
         auto_from = tl_event.get("auto_created_from", "")
         if not auto_from:
             continue
         if tl_event.get("examiner_modifications"):
             continue
-        if tl_event.get("id") in directly_acted:
-            continue
         source = item_by_id.get(auto_from)
         if not source:
             continue
-        if auto_from in acted_approved and source.get("status") == "APPROVED":
+        if source.get("status") == "APPROVED" and tl_event.get("status") == "DRAFT":
             tl_event["status"] = "APPROVED"
             tl_event["approved_at"] = now
             tl_event["approved_by"] = identity["examiner"]
@@ -1264,7 +1286,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             new_hash = compute_content_hash(tl_event)
             tl_event["content_hash"] = new_hash
             approved_ids.append(tl_event["id"])
-        elif auto_from in acted_rejected and source.get("status") == "REJECTED":
+        elif source.get("status") == "REJECTED":
             tl_event["status"] = "REJECTED"
             tl_event["rejected_at"] = now
             tl_event["rejected_by"] = identity["examiner"]
@@ -1301,6 +1323,8 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             ioc["modified_at"] = now
             iocs_modified = True
             rejected_ids.append(ioc["id"])
+
+    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
 
     # Step 1: Persist primary data FIRST
     try:
