@@ -186,13 +186,16 @@ def _create_backup(args, identity: dict) -> None:
 _COPY_CHUNK = 1024 * 1024
 
 
-def _copy_file_hashing(src: Path, dst: Path) -> str:
-    """Copy src to dst and return the SHA-256 of the bytes copied.
+def _copy_file_hashing(src: Path, dst: Path) -> tuple[Path, str]:
+    """Copy src to dst; return the path written and the SHA-256 of the bytes copied.
 
     Stands in for shutil.copy2 (copyfile + copystat) so the manifest hash comes
     from the stream in flight instead of a second read of the destination. Gives
     up copy2's sendfile fast path — hashing requires the bytes in user space.
+    Like copy2, a dst that is an existing directory receives src inside it.
     """
+    if dst.is_dir():
+        dst = dst / src.name
     if stat.S_ISFIFO(os.stat(src).st_mode):
         raise shutil.SpecialFileError(f"`{src}` is a named pipe")
     h = hashlib.sha256()
@@ -204,7 +207,7 @@ def _copy_file_hashing(src: Path, dst: Path) -> str:
             h.update(chunk)
             fdst.write(chunk)
     shutil.copystat(str(src), str(dst))
-    return h.hexdigest()
+    return dst, h.hexdigest()
 
 
 def create_backup_data(
@@ -326,7 +329,8 @@ def create_backup_data(
             continue
         dst = backup_dir / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
-        copied_hashes[rel_path] = _copy_file_hashing(Path(abs_path), dst)
+        written_to, fhash = _copy_file_hashing(Path(abs_path), dst)
+        copied_hashes[str(written_to.relative_to(backup_dir))] = fhash
         if progress_fn:
             progress_fn("Copying", i, total_files)
 

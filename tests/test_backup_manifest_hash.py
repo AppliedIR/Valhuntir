@@ -9,7 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from vhir_cli.commands.backup import _verify_backup, create_backup_data
+from vhir_cli.commands.backup import (
+    _copy_file_hashing,
+    _verify_backup,
+    create_backup_data,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -127,3 +131,21 @@ def test_non_payload_files_still_hashed_from_disk(tmp_path):
     rel = str(Path("verification") / "INC-TEST.jsonl")
     assert result["includes_verification_ledger"] is True
     assert entries[rel]["sha256"] == hashlib.sha256(ledger.read_bytes()).hexdigest()
+
+
+def test_copy_into_existing_directory_matches_copy2(tmp_path):
+    """A dst that is already a directory receives src inside it, as with copy2.
+
+    The backup writes passwords/ and verification/ before copying the case, so a
+    case file with one of those names meets a directory at its destination.
+    """
+    src = tmp_path / "passwords"
+    src.write_bytes(b"examiner's own file")
+    dst = tmp_path / "backup" / "passwords"
+    dst.mkdir(parents=True)
+
+    written, fhash = _copy_file_hashing(src, dst)
+
+    assert written == dst / "passwords"
+    assert written.read_bytes() == b"examiner's own file"
+    assert fhash == hashlib.sha256(b"examiner's own file").hexdigest()
