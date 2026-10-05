@@ -99,6 +99,32 @@ def cmd_approve(args, identity: dict) -> None:
         )
 
 
+def _keep_landed(case_dir: Path, *lists) -> None:
+    """Append the records on disk whose ids aren't in memory: forensic-mcp
+    staged them during the approval wait. Lists: findings, timeline, iocs."""
+    names = ("findings.json", "timeline.json", "iocs.json")
+    for name, items in zip(names, lists, strict=True):
+        if items is None:
+            continue
+        try:
+            on_disk = json.loads((case_dir / name).read_text() or "[]")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            on_disk = None
+        if not isinstance(on_disk, list):
+            print(
+                f"WARNING: could not check {name} for items added during "
+                "approval — re-run vhir review",
+                file=sys.stderr,
+            )
+            continue
+        known = {x.get("id") for x in items}
+        items += [
+            x for x in on_disk if isinstance(x, dict) and x.get("id") not in known
+        ]
+
+
 def _approve_specific(
     case_dir: Path,
     ids: list[str],
@@ -165,6 +191,8 @@ def _approve_specific(
             continue
         if tl_event.get("examiner_modifications"):
             continue
+        if tl_event.get("status") != "DRAFT":  # an explicit reject wins
+            continue
         tl_event["status"] = "APPROVED"
         tl_event["approved_at"] = now
         tl_event["approved_by"] = identity["examiner"]
@@ -202,6 +230,8 @@ def _approve_specific(
             ioc["modified_at"] = now
             iocs_modified = True
             coupled_events.append(ioc)
+
+    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
 
     # Step 1: Persist primary data FIRST
     try:
@@ -415,7 +445,7 @@ def _interactive_review(
         source = finding_by_id.get(auto_from)
         if not source:
             continue
-        if source["id"] in approvals:
+        if source["id"] in approvals and tl_event.get("status") == "DRAFT":
             tl_event["status"] = "APPROVED"
             tl_event["approved_at"] = now
             tl_event["approved_by"] = identity["examiner"]
@@ -459,6 +489,8 @@ def _interactive_review(
             ioc["modified_at"] = now
             iocs_modified = True
             coupled_ioc.append(ioc)
+
+    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
 
     # Step 1: Persist primary data FIRST
     try:
@@ -1245,7 +1277,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         source = item_by_id.get(auto_from)
         if not source:
             continue
-        if source.get("status") == "APPROVED":
+        if source.get("status") == "APPROVED" and tl_event.get("status") == "DRAFT":
             tl_event["status"] = "APPROVED"
             tl_event["approved_at"] = now
             tl_event["approved_by"] = identity["examiner"]
@@ -1290,6 +1322,8 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             ioc["modified_at"] = now
             iocs_modified = True
             rejected_ids.append(ioc["id"])
+
+    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
 
     # Step 1: Persist primary data FIRST
     try:
