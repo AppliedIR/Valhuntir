@@ -126,7 +126,12 @@ class TestIsSift:
 
 
 class TestMergeSettings:
-    def test_merges_permissions_deny(self, tmp_path):
+    def test_merges_permissions_deny(self, tmp_path, monkeypatch):
+        # A change to an existing file needs the user's yes, on a terminal
+        import types
+
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda prompt="": "y")
         target = tmp_path / "settings.json"
         source = tmp_path / "source.json"
 
@@ -147,7 +152,7 @@ class TestMergeSettings:
         _merge_settings(target, source)
         data = json.loads(target.read_text())
 
-        # deny is merged (union, sorted, deduplicated)
+        # deny is merged (union, deduplicated)
         assert sorted(data["permissions"]["deny"]) == sorted(
             ["Bash(dd *)", "Bash(mkfs*)", "Bash(rm -rf *)"]
         )
