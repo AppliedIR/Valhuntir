@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir, load_case_meta
+from vhir_cli.case_io import _EXAMINER_RE, get_case_dir, load_case_meta
 from vhir_cli.verification import VERIFICATION_DIR
 
 _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
@@ -269,8 +269,13 @@ def create_backup_data(
         if findings_file.exists():
             findings = json.loads(findings_file.read_text())
             if isinstance(findings, list):
+                # Only well-formed examiner names: "./steve" or "../x" would
+                # alias a control path or read outside the password store.
                 examiners_in_case = {
-                    f.get("created_by", "") for f in findings if f.get("created_by")
+                    f.get("created_by")
+                    for f in findings
+                    if isinstance(f.get("created_by"), str)
+                    and _EXAMINER_RE.match(f["created_by"])
                 }
                 pw_dir = backup_dir / "passwords"
                 for ex in sorted(examiners_in_case):
@@ -284,7 +289,14 @@ def create_backup_data(
 
     # Copy files
     total_files = len(files_to_copy)
+    # A case file at a control path this backup just wrote (e.g. a copy left
+    # in the case dir by an older restore) must not replace the live copy.
+    written = {f"passwords/{ex}.json" for ex in password_examiners}
+    if ledger_included:
+        written.add(f"verification/{case_id}.jsonl")
     for i, (rel_path, abs_path, _size) in enumerate(files_to_copy, 1):
+        if rel_path in written:
+            continue
         dst = backup_dir / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(abs_path), str(dst))
@@ -472,6 +484,32 @@ def human_size(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
+def _registered_paths(case_dir: Path) -> set[str]:
+    """Resolved paths of the case's registered evidence (evidence.json);
+    a relative entry is relative to the case directory."""
+    registry = case_dir / "evidence.json"
+    if not registry.exists():
+        return set()
+    try:
+        files = json.loads(registry.read_text()).get("files", [])
+    except (OSError, ValueError, AttributeError) as e:
+        print(
+            f"Warning: can't read {registry} ({e}); registered evidence outside "
+            "evidence/ can't be excluded, so this backup may include it.",
+            file=sys.stderr,
+        )
+        return set()
+    paths = set()
+    for f in files if isinstance(files, list) else []:
+        p = f.get("path") if isinstance(f, dict) else None
+        if isinstance(p, str) and p:
+            try:
+                paths.add(str((case_dir / p).resolve()))  # an absolute p stands
+            except (OSError, RuntimeError, ValueError):  # ValueError: a NUL in p
+                continue
+    return paths
+
+
 def scan_case_dir(case_dir: Path) -> dict:
     """Scan case directory and categorize files.
 
@@ -482,6 +520,8 @@ def scan_case_dir(case_dir: Path) -> dict:
     evidence = []
     extractions = []
     symlinks = []
+    # Registered evidence is evidence wherever it sits (the case root, work/).
+    registered = _registered_paths(case_dir)
 
     # (st_dev, st_ino) of every directory from case_dir down to the current
     # root, keyed by the path os.walk yields. A directory symlink pointing back
@@ -538,7 +578,9 @@ def scan_case_dir(case_dir: Path) -> dict:
             entry = (str(rel_path), str(abs_path), size)
             parts = rel_path.parts
 
-            if parts and parts[0] == "evidence":
+            if (parts and parts[0] == "evidence") or (
+                registered and str(abs_path.resolve()) in registered
+            ):
                 evidence.append(entry)
             elif parts and parts[0] == "extractions":
                 extractions.append(entry)
@@ -861,6 +903,7 @@ def cmd_restore(args, identity: dict) -> None:
         and (backup_path / "opensearch-snapshot").is_dir()
     )
     restore_ledger = not skip_ledger and manifest.get("includes_verification_ledger")
+    ledger_declined = False
 
     if sys.stdin.isatty():
         if restore_opensearch:
@@ -871,6 +914,7 @@ def cmd_restore(args, identity: dict) -> None:
             resp = input("Restore verification ledger? [Y/n] ").strip().lower()
             if resp in ("n", "no"):
                 restore_ledger = False
+                ledger_declined = True
 
     # Conflict checks
     if target_dir.exists():
@@ -979,11 +1023,25 @@ def cmd_restore(args, identity: dict) -> None:
     print("Restoring...")
     files = manifest.get("files", [])
     total = len(files)
+    # The declared ledger, hashes and snapshot stay out of the case directory
+    # (hash material is kept from the LLM); they're installed or used from
+    # the backup.
+    pw_names = manifest.get("password_examiners") or []
+    control = {f"passwords/{ex}.json" for ex in pw_names}
+    if manifest.get("includes_verification_ledger"):
+        control.add(f"verification/{case_id}.jsonl")
+
+    def _is_control(rel: str) -> bool:
+        return rel in control or (
+            bool(manifest.get("includes_opensearch"))
+            and rel.startswith("opensearch-snapshot/")
+        )
+
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         src = backup_path / rel
         dst = target_dir / rel
-        if src.exists():
+        if src.exists() and not _is_control(rel):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
         progress("Copying files", i, total)
@@ -1037,6 +1095,27 @@ def cmd_restore(args, identity: dict) -> None:
         if pw_dir.is_dir():
             for pw_file in pw_dir.glob("*.json"):
                 examiner_name = pw_file.stem
+                if examiner_name not in pw_names:
+                    continue  # only the hashes the backup declared
+                # Never replace a different (or unreadable) hash on this box:
+                # the examiner may have changed their password since the backup.
+                current = _PASSWORDS_DIR / pw_file.name
+                why = ""
+                try:
+                    if (
+                        current.exists()
+                        and current.read_bytes() != pw_file.read_bytes()
+                    ):
+                        why = "kept the existing, different hash"
+                except OSError as e:
+                    why = f"couldn't check for an existing hash ({e})"
+                if why:
+                    print(
+                        f"  Password hash ({examiner_name})... {why}; "
+                        f"the backup's copy was not installed ({pw_file})",
+                        file=sys.stderr,
+                    )
+                    continue
                 try:
                     result = subprocess.run(
                         [
@@ -1104,7 +1183,7 @@ def cmd_restore(args, identity: dict) -> None:
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         expected = entry["sha256"]
-        fpath = target_dir / rel
+        fpath = (backup_path if _is_control(rel) else target_dir) / rel
         if not fpath.exists():
             missing_count += 1
         elif sha256_file(fpath) != expected:
@@ -1141,7 +1220,7 @@ def cmd_restore(args, identity: dict) -> None:
         print("  OpenSearch: not included in backup")
     if restore_ledger:
         print("  Ledger: restored")
-    elif skip_ledger:
+    elif skip_ledger or ledger_declined:
         print("  Ledger: skipped")
     else:
         print("  Ledger: not included in backup")
