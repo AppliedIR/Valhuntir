@@ -971,13 +971,16 @@ def two_finding_case(wait_case):
 def test_a_concurrent_approval_of_an_untouched_finding_is_kept(
     two_finding_case, monkeypatch, mode, answers
 ):
-    _run(
+    _, signed = _run(
         two_finding_case,
         monkeypatch,
         mode,
         lambda: _approve_concurrently(two_finding_case, "F-steve-002"),
         answers=answers,
     )
+    # Keeping someone else's change must not make it this examiner's: only
+    # what this run acted on is signed into the ledger.
+    assert "F-steve-002" not in signed
     F, _, _ = _on_disk(two_finding_case)
     assert F["F-steve-001"]["status"] == "APPROVED"
     assert F["F-steve-002"]["status"] == "APPROVED", (
