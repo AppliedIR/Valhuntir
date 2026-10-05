@@ -449,7 +449,7 @@ def test_setup_claims_global_controls_only_when_applied(
         lambda project_dir=None: (box.settings, status),
     )
     monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: False)
-    monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: None)
+    monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: True)
     cs._generate_config("claude-code", {}, "steve")
     out = capsys.readouterr().out
     assert ("Forensic controls deployed globally." in out) is claims

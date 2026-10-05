@@ -111,42 +111,57 @@ class TestMergeAndWrite:
         _merge_and_write(path, config)
         assert path.is_file()
 
-    def test_unreadable_existing_file_is_not_clobbered(self, tmp_path):
+    _VHIR = {
+        "mcpServers": {
+            "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+        }
+    }
+
+    def test_unreadable_existing_file_is_left_unchanged(self, tmp_path, capsys):
         path = tmp_path / "config.json"
         existing = {"mcpServers": {"custom": {"type": "stdio", "command": "test"}}}
         path.write_text(json.dumps(existing))
 
-        config = {
-            "mcpServers": {
-                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
-            }
-        }
-        raised = False
         with patch.object(
             Path, "read_text", side_effect=PermissionError(13, "Permission denied")
         ):
-            try:
-                _merge_and_write(path, config)
-            except OSError:
-                raised = True
+            written = _merge_and_write(path, self._VHIR)
 
+        assert written is False
         assert json.loads(path.read_text()) == existing
-        assert raised
+        assert "Not changed" in capsys.readouterr().err
 
-    def test_invalid_json_existing_file_is_backed_up(self, tmp_path):
+    def test_invalid_json_existing_file_is_left_unchanged(self, tmp_path, capsys):
         path = tmp_path / "config.json"
         path.write_text("{not json")
 
-        config = {
-            "mcpServers": {
-                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
-            }
-        }
-        _merge_and_write(path, config)
+        assert _merge_and_write(path, self._VHIR) is False
+        assert path.read_text() == "{not json"
+        assert "Not changed" in capsys.readouterr().err
 
-        backup = path.with_name(path.name + ".bak")
-        assert backup.read_text() == "{not json"
-        assert "vhir" in json.loads(path.read_text())["mcpServers"]
+    def test_non_object_json_existing_file_is_left_unchanged(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("[1, 2]")
+
+        assert _merge_and_write(path, self._VHIR) is False
+        assert path.read_text() == "[1, 2]"
+
+    def test_written_file_reports_true(self, tmp_path):
+        assert _merge_and_write(tmp_path / "config.json", self._VHIR) is True
+
+    def test_a_skipped_write_is_not_reported_as_generated(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "vhir-mcp-config.json"
+        target.write_text("{not json")
+
+        from vhir_cli.commands import client_setup as cs
+
+        cs._generate_config("other", {}, "steve")
+
+        assert "Generated" not in capsys.readouterr().out
+        assert target.read_text() == "{not json"
 
 
 class TestIsSift:
