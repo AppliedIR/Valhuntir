@@ -456,107 +456,6 @@ class TestApproveInteractive:
         timeline = load_timeline(case_dir)
         assert timeline[0]["status"] == "DRAFT"  # Not reviewed
 
-    def test_interactive_preserves_concurrent_finding(
-        self, case_dir, identity, staged_finding, pw_config
-    ):
-        """A finding staged while the examiner reviews survives the approval."""
-
-        def answer_and_add_finding(prompt=""):
-            # Simulate an MCP write happening while the examiner is at the prompt
-            findings = load_findings(case_dir)
-            findings.append(
-                {
-                    "id": "F-tester-002",
-                    "status": "DRAFT",
-                    "title": "Concurrent finding",
-                    "staged": "2026-02-19T13:00:00Z",
-                    "created_by": "mcp",
-                }
-            )
-            save_findings(case_dir, findings)
-            return "a"
-
-        args = Namespace(
-            ids=[],
-            case=None,
-            analyst=None,
-            note=None,
-            edit=False,
-            interpretation=None,
-            by=None,
-            findings_only=False,
-            timeline_only=False,
-        )
-        with patch("builtins.input", side_effect=answer_and_add_finding):
-            with patch(
-                "vhir_cli.commands.approve.Path.home",
-                return_value=case_dir.parent,
-            ):
-                with patch(
-                    "vhir_cli.approval_auth.getpass_prompt",
-                    return_value="testpass1",
-                ):
-                    cmd_approve(args, identity)
-
-        # F-tester-001 should be APPROVED, F-tester-002 should survive as DRAFT
-        findings = load_findings(case_dir)
-        assert len(findings) == 2
-        f001 = next(f for f in findings if f["id"] == "F-tester-001")
-        f002 = next(f for f in findings if f["id"] == "F-tester-002")
-        assert f001["status"] == "APPROVED"
-        assert f002["status"] == "DRAFT"
-
-    def test_interactive_reload_keeps_examiner_note(
-        self, case_dir, identity, staged_finding, pw_config
-    ):
-        """The reload keeps examiner edits on the item being approved."""
-
-        def answer_and_add_finding(prompt=""):
-            if "Note:" in prompt:
-                return "Corroborated by netflow"
-            findings = load_findings(case_dir)
-            findings.append(
-                {
-                    "id": "F-tester-002",
-                    "status": "DRAFT",
-                    "title": "Concurrent finding",
-                    "staged": "2026-02-19T13:00:00Z",
-                    "created_by": "mcp",
-                }
-            )
-            save_findings(case_dir, findings)
-            return "n"
-
-        args = Namespace(
-            ids=[],
-            case=None,
-            analyst=None,
-            note=None,
-            edit=False,
-            interpretation=None,
-            by=None,
-            findings_only=False,
-            timeline_only=False,
-        )
-        with patch("builtins.input", side_effect=answer_and_add_finding):
-            with patch(
-                "vhir_cli.commands.approve.Path.home",
-                return_value=case_dir.parent,
-            ):
-                with patch(
-                    "vhir_cli.approval_auth.getpass_prompt",
-                    return_value="testpass1",
-                ):
-                    cmd_approve(args, identity)
-
-        findings = load_findings(case_dir)
-        assert len(findings) == 2
-        f001 = next(f for f in findings if f["id"] == "F-tester-001")
-        f002 = next(f for f in findings if f["id"] == "F-tester-002")
-        assert f001["status"] == "APPROVED"
-        assert f001["examiner_notes"][0]["note"] == "Corroborated by netflow"
-        assert f002["status"] == "DRAFT"
-
 
 class TestReject:
     def test_reject_finding(self, case_dir, identity, staged_finding, pw_config):
@@ -1035,3 +934,53 @@ def test_without_a_concurrent_write_the_outcome_is_unchanged(
     )
     assert iocs["IOC-steve-001"]["status"] == "APPROVED"
     assert sorted(signed) == ["F-steve-001", "IOC-steve-001", "T-steve-001"]
+
+
+# --- a concurrent change to an existing record the examiner did not act on ----
+# _keep_landed appends records whose ids are new, so a record *staged* during
+# the wait survives. A record that already existed but was *changed* on disk
+# during the wait — approved by another examiner from another terminal, say —
+# is still written back from the stale in-memory copy.
+
+
+def _approve_concurrently(case, fid, by="alice"):
+    """What `vhir approve <fid>` in another terminal writes for that finding."""
+    path = case / "findings.json"
+    data = json.loads(path.read_text())
+    for f in data:
+        if f["id"] == fid:
+            f.update(status="APPROVED", approved_at=_NOW, approved_by=by)
+    _write(path, data)
+
+
+@pytest.fixture
+def two_finding_case(wait_case):
+    path = wait_case / "findings.json"
+    _write(
+        path,
+        json.loads(path.read_text()) + [_f("F-steve-002", "Second", "T-steve-003")],
+    )
+    return wait_case
+
+
+@pytest.mark.parametrize(
+    "mode,answers",
+    [("ids", ()), ("int", ("a", "s", "s", "s")), ("rev", ())],
+    ids=["ids", "interactive", "review"],
+)
+def test_a_concurrent_approval_of_an_untouched_finding_is_kept(
+    two_finding_case, monkeypatch, mode, answers
+):
+    _run(
+        two_finding_case,
+        monkeypatch,
+        mode,
+        lambda: _approve_concurrently(two_finding_case, "F-steve-002"),
+        answers=answers,
+    )
+    F, _, _ = _on_disk(two_finding_case)
+    assert F["F-steve-001"]["status"] == "APPROVED"
+    assert F["F-steve-002"]["status"] == "APPROVED", (
+        "another examiner's approval made during the wait was reverted to DRAFT"
+    )
+    assert F["F-steve-002"]["approved_by"] == "alice"

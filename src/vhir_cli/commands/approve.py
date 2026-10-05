@@ -99,9 +99,29 @@ def cmd_approve(args, identity: dict) -> None:
         )
 
 
-def _keep_landed(case_dir: Path, *lists) -> None:
+def _canonical(record: dict) -> str:
+    return json.dumps(record, sort_keys=True, default=str)
+
+
+def _snapshot(**lists: list) -> dict[str, dict]:
+    """What each list held when it was read, by id, so _keep_landed can tell
+    which records this run changed. Keys: findings, timeline, iocs."""
+    return {
+        f"{name}.json": {
+            x.get("id"): _canonical(x) for x in items if isinstance(x, dict)
+        }
+        for name, items in lists.items()
+    }
+
+
+def _keep_landed(case_dir: Path, *lists, read: dict | None = None) -> None:
     """Append the records on disk whose ids aren't in memory: forensic-mcp
-    staged them during the approval wait. Lists: findings, timeline, iocs."""
+    staged them during the approval wait. Lists: findings, timeline, iocs.
+
+    With `read` (a _snapshot of the lists as first loaded), also take the disk
+    copy of a record this run left unchanged but something else changed
+    during the wait — another examiner's approval, say. Otherwise the stale
+    copy read before the wait is written back over it."""
     names = ("findings.json", "timeline.json", "iocs.json")
     for name, items in zip(names, lists, strict=True):
         if items is None:
@@ -119,6 +139,17 @@ def _keep_landed(case_dir: Path, *lists) -> None:
                 file=sys.stderr,
             )
             continue
+        as_read = (read or {}).get(name)
+        if as_read:
+            disk_by_id = {x.get("id"): x for x in on_disk if isinstance(x, dict)}
+            for i, x in enumerate(items):
+                xid = x.get("id")
+                theirs = disk_by_id.get(xid)
+                if theirs is None or xid not in as_read:
+                    continue
+                untouched_here = _canonical(x) == as_read[xid]
+                if untouched_here and _canonical(theirs) != as_read[xid]:
+                    items[i] = theirs
         known = {x.get("id") for x in items}
         items += [
             x for x in on_disk if isinstance(x, dict) and x.get("id") not in known
@@ -139,6 +170,7 @@ def _approve_specific(
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    read = _snapshot(findings=findings, timeline=timeline)
     to_approve = []
 
     for item_id in ids:
@@ -231,7 +263,9 @@ def _approve_specific(
             iocs_modified = True
             coupled_events.append(ioc)
 
-    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
+    _keep_landed(
+        case_dir, findings, timeline, iocs if iocs_modified else None, read=read
+    )
 
     # Step 1: Persist primary data FIRST
     try:
@@ -294,6 +328,7 @@ def _interactive_review(
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    read = _snapshot(findings=findings, timeline=timeline)
 
     drafts = (
         [] if timeline_only else [f for f in findings if f.get("status") == "DRAFT"]
@@ -399,19 +434,6 @@ def _interactive_review(
         print("Nothing to commit.")
         return
 
-    # Reload from disk to preserve any concurrent MCP writes. The reviewed items
-    # keep the content the examiner saw and dispositioned; everything else comes
-    # back from disk, including items staged during the review.
-    check_case_file_integrity(case_dir, "findings.json")
-    check_case_file_integrity(case_dir, "timeline.json")
-    reviewed = {
-        item["id"]: item
-        for item in all_items
-        if item["id"] in approvals or item["id"] in rejections
-    }
-    findings = [reviewed.get(f["id"], f) for f in load_findings(case_dir)]
-    timeline = [reviewed.get(t["id"], t) for t in load_timeline(case_dir)]
-
     now = datetime.now(timezone.utc).isoformat()
 
     # Apply approvals (in-memory)
@@ -503,7 +525,9 @@ def _interactive_review(
             iocs_modified = True
             coupled_ioc.append(ioc)
 
-    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
+    _keep_landed(
+        case_dir, findings, timeline, iocs if iocs_modified else None, read=read
+    )
 
     # Step 1: Persist primary data FIRST
     try:
@@ -1100,6 +1124,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
     from vhir_cli.case_io import load_iocs, save_iocs
 
     iocs = load_iocs(case_dir)
+    read = _snapshot(findings=findings, timeline=timeline, iocs=iocs)
 
     # Build lookup by ID — includes findings, timeline, AND IOCs
     item_by_id: dict[str, dict] = {}
@@ -1337,7 +1362,9 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             iocs_modified = True
             rejected_ids.append(ioc["id"])
 
-    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
+    _keep_landed(
+        case_dir, findings, timeline, iocs if iocs_modified else None, read=read
+    )
 
     # Step 1: Persist primary data FIRST
     try:
