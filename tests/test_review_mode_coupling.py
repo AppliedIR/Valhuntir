@@ -161,3 +161,78 @@ def test_coupling_still_applies_for_source_acted_on_now(
     saved = {t["id"]: t for t in json.loads((case_path / "timeline.json").read_text())}
     assert saved["T-003"]["status"] == "APPROVED"
     assert saved["T-003"]["approved_by"] == "analyst1"
+
+
+def test_event_staged_after_an_earlier_approval_is_not_approved_unseen(
+    tmp_path, identity, config_path
+):
+    """A DRAFT event must not be approved by a review that never touched its finding.
+
+    F-001 was approved in an earlier session. T-009 was staged later from it and has
+    never been reviewed. A delta acting only on the unrelated F-002 must leave T-009
+    as DRAFT: approving it would sign an item no examiner has seen.
+    """
+    findings = [
+        {
+            "id": "F-001",
+            "title": "Old finding",
+            "status": "APPROVED",
+            "approved_at": OLD_TS,
+            "approved_by": "analyst0",
+        },
+        {"id": "F-002", "title": "New finding", "status": "DRAFT"},
+    ]
+    timeline = [
+        {
+            "id": "T-009",
+            "description": "Staged after F-001 was approved",
+            "status": "DRAFT",
+            "auto_created_from": "F-001",
+        }
+    ]
+    delta = [{"id": "F-002", "action": "approve"}]
+
+    case_path = _make_case(tmp_path, findings, timeline, delta)
+    _review_mode(case_path, identity, config_path)
+
+    saved = {t["id"]: t for t in json.loads((case_path / "timeline.json").read_text())}
+    assert saved["T-009"]["status"] == "DRAFT", (
+        "an event nobody reviewed was approved by an unrelated delta"
+    )
+
+
+def test_previously_rejected_event_is_not_restamped(tmp_path, identity, config_path):
+    """A later --review run must not re-reject an event rejected in an earlier one.
+
+    F-005 and its event T-010 were rejected in an earlier session. A delta acting
+    only on the unrelated F-006 must leave T-010's rejection metadata untouched.
+    """
+    findings = [
+        {
+            "id": "F-005",
+            "title": "Old finding",
+            "status": "REJECTED",
+            "rejected_at": OLD_TS,
+            "rejected_by": "analyst0",
+        },
+        {"id": "F-006", "title": "New finding", "status": "DRAFT"},
+    ]
+    timeline = [
+        {
+            "id": "T-010",
+            "description": "Coupled event",
+            "status": "REJECTED",
+            "auto_created_from": "F-005",
+            "rejected_at": OLD_TS,
+            "rejected_by": "analyst0",
+            "rejection_reason": "Source finding rejected",
+        }
+    ]
+    delta = [{"id": "F-006", "action": "approve"}]
+
+    case_path = _make_case(tmp_path, findings, timeline, delta)
+    _review_mode(case_path, identity, config_path)
+
+    saved = {t["id"]: t for t in json.loads((case_path / "timeline.json").read_text())}
+    assert saved["T-010"]["rejected_at"] == OLD_TS, "rejected event was re-stamped"
+    assert saved["T-010"]["rejected_by"] == "analyst0"
