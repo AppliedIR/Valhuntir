@@ -29,6 +29,9 @@ def cmd_export(args, identity: dict) -> None:
 
     try:
         bundle = export_bundle(case_dir, since=since)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     except OSError as e:
         print(f"Failed to read case data for export: {e}", file=sys.stderr)
         sys.exit(1)
