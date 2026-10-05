@@ -38,6 +38,10 @@ def manifest_dir(tmp_path):
     # Create package dirs
     for rel in _PACKAGE_PATHS.values():
         (src / rel).mkdir(parents=True, exist_ok=True)
+    (src / "deps").mkdir()
+    (src / "deps" / "vhir.lock").write_text("# lock\n")
+    (src / "deps" / "vhir-cpu.lock").write_text("# variant cpu\n")
+    (src / "deps" / "check-lock.py").write_text("")
 
     manifest = {
         "version": "1.0",
@@ -66,6 +70,9 @@ def _make_args(**kwargs):
     args = MagicMock()
     args.check = kwargs.get("check", False)
     args.no_restart = kwargs.get("no_restart", False)
+    # A MagicMock's unset attributes are truthy: --cpu/--gpu must be set.
+    args.cpu = kwargs.get("cpu", False)
+    args.gpu = kwargs.get("gpu", False)
     return args
 
 
@@ -182,7 +189,9 @@ def test_pip_install_order(manifest_dir):
         result.returncode = 0
         result.stdout = "0"
         result.stderr = ""
-        if "symbolic-ref" in cmd:
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
             result.stdout = "main"
         elif cmd[0].endswith("/pip") and "install" in cmd:
             # Extract package path
@@ -218,7 +227,9 @@ def test_no_restart_flag(manifest_dir):
         result.returncode = 0
         result.stdout = "0"
         result.stderr = ""
-        if "symbolic-ref" in cmd:
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
             result.stdout = "main"
         elif "systemctl" in cmd:
             systemctl_called.append(cmd)
@@ -251,7 +262,7 @@ def test_client_written_to_manifest(tmp_path):
     assert result["client"] == "librechat"
 
 
-def test_wrong_branch_fails(manifest_dir):
+def test_wrong_branch_fails(manifest_dir, capsys):
     """Fail cleanly when repo is not on main branch."""
     tmp_path, _ = manifest_dir
 
@@ -260,7 +271,9 @@ def test_wrong_branch_fails(manifest_dir):
         result.returncode = 0
         result.stdout = "0"
         result.stderr = ""
-        if "symbolic-ref" in cmd:
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
             result.stdout = "feature-branch"
         return result
 
@@ -270,6 +283,7 @@ def test_wrong_branch_fails(manifest_dir):
     ):
         with pytest.raises(SystemExit):
             cmd_update(_make_args(), {})
+    assert "expected 'main'" in capsys.readouterr().err
 
 
 def test_install_order_matches_package_paths():
@@ -290,7 +304,9 @@ def test_old_manifest_no_client(manifest_dir, capsys):
         result.returncode = 0
         result.stdout = "0"
         result.stderr = ""
-        if "symbolic-ref" in cmd:
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
             result.stdout = "main"
         return result
 
@@ -683,3 +699,29 @@ class TestDetectConstraintChangedPackages:
         # Broken repo yielded no findings (soft-fail) — no exception
         # escaped — AND healthy repo's changes still made it through.
         assert "pycti" in changed
+
+
+def test_locked_install_is_not_cut_off_by_a_timeout(manifest_dir):
+    """The first locked install can download gigabytes; uv's own network timeouts end a stall."""
+    tmp_path, _ = manifest_dir
+    locked = []
+
+    def mock_run(cmd, **kwargs):
+        result = MagicMock(returncode=0, stdout="0", stderr="")
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
+            result.stdout = "main"
+        elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
+            locked.append(kwargs)
+        return result
+
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch("subprocess.run", side_effect=mock_run),
+        patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
+        patch("vhir_cli.commands.setup._run_connectivity_test"),
+    ):
+        cmd_update(_make_args(no_restart=True), {})
+
+    assert len(locked) == 1 and locked[0].get("timeout") is None
