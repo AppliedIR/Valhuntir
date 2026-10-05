@@ -237,7 +237,7 @@ def create_backup_data(
     marker = backup_dir / ".backup-in-progress"
     marker.touch()
 
-    # Scan case directory (excluded categories are never walked)
+    # Scan case directory (an excluded evidence/ or extractions/ isn't walked)
     scan = scan_case_dir(
         case_dir,
         include_evidence=include_evidence,
@@ -522,9 +522,11 @@ def scan_case_dir(
 ) -> dict:
     """Scan case directory and categorize files.
 
-    Excluded categories are pruned from the walk rather than collected and
-    discarded — a backup that skips evidence/ must not pay to stat every file
-    in it. Their lists come back empty.
+    An excluded evidence/ or extractions/ subtree is pruned from the walk
+    rather than collected and discarded — a backup that skips evidence/ must
+    not pay to stat every file in it. Registered evidence sitting elsewhere in
+    the case is still found and listed as evidence, since that is how it gets
+    excluded.
 
     Returns dict with keys: case_data, evidence, extractions, symlinks.
     Each list contains (relative_path, absolute_path, size) tuples.
@@ -535,6 +537,15 @@ def scan_case_dir(
     symlinks = []
     # Registered evidence is evidence wherever it sits (the case root, work/).
     registered = _registered_paths(case_dir)
+    # An excluded extractions/ can still hold registered evidence; when that
+    # evidence is being backed up, the subtree has to be walked to find it.
+    walk_extractions = include_extractions
+    if include_evidence and not include_extractions and registered:
+        try:
+            ext_root = str((case_dir / "extractions").resolve()) + os.sep
+            walk_extractions = any(r.startswith(ext_root) for r in registered)
+        except (OSError, RuntimeError):
+            walk_extractions = True  # can't tell: walk rather than miss evidence
 
     for root, dirs, files in os.walk(case_dir, followlinks=True):
         # Filter out skip names
@@ -546,7 +557,7 @@ def scan_case_dir(
             # here — a nested reports/evidence/ is case data and must be kept.
             if not include_evidence:
                 dirs[:] = [d for d in dirs if d != "evidence"]
-            if not include_extractions:
+            if not walk_extractions:
                 dirs[:] = [d for d in dirs if d != "extractions"]
 
         for fname in files:

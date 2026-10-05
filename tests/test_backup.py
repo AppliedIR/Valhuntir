@@ -148,3 +148,51 @@ class TestCreateBackupData:
         )
 
         assert result["symlinks"] == []
+
+
+class TestPruneWithRegisteredEvidence:
+    """Registered evidence is evidence wherever it sits, so pruning a subtree
+    must not hide registered evidence the backup was asked to include."""
+
+    def _register(self, case_dir: Path, rel: str) -> None:
+        import json
+
+        (case_dir / "evidence.json").write_text(json.dumps({"files": [{"path": rel}]}))
+
+    def test_registered_evidence_under_excluded_extractions_is_still_copied(
+        self, tmp_path
+    ):
+        case_dir = _seed_case(tmp_path)
+        carved = case_dir / "extractions" / "host-01" / "carved.bin"
+        carved.write_bytes(b"c" * 8)
+        self._register(case_dir, "extractions/host-01/carved.bin")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+
+        result = create_backup_data(
+            case_dir=case_dir,
+            destination=str(dest),
+            examiner="alice",
+            include_evidence=True,
+            include_extractions=False,
+        )
+
+        backup_dir = Path(result["backup_path"])
+        assert (backup_dir / "extractions" / "host-01" / "carved.bin").is_file()
+        # The rest of extractions/ stays out.
+        assert not (backup_dir / "extractions" / "host-01" / "artifact-0.bin").exists()
+
+    def test_extractions_still_pruned_when_nothing_registered_there(self, tmp_path):
+        case_dir = _seed_case(tmp_path)
+        self._register(case_dir, "evidence/host-01/artifact-0.bin")
+
+        recorded: list[str] = []
+        real_walk = os.walk
+        os.walk = _recording_walk(recorded)
+        try:
+            scan_case_dir(case_dir, include_evidence=True, include_extractions=False)
+        finally:
+            os.walk = real_walk
+
+        pruned = str(case_dir / "extractions")
+        assert not any(r.startswith(pruned) for r in recorded)
