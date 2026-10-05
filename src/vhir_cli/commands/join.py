@@ -406,7 +406,8 @@ def _ensure_remote_binding() -> None:
     try:
         fd = os.open(str(gateway_config), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
+            # Owner's key first: local readers take the first api_key.
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     except OSError as e:
         print(f"Failed to update gateway.yaml: {e}", file=sys.stderr)
         return
