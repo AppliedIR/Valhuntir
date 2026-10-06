@@ -249,7 +249,7 @@ def create_backup_data(
         )
         if evidence and not include_evidence:
             continue
-        if top == ("extractions",) and not include_extractions:
+        if not evidence and top == ("extractions",) and not include_extractions:
             continue
         problems.append(err)
     problems.sort(key=lambda e: e.filename)
@@ -590,22 +590,20 @@ def scan_case_dir(case_dir: Path) -> dict:
     registered = _registered_paths(case_dir)
     # A symlink may lead out of the case only where the examiner links storage
     # in: at the top of the case or of evidence/, or as registered evidence.
-    # Any other link must stay inside; one in extracted evidence (etc/hostname
-    # -> /etc/hostname) would otherwise copy this machine's file as evidence.
+    # Any other link must stay inside the case or the storage linked in on its
+    # own path; one in extracted evidence (etc/hostname -> /etc/hostname) would
+    # otherwise copy this machine's file as evidence.
     roots = {os.path.realpath(case_dir), *registered}
-    for top in (case_dir, case_dir / "evidence"):
-        try:
-            roots.update(
-                os.path.realpath(p) for p in top.iterdir() if os.path.islink(p)
-            )
-        except OSError:
-            pass
 
     def _leaves_case(path: Path) -> bool:
         if not os.path.islink(path):  # False, not EACCES, in a dir we can't search
             return False
         real = os.path.realpath(path)
-        if any(os.path.commonpath([real, r]) == r for r in roots):
+        parts = path.relative_to(case_dir).parts
+        depth = 2 if parts[0] == "evidence" else 1
+        entries = {case_dir.joinpath(*parts[:i]) for i in range(1, depth + 1)}
+        allowed = roots | {os.path.realpath(p) for p in entries}
+        if any(os.path.commonpath([real, r]) == r for r in allowed):
             return False
         unreadable.append(
             OSError(errno.EXDEV, f"symlink to {real}, outside the case", str(path))

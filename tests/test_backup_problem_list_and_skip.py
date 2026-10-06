@@ -139,6 +139,8 @@ def test_every_problem_is_listed_before_anything_is_copied(case, outside, tmp_pa
     for rel in KINDS:
         assert any(line.rstrip().split(": ")[0].endswith(rel) for line in listed), rel
     assert len(listed) == len(KINDS)
+    paths = [line.strip().split(": ")[0] for line in listed]
+    assert paths == sorted(paths)
     assert _copied(dest) == []
 
 
@@ -161,7 +163,7 @@ def test_the_skip_option_finishes_and_lists_every_skipped_path(case, outside, tm
     _all(case, outside)
     result = _backup(case, tmp_path / "out", skip_unreadable=True)
     manifest = _manifest(result)
-    assert {s["path"] for s in manifest["skipped"]} == set(KINDS)
+    assert [s["path"] for s in manifest["skipped"]] == sorted(KINDS)
     assert all(KINDS[s["path"]] in s["reason"] for s in manifest["skipped"])
     assert result["skipped"] == manifest["skipped"]
     paths = {f["path"] for f in manifest["files"]}
