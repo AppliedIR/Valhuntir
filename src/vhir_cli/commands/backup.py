@@ -252,6 +252,22 @@ def create_backup_data(
         if not evidence and top == ("extractions",) and not include_extractions:
             continue
         problems.append(err)
+    # A registered file that is there but the scan didn't reach (behind a
+    # link or folder it wouldn't follow) is a problem too, wherever that is.
+    if include_evidence:
+        reached = {os.path.realpath(a) for _r, a, _s in scan["evidence"]}
+        reached |= {os.path.realpath(e.filename) for e in problems}
+        problems += [
+            FileNotFoundError(
+                errno.ENOENT,
+                "registered evidence the backup can't reach (behind a link it "
+                "won't follow; link the storage at the top of the case or of "
+                "evidence/)",
+                r,
+            )
+            for r in scan["registered"] - reached
+            if os.path.isfile(r)
+        ]
     problems.sort(key=lambda e: e.filename)
     if problems and not skip_unreadable:
         raise OSError(
@@ -263,7 +279,7 @@ def create_backup_data(
             + "\n".join(f"  {e.filename}: {_reason(e)}" for e in problems)
         )
     skipped = [
-        {"path": str(Path(e.filename).relative_to(case_dir)), "reason": _reason(e)}
+        {"path": os.path.relpath(e.filename, case_dir), "reason": _reason(e)}
         for e in problems
     ]
 
