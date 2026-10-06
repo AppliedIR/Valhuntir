@@ -628,6 +628,14 @@ def _merge_items(
         # Approval couples an event to its finding by this; only forensic-mcp's
         # auto-timeline sets it, never an import.
         "auto_created_from",
+        # A decision belongs to the case that made it: this case has no ledger
+        # entry to back an incoming one.
+        "approved_at",
+        "approved_by",
+        "rejected_at",
+        "rejected_by",
+        "rejection_reason",
+        "verification",
     }
 
     for item in incoming:
