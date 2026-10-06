@@ -220,18 +220,11 @@ def create_backup_data(
     case_id = meta.get("case_id", case_dir.name)
     dest = Path(destination)
 
-    # Create backup dir with collision avoidance (atomic mkdir to avoid TOCTOU)
+    # Build under an ".incomplete" name; only a finished backup takes the
+    # case-date name, so a failed or interrupted one can't pass for a backup.
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     backup_name = f"{case_id}-{date_str}"
-    backup_dir = dest / backup_name
-    suffix = 0
-    while True:
-        try:
-            backup_dir.mkdir(parents=True, exist_ok=False)
-            break
-        except FileExistsError:
-            suffix += 1
-            backup_dir = dest / f"{backup_name}-{suffix}"
+    backup_dir = _reserve_dir(dest, f"{backup_name}.incomplete")
 
     # Write in-progress marker
     marker = backup_dir / ".backup-in-progress"
@@ -369,6 +362,9 @@ def create_backup_data(
         marker.unlink()
     except OSError:
         pass
+    final = _reserve_dir(dest, backup_name)
+    os.rename(backup_dir, final)  # replaces the empty directory just reserved
+    backup_dir = final
 
     return {
         "backup_path": str(backup_dir),
@@ -385,6 +381,18 @@ def create_backup_data(
         "ledger_note": ledger_note,
         "symlinks": scan["symlinks"],
     }
+
+
+def _reserve_dir(dest: Path, name: str) -> Path:
+    """Create dest/name, or name-1, name-2, ... (atomic mkdir avoids TOCTOU)."""
+    path, suffix = dest / name, 0
+    while True:
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+            return path
+        except FileExistsError:
+            suffix += 1
+            path = dest / f"{name}-{suffix}"
 
 
 # ---------------------------------------------------------------------------
