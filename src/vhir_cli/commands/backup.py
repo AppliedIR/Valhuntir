@@ -6,6 +6,7 @@ Restore enforces original case path for audit trail integrity.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -123,6 +124,7 @@ def _create_backup(args, identity: dict) -> None:
             include_extractions=include_extractions,
             include_opensearch=include_opensearch,
             progress_fn=progress,
+            skip_unreadable=getattr(args, "skip_unreadable", False),
         )
     except OSError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -163,6 +165,7 @@ def _create_backup(args, identity: dict) -> None:
         )
     if result.get("password_examiners"):
         print(f"  Password hashes: {', '.join(result['password_examiners'])}")
+    _print_skipped(result["skipped"])
 
     # Password warning
     print()
@@ -192,6 +195,7 @@ def create_backup_data(
     include_opensearch: bool = False,
     purpose: str = "",
     progress_fn=None,
+    skip_unreadable: bool = False,
 ) -> dict:
     """Create a case backup and return result dict.
 
@@ -207,6 +211,8 @@ def create_backup_data(
         include_opensearch: Include OpenSearch index snapshot (local Docker only).
         purpose: Why the backup is being made (stored in manifest).
         progress_fn: Optional callback(label, i, total) for progress.
+        skip_unreadable: Leave out what can't be read or followed, and list
+            it in the manifest, instead of stopping.
 
     Returns:
         Dict with backup_path, file_count, total_bytes, manifest,
@@ -232,6 +238,34 @@ def create_backup_data(
 
     # Scan case directory
     scan = scan_case_dir(case_dir)
+    # What the scan couldn't read or follow stops the backup before anything
+    # is copied, unless it is in a part of the case this backup leaves out;
+    # skip_unreadable leaves it out and lists it in the manifest instead.
+    problems = []
+    for err in scan["unreadable"]:
+        top = Path(err.filename).relative_to(case_dir).parts[:1]
+        evidence = (
+            top == ("evidence",) or os.path.realpath(err.filename) in scan["registered"]
+        )
+        if evidence and not include_evidence:
+            continue
+        if top == ("extractions",) and not include_extractions:
+            continue
+        problems.append(err)
+    problems.sort(key=lambda e: e.filename)
+    if problems and not skip_unreadable:
+        raise OSError(
+            f"Backup stopped before copying: {len(problems)} path(s) can't be "
+            "backed up as they are. Fix them and run the backup again, or run "
+            "it again with --skip-unreadable (MCP backup_case: "
+            "skip_unreadable=true) to leave them out; the backup's manifest "
+            "then lists each one as skipped.\n"
+            + "\n".join(f"  {e.filename}: {_reason(e)}" for e in problems)
+        )
+    skipped = [
+        {"path": str(Path(e.filename).relative_to(case_dir)), "reason": _reason(e)}
+        for e in problems
+    ]
 
     # Build file list
     files_to_copy = list(scan["case_data"])
@@ -350,6 +384,8 @@ def create_backup_data(
         manifest["opensearch_snapshot"] = opensearch_snapshot_info
     if purpose:
         manifest["purpose"] = purpose
+    if skipped:
+        manifest["skipped"] = skipped
 
     manifest_path = backup_dir / "backup-manifest.json"
     with open(manifest_path, "w") as f:
@@ -380,7 +416,25 @@ def create_backup_data(
         "password_examiners": password_examiners,
         "ledger_note": ledger_note,
         "symlinks": scan["symlinks"],
+        "skipped": skipped,
     }
+
+
+def _reason(err: OSError) -> str:
+    """Why a path can't be backed up, in words."""
+    if err.errno == errno.ENOENT and os.path.islink(err.filename):
+        return "broken symlink (its target is missing)"
+    if err.errno == errno.ELOOP:
+        return "symlink loop"
+    return err.strerror
+
+
+def _print_skipped(skipped) -> None:
+    """List the paths left out when the backup was made (in its manifest)."""
+    if skipped:
+        print(f"  Skipped when backed up: {len(skipped)} path(s), not in the backup:")
+        for s in skipped:
+            print(f"    SKIPPED: {s.get('path')} ({s.get('reason')})")
 
 
 def _reserve_dir(dest: Path, name: str) -> Path:
@@ -456,6 +510,7 @@ def _verify_backup(backup_path: Path) -> bool:
         print(f", {missing_count} MISSING", end="")
     print()
 
+    _print_skipped(manifest.get("skipped"))
     if mismatch_count or missing_count:
         print("FAILED: backup integrity check failed")
         return False
@@ -521,30 +576,79 @@ def _registered_paths(case_dir: Path) -> set[str]:
 def scan_case_dir(case_dir: Path) -> dict:
     """Scan case directory and categorize files.
 
-    Returns dict with keys: case_data, evidence, extractions, symlinks.
+    Returns dict with keys: case_data, evidence, extractions, symlinks,
+    unreadable (the OSError for each entry the walk could not list, stat,
+    read or follow), registered.
     Each list contains (relative_path, absolute_path, size) tuples.
     """
     case_data = []
     evidence = []
     extractions = []
     symlinks = []
+    unreadable: list[OSError] = []
     # Registered evidence is evidence wherever it sits (the case root, work/).
     registered = _registered_paths(case_dir)
+    # A symlink may lead out of the case only where the examiner links storage
+    # in: at the top of the case or of evidence/, or as registered evidence.
+    # Any other link must stay inside; one in extracted evidence (etc/hostname
+    # -> /etc/hostname) would otherwise copy this machine's file as evidence.
+    roots = {os.path.realpath(case_dir), *registered}
+    for top in (case_dir, case_dir / "evidence"):
+        try:
+            roots.update(
+                os.path.realpath(p) for p in top.iterdir() if os.path.islink(p)
+            )
+        except OSError:
+            pass
 
-    for root, dirs, files in os.walk(case_dir, followlinks=True):
-        # Filter out skip names
-        dirs[:] = [d for d in dirs if d not in _SKIP_NAMES]
+    def _leaves_case(path: Path) -> bool:
+        if not os.path.islink(path):  # False, not EACCES, in a dir we can't search
+            return False
+        real = os.path.realpath(path)
+        if any(os.path.commonpath([real, r]) == r for r in roots):
+            return False
+        unreadable.append(
+            OSError(errno.EXDEV, f"symlink to {real}, outside the case", str(path))
+        )
+        return True
 
+    def _loops(path: Path) -> bool:  # a link to its own folder or one above it
+        real = os.path.realpath(path)
+        if os.path.commonpath([real, os.path.realpath(path.parent)]) != real:
+            return False
+        unreadable.append(OSError(errno.ELOOP, "symlink loop", str(path)))
+        return True
+
+    for root, dirs, files in os.walk(
+        case_dir, followlinks=True, onerror=unreadable.append
+    ):
         root_path = Path(root)
+        # Filter out skip names, links that lead out of the case, and loops
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in _SKIP_NAMES
+            and not _leaves_case(root_path / d)
+            and not _loops(root_path / d)
+        ]
+
         for fname in files:
             if fname in _SKIP_NAMES:
                 continue
             abs_path = root_path / fname
             rel_path = abs_path.relative_to(case_dir)
+            if _leaves_case(abs_path):
+                continue
 
             try:
                 size = abs_path.stat().st_size
-            except OSError:
+            except OSError as e:  # e.g. a dangling symlink
+                unreadable.append(e)
+                continue
+            if not os.access(abs_path, os.R_OK):
+                unreadable.append(
+                    PermissionError(errno.EACCES, "Permission denied", str(abs_path))
+                )
                 continue
 
             # Track symlinks
@@ -572,6 +676,8 @@ def scan_case_dir(case_dir: Path) -> dict:
         "evidence": evidence,
         "extractions": extractions,
         "symlinks": symlinks,
+        "unreadable": unreadable,
+        "registered": registered,
     }
 
 
@@ -1188,6 +1294,7 @@ def cmd_restore(args, identity: dict) -> None:
     if missing_count:
         print(f", {missing_count} MISSING", end="")
     print()
+    _print_skipped(manifest.get("skipped"))
     if os_restored:
         snap = manifest.get("opensearch_snapshot", {})
         print(
