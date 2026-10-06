@@ -25,6 +25,7 @@ from vhir_cli.case_io import (
     load_audit_index,
     load_case_meta,
     load_findings,
+    load_iocs,
     load_timeline,
     load_todos,
     verify_approval_integrity,
@@ -324,7 +325,9 @@ def _show_ledger_reconciliation(case_dir: Path) -> None:
     timeline = load_timeline(case_dir)
     approved_findings = [f for f in findings if f.get("status") == "APPROVED"]
     approved_timeline = [t for t in timeline if t.get("status") == "APPROVED"]
-    all_approved = approved_findings + approved_timeline
+    iocs = [i for i in load_iocs(case_dir) if isinstance(i, dict)]
+    approved_iocs = [i for i in iocs if i.get("status") == "APPROVED"]
+    all_approved = approved_findings + approved_timeline + approved_iocs
 
     items_by_id = {i["id"]: i for i in all_approved}
     ledger_by_id = {e["finding_id"]: e for e in ledger}
