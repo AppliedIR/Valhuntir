@@ -237,8 +237,12 @@ def create_backup_data(
     marker = backup_dir / ".backup-in-progress"
     marker.touch()
 
-    # Scan case directory
-    scan = scan_case_dir(case_dir)
+    # Scan case directory (an excluded evidence/ or extractions/ isn't walked)
+    scan = scan_case_dir(
+        case_dir,
+        include_evidence=include_evidence,
+        include_extractions=include_extractions,
+    )
 
     # Build file list
     files_to_copy = list(scan["case_data"])
@@ -510,8 +514,19 @@ def _registered_paths(case_dir: Path) -> set[str]:
     return paths
 
 
-def scan_case_dir(case_dir: Path) -> dict:
+def scan_case_dir(
+    case_dir: Path,
+    *,
+    include_evidence: bool = True,
+    include_extractions: bool = True,
+) -> dict:
     """Scan case directory and categorize files.
+
+    An excluded evidence/ or extractions/ subtree is pruned from the walk
+    rather than collected and discarded — a backup that skips evidence/ must
+    not pay to stat every file in it. Registered evidence sitting elsewhere in
+    the case is still found and listed as evidence, since that is how it gets
+    excluded.
 
     Returns dict with keys: case_data, evidence, extractions, symlinks.
     Each list contains (relative_path, absolute_path, size) tuples.
@@ -522,12 +537,29 @@ def scan_case_dir(case_dir: Path) -> dict:
     symlinks = []
     # Registered evidence is evidence wherever it sits (the case root, work/).
     registered = _registered_paths(case_dir)
+    # An excluded extractions/ can still hold registered evidence; when that
+    # evidence is being backed up, the subtree has to be walked to find it.
+    walk_extractions = include_extractions
+    if include_evidence and not include_extractions and registered:
+        try:
+            ext_root = str((case_dir / "extractions").resolve()) + os.sep
+            walk_extractions = any(r.startswith(ext_root) for r in registered)
+        except (OSError, RuntimeError):
+            walk_extractions = True  # can't tell: walk rather than miss evidence
 
     for root, dirs, files in os.walk(case_dir, followlinks=True):
         # Filter out skip names
         dirs[:] = [d for d in dirs if d not in _SKIP_NAMES]
 
         root_path = Path(root)
+        if root_path == case_dir:
+            # Files are categorized by their top-level component, so prune only
+            # here — a nested reports/evidence/ is case data and must be kept.
+            if not include_evidence:
+                dirs[:] = [d for d in dirs if d != "evidence"]
+            if not walk_extractions:
+                dirs[:] = [d for d in dirs if d != "extractions"]
+
         for fname in files:
             if fname in _SKIP_NAMES:
                 continue
