@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -42,6 +41,9 @@ from vhir_cli.case_io import (
     save_todos,
     write_approval_log,
 )
+from vhir_cli.display import MULTI_LINE as _MULTI_LINE
+from vhir_cli.display import lines as _lines
+from vhir_cli.display import one_line as _one_line
 
 
 def cmd_approve(args, identity: dict) -> None:
@@ -848,29 +850,6 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
         shown = f"  Created {_one_line(todo_id)}: "
         print(shown + _lines(td["description"], " " * len(shown)))
     save_todos(case_dir, todos)
-
-
-# C0 and C1 controls: escape sequences and line breaks
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-
-
-def _one_line(text) -> str:
-    """Free text for one terminal line, its control characters shown as "?",
-    so it can't move the cursor or hide another line. Every single-line value
-    approve and review print from the case or a review file goes through it;
-    multi-line text goes through `_lines`."""
-    return _CONTROL.sub("?", str(text))
-
-
-def _lines(text, indent: str) -> str:
-    """Multi-line free text (an observation, an interpretation): each line
-    break stays a real one, indented under its field; every other control
-    character is shown as "?", as in `_one_line`."""
-    return f"\n{indent}".join(_one_line(line) for line in str(text).split("\n"))
-
-
-# Fields that hold multi-line text; every other value is one line
-_MULTI_LINE = {"observation", "interpretation", "description"}
 
 
 def _challenge_line(challenged) -> str:

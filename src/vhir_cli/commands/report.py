@@ -11,6 +11,8 @@ Reads case data from the case directory and produces formatted reports:
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -25,6 +27,7 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
 )
+from vhir_cli.display import display_safe
 
 
 def cmd_report(args, identity: dict) -> None:
@@ -51,21 +54,43 @@ def cmd_report(args, identity: dict) -> None:
     if getattr(args, "full", False):
         _report_full(case_dir, args)
     elif getattr(args, "executive_summary", False):
-        _report_executive_summary(case_dir, args)
+        _shown_and_saved(case_dir, args, _report_executive_summary)
     elif getattr(args, "report_timeline", False):
-        _report_timeline(case_dir, args)
+        _shown_and_saved(case_dir, args, _report_timeline)
     elif getattr(args, "ioc", False):
-        _report_ioc(case_dir, args)
+        _shown_and_saved(case_dir, args, _report_ioc)
     elif getattr(args, "report_findings", None):
-        _report_findings(case_dir, args)
+        _shown_and_saved(case_dir, args, _report_findings)
     elif getattr(args, "status_brief", False):
-        _report_status_brief(case_dir, args)
+        _shown_and_saved(case_dir, args, _report_status_brief)
     else:
         print(
             "Usage: vhir report --full | --executive-summary | --timeline | --ioc | --findings <ids> | --status-brief",
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _shown(records, safe: bool):
+    """Loaded records as the terminal shows them (`safe`), or as stored."""
+    return display_safe(records) if safe else records
+
+
+def _shown_and_saved(case_dir: Path, args, report) -> None:
+    """Print a text report built from display-safe records; with --save, write
+    the same report built from the records as stored, so the file is exact."""
+    output = report(case_dir, args, safe=True)
+    if output is None:
+        return
+    print(output)
+    save = getattr(args, "save", None)
+    if save:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            stored = report(case_dir, args, safe=False)
+        _save_output(case_dir, save, stored if stored is not None else output)
 
 
 def _save_output(case_dir: Path, save_path: str | None, content: str) -> None:
@@ -197,12 +222,12 @@ def _report_full(case_dir: Path, args) -> None:
     _save_output(case_dir, getattr(args, "save", None), output)
 
 
-def _report_executive_summary(case_dir: Path, args) -> None:
+def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | None:
     """Executive summary: counts and key statistics."""
-    meta = load_case_meta(case_dir)
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    todos = load_todos(case_dir)
+    meta = _shown(load_case_meta(case_dir), safe)
+    findings = _shown(load_findings(case_dir), safe)
+    timeline = _shown(load_timeline(case_dir), safe)
+    todos = _shown(load_todos(case_dir), safe)
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
@@ -235,13 +260,12 @@ def _report_executive_summary(case_dir: Path, args) -> None:
     lines.append(f"Open TODOs: {open_todos}")
 
     output = "\n".join(lines)
-    print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    return output
 
 
-def _report_timeline(case_dir: Path, args) -> None:
+def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     """Timeline report with optional date filtering."""
-    timeline = load_timeline(case_dir)
+    timeline = _shown(load_timeline(case_dir), safe)
     timeline.sort(key=lambda t: t.get("timestamp", ""))
 
     from_date = getattr(args, "from_date", None)
@@ -254,7 +278,7 @@ def _report_timeline(case_dir: Path, args) -> None:
 
     if not timeline:
         print("No timeline events found.")
-        return
+        return None
 
     lines = []
     lines.append(f"{'ID':<22} {'Status':<10} {'Timestamp':<22} Description")
@@ -272,23 +296,22 @@ def _report_timeline(case_dir: Path, args) -> None:
     lines.append(f"Total: {len(timeline)} events")
 
     output = "\n".join(lines)
-    print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    return output
 
 
-def _report_ioc(case_dir: Path, args) -> None:
+def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
     """IOC report from approved findings."""
-    findings = load_findings(case_dir)
+    findings = _shown(load_findings(case_dir), safe)
     approved = [f for f in findings if f.get("status") == "APPROVED"]
 
     if not approved:
         print("No approved findings with IOCs.")
-        return
+        return None
 
     iocs = _extract_all_iocs(approved)
     if not iocs:
         print("No IOCs found in approved findings.")
-        return
+        return None
 
     lines = []
     lines.append("IOC REPORT (Approved Findings Only)")
@@ -302,11 +325,10 @@ def _report_ioc(case_dir: Path, args) -> None:
     lines.append(f"\nTotal: {total} IOCs across {len(iocs)} types")
 
     output = "\n".join(lines)
-    print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    return output
 
 
-def _report_findings(case_dir: Path, args) -> None:
+def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
     """Report on specific findings by ID."""
     ids_str = getattr(args, "report_findings", "")
     if not ids_str:
@@ -314,7 +336,7 @@ def _report_findings(case_dir: Path, args) -> None:
         sys.exit(1)
 
     requested_ids = [fid.strip() for fid in ids_str.split(",") if fid.strip()]
-    findings = load_findings(case_dir)
+    findings = _shown(load_findings(case_dir), safe)
 
     by_id = {f["id"]: f for f in findings if "id" in f}
     found = []
@@ -356,16 +378,15 @@ def _report_findings(case_dir: Path, args) -> None:
         lines.append("")
 
     output = "\n".join(lines)
-    print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    return output
 
 
-def _report_status_brief(case_dir: Path, args) -> None:
+def _report_status_brief(case_dir: Path, args, safe: bool = True) -> str | None:
     """Quick status counts."""
-    meta = load_case_meta(case_dir)
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    todos = load_todos(case_dir)
+    meta = _shown(load_case_meta(case_dir), safe)
+    findings = _shown(load_findings(case_dir), safe)
+    timeline = _shown(load_timeline(case_dir), safe)
+    todos = _shown(load_todos(case_dir), safe)
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
@@ -382,5 +403,4 @@ def _report_status_brief(case_dir: Path, args) -> None:
     lines.append(f"Open TODOs: {open_todos}")
 
     output = "\n".join(lines)
-    print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    return output

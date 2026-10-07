@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import get_case_dir
+from vhir_cli.display import display_safe
 
 
 def cmd_audit(args, identity: dict) -> None:
@@ -83,7 +84,7 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
 def _audit_log(args) -> None:
     """Show audit log entries with optional filters."""
     case_dir = get_case_dir(getattr(args, "case", None))
-    entries = _load_audit_entries(case_dir)
+    entries = display_safe(_load_audit_entries(case_dir))
 
     mcp_filter = getattr(args, "mcp", None)
     tool_filter = getattr(args, "tool", None)
@@ -159,7 +160,7 @@ def audit_summary_data(case_dir) -> dict:
 def _audit_summary(args) -> None:
     """CLI wrapper — prints formatted audit summary."""
     case_dir = get_case_dir(getattr(args, "case", None))
-    data = audit_summary_data(case_dir)
+    data = display_safe(audit_summary_data(case_dir))
 
     if data["total_entries"] == 0:
         print("No audit entries found.")

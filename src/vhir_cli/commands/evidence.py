@@ -26,6 +26,7 @@ from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
 from vhir_cli.case_io import get_case_dir
+from vhir_cli.display import display_safe
 
 
 def cmd_evidence(args, identity: dict) -> None:
@@ -362,7 +363,7 @@ def cmd_list_evidence(args, identity: dict) -> None:
     case_dir = get_case_dir(getattr(args, "case", None))
 
     try:
-        data = list_evidence_data(case_dir)
+        data = display_safe(list_evidence_data(case_dir))
     except (json.JSONDecodeError, OSError) as e:
         print(f"Failed to read evidence registry: {e}", file=sys.stderr)
         sys.exit(1)
@@ -486,7 +487,7 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     case_dir = get_case_dir(getattr(args, "case", None))
 
     try:
-        data = verify_evidence_data(case_dir)
+        data = display_safe(verify_evidence_data(case_dir))
     except (json.JSONDecodeError, OSError) as e:
         print(f"Failed to read evidence registry: {e}", file=sys.stderr)
         sys.exit(1)
@@ -537,7 +538,7 @@ def cmd_evidence_log(args, identity: dict) -> None:
         if not line:
             continue
         try:
-            entry = json.loads(line)
+            entry = display_safe(json.loads(line))
             entries.append(entry)
         except json.JSONDecodeError:
             continue

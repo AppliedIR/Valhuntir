@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 
 from vhir_cli.case_io import get_case_dir, load_todos, save_todos
+from vhir_cli.display import display_safe
 
 
 def cmd_todo(args, identity: dict) -> None:
@@ -28,7 +29,7 @@ def cmd_todo(args, identity: dict) -> None:
 
 def _todo_list(case_dir, args) -> None:
     """List TODOs, optionally filtered."""
-    todos = load_todos(case_dir)
+    todos = display_safe(load_todos(case_dir))
     show_all = getattr(args, "all", False)
     assignee_filter = getattr(args, "assignee", "")
 

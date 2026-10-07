@@ -31,6 +31,7 @@ from vhir_cli.case_io import (
     load_withdrawals,
     verify_approval_integrity,
 )
+from vhir_cli.display import display_safe, one_line
 
 _EM_DASH = "\u2014"
 
@@ -75,9 +76,9 @@ def cmd_review(args, identity: dict) -> None:
 def _show_summary(case_dir: Path) -> None:
     """Show case overview with status counts."""
     meta = load_case_meta(case_dir)
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    evidence = _load_evidence(case_dir)
+    findings = display_safe(load_findings(case_dir))
+    timeline = display_safe(load_timeline(case_dir))
+    evidence = display_safe(_load_evidence(case_dir))
 
     print(f"Case: {meta.get('case_id', '?')}")
     print(f"Name: {meta.get('name', '')}")
@@ -99,7 +100,7 @@ def _show_summary(case_dir: Path) -> None:
 
     print(f"Evidence: {len(evidence)} registered files")
 
-    todos = load_todos(case_dir)
+    todos = display_safe(load_todos(case_dir))
     open_t = sum(1 for t in todos if t.get("status") == "open")
     completed_t = sum(1 for t in todos if t.get("status") == "completed")
     print(f"TODOs: {len(todos)} total ({open_t} open, {completed_t} completed)")
@@ -107,7 +108,7 @@ def _show_summary(case_dir: Path) -> None:
 
 def _show_todos(case_dir: Path, open_only: bool = False) -> None:
     """Show TODO items in a table."""
-    todos = load_todos(case_dir)
+    todos = display_safe(load_todos(case_dir))
     if open_only:
         todos = [t for t in todos if t.get("status") == "open"]
 
@@ -134,7 +135,7 @@ def _show_todos(case_dir: Path, open_only: bool = False) -> None:
 
 def _show_findings_table(case_dir: Path) -> None:
     """Show findings as a summary table."""
-    findings = load_findings(case_dir)
+    findings = display_safe(load_findings(case_dir))
     if not findings:
         print("No findings recorded.")
         return
@@ -178,14 +179,14 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
 def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
     try:
-        withdrawals = load_withdrawals(case_dir)
+        withdrawals = display_safe(load_withdrawals(case_dir))
     except Exception as e:  # a damaged audit line: say so, never "none"
         print(f"Withdrawn candidates couldn't be read: {e}")
         sys.exit(1)
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
-    audit_index = load_audit_index(case_dir)
+    audit_index = display_safe(load_audit_index(case_dir))
     print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
     for entry in withdrawals:
         result = entry["result_summary"]
@@ -205,12 +206,12 @@ def _show_withdrawn(case_dir: Path) -> None:
 
 def _show_findings_detail(case_dir: Path) -> None:
     """Show full findings with all fields."""
-    findings = load_findings(case_dir)
+    findings = display_safe(load_findings(case_dir))
     if not findings:
         print("No findings recorded.")
         return
 
-    audit_index = load_audit_index(case_dir)
+    audit_index = display_safe(load_audit_index(case_dir))
 
     for f in findings:
         print(f"\n{'=' * 60}")
@@ -316,7 +317,9 @@ def _show_findings_verify(
             vdisplay = "draft"
 
         title = f.get("title", "Untitled")
-        print(f"{fid:<20} {status:<12} {vdisplay:<22} {title}")
+        print(
+            f"{one_line(fid):<20} {one_line(status):<12} {vdisplay:<22} {one_line(title)}"
+        )
 
     # Summary
     confirmed = sum(1 for f in results if f["verification"] == "confirmed")
@@ -376,19 +379,19 @@ def _show_ledger_reconciliation(case_dir: Path) -> None:
         item = items_by_id.get(item_id)
         entry = ledger_by_id.get(item_id)
         if item and not entry:
-            print(f"{item_id:<20} APPROVED_NO_VERIFICATION")
+            print(f"{one_line(item_id):<20} APPROVED_NO_VERIFICATION")
             alerts += 1
         elif entry and not item:
-            print(f"{item_id:<20} VERIFICATION_NO_FINDING")
+            print(f"{one_line(item_id):<20} VERIFICATION_NO_FINDING")
             alerts += 1
         elif item and entry:
             desc = hmac_text(item)
             snap = entry.get("content_snapshot", "")
             if desc != snap:
-                print(f"{item_id:<20} DESCRIPTION_MISMATCH")
+                print(f"{one_line(item_id):<20} DESCRIPTION_MISMATCH")
                 alerts += 1
             else:
-                print(f"{item_id:<20} VERIFIED")
+                print(f"{one_line(item_id):<20} VERIFIED")
 
     if alerts:
         print(
@@ -431,11 +434,11 @@ def _show_hmac_verification(
         examiners = [e for e in examiners if e == identity.get("examiner")]
 
     print("\nHMAC Verification (password required)")
-    print(f"Examiners with ledger entries: {', '.join(examiners)}")
+    print(f"Examiners with ledger entries: {one_line(', '.join(examiners))}")
 
     for examiner in examiners:
         try:
-            print(f"\n  Verifying entries for examiner '{examiner}':")
+            print(f"\n  Verifying entries for examiner '{one_line(examiner)}':")
             password = getpass_prompt(f"  Enter password for '{examiner}': ")
             salt = get_analyst_salt(config_path, examiner)
             if not verify_password(config_path, examiner, password):
@@ -451,7 +454,7 @@ def _show_hmac_verification(
 
             for r in results:
                 status = "CONFIRMED" if r["verified"] else "TAMPERED"
-                print(f"    {r['finding_id']:<20} {status}")
+                print(f"    {one_line(r['finding_id']):<20} {status}")
 
             print(f"  {confirmed} confirmed, {failed} failed")
             if failed:
@@ -464,7 +467,7 @@ def _show_hmac_verification(
 
 def _show_iocs(case_dir: Path) -> None:
     """Extract IOCs from findings, grouped by approval status."""
-    findings = load_findings(case_dir)
+    findings = display_safe(load_findings(case_dir))
     if not findings:
         print("No findings recorded.")
         return
@@ -558,7 +561,7 @@ def _show_timeline(
     event_type: str | None = None,
 ) -> None:
     """Show timeline events with optional filters."""
-    timeline = load_timeline(case_dir)
+    timeline = display_safe(load_timeline(case_dir))
     timeline.sort(key=lambda t: t.get("timestamp", ""))
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
@@ -600,7 +603,7 @@ def _show_timeline(
 
 def _show_evidence(case_dir: Path) -> None:
     """Show evidence registry and integrity status."""
-    evidence = _load_evidence(case_dir)
+    evidence = display_safe(_load_evidence(case_dir))
     if not evidence:
         print("No evidence registered.")
         return
@@ -630,7 +633,7 @@ def _show_evidence(case_dir: Path) -> None:
                     if not line:
                         continue
                     try:
-                        entry = json.loads(line)
+                        entry = display_safe(json.loads(line))
                     except json.JSONDecodeError:
                         print("  Warning: skipping corrupt log line", file=sys.stderr)
                         continue
@@ -658,7 +661,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                         if not line:
                             continue
                         try:
-                            entries.append(json.loads(line))
+                            entries.append(display_safe(json.loads(line)))
                         except json.JSONDecodeError:
                             print(
                                 f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
@@ -678,7 +681,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                     if not line:
                         continue
                     try:
-                        entry = json.loads(line)
+                        entry = display_safe(json.loads(line))
                     except json.JSONDecodeError:
                         print(
                             "  Warning: skipping corrupt approval line", file=sys.stderr
