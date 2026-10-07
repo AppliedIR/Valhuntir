@@ -12,6 +12,7 @@ from vhir_cli.commands.evidence import (
     cmd_lock_evidence,
     cmd_register_evidence,
     cmd_verify_evidence,
+    register_evidence_data,
 )
 
 
@@ -43,12 +44,14 @@ class FakeArgs:
         description="",
         evidence_action=None,
         path_filter=None,
+        force_reregister=False,
     ):
         self.case = case
         self.path = path
         self.description = description
         self.evidence_action = evidence_action
         self.path_filter = path_filter
+        self.force_reregister = force_reregister
 
 
 class TestLockEvidence:
@@ -73,6 +76,36 @@ class TestRegisterEvidence:
         assert len(reg["files"]) == 1
         assert reg["files"][0]["sha256"]
         assert reg["files"][0]["description"] == "Test malware"
+
+    def test_reregister_changed_file_refuses(self, case_dir, identity):
+        ev_file = case_dir / "evidence" / "memdump.raw"
+        ev_file.write_bytes(b"original acquisition")
+        first = register_evidence_data(
+            case_dir=case_dir, path=str(ev_file), examiner="analyst1"
+        )
+        ev_file.write_bytes(b"modified after registration")
+        with pytest.raises(ValueError, match="changed since registration"):
+            register_evidence_data(
+                case_dir=case_dir, path=str(ev_file), examiner="analyst1"
+            )
+        reg = json.loads((case_dir / "evidence.json").read_text())
+        assert reg["files"][0]["sha256"] == first["sha256"]
+
+    def test_force_reregister_keeps_prior_hash(self, case_dir, identity, monkeypatch):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        ev_file = case_dir / "evidence" / "memdump.raw"
+        ev_file.write_bytes(b"original acquisition")
+        cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
+        reg = json.loads((case_dir / "evidence.json").read_text())
+        original_hash = reg["files"][0]["sha256"]
+        ev_file.write_bytes(b"re-acquired image")
+        cmd_register_evidence(
+            FakeArgs(path=str(ev_file), force_reregister=True), identity
+        )
+        reg = json.loads((case_dir / "evidence.json").read_text())
+        assert len(reg["files"]) == 1
+        assert reg["files"][0]["sha256"] != original_hash
+        assert reg["files"][0]["previous_hashes"][0]["sha256"] == original_hash
 
 
 class TestListEvidence:

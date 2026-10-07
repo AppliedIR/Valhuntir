@@ -452,6 +452,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ev_register.add_argument(
         "--description", default="", help="Description of evidence"
     )
+    p_ev_register.add_argument(
+        "--force-reregister",
+        action="store_true",
+        help="Re-register a file whose hash changed (keeps the prior hash)",
+    )
 
     evidence_sub.add_parser("list", help="List registered evidence files")
 
