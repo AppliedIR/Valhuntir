@@ -614,10 +614,13 @@ def _registered_paths(case_dir: Path) -> set[str]:
 
 
 def _is_backup(path: Path) -> bool:
-    return any(
-        (path / name).is_file()
-        for name in ("backup-manifest.json", ".backup-in-progress")
-    )
+    try:
+        return any(
+            (path / name).is_file()
+            for name in ("backup-manifest.json", ".backup-in-progress")
+        )
+    except OSError:  # a folder it can't search: the walk reports it
+        return False
 
 
 def scan_case_dir(case_dir: Path) -> dict:
