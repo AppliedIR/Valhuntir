@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import grp
 import os
+import signal
+import stat
 import types
 from pathlib import Path
 
@@ -132,7 +134,7 @@ def test_a_link_planted_in_a_case_does_not_widen_what_it_points_at(
     (tmp_path / "evidence").mkdir()
     (tmp_path / "evidence").chmod(0o700)
     warning = main._set_case_wintools_permissions(tmp_path)
-    assert "symbolic link" in warning
+    assert "inside the case" in warning and "is not a" in warning
     assert record.stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "evidence").stat().st_mode & 0o7777 == 0o700
 
@@ -148,5 +150,99 @@ def test_a_dangling_link_planted_for_the_audit_file_creates_nothing(
     (tmp_path / "case" / "audit").mkdir(parents=True)
     (tmp_path / "case" / "audit" / "wintools-mcp.jsonl").symlink_to(outside)
     warning = main._set_case_wintools_permissions(tmp_path / "case")
-    assert "symbolic link" in warning
+    assert "Group permissions not applied" in warning
     assert not outside.exists()
+
+
+def test_a_pipe_planted_for_the_audit_file_does_not_hang_activation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        grp, "getgrnam", lambda name: types.SimpleNamespace(gr_gid=os.getgid())
+    )
+    (tmp_path / "audit").mkdir()
+    os.mkfifo(tmp_path / "audit" / "wintools-mcp.jsonl")
+
+    def hung(signum, frame):
+        raise TimeoutError("the group step waited on a pipe")
+
+    previous = signal.signal(signal.SIGALRM, hung)
+    signal.alarm(5)
+    try:
+        warning = main._set_case_wintools_permissions(tmp_path)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    assert "is not a regular file inside the case" in warning
+
+
+@pytest.mark.parametrize("folder", ["audit", "extractions"])
+def test_a_case_folder_linked_outside_the_case_is_not_followed(
+    tmp_path, monkeypatch, folder
+):
+    monkeypatch.setattr(
+        grp, "getgrnam", lambda name: types.SimpleNamespace(gr_gid=os.getgid())
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "wintools-mcp.jsonl").write_text("")
+    (outside / "wintools-mcp.jsonl").chmod(0o600)
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / folder).symlink_to(outside)
+    warning = main._set_case_wintools_permissions(case)
+    assert "leads outside the case" in warning
+    assert (outside / "wintools-mcp.jsonl").stat().st_mode & 0o777 == 0o600
+    assert not (outside / "wintools").exists()
+
+
+def _seen_as_a_regular_file(monkeypatch, path):
+    """`path` passes the check, as if it were swapped in just after it."""
+    real_lstat = os.lstat
+
+    def lstat(p, *a, **k):
+        st = real_lstat(p, *a, **k)
+        if os.fspath(p) == os.fspath(path):
+            return os.stat_result((stat.S_IFREG | 0o644, *tuple(st)[1:]))
+        return st
+
+    monkeypatch.setattr(os, "lstat", lstat)
+
+
+def test_a_pipe_swapped_in_after_the_check_does_not_hang_activation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        grp, "getgrnam", lambda name: types.SimpleNamespace(gr_gid=os.getgid())
+    )
+    (tmp_path / "audit").mkdir()
+    pipe = tmp_path / "audit" / "wintools-mcp.jsonl"
+    os.mkfifo(pipe)
+    _seen_as_a_regular_file(monkeypatch, pipe)
+
+    def hung(signum, frame):
+        raise TimeoutError("the group step waited on a pipe")
+
+    previous = signal.signal(signal.SIGALRM, hung)
+    signal.alarm(5)
+    try:
+        warning = main._set_case_wintools_permissions(tmp_path)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    assert "is not a regular file inside the case" in warning
+
+
+def test_a_link_swapped_in_after_the_check_is_not_followed(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        grp, "getgrnam", lambda name: types.SimpleNamespace(gr_gid=os.getgid())
+    )
+    record = tmp_path / "findings.json"
+    record.write_text("[]")
+    record.chmod(0o600)
+    (tmp_path / "audit").mkdir()
+    link = tmp_path / "audit" / "wintools-mcp.jsonl"
+    link.symlink_to(record)
+    _seen_as_a_regular_file(monkeypatch, link)
+    main._set_case_wintools_permissions(tmp_path)
+    assert record.stat().st_mode & 0o777 == 0o600

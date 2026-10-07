@@ -1137,6 +1137,7 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
     """
     import grp
     import os
+    import stat
 
     try:
         sift_gid = grp.getgrnam("sift").gr_gid
@@ -1145,12 +1146,28 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
 
-    def share_with_group(path: Path, mode: int, directory: bool = False) -> None:
-        # Never through a link: one planted here would widen another file
-        flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if directory else 0)
+    root = os.path.realpath(case_dir)
+
+    def inside(path: Path) -> bool:
+        real = os.path.realpath(path)
+        return os.path.commonpath([real, root]) == root
+
+    def share_with_group(path: Path, mode: int, directory: bool = False) -> str | None:
+        """Give `path` to the group: only a regular file or folder (as asked)
+        inside the case, never through a link, and never waiting on a pipe."""
+        kind = stat.S_ISDIR if directory else stat.S_ISREG
+        refused = (
+            f"Group permissions not applied: {path} is not a "
+            f"{'folder' if directory else 'regular file'} inside the case."
+        )
+        if not kind(os.lstat(path).st_mode) or not inside(path):
+            return refused
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         try:
-            fd = os.open(path, flags)
+            fd = os.open(path, flags | (os.O_DIRECTORY if directory else 0))
             try:
+                if not kind(os.fstat(fd).st_mode):  # replaced since the check
+                    return refused
                 os.fchown(fd, -1, sift_gid)
                 os.fchmod(fd, mode)
             finally:
@@ -1158,27 +1175,35 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
         except OSError as e:
             e.filename = str(path)
             raise
+        return None
 
     try:
         # Create extractions/wintools/ with setgid + group-writable
         wintools_dir = case_dir / "extractions" / "wintools"
+        if not inside(wintools_dir):
+            return (
+                f"Group permissions not applied: {wintools_dir} leads outside the case."
+            )
         wintools_dir.mkdir(parents=True, exist_ok=True)
-        share_with_group(wintools_dir, 0o2775, directory=True)
+        warning = share_with_group(wintools_dir, 0o2775, directory=True)
+        if warning:
+            return warning
 
         # Create audit/wintools-mcp.jsonl with group-writable
         audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
+        if not inside(audit_file):
+            return (
+                f"Group permissions not applied: {audit_file} leads outside the case."
+            )
         if not audit_file.exists() and not audit_file.is_symlink():
             audit_file.parent.mkdir(parents=True, exist_ok=True)
             audit_file.touch()
-        share_with_group(audit_file, 0o664)
+        return share_with_group(audit_file, 0o664)
     except OSError as e:
-        if os.path.islink(e.filename):
-            return f"Group permissions not applied: {e.filename} is a symbolic link."
         return (
             f"Group permissions not applied to {e.filename or case_dir}: "
             f"{e.strerror or e}. Log out and back in, then activate the case again."
         )
-    return None
 
 
 def _wintools_configured() -> bool:
