@@ -979,6 +979,56 @@ def _stays_inside(rel) -> bool:
     )
 
 
+def _repoint_evidence(target_dir: Path, source: str) -> tuple[int, list[str]] | None:
+    """Point evidence.json entries under the backed-up case at the restored copy.
+
+    Registration stores absolute paths, so after a restore elsewhere they still
+    name the original's files. An entry under the recorded source, or under
+    its real path, gets the same relative path under the restored folder;
+    entries elsewhere (evidence linked in from outside) are kept and listed.
+    Returns (entries re-pointed, entries left outside the case), or None when
+    the registry can't be read, in which case it's left untouched.
+    """
+    reg = target_dir / "evidence.json"
+    if not reg.exists():
+        return 0, []
+    try:
+        data = json.loads(reg.read_text())
+        files = data["files"]
+        if not isinstance(files, list):
+            raise TypeError("files is not a list")
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"  Note: evidence.json can't be read ({e}); it was left as it is.")
+        return None
+    new_root = target_dir.resolve()
+    roots = [Path(os.path.abspath(source)), Path(os.path.realpath(source))]
+    moved, outside = 0, []
+    for entry in files:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str):
+            continue
+        for root in roots:
+            try:
+                rel = Path(path).relative_to(root)  # by component, not by prefix
+            except ValueError:
+                continue
+            entry["path"] = str(new_root / rel)
+            moved += entry["path"] != path
+            break
+        else:
+            try:
+                Path(path).relative_to(new_root)
+            except ValueError:
+                outside.append(path)
+    if moved:
+        from vhir_cli.case_io import _atomic_write
+
+        mode = reg.stat().st_mode & 0o777
+        _atomic_write(reg, json.dumps(data, indent=2, default=str))
+        os.chmod(reg, mode)
+    return moved, outside
+
+
 def cmd_restore(args, identity: dict) -> None:
     """Entry point for 'vhir restore'."""
     backup_path = Path(args.backup_path)
@@ -1386,6 +1436,28 @@ def cmd_restore(args, identity: dict) -> None:
         print()
 
     integrity_ok = not (mismatch_count or missing_count)
+
+    # Evidence registered in the backed-up case is re-pointed at the restored
+    # copy, so verify checks these files. Before the marker goes: a failed
+    # write leaves the restore flagged.
+    if integrity_ok and target_dir.resolve() != Path(os.path.realpath(source_path)):
+        try:
+            repointed = _repoint_evidence(target_dir, source_path)
+        except OSError as e:
+            print(
+                f"Error: evidence.json could not be updated for {target_dir}: {e}\n"
+                f"  {target_dir} is marked .restore-in-progress — do not use it.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if repointed:
+            moved, outside = repointed
+            if moved:
+                print(f"  Evidence: {moved} registry path(s) now point to {target_dir}")
+            if outside:
+                print("  Evidence still registered outside the restored case:")
+                for path in outside:
+                    print(f"    {path}")
 
     # Remove restore marker — only once every file verified, so a bad restore
     # stays flagged, and a re-run asks before removing it.
