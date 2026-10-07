@@ -185,6 +185,9 @@ def _create_backup(args, identity: dict) -> None:
     print("know the examiner password used when findings were approved.")
     print()
     print("The backup does NOT contain the plaintext password.")
+    if result.get("password_examiners"):
+        print("It does contain the examiners' password files, which are enough")
+        print("to sign ledger entries: store it as carefully as the password.")
     print("It is YOUR responsibility to remember or securely store it.")
     print("=" * 64)
 

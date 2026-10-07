@@ -1,12 +1,16 @@
 """HMAC verification ledger for approved findings and timeline events.
 
-The verification ledger lives at /var/lib/vhir/verification/{case-id}.jsonl.
-This path is outside any user's home directory and is unreachable by the
-Claude Code sandbox from any CWD.
+The verification ledger lives at /var/lib/vhir/verification/{case-id}.jsonl,
+outside every user's home directory. Claude Code's deny rules and sandbox keep
+that client's own tools away from it; they don't limit other programs running
+as the examiner's user.
 
 Each entry records an HMAC-SHA256 over the description text, keyed by
-PBKDF2(password, salt). The LLM cannot forge entries because it does not know
-the password-derived key.
+PBKDF2(password, salt). That key is the same value as the stored password
+hash, so anyone (or any program) running as a user who can read the
+examiner's password file in /var/lib/vhir/passwords can create entries that
+verify. The ledger does show a later change to approved text made by anyone
+without that file or the password.
 """
 
 from __future__ import annotations

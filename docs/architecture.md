@@ -309,7 +309,7 @@ Nine layers of defense-in-depth protect the integrity of forensic findings. See 
 | L8 | Provenance enforcement (MCP > HOOK > SHELL > NONE) | Structural |
 | L9 | Kernel sandbox (bubblewrap namespaces) | Kernel |
 
-The HMAC ledger (L2) is the cryptographic guarantee. The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
+The HMAC ledger (L2) shows later changes to approved text by anyone without the examiner's password or password file; anyone running as a user who can read that file can sign entries (see [Security](security.md)). The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
 
 ## Grounding Score
 

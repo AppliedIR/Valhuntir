@@ -59,7 +59,7 @@ The installer requires typing `security_hole` (or passing `-AcknowledgeSecurityH
 
 ## Human-in-the-Loop Controls
 
-Nine layers of defense-in-depth protect the integrity of forensic findings. The HMAC verification ledger (L2) is the cryptographic guarantee. The other layers are advisory controls that raise the bar.
+Nine layers of defense-in-depth protect the integrity of forensic findings. The HMAC verification ledger (L2) shows later changes to approved text; what it does and doesn't prove is below. The other layers are advisory controls that raise the bar.
 
 ### L1 — Structural Approval Gate
 
@@ -75,7 +75,12 @@ When an examiner approves findings, an HMAC-SHA256 signature is computed over th
 - Password rotation (`vhir config --reset-password`) re-signs all ledger entries with the new key
 - Case close copies the verification ledger into the case directory for archival
 
-The LLM cannot forge ledger entries because it does not know the password-derived key.
+What the ledger shows, and what it doesn't:
+
+- It shows a later change to approved text made by anyone who has neither the examiner's password nor their password file.
+- The signing key is the stored password hash. Anyone, or any program, running as a user who can read the examiner's password file in `/var/lib/vhir/passwords` can create ledger entries that verify.
+- The terminal password prompt stops a command that only pipes input into `vhir`. It doesn't stop a program that controls a terminal.
+- Claude Code's deny rules and sandbox limit that client's own tools. They don't limit other programs running as the examiner's user.
 
 ### L3 — Case Data Deny Rules
 

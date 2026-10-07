@@ -1,13 +1,15 @@
 """Approval authentication: mandatory password for approve/reject.
 
-Password uses getpass (reads from /dev/tty, no echo) to block
-both AI-via-Bash AND expect-style terminal automation.
+The password is read with getpass from /dev/tty, with no echo. That stops a
+command that only pipes input into vhir; it doesn't stop a program that
+controls a terminal (a pty) and types into it.
 A password must be configured before approvals are allowed.
 
 Password hashes are stored in /var/lib/vhir/passwords/{examiner}.json
-(0o600, directory 0o700) — protected by Read/Edit/Write deny
-rules so the LLM cannot access the hash material. Auto-migration
-from the legacy config.yaml location happens on first use.
+(0o600, directory 0o700). Claude Code's deny rules keep that client's own
+tools from reading them; other programs running as the examiner's user can
+(the hash is also the ledger's signing key). Auto-migration from the legacy
+config.yaml location happens on first use.
 """
 
 from __future__ import annotations

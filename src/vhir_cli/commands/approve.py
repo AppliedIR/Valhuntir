@@ -1,7 +1,7 @@
 """Approve staged findings and timeline events.
 
-Every approval requires password confirmation via /dev/tty.
-This blocks AI-via-Bash from approving without human involvement.
+Every approval requires password confirmation via /dev/tty. That stops a
+command that only pipes input; a program that controls a terminal can type it.
 
 Interactive review options per item:
   [a]pprove  — approve as-is
