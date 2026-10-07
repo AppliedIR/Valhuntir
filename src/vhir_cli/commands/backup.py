@@ -258,7 +258,7 @@ def _create_backup_data(
 
     # Write in-progress marker
     marker = backup_dir / ".backup-in-progress"
-    marker.touch()
+    marker.write_text(json.dumps(_MARKER))
 
     # Scan case directory
     scan = scan_case_dir(case_dir)
@@ -308,6 +308,14 @@ def _create_backup_data(
     skipped = [
         {"path": os.path.relpath(e.filename, case_dir), "reason": _reason(e)}
         for e in problems
+    ]
+    # Earlier backups made into the case are left out, and listed (this one
+    # is left out too, but isn't anything to report)
+    this = os.path.realpath(backup_dir)
+    skipped += [
+        {"path": rel, "reason": "an earlier Valhuntir backup"}
+        for rel in sorted(scan["pruned_backups"])
+        if os.path.realpath(case_dir / rel) != this
     ]
 
     # Build file list
@@ -613,14 +621,42 @@ def _registered_paths(case_dir: Path) -> set[str]:
     return paths
 
 
-def _is_backup(path: Path) -> bool:
+# The in-progress marker's body, so only vhir's own marker counts as one.
+_MARKER = {"valhuntir": "backup in progress"}
+# Keys every manifest create_backup_data writes; a backup-manifest.json
+# without them is another tool's, and its folder is backed up as usual.
+_MANIFEST_KEYS = (
+    "version",
+    "case_id",
+    "timestamp",
+    "source",
+    "examiner",
+    "files",
+    "file_count",
+    "total_bytes",
+)
+
+
+def _json_file(path: Path):
     try:
-        return any(
-            (path / name).is_file()
-            for name in ("backup-manifest.json", ".backup-in-progress")
-        )
-    except OSError:  # a folder it can't search: the walk reports it
-        return False
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text())
+    except (OSError, ValueError):  # a folder it can't search: the walk reports it
+        return None
+
+
+def _is_backup(path: Path) -> bool:
+    """True for a folder holding a Valhuntir backup, finished or in progress."""
+    marker = _json_file(path / ".backup-in-progress")
+    if marker == _MARKER:
+        return True
+    manifest = _json_file(path / "backup-manifest.json")
+    return (
+        isinstance(manifest, dict)
+        and all(key in manifest for key in _MANIFEST_KEYS)
+        and isinstance(manifest["files"], list)
+    )
 
 
 def scan_case_dir(case_dir: Path) -> dict:
@@ -628,13 +664,15 @@ def scan_case_dir(case_dir: Path) -> dict:
 
     Returns dict with keys: case_data, evidence, extractions, symlinks,
     unreadable (the OSError for each entry the walk could not list, stat,
-    read or follow), registered.
+    read or follow), registered, pruned_backups (the folders left out as
+    Valhuntir backups, relative to the case).
     Each list contains (relative_path, absolute_path, size) tuples.
     """
     case_data = []
     evidence = []
     extractions = []
     symlinks = []
+    pruned_backups: list[str] = []  # Valhuntir backups made into the case
     unreadable: list[OSError] = []
     # Registered evidence is evidence wherever it sits (the case root, work/).
     registered = _registered_paths(case_dir)
@@ -690,8 +728,10 @@ def scan_case_dir(case_dir: Path) -> dict:
             if d not in _SKIP_NAMES
             and not _leaves_case(root_path / d)
             and not _loops(root_path / d)
-            and not _is_backup(root_path / d)
         ]
+        backups = [d for d in dirs if _is_backup(root_path / d)]
+        pruned_backups += [str((root_path / d).relative_to(case_dir)) for d in backups]
+        dirs[:] = [d for d in dirs if d not in backups]
 
         # Drop subdirectories that loop back onto the path we came in by
         chain = chains.pop(str(root), ())
@@ -757,6 +797,7 @@ def scan_case_dir(case_dir: Path) -> dict:
         "symlinks": symlinks,
         "unreadable": unreadable,
         "registered": registered,
+        "pruned_backups": pruned_backups,
     }
 
 

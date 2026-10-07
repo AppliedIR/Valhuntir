@@ -4,11 +4,14 @@ The scan copied the whole case, earlier backups and the one being written
 included, so each backup into <case>/backups held all the ones before it
 (4 -> 9 -> 19 files), and the in-progress marker of the running one ended up
 inside it. A folder holding a backup manifest or the in-progress marker is
-now left out; everything else in the destination is still backed up.
+now left out, and listed in the backup's result as skipped; it must be
+Valhuntir's own (its manifest's fields, or its marker), so another tool's
+backup-manifest.json beside evidence doesn't hide that evidence.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -48,8 +51,16 @@ def test_backups_into_the_case_stay_the_same_size(case, where):
     else:
         destinations = [case / where] * 3
     backups = _three(case, destinations)
+    # The data copied; the manifest itself grows by one line per earlier
+    # backup, as it lists each one as skipped
     sizes = [
-        (len(_files(b)), sum(p.stat().st_size for p in _files(b))) for b in backups
+        (
+            len(_files(b)),
+            sum(
+                p.stat().st_size for p in _files(b) if p.name != "backup-manifest.json"
+            ),
+        )
+        for b in backups
     ]
     assert sizes[0] == sizes[1] == sizes[2], sizes
     for backup in backups:  # on disk: the manifest's walk hides the marker
@@ -67,3 +78,36 @@ def test_anchor_an_examiners_file_in_the_destination_is_kept(case):
 def test_anchor_a_destination_outside_the_case_is_unchanged(case, tmp_path):
     backups = _three(case, [tmp_path / "out"] * 3)
     assert [len(_files(b)) for b in backups] == [len(_files(backups[0]))] * 3
+
+
+def test_each_earlier_backup_is_listed_as_skipped(case):
+    results = [
+        create_backup_data(case, str(case / "backups"), "tester") for _ in range(3)
+    ]
+    assert results[0]["skipped"] == []
+    listed = [s["path"] for s in results[2]["skipped"]]
+    assert listed == sorted(
+        str(Path(r["backup_path"]).relative_to(case)) for r in results[:2]
+    ), results[2]["skipped"]
+    assert {s["reason"] for s in results[2]["skipped"]} == {
+        "an earlier Valhuntir backup"
+    }
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [{"tool": "other", "files": ["a"]}, "not json"],
+    ids=["another tool's manifest", "unreadable manifest"],
+)
+def test_evidence_beside_another_tools_manifest_is_backed_up(case, tmp_path, manifest):
+    folder = case / "work" / "collected"
+    folder.mkdir(parents=True)
+    (folder / "backup-manifest.json").write_text(
+        manifest if isinstance(manifest, str) else json.dumps(manifest)
+    )
+    (folder / "notes.txt").write_text("examiner notes")
+    (folder / ".backup-in-progress").write_text("")  # not Valhuntir's marker
+    result = create_backup_data(case, str(tmp_path / "out"), "tester")
+    backup = Path(result["backup_path"])
+    assert (backup / "work" / "collected" / "notes.txt").is_file()
+    assert result["skipped"] == []
