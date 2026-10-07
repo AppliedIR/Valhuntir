@@ -580,12 +580,45 @@ def _setup_firewall(wintools_ip: str) -> None:
     )
 
 
+def _set_smb_password(join_code: str) -> None:
+    """Give vhir-smb this join code's password and push it to wintools-mcp."""
+    import subprocess
+
+    derived_password = derive_smb_password(join_code)
+    try:
+        subprocess.run(
+            ["sudo", "smbpasswd", "-a", "-s", "vhir-smb"],
+            input=f"{derived_password}\n{derived_password}\n".encode(),
+            check=True,
+            capture_output=True,
+            timeout=15,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to set SMB password: {e}") from e
+
+    # Push updated SMB credentials to wintools-mcp if configured
+    _push_smb_credentials(derived_password)
+
+
+def _active_case_dir() -> Path | None:
+    """The active case's directory, if the pointer names one with a CASE.yaml."""
+    try:
+        case_dir = Path((Path.home() / ".vhir" / "active_case").read_text().strip())
+    except OSError:
+        return None
+    if case_dir.is_absolute() and (case_dir / "CASE.yaml").is_file():
+        return case_dir
+    return None
+
+
 def _setup_samba_share(join_code: str) -> str:
     """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP."""
     import subprocess
 
-    # Idempotency: skip if already configured
+    # Idempotency: skip if already configured, but every join code still
+    # sets the password Windows will derive from it
     samba_yaml = Path.home() / ".vhir" / "samba.yaml"
+    keep_ip = None
     if samba_yaml.is_file():
         try:
             doc = yaml.safe_load(samba_yaml.read_text()) or {}
@@ -593,9 +626,12 @@ def _setup_samba_share(join_code: str) -> str:
                 print(f"Samba share already configured for {doc['wintools_ip']}")
                 answer = input("Reconfigure? [y/N] ").strip().lower()
                 if answer not in ("y", "yes"):
-                    return doc["wintools_ip"]
+                    keep_ip = doc["wintools_ip"]
         except (yaml.YAMLError, OSError):
             pass
+    if keep_ip:
+        _set_smb_password(join_code)
+        return keep_ip
 
     try:
         subprocess.run(
@@ -661,23 +697,7 @@ def _setup_samba_share(join_code: str) -> str:
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to add user to sift group: {e}") from e
 
-    # Derive SMB password
-    derived_password = derive_smb_password(join_code)
-
-    # Set smbpasswd
-    try:
-        subprocess.run(
-            ["sudo", "smbpasswd", "-a", "-s", "vhir-smb"],
-            input=f"{derived_password}\n{derived_password}\n".encode(),
-            check=True,
-            capture_output=True,
-            timeout=15,
-        )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to set SMB password: {e}") from e
-
-    # Push updated SMB credentials to wintools-mcp if configured
-    _push_smb_credentials(derived_password)
+    _set_smb_password(join_code)
 
     # Prompt for wintools IP
     import ipaddress
@@ -692,16 +712,18 @@ def _setup_samba_share(join_code: str) -> str:
             f"IP must be a private address (10.x, 172.16-31.x, 192.168.x): {wintools_ip}"
         )
 
-    # Share starts at inactive placeholder — repointed per-case on activation
-    placeholder = str(Path.home() / ".vhir" / "share-inactive")
-    Path(placeholder).mkdir(parents=True, exist_ok=True)
+    # The share points at the active case, or at the inactive placeholder
+    # when there is none; activation repoints it from then on.
+    placeholder = Path.home() / ".vhir" / "share-inactive"
+    placeholder.mkdir(parents=True, exist_ok=True)
+    share_target = str(_active_case_dir() or placeholder)
 
     # Write Samba config — force user ensures SMB file operations run as the
     # local installer user, eliminating the need to re-login for sift group
     # membership.  Authentication still uses vhir-smb (valid users).
     username = getpass.getuser()
     smb_conf = f"""[cases]
-    path = {placeholder}
+    path = {share_target}
     valid users = vhir-smb
     read only = no
     create mask = 0644
@@ -806,7 +828,7 @@ def _setup_samba_share(join_code: str) -> str:
         "smb_user": "vhir-smb",
         "force_user": username,
         "wintools_ip": wintools_ip,
-        "active_share_target": placeholder,
+        "active_share_target": share_target,
         "configured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     samba_path = vhir_dir / "samba.yaml"

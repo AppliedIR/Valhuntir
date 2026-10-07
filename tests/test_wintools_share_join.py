@@ -1,0 +1,113 @@
+"""Every join code leaves the wintools share usable.
+
+A join code sets the Samba password Windows derives from it, even when the
+existing share setup is kept. A join while a case is active points the share
+at that case. Every command is recorded, none run.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import types
+
+import pytest
+import yaml
+
+from vhir_cli.commands import join
+
+
+@pytest.fixture
+def box(tmp_path, monkeypatch):
+    """An isolated HOME, recorded commands and pushes, and scripted answers."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".vhir").mkdir()
+    ran, pushed, answers = [], [], []
+
+    def run(cmd, **kwargs):
+        ran.append((cmd, kwargs.get("input")))
+        out = "" if kwargs.get("text") else b""
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr=out)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(join, "_push_smb_credentials", pushed.append)
+    monkeypatch.setattr(join, "_get_sift_ip", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda prompt="": answers.pop(0))
+    return types.SimpleNamespace(home=tmp_path, ran=ran, pushed=pushed, answers=answers)
+
+
+def _configured(box):
+    (box.home / ".vhir" / "samba.yaml").write_text(
+        yaml.dump({"share_name": "cases", "wintools_ip": "10.0.0.20"})
+    )
+
+
+def _smbpasswd_inputs(box):
+    return [i for cmd, i in box.ran if "smbpasswd" in cmd]
+
+
+def _case(box, case_id="INC-1"):
+    case_dir = box.home / "cases" / case_id
+    case_dir.mkdir(parents=True)
+    (case_dir / "CASE.yaml").write_text(f"case_id: {case_id}\n")
+    (box.home / ".vhir" / "active_case").write_text(str(case_dir))
+    return case_dir
+
+
+SHARE_CONF = "/etc/samba/smb.conf.d/vhir-cases.conf"
+
+
+def _share_conf(box):
+    (conf,) = [i.decode() for cmd, i in box.ran if cmd[-1:] == [SHARE_CONF]]
+    return conf
+
+
+def test_a_join_code_that_keeps_the_setup_still_sets_its_password(box):
+    _configured(box)
+    box.answers.append("n")
+    assert join._setup_samba_share("CODE-TWO") == "10.0.0.20"
+    password = join.derive_smb_password("CODE-TWO")
+    assert _smbpasswd_inputs(box) == [f"{password}\n{password}\n".encode()]
+    assert box.pushed == [password]
+
+
+def test_a_password_that_fails_to_set_is_not_silent(box, monkeypatch):
+    _configured(box)
+    box.answers.append("n")
+
+    def refuse(cmd, **kwargs):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    with pytest.raises(RuntimeError, match="Failed to set SMB password"):
+        join._setup_samba_share("CODE-TWO")
+    assert box.pushed == []
+
+
+def test_a_join_with_a_case_active_points_the_share_at_it(box):
+    case_dir = _case(box)
+    box.answers.append("10.0.0.20")
+    join._setup_samba_share("CODE-ONE")
+    assert f"path = {case_dir}\n" in _share_conf(box)
+    samba = yaml.safe_load((box.home / ".vhir" / "samba.yaml").read_text())
+    assert samba["active_share_target"] == str(case_dir)
+
+
+@pytest.mark.parametrize("pointer", ["none", "no case file", "relative"])
+def test_a_join_with_no_valid_active_case_points_the_share_at_the_placeholder(
+    box, pointer, monkeypatch
+):
+    if pointer == "no case file":
+        (box.home / "cases" / "INC-1").mkdir(parents=True)
+        (box.home / ".vhir" / "active_case").write_text(
+            str(box.home / "cases" / "INC-1")
+        )
+    elif pointer == "relative":
+        # a relative pointer isn't read against wherever join happens to run
+        _case(box)
+        monkeypatch.chdir(box.home / "cases")
+        (box.home / ".vhir" / "active_case").write_text("INC-1")
+    box.answers.append("10.0.0.20")
+    join._setup_samba_share("CODE-ONE")
+    placeholder = box.home / ".vhir" / "share-inactive"
+    assert f"path = {placeholder}\n" in _share_conf(box)
+    assert placeholder.is_dir()
