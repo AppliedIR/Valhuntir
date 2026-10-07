@@ -46,8 +46,11 @@ pytestmark = pytest.mark.skipif(
 
 
 def _matches(name: str, expression: str) -> bool:
+    """As OpenSearch reads an index expression: an exclusion with no
+    inclusion before it means every index but those."""
     parts = [p for p in expression.split(",") if p]
-    keep = any(fnmatch.fnmatchcase(name, p) for p in parts if not p.startswith("-"))
+    positive = [p for p in parts if not p.startswith("-")]
+    keep = not positive or any(fnmatch.fnmatchcase(name, p) for p in positive)
     drop = any(fnmatch.fnmatchcase(name, p[1:]) for p in parts if p.startswith("-"))
     return keep and not drop
 
@@ -68,6 +71,7 @@ class FakeOpenSearch:
             create=self._create,
             status=lambda **k: {"snapshots": [{"state": "SUCCESS"}]},
             restore=self._restore,
+            get=lambda **k: {"snapshots": [{"indices": list(self.snapshot_holds)}]},
         )
         self.cat = SimpleNamespace(indices=self._cat)
         self.indices = SimpleNamespace(
@@ -228,6 +232,19 @@ def test_an_older_case_restored_beside_its_original_keeps_its_indices_apart(box)
     assert "case-c-1-evtx-wks01" in box.os.existing  # the original's, untouched
 
 
+def test_a_longer_local_case_s_older_index_in_the_snapshot_isn_t_restored(box):
+    """C-1-2's `case-c-1-2-…` names begin with C-1's `case-c-1-`; a snapshot
+    holding one (a crafted backup) doesn't bring it into C-1's copy."""
+    box.os.existing = {"case-c-1-evtx-wks01"}
+    (box.tmp / "cases" / "C-1-2").mkdir()
+    (box.tmp / "cases" / "C-1-2" / "CASE.yaml").write_text("case_id: C-1-2\n")
+    path = _backup(box)
+    box.os.snapshot_holds.append("case-c-1-2-evtx-other")
+    _restore(path, box.tmp / "cases" / "C-1-copy")
+    restored = {i for body in box.os.restored for i in body["indices"].split(",")}
+    assert restored == {"case-c-1-evtx-wks01"}
+
+
 def test_a_restore_in_the_case_s_own_place_keeps_its_identity(box):
     import shutil
 
@@ -240,7 +257,7 @@ def test_a_restore_in_the_case_s_own_place_keeps_its_identity(box):
     _restore(path, box.case)
     assert _meta(box.case)["case_uuid"] == uuid
     (body,) = box.os.restored
-    assert body["indices"] == f"case-{c12}-*" and "rename_pattern" not in body
+    assert body["indices"] == f"case-{c12}-evtx-0" and "rename_pattern" not in body
     assert box.os.existing == {f"case-{c12}-evtx-0"}
 
 
@@ -266,21 +283,6 @@ def test_a_cross_major_snapshot_is_refused_before_anything_is_written(box, capsy
     with pytest.raises(SystemExit):
         _restore(path, copy)
     assert "version mismatch" in capsys.readouterr().err
-    assert not copy.exists() and box.os.restored == []
-
-
-def test_a_manifest_naming_another_case_s_indices_is_refused(box, capsys):
-    c12 = _identity(box.case)
-    box.os.existing = {f"case-{c12}-evtx-0", "case-other-evtx-0"}
-    path = _backup(box)
-    manifest_path = B.Path(path) / "backup-manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest["opensearch_snapshot"]["index_scope"] = "case-other-*"
-    manifest_path.write_text(json.dumps(manifest))
-    copy = box.tmp / "cases" / "C-1-copy"
-    with pytest.raises(SystemExit):
-        _restore(path, copy)
-    assert "outside case C-1" in capsys.readouterr().err
     assert not copy.exists() and box.os.restored == []
 
 
@@ -349,22 +351,53 @@ def _crafted(box, older=False, **snapshot) -> str:
 
 
 @pytest.mark.parametrize(
-    "snapshot",
-    [
-        {"index_scope": "*"},
-        {"case_uuid": "*", "index_scope": "case-*-*"},
-        {"index_scope": "case-c-1-*,case-*"},
-        {"index_scope": "case-c-1-evtx-*-wks*"},
+    "scope",
+    ["case-other-*", "*", "-case-zzz-*", "case-c-1-*,case-*", "case-c-1-evtx-*-wks*"],
+    ids=[
+        "another-case",
+        "everything",
+        "exclusion-only",
+        "a-second-segment",
+        "inner-wildcard",
     ],
-    ids=["everything", "wildcard-identity", "a-second-segment", "inner-wildcard"],
 )
-def test_a_manifest_reaching_past_the_case_is_refused(box, capsys, snapshot):
-    path = _crafted(box, **snapshot)
-    copy = box.tmp / "cases" / "C-1-copy"
+@pytest.mark.parametrize("in_place", [False, True], ids=["copy", "in-place"])
+def test_the_manifest_s_index_expression_is_ignored(box, scope, in_place):
+    """The snapshot also holds another case's index (a crafted backup); only
+    the case's own, by name, are restored."""
+    import shutil
+
+    path = _crafted(box, index_scope=scope)
+    box.os.snapshot_holds.append("case-other-evtx-0")
+    box.os.existing = {"case-other-evtx-0"}
+    target = box.case if in_place else box.tmp / "cases" / "C-1-copy"
+    if in_place:
+        shutil.rmtree(box.case)
+    _restore(path, target)
+    restored = {i for body in box.os.restored for i in body["indices"].split(",")}
+    assert restored and all(i.startswith("case-") and "*" not in i for i in restored)
+    assert "case-other-evtx-0" not in restored
+    own = _meta(target)["case_uuid"].replace("-", "")[:12]
+    assert f"case-{own}-evtx-0" in box.os.existing
+
+
+def test_a_failed_index_listing_refuses_an_in_place_restore(box, capsys):
+    import shutil
+
+    path = _crafted(box)
+    shutil.rmtree(box.case)
+
+    def broken(**k):
+        raise ConnectionError("cluster unreachable")
+
+    box.os.cat = SimpleNamespace(indices=broken)
     with pytest.raises(SystemExit):
-        _restore(path, copy)
-    assert "Error: the snapshot" in capsys.readouterr().err
-    assert not copy.exists() and box.os.restored == []
+        _restore(path, box.case)
+    assert (
+        "couldn't check whether case C-1's OpenSearch indices"
+        in capsys.readouterr().err
+    )
+    assert not box.case.exists() and box.os.restored == []
 
 
 def test_a_wildcard_identity_on_a_case_from_before_identities_is_refused(box, capsys):
@@ -392,7 +425,7 @@ def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box):
 
 
 def test_a_refused_snapshot_leaves_an_interrupted_restore_in_place(box, monkeypatch):
-    path = _crafted(box, index_scope="*")
+    path = _crafted(box, case_uuid="*")
     copy = box.tmp / "cases" / "C-1-copy"
     copy.mkdir()
     (copy / ".restore-in-progress").write_text("")

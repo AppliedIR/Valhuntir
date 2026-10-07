@@ -1239,7 +1239,7 @@ def cmd_restore(args, identity: dict) -> None:
     snap_info = manifest.get("opensearch_snapshot") or {}
     alongside = target_dir.resolve() != Path(source_path).resolve()
     if restore_opensearch:
-        problem = _snapshot_scope_problem(snap_info, case_id, backup_path)
+        problem = _snapshot_identity_problem(snap_info, backup_path)
         if problem:
             print(
                 f"Error: {problem}. The snapshot's indices weren't restored and "
@@ -1250,25 +1250,38 @@ def cmd_restore(args, identity: dict) -> None:
             sys.exit(1)
     snap_info = {**snap_info, "case_uuid": _snapshot_uuid(snap_info) or ""}
     if restore_opensearch and _is_opensearch_available():
-        try:
-            from opensearch_mcp.client import get_client
-            from opensearch_mcp.paths import sanitize_index_component
+        from opensearch_mcp.client import get_client
 
-            client = get_client()
-            scope = snap_info.get("index_scope") or (
-                f"case-{sanitize_index_component(case_id)}-*"
-            )
-            existing = client.cat.indices(index=scope, format="json")
-        except Exception:
-            existing = []  # OpenSearch query failed — will handle during restore
-        if existing and not alongside:
-            print(
-                f"Error: OpenSearch indices of case {case_id} still exist ({scope}).\n"
-                "Restore it as a copy beside them with --target <another folder>, "
-                "delete them first, or use --skip-opensearch.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        # In its own place, none of the case's indices may still exist; a
+        # listing that fails refuses too
+        if not alongside:
+            try:
+                prefixes = _own_prefixes(snap_info["case_uuid"], case_id)
+                listed = get_client().cat.indices(index=prefixes, format="json")
+                new, old = _own_indices(
+                    [row["index"] for row in listed or []],
+                    snap_info["case_uuid"],
+                    case_id,
+                    target_dir.parent,
+                )
+            except Exception as e:
+                print(
+                    f"Error: couldn't check whether case {case_id}'s OpenSearch indices "
+                    f"still exist ({e}); nothing was written.\n"
+                    "Use --skip-opensearch to restore the case files alone.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if new or old:
+                print(
+                    f"Error: OpenSearch indices of case {case_id} still exist "
+                    f"({', '.join((new + old)[:5])}"
+                    f"{', …' if len(new + old) > 5 else ''}).\n"
+                    "Restore it as a copy beside them with --target <another folder>, "
+                    "delete them first, or use --skip-opensearch.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
         # Version check
         backup_version = snap_info.get("opensearch_version", "")
@@ -1557,7 +1570,8 @@ def cmd_restore(args, identity: dict) -> None:
                     case_id,
                     snapshot_dir,
                     progress,
-                    scope=snap_info.get("index_scope", ""),
+                    case_uuid=snap_info["case_uuid"],
+                    cases_dir=target_dir.parent,
                     rename=rename,
                 )
                 os_restored = True
@@ -1695,12 +1709,10 @@ def _snapshot_uuid(snap_info: dict) -> str | None:
     return str(uuid.UUID(hex=hexed))
 
 
-def _snapshot_scope_problem(snap_info: dict, case_id: str, backup_path: Path) -> str:
-    """Why the snapshot's recorded scope can't be restored for this case, or
-    "": its identity must be a UUID, the backed-up case's, and every index
-    pattern it names must be one of the case's own (`case-<c12>-…` or its
-    pre-0.7 `case-<case id>-…`), with at most a trailing wildcard."""
-    scope = str(snap_info.get("index_scope") or "")
+def _snapshot_identity_problem(snap_info: dict, backup_path: Path) -> str:
+    """Why the snapshot's case identity can't be used, or "": it must be a
+    UUID, and the backed-up case's. (Its `index_scope` isn't used: the
+    restore names the case's own indices itself.)"""
     uuid = _snapshot_uuid(snap_info)
     if uuid is None:
         return f"the snapshot's case identity ({snap_info.get('case_uuid')!r}) isn't a UUID"
@@ -1710,21 +1722,50 @@ def _snapshot_scope_problem(snap_info: dict, case_id: str, backup_path: Path) ->
             f"the snapshot's case identity ({uuid}) isn't the backed-up case's "
             f"({backed_up})"
         )
-    try:
-        from opensearch_mcp.paths import sanitize_index_component
-
-        legacy = f"case-{sanitize_index_component(case_id)}-"
-    except ImportError:
-        legacy = f"case-{case_id.lower()}-"
-    own = [legacy] + ([f"case-{uuid.replace('-', '')[:12]}-"] if uuid else [])
-    shapes = [re.compile(re.escape(p) + r"[^*?,]*\*?") for p in own]
-    for segment in scope.split(","):
-        segment = segment.strip()
-        # an exclusion (`-…`) narrows the scope, and is held to the same shape
-        name = segment[1:] if segment.startswith("-") else segment
-        if segment and not any(shape.fullmatch(name) for shape in shapes):
-            return f"the snapshot names indices outside case {case_id} ({segment})"
     return ""
+
+
+def _index_component(value: str) -> str:
+    """A case id as it appears in index names (opensearch-mcp's rule)."""
+    return re.sub(r"[^a-z0-9._-]", "-", value.lower())
+
+
+def _own_prefixes(case_uuid: str, case_id: str) -> str:
+    """The patterns to list the case's indices by (a listing only: what's
+    restored is then picked by name)."""
+    parts = [f"case-{case_uuid.replace('-', '')[:12]}-*"] if case_uuid else []
+    return ",".join(parts + [f"case-{_index_component(case_id)}-*"])
+
+
+def _own_indices(
+    names, case_uuid: str, case_id: str, cases_dir: Path
+) -> tuple[list[str], list[str]]:
+    """The case's own indices among `names`, by name: its 0.7 ones
+    (`case-<c12>-…`, from its identity) and its pre-0.7 ones (`case-<case
+    id>-…`, less those of a local case whose id is longer, `case-<id>-2-…`)."""
+    legacy = f"case-{_index_component(case_id)}-"
+    try:
+        local = [d for d in cases_dir.iterdir() if (d / "CASE.yaml").is_file()]
+    except OSError:
+        local = []
+    ids = {d.name for d in local} | {
+        str(load_case_meta(d).get("case_id") or d.name) for d in local
+    }
+    longer = tuple(
+        p
+        for p in (f"case-{_index_component(i)}-" for i in ids)
+        if p != legacy and p.startswith(legacy)
+    )
+    v2 = f"case-{case_uuid.replace('-', '')[:12]}-" if case_uuid else ""
+    new = sorted(n for n in names if v2 and n.startswith(v2))
+    old = sorted(
+        n
+        for n in names
+        if n.startswith(legacy)
+        and n not in new
+        and not (longer and n.startswith(longer))
+    )
+    return new, old
 
 
 def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
@@ -1797,11 +1838,13 @@ def _restore_opensearch_snapshot(
     case_id: str,
     snapshot_dir: Path,
     progress_fn=None,
-    scope: str = "",
+    case_uuid: str = "",
+    cases_dir: Path | None = None,
     rename: dict | None = None,
 ) -> None:
-    """Restore OpenSearch indices from a snapshot directory: under their own
-    names in the case's place, or renamed into the copy's identity (`rename`)."""
+    """Restore the case's own indices from a snapshot directory, each named
+    (never by pattern): under their own names in the case's place, or renamed
+    into the copy's identity (`rename`)."""
 
     from opensearch_mcp.client import get_client
     from opensearch_mcp.paths import sanitize_index_component
@@ -1853,27 +1896,30 @@ def _restore_opensearch_snapshot(
             "include_global_state": False,
             "index_settings": {"index.number_of_replicas": 0},
         }
+        held = client.snapshot.get(repository=repo_name, snapshot="snap")
+        names = [
+            n for snap in held.get("snapshots") or [] for n in snap.get("indices") or []
+        ]
+        current, legacy = _own_indices(
+            names, case_uuid, case_id, cases_dir or _SNAPSHOTS_DIR
+        )
+        if not current and not legacy:
+            print(f"  OpenSearch indices... none of case {case_id}'s in the snapshot")
+            return
         if rename is None:
             client.snapshot.restore(
                 repository=repo_name,
                 snapshot="snap",
-                body={"indices": scope or f"case-{safe_id}-*", **common},
+                body={"indices": ",".join(current + legacy), **common},
                 wait_for_completion=True,
             )
         else:
             new = f"case-{rename['new_c12']}-"
             renames = []
-            if rename["old_c12"]:  # 0.7 indices: the same names, the new identity
+            if current and rename["old_c12"]:  # 0.7 indices: the new identity
                 old = f"case-{rename['old_c12']}-"
-                renames.append((f"{old}*", f"{re.escape(old)}(.+)", f"{new}$1"))
+                renames.append((",".join(current), f"{re.escape(old)}(.+)", f"{new}$1"))
             # pre-0.7 indices, kept apart under v1-
-            legacy = [
-                seg
-                for seg in (scope or f"case-{safe_id}-*").split(",")
-                if not (
-                    rename["old_c12"] and seg.startswith(f"case-{rename['old_c12']}-")
-                )
-            ]
             if legacy:
                 # case-<id>-<type>-<host> -> case-<new>-<type>-v1-<host>:
                 # typed reads (case-<c12>-<type>-*) find them, and they stay
