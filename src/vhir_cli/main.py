@@ -94,7 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_backup.add_argument(
         "--skip-unreadable",
         action="store_true",
-        help="Leave out paths that can't be read or followed; list them in the manifest",
+        help=(
+            "Leave out paths that can't be read, found or followed; "
+            "list them in the manifest"
+        ),
     )
     p_backup.add_argument(
         "--verify", metavar="BACKUP_PATH", help="Verify backup integrity"
