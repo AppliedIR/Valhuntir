@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from vhir_cli.verification import (
@@ -11,6 +14,7 @@ from vhir_cli.verification import (
     read_ledger,
     rehmac_entries,
     verify_items,
+    write_ledger_entries,
     write_ledger_entry,
 )
 
@@ -200,3 +204,53 @@ def test_case_id_validation():
 
     with pytest.raises(ValueError, match="empty"):
         write_ledger_entry("", {"finding_id": "F-001"})
+
+
+def _ledger_entries(count):
+    return [
+        {
+            "finding_id": f"F-{i:03d}",
+            "type": "finding",
+            "hmac": "deadbeef",
+            "content_snapshot": f"Test finding {i}",
+            "approved_by": "alice",
+            "approved_at": "2026-01-01T00:00:00Z",
+            "case_id": "INC-2026-001",
+        }
+        for i in range(count)
+    ]
+
+
+def test_write_ledger_entries_fsyncs_once(tmp_path, monkeypatch):
+    """A whole batch costs one fsync, not one per entry."""
+    calls = []
+    real_fsync = os.fsync
+
+    def counting_fsync(fd):
+        calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", counting_fsync)
+    write_ledger_entries("INC-2026-001", _ledger_entries(50))
+    assert len(calls) == 1
+
+
+def test_write_ledger_entries_appends_in_order(tmp_path):
+    """Batched entries land in list order and the file stays 0o600."""
+    write_ledger_entries("INC-2026-001", _ledger_entries(5))
+    entries = read_ledger("INC-2026-001")
+    assert [e["finding_id"] for e in entries] == [f"F-{i:03d}" for i in range(5)]
+    path = tmp_path / "INC-2026-001.jsonl"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_write_ledger_entries_empty_creates_no_file(tmp_path):
+    """An empty batch does no work at all."""
+    write_ledger_entries("INC-2026-001", [])
+    assert not (tmp_path / "INC-2026-001.jsonl").exists()
+
+
+def test_write_ledger_entries_validates_case_id(tmp_path):
+    """Batched writes reject path traversal in case IDs."""
+    with pytest.raises(ValueError, match="path traversal"):
+        write_ledger_entries("../evil", _ledger_entries(1))

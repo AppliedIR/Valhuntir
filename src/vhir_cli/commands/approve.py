@@ -38,7 +38,7 @@ from vhir_cli.case_io import (
     save_findings,
     save_timeline,
     save_todos,
-    write_approval_log,
+    write_approval_log_batch,
 )
 
 
@@ -249,16 +249,18 @@ def _approve_specific(
     # Step 2: Audit log (best-effort, warn on failure)
     log_failures = []
     all_approved = list(to_approve) + coupled_events
-    for item in all_approved:
-        if not write_approval_log(
-            case_dir,
-            item["id"],
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=item["content_hash"],
-        ):
-            log_failures.append(item["id"])
+    log_records = [
+        {
+            "item_id": item["id"],
+            "action": "APPROVED",
+            "identity": identity,
+            "mode": mode,
+            "content_hash": item["content_hash"],
+        }
+        for item in all_approved
+    ]
+    if not write_approval_log_batch(case_dir, log_records):
+        log_failures = [r["item_id"] for r in log_records]
 
     # Step 3: HMAC ledger (warn on failure)
     hmac_failures = _write_verification_entries(
@@ -507,24 +509,31 @@ def _interactive_review(
 
     # Step 2: Approval log (best-effort, collect failures)
     log_failures = []
+    log_records = []
     for item in all_items:
-        if item["id"] in approvals and not write_approval_log(
-            case_dir,
-            item["id"],
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=item["content_hash"],
-        ):
-            log_failures.append(item["id"])
+        if item["id"] in approvals:
+            log_records.append(
+                {
+                    "item_id": item["id"],
+                    "action": "APPROVED",
+                    "identity": identity,
+                    "mode": mode,
+                    "content_hash": item["content_hash"],
+                }
+            )
     for item in all_items:
         disp = dispositions.get(item["id"])
         if disp and disp[0] == "reject":
             reason = disp[1] or ""
-            if not write_approval_log(
-                case_dir, item["id"], "REJECTED", identity, reason=reason, mode=mode
-            ):
-                log_failures.append(item["id"])
+            log_records.append(
+                {
+                    "item_id": item["id"],
+                    "action": "REJECTED",
+                    "identity": identity,
+                    "reason": reason,
+                    "mode": mode,
+                }
+            )
     # Coupled items also need audit log entries
     for item in coupled_tl:
         status = item.get("status", "")
@@ -533,24 +542,31 @@ def _interactive_review(
             if status == "REJECTED"
             else ""
         )
-        if not write_approval_log(
-            case_dir,
-            item["id"],
-            status,
-            identity,
-            mode=mode,
-            coupled_from=item.get("auto_created_from", ""),
-            content_hash=item.get("content_hash", ""),
-            reason=reason,
-        ):
-            log_failures.append(item["id"])
+        log_records.append(
+            {
+                "item_id": item["id"],
+                "action": status,
+                "identity": identity,
+                "mode": mode,
+                "coupled_from": item.get("auto_created_from", ""),
+                "content_hash": item.get("content_hash", ""),
+                "reason": reason,
+            }
+        )
     for item in coupled_ioc:
         status = item.get("status", "")
         reason = item.get("rejection_reason", "") if status == "REJECTED" else ""
-        if not write_approval_log(
-            case_dir, item["id"], status, identity, mode=mode, reason=reason
-        ):
-            log_failures.append(item["id"])
+        log_records.append(
+            {
+                "item_id": item["id"],
+                "action": status,
+                "identity": identity,
+                "mode": mode,
+                "reason": reason,
+            }
+        )
+    if not write_approval_log_batch(case_dir, log_records):
+        log_failures = [r["item_id"] for r in log_records]
 
     # Step 3: HMAC ledger (warn on failure)
     approved_items = [item for item in all_items if item["id"] in approvals]
@@ -598,7 +614,7 @@ def _write_verification_entries(
         from vhir_cli.verification import (
             compute_hmac,
             derive_hmac_key,
-            write_ledger_entry,
+            write_ledger_entries,
         )
     except ImportError:
         return [item.get("id", "") for item in items]
@@ -625,6 +641,7 @@ def _write_verification_entries(
         case_id = case_dir.name
 
     failures: list[str] = []
+    entries = []
     for item in items:
         item_id = item.get("id", "")
         item_type = (
@@ -635,20 +652,22 @@ def _write_verification_entries(
             else "finding"
         )
         desc = hmac_text(item)
-        entry = {
-            "finding_id": item_id,
-            "type": item_type,
-            "hmac": compute_hmac(derived_key, desc),
-            "hmac_version": 2,
-            "content_snapshot": desc,
-            "approved_by": identity["examiner"],
-            "approved_at": now,
-            "case_id": case_id,
-        }
-        try:
-            write_ledger_entry(case_id, entry)
-        except OSError:
-            failures.append(item_id)
+        entries.append(
+            {
+                "finding_id": item_id,
+                "type": item_type,
+                "hmac": compute_hmac(derived_key, desc),
+                "hmac_version": 2,
+                "content_snapshot": desc,
+                "approved_by": identity["examiner"],
+                "approved_at": now,
+                "case_id": case_id,
+            }
+        )
+    try:
+        write_ledger_entries(case_id, entries)
+    except OSError:
+        failures = [entry["finding_id"] for entry in entries]
 
     return failures
 
@@ -1339,37 +1358,47 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
 
     # Step 2: Approval log (best-effort, collect failures)
     log_failures = []
+    log_records = []
     for item_id in approved_ids:
         item = item_by_id.get(item_id)
-        if item and not write_approval_log(
-            case_dir,
-            item_id,
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=item.get("content_hash", ""),
-            stale_at_approval=item_id in stale_warnings,
-        ):
-            log_failures.append(item_id)
+        if item:
+            log_records.append(
+                {
+                    "item_id": item_id,
+                    "action": "APPROVED",
+                    "identity": identity,
+                    "mode": mode,
+                    "content_hash": item.get("content_hash", ""),
+                    "stale_at_approval": item_id in stale_warnings,
+                }
+            )
     for entry in rejections:
         item_id = entry.get("id", "")
         if item_id in rejected_ids:
             reason = entry.get("rejection_reason", "") or entry.get("reason", "")
-            if not write_approval_log(
-                case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-            ):
-                log_failures.append(item_id)
+            log_records.append(
+                {
+                    "item_id": item_id,
+                    "action": "REJECTED",
+                    "identity": identity,
+                    "reason": reason,
+                    "mode": mode,
+                }
+            )
     for item_id in edited_ids:
         item = item_by_id.get(item_id)
-        if item and not write_approval_log(
-            case_dir,
-            item_id,
-            "EDITED",
-            identity,
-            mode=mode,
-            content_hash=item.get("content_hash", ""),
-        ):
-            log_failures.append(item_id)
+        if item:
+            log_records.append(
+                {
+                    "item_id": item_id,
+                    "action": "EDITED",
+                    "identity": identity,
+                    "mode": mode,
+                    "content_hash": item.get("content_hash", ""),
+                }
+            )
+    if not write_approval_log_batch(case_dir, log_records):
+        log_failures = [r["item_id"] for r in log_records]
 
     # Step 3: HMAC ledger (warn on failure)
     approved_items = [item_by_id[aid] for aid in approved_ids if aid in item_by_id]

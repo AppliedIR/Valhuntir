@@ -1,6 +1,8 @@
 """Tests for shared case I/O module."""
 
 import json
+import os
+import stat
 from argparse import Namespace
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from vhir_cli.case_io import (
     save_timeline,
     verify_approval_integrity,
     write_approval_log,
+    write_approval_log_batch,
 )
 from vhir_cli.main import _case_list
 
@@ -128,6 +131,97 @@ class TestApprovalLog:
         log_file = case_dir / "approvals.jsonl"
         entry = json.loads(log_file.read_text().strip())
         assert entry["reason"] == "Bad evidence"
+
+
+class TestApprovalLogBatch:
+    IDENTITY = {
+        "os_user": "testuser",
+        "examiner": "analyst1",
+        "examiner_source": "flag",
+        "analyst": "analyst1",
+        "analyst_source": "flag",
+    }
+
+    def _records(self, count):
+        return [
+            {
+                "item_id": f"F-tester-{i:03d}",
+                "action": "APPROVED",
+                "identity": self.IDENTITY,
+                "mode": "review",
+                "content_hash": "a" * 64,
+            }
+            for i in range(count)
+        ]
+
+    def test_batch_fsyncs_once(self, case_dir, monkeypatch):
+        """A whole batch costs one fsync, not one per record."""
+        calls = []
+        real_fsync = os.fsync
+
+        def counting_fsync(fd):
+            calls.append(fd)
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", counting_fsync)
+        assert write_approval_log_batch(case_dir, self._records(50))
+        assert len(calls) == 1
+
+    def test_batch_writes_all_records_in_order(self, case_dir):
+        assert write_approval_log_batch(case_dir, self._records(5))
+        lines = (case_dir / "approvals.jsonl").read_text().splitlines()
+        assert len(lines) == 5
+        ids = [json.loads(line)["item_id"] for line in lines]
+        assert ids == [f"F-tester-{i:03d}" for i in range(5)]
+
+    def test_batch_matches_single_entry_fields(self, case_dir, tmp_path):
+        """Batched records carry the same fields as write_approval_log."""
+        single_dir = tmp_path / "single"
+        single_dir.mkdir()
+        write_approval_log(
+            single_dir,
+            "F-tester-001",
+            "REJECTED",
+            self.IDENTITY,
+            reason="Bad evidence",
+            mode="review",
+            content_hash="b" * 64,
+            stale_at_approval=True,
+            coupled_from="F-tester-000",
+        )
+        write_approval_log_batch(
+            case_dir,
+            [
+                {
+                    "item_id": "F-tester-001",
+                    "action": "REJECTED",
+                    "identity": self.IDENTITY,
+                    "reason": "Bad evidence",
+                    "mode": "review",
+                    "content_hash": "b" * 64,
+                    "stale_at_approval": True,
+                    "coupled_from": "F-tester-000",
+                }
+            ],
+        )
+        single = json.loads((single_dir / "approvals.jsonl").read_text().strip())
+        batched = json.loads((case_dir / "approvals.jsonl").read_text().strip())
+        del single["ts"]
+        del batched["ts"]
+        assert single == batched
+
+    def test_empty_batch_creates_no_file(self, case_dir):
+        assert write_approval_log_batch(case_dir, [])
+        assert not (case_dir / "approvals.jsonl").exists()
+
+    def test_batch_relocks_log_file(self, case_dir):
+        write_approval_log_batch(case_dir, self._records(3))
+        log_file = case_dir / "approvals.jsonl"
+        assert stat.S_IMODE(log_file.stat().st_mode) == 0o444
+        # A second batch must unlock, append and relock
+        write_approval_log_batch(case_dir, self._records(2))
+        assert len((case_dir / "approvals.jsonl").read_text().splitlines()) == 5
+        assert stat.S_IMODE(log_file.stat().st_mode) == 0o444
 
 
 class TestPathTraversal:

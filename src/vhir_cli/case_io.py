@@ -270,26 +270,63 @@ def write_approval_log(
     coupled_from: str = "",
 ) -> bool:
     """Write approval/rejection record to approvals.jsonl. Returns True on success."""
-    log_file = case_dir / "approvals.jsonl"
+    return write_approval_log_batch(
+        case_dir,
+        [
+            {
+                "item_id": item_id,
+                "action": action,
+                "identity": identity,
+                "reason": reason,
+                "mode": mode,
+                "content_hash": content_hash,
+                "stale_at_approval": stale_at_approval,
+                "coupled_from": coupled_from,
+            }
+        ],
+    )
+
+
+def _approval_entry(record: dict) -> dict:
+    """Build one approvals.jsonl record from write_approval_log arguments."""
+    identity = record["identity"]
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
-        "item_id": item_id,
-        "action": action,
+        "item_id": record["item_id"],
+        "action": record["action"],
         "os_user": identity["os_user"],
         "examiner": identity.get("examiner", identity.get("analyst", "")),
         "examiner_source": identity.get(
             "examiner_source", identity.get("analyst_source", "")
         ),
-        "mode": mode,
+        "mode": record.get("mode", "interactive"),
     }
-    if reason:
-        entry["reason"] = reason
-    if content_hash:
-        entry["content_hash"] = content_hash
-    if stale_at_approval:
+    if record.get("reason"):
+        entry["reason"] = record["reason"]
+    if record.get("content_hash"):
+        entry["content_hash"] = record["content_hash"]
+    if record.get("stale_at_approval"):
         entry["stale_at_approval"] = True
-    if coupled_from:
-        entry["coupled_from"] = coupled_from
+    if record.get("coupled_from"):
+        entry["coupled_from"] = record["coupled_from"]
+    return entry
+
+
+def write_approval_log_batch(case_dir: Path, records: list[dict]) -> bool:
+    """Write approval/rejection records to approvals.jsonl in one pass.
+
+    Each record carries the keyword arguments of write_approval_log except
+    case_dir. One unlock/open/fsync/lock cycle covers the whole batch, so a
+    commit pays a single durability stall instead of one per disposition.
+    Records are appended in list order. Returns True on success; on failure
+    no record in the batch is reported as written.
+    """
+    if not records:
+        return True
+    log_file = case_dir / "approvals.jsonl"
+    # Serialize before touching the file so a malformed record cannot leave a
+    # partially written batch behind.
+    lines = "".join(json.dumps(_approval_entry(r)) + "\n" for r in records)
     try:
         if log_file.exists():
             os.chmod(log_file, 0o644)
@@ -297,7 +334,7 @@ def write_approval_log(
         pass
     try:
         with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(lines)
             f.flush()
             os.fsync(f.fileno())
     except OSError:

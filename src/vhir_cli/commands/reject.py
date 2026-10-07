@@ -18,7 +18,7 @@ from vhir_cli.case_io import (
     load_timeline,
     save_findings,
     save_timeline,
-    write_approval_log,
+    write_approval_log_batch,
 )
 
 
@@ -149,11 +149,18 @@ def cmd_reject(args, identity: dict) -> None:
 
     # Step 2: Audit log (best-effort)
     log_failures = []
-    for item_id in rejected:
-        if not write_approval_log(
-            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-        ):
-            log_failures.append(item_id)
+    log_records = [
+        {
+            "item_id": item_id,
+            "action": "REJECTED",
+            "identity": identity,
+            "reason": reason,
+            "mode": mode,
+        }
+        for item_id in rejected
+    ]
+    if not write_approval_log_batch(case_dir, log_records):
+        log_failures = [r["item_id"] for r in log_records]
 
     msg = f"Rejected: {', '.join(rejected)}"
     if reason:
@@ -294,41 +301,47 @@ def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> No
 
     # Step 2: Audit log (best-effort)
     log_failures = []
+    log_records = []
     for item_id, reason in to_reject:
-        if item_id in rejected and not write_approval_log(
-            case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-        ):
-            log_failures.append(item_id)
+        if item_id in rejected:
+            log_records.append(
+                {
+                    "item_id": item_id,
+                    "action": "REJECTED",
+                    "identity": identity,
+                    "reason": reason,
+                    "mode": mode,
+                }
+            )
     # Coupled timeline events also need audit log entries
     for tl_event in timeline:
-        if (
-            tl_event.get("auto_created_from")
-            and tl_event["id"] in rejected
-            and not write_approval_log(
-                case_dir,
-                tl_event["id"],
-                "REJECTED",
-                identity,
-                reason="Source finding rejected",
-                mode=mode,
+        if tl_event.get("auto_created_from") and tl_event["id"] in rejected:
+            log_records.append(
+                {
+                    "item_id": tl_event["id"],
+                    "action": "REJECTED",
+                    "identity": identity,
+                    "reason": "Source finding rejected",
+                    "mode": mode,
+                }
             )
-        ):
-            log_failures.append(tl_event["id"])
     # Cascaded IOC rejections also need audit log entries
     for ioc in iocs:
         if (
             ioc["id"] in rejected
             and ioc.get("rejection_reason") == "All source findings rejected"
-            and not write_approval_log(
-                case_dir,
-                ioc["id"],
-                "REJECTED",
-                identity,
-                reason="All source findings rejected",
-                mode=mode,
-            )
         ):
-            log_failures.append(ioc["id"])
+            log_records.append(
+                {
+                    "item_id": ioc["id"],
+                    "action": "REJECTED",
+                    "identity": identity,
+                    "reason": "All source findings rejected",
+                    "mode": mode,
+                }
+            )
+    if not write_approval_log_batch(case_dir, log_records):
+        log_failures = [r["item_id"] for r in log_records]
 
     print(f"\nRejected {len(rejected)} item(s): {', '.join(rejected)}")
     if log_failures:

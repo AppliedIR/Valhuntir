@@ -44,11 +44,24 @@ def compute_hmac(derived_key: bytes, description: str) -> str:
 
 def write_ledger_entry(case_id: str, entry: dict) -> None:
     """Append entry to /var/lib/vhir/verification/{case_id}.jsonl."""
+    write_ledger_entries(case_id, [entry])
+
+
+def write_ledger_entries(case_id: str, entries: list[dict]) -> None:
+    """Append entries to /var/lib/vhir/verification/{case_id}.jsonl in one pass.
+
+    One open/fsync/chmod cycle covers the whole batch, so approving N items
+    costs a single durability stall instead of N. Entries are appended in
+    list order.
+    """
+    if not entries:
+        return
     _validate_case_id(case_id)
     VERIFICATION_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = VERIFICATION_DIR / f"{case_id}.jsonl"
+    lines = "".join(json.dumps(entry) + "\n" for entry in entries)
     with open(path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+        f.write(lines)
         f.flush()
         os.fsync(f.fileno())
     os.chmod(path, 0o600)

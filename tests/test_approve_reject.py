@@ -1,6 +1,7 @@
 """Tests for approve and reject commands (hardened with mandatory password)."""
 
 import json
+import os
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -556,6 +557,51 @@ class TestReject:
         f002 = next(f for f in findings if f["id"] == "F-tester-002")
         assert f001["status"] == "REJECTED"
         assert f002["status"] == "DRAFT"
+
+    def test_reject_batch_fsyncs_log_once(self, case_dir, identity, pw_config):
+        """A batch commit costs one approvals.jsonl fsync, not one per item."""
+        findings = [
+            {
+                "id": f"F-tester-{i:03d}",
+                "status": "DRAFT",
+                "title": f"Suspicious process {i}",
+                "staged": "2026-02-19T12:00:00Z",
+                "created_by": "steve",
+            }
+            for i in range(20)
+        ]
+        save_findings(case_dir, findings)
+
+        synced = []
+        real_fsync = os.fsync
+
+        def recording_fsync(fd):
+            try:
+                st = os.fstat(fd)
+                synced.append((st.st_dev, st.st_ino))
+            except OSError:
+                pass
+            return real_fsync(fd)
+
+        args = Namespace(
+            ids=[f["id"] for f in findings],
+            reason="Bad data",
+            case=None,
+            analyst=None,
+        )
+        with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
+            with patch(
+                "vhir_cli.approval_auth.getpass_prompt",
+                return_value="testpass1",
+            ):
+                with patch("os.fsync", recording_fsync):
+                    cmd_reject(args, identity)
+
+        log_file = case_dir / "approvals.jsonl"
+        st = log_file.stat()
+        assert synced.count((st.st_dev, st.st_ino)) == 1
+        log = load_approval_log(case_dir)
+        assert [e["item_id"] for e in log] == [f["id"] for f in findings]
 
 
 # --- approve saves what's on disk after the wait, not what it read before ----
