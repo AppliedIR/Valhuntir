@@ -12,8 +12,10 @@ import argparse
 import grp
 import os
 import types
+from pathlib import Path
 
 import pytest
+import yaml
 
 from vhir_cli import main
 from vhir_cli.commands import join
@@ -66,3 +68,47 @@ def test_cli_init_shares_the_case_when_the_group_step_fails(
     main._case_init(args, {"examiner": "tester"})
     assert shared == [("repoint", home / "cases" / "CASE-C"), ("notify", "CASE-C")]
     assert "Group permissions not applied" in capsys.readouterr().out
+
+
+@pytest.fixture
+def shared(home, monkeypatch):
+    """A configured share whose repoint and notify are recorded."""
+    calls = []
+    monkeypatch.setattr(main, "_wintools_configured", lambda: True)
+    monkeypatch.setattr(
+        join, "_repoint_samba_share", lambda p: calls.append(("repoint", p))
+    )
+    monkeypatch.setattr(
+        join,
+        "notify_wintools_case_activated",
+        lambda c: calls.append(("notify", c)) or True,
+    )
+    return calls
+
+
+def _closed_case(home, case_id):
+    data = main._case_init_data(
+        name="c", examiner="tester", cases_dir=str(home / "cases"), case_id=case_id
+    )
+    return Path(data["case_dir"])
+
+
+@pytest.mark.parametrize("command", ["activate", "reopen"])
+def test_cli_activate_and_reopen_prepare_the_case_for_wintools(
+    home, shared, no_group, capsys, command, monkeypatch
+):
+    monkeypatch.setenv("VHIR_CASES_DIR", str(home / "cases"))
+    case_dir = _closed_case(home, "CASE-D")
+    args = argparse.Namespace(case_id="CASE-D", cases_dir=str(home / "cases"))
+    if command == "reopen":
+        meta = yaml.safe_load((case_dir / "CASE.yaml").read_text())
+        meta["status"] = "closed"
+        (case_dir / "CASE.yaml").write_text(yaml.safe_dump(meta))
+        main._case_reopen(args, {"examiner": "tester"})
+    else:
+        main._case_activate(args, {"examiner": "tester"})
+    assert shared == [("repoint", case_dir), ("notify", "CASE-D")]
+    out = capsys.readouterr().out
+    # the group step ran: the warning's "activate the case again" re-runs it
+    assert "Group permissions not applied" in out
+    assert (case_dir / "extractions" / "wintools").is_dir()

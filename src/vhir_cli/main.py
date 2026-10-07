@@ -1432,8 +1432,11 @@ def _case_activate(args, identity: dict) -> None:
                 notify_wintools_case_activated,
             )
 
+            warning = _set_case_wintools_permissions(case_path)
             _repoint_samba_share(case_path)
             notify_wintools_case_activated(args.case_id)
+            if warning:
+                print(f"  WARNING: {warning}")
         except Exception as e:
             print(
                 f"Warning: wintools share update failed: {e}",
@@ -1589,8 +1592,11 @@ def _case_reopen(args, identity: dict) -> None:
                 notify_wintools_case_activated,
             )
 
+            warning = _set_case_wintools_permissions(case_dir)
             _repoint_samba_share(case_dir)
             notify_wintools_case_activated(case_id)
+            if warning:
+                print(f"  WARNING: {warning}")
         except Exception as e:
             print(f"Warning: wintools share update failed: {e}", file=sys.stderr)
 
