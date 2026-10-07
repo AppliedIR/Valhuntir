@@ -1109,12 +1109,11 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         action = entry.get("action", "").lower()
         item = item_by_id.get(item_id)
 
-        # Check content hash staleness
+        # Check content hash staleness — recompute, because a stored
+        # content_hash may be absent or itself stale
         hash_at_review = entry.get("content_hash_at_review", "")
-        if item and hash_at_review:
-            current_hash = item.get("content_hash", "")
-            if current_hash and hash_at_review != current_hash:
-                stale_warnings.append(item_id)
+        if item and hash_at_review and compute_content_hash(item) != hash_at_review:
+            stale_warnings.append(item_id)
 
         # Render each item
         _render_terminal_diff(item, entry)
