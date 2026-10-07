@@ -262,8 +262,25 @@ def create_backup_data(
     else:
         ledger_note = "Note: no verification ledger found for this case"
 
-    # Copy password hash files for all examiners with findings
+    # Copy password hash files for every examiner who signed or staged items
     password_examiners: list[str] = []
+    examiners_in_case: set[str] = set()
+    # Ledger signers first — approved_by is what verify_items keys on, so
+    # without their salt the restored ledger cannot be verified at all.
+    try:
+        if ledger_path.is_file():
+            for line in ledger_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                approver = entry.get("approved_by") if isinstance(entry, dict) else None
+                if isinstance(approver, str) and _EXAMINER_RE.match(approver):
+                    examiners_in_case.add(approver)
+    except OSError:
+        pass  # best-effort
     try:
         findings_file = case_dir / "findings.json"
         if findings_file.exists():
@@ -271,20 +288,23 @@ def create_backup_data(
             if isinstance(findings, list):
                 # Only well-formed examiner names: "./steve" or "../x" would
                 # alias a control path or read outside the password store.
-                examiners_in_case = {
+                examiners_in_case.update(
                     f.get("created_by")
                     for f in findings
                     if isinstance(f.get("created_by"), str)
                     and _EXAMINER_RE.match(f["created_by"])
-                }
-                pw_dir = backup_dir / "passwords"
-                for ex in sorted(examiners_in_case):
-                    pw_file = _PASSWORDS_DIR / f"{ex}.json"
-                    if pw_file.is_file():
-                        pw_dir.mkdir(exist_ok=True)
-                        shutil.copy2(str(pw_file), str(pw_dir / f"{ex}.json"))
-                        password_examiners.append(ex)
+                )
     except (json.JSONDecodeError, OSError):
+        pass  # best-effort
+    try:
+        pw_dir = backup_dir / "passwords"
+        for ex in sorted(examiners_in_case):
+            pw_file = _PASSWORDS_DIR / f"{ex}.json"
+            if pw_file.is_file():
+                pw_dir.mkdir(exist_ok=True)
+                shutil.copy2(str(pw_file), str(pw_dir / f"{ex}.json"))
+                password_examiners.append(ex)
+    except OSError:
         pass  # best-effort
 
     # Copy files
