@@ -1050,6 +1050,13 @@ def _gateway_has_wintools() -> bool:
         return False
 
 
+# Said at intake while a case has no host list (case-mcp's case_init says the same)
+HOST_LIST_HINT = (
+    "If you have an inventory of the machines in scope, upload it in the Hosts tab "
+    "before ingesting; matching hosts then confirm automatically."
+)
+
+
 def _case_init(args, identity: dict) -> None:
     """CLI wrapper — creates case and prints summary."""
     import os
@@ -1127,6 +1134,7 @@ def _case_init(args, identity: dict) -> None:
         print("Warning: the new case could not be made the active case")
     if data.get("fs_warning"):
         print(f"  WARNING: {data['fs_warning']}")
+    print(HOST_LIST_HINT)  # a case just made has no host list
 
     # Wintools sharing (after case creation succeeds)
     if _wintools_configured():
