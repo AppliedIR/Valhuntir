@@ -669,6 +669,7 @@ def scan_case_dir(case_dir: Path) -> dict:
                 continue
             key = (sub_st.st_dev, sub_st.st_ino)
             if key in chain:
+                unreadable.append(OSError(errno.ELOOP, "symlink loop", sub))
                 continue
             chains[sub] = chain + (key,)
             kept.append(d)

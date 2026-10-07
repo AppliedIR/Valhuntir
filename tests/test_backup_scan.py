@@ -61,6 +61,26 @@ class TestScanCaseDirLoops:
         assert len(paths) == 7
         assert "evidence/ext/mem.raw" in paths
 
+    def test_a_loop_through_linked_storage_is_reported(self, tmp_path):
+        """evidence -> store, store/back -> case: listed as a symlink loop, not dropped."""
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        (case_dir / "CASE.yaml").write_text("case_id: X\n")
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "disk.E01").write_bytes(b"z" * 8)
+        os.symlink(str(store), case_dir / "evidence")
+        os.symlink(str(case_dir), store / "back")
+
+        scan = scan_case_dir(case_dir)
+
+        problems = [
+            (str(Path(e.filename).relative_to(case_dir)), e.strerror)
+            for e in scan["unreadable"]
+        ]
+        assert problems == [("evidence/back", "symlink loop")]
+        assert [p for p, _, _ in scan["evidence"]] == ["evidence/disk.E01"]
+
 
 class TestScanCaseDirFollowsLinks:
     def test_evidence_symlink_target_is_scanned(self, tmp_path):
