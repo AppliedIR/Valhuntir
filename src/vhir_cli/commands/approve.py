@@ -1268,10 +1268,14 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             item["manually_reviewed"] = True
         rejected_ids.append(item_id)
 
-    # Timeline approval coupling: auto-created events follow their finding
+    # Timeline approval coupling: auto-created events follow their finding, but
+    # only a finding acted on in this delta. Keying off the persisted status alone
+    # approves events staged after an earlier session without anyone seeing them,
+    # and re-stamps events coupled in an earlier session on every run.
+    acted_on = set(approved_ids) | set(rejected_ids)
     for tl_event in timeline:
         auto_from = tl_event.get("auto_created_from", "")
-        if not auto_from:
+        if not auto_from or auto_from not in acted_on:
             continue
         if tl_event.get("examiner_modifications"):
             continue
