@@ -190,6 +190,87 @@ def test_rehmac_entries(tmp_path):
     assert results_old[0]["verified"] is False
 
 
+def test_rehmac_entries_preserves_corrupt_lines(tmp_path):
+    """A line that will not parse survives the rotation byte-for-byte."""
+    old_password, old_salt = "oldpasswd", b"oldsalt"
+    new_password, new_salt = "newpasswd", b"newsalt"
+    old_key = derive_hmac_key(old_password, old_salt)
+
+    def _entry(finding_id, desc):
+        return {
+            "finding_id": finding_id,
+            "type": "finding",
+            "hmac": compute_hmac(old_key, desc),
+            "content_snapshot": desc,
+            "approved_by": "alice",
+            "approved_at": "2026-01-01T00:00:00Z",
+            "case_id": "INC-2026-001",
+        }
+
+    write_ledger_entry("INC-2026-001", _entry("F-001", "First finding"))
+
+    # A truncated append — the kind ENOSPC or a crash leaves behind.
+    corrupt = b'{"finding_id": "F-002", "approved_by": "alice", "hmac": "ab\n'
+    path = tmp_path / "INC-2026-001.jsonl"
+    with open(path, "ab") as f:
+        f.write(corrupt)
+
+    write_ledger_entry("INC-2026-001", _entry("F-003", "Third finding"))
+
+    count = rehmac_entries(
+        "INC-2026-001", "alice", old_password, old_salt, new_password, new_salt
+    )
+    assert count == 2
+
+    # The unparseable line is still there, unchanged.
+    assert corrupt in path.read_bytes()
+
+    # The parseable entries were re-signed.
+    results = verify_items("INC-2026-001", new_password, new_salt, "alice")
+    assert len(results) == 2
+    assert all(r["verified"] for r in results)
+
+
+def test_rehmac_entries_preserves_non_utf8_lines(tmp_path):
+    """A line with invalid UTF-8 bytes survives the rotation too."""
+    old_password, old_salt = "oldpasswd", b"oldsalt"
+    new_password, new_salt = "newpasswd", b"newsalt"
+    old_key = derive_hmac_key(old_password, old_salt)
+    desc = "Finding description"
+
+    entry = {
+        "finding_id": "F-001",
+        "type": "finding",
+        "hmac": compute_hmac(old_key, desc),
+        "content_snapshot": desc,
+        "approved_by": "alice",
+        "approved_at": "2026-01-01T00:00:00Z",
+        "case_id": "INC-2026-001",
+    }
+    write_ledger_entry("INC-2026-001", entry)
+
+    corrupt = b'{"finding_id": "F-002", "content_snapshot": "\xff\xfe"}\n'
+    path = tmp_path / "INC-2026-001.jsonl"
+    with open(path, "ab") as f:
+        f.write(corrupt)
+
+    count = rehmac_entries(
+        "INC-2026-001", "alice", old_password, old_salt, new_password, new_salt
+    )
+    assert count == 1
+    assert corrupt in path.read_bytes()
+
+
+def test_read_ledger_warns_on_corrupt_lines(tmp_path, capsys):
+    """Corrupt lines are reported, not silently dropped."""
+    path = tmp_path / "INC-2026-001.jsonl"
+    path.write_text('{"finding_id": "F-001"}\n{"finding_id": "F-002"\n')
+
+    entries = read_ledger("INC-2026-001")
+    assert len(entries) == 1
+    assert "1 corrupt line(s) skipped in INC-2026-001.jsonl" in capsys.readouterr().err
+
+
 def test_case_id_validation():
     """Rejects path traversal in case IDs."""
     with pytest.raises(ValueError, match="path traversal"):
