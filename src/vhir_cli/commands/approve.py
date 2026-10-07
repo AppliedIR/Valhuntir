@@ -855,7 +855,8 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 def _one_line(text) -> str:
     """Free text for one terminal line, its control characters shown as "?",
-    so it can't move the cursor or hide the lines printed after it."""
+    so it can't move the cursor or hide another line. Every value approve and
+    review print from the case goes through it."""
     return _CONTROL.sub("?", str(text))
 
 
@@ -905,32 +906,34 @@ def _display_item(item: dict) -> None:
     title = item.get("title", item.get("description", "Untitled"))
     print(f"  [{_one_line(item['id'])}]  {_one_line(title)}")
     if "title" in item:  # under the title, which can't hide it
-        print(f"  {_challenge_line(item.get('challenged'))}")
+        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
     if examiner:
-        print(f"  Examiner: {examiner}", end="")
+        print(f"  Examiner: {_one_line(examiner)}", end="")
     if created_by:
-        print(f"  | By: {created_by}", end="")
+        print(f"  | By: {_one_line(created_by)}", end="")
     if item.get("confidence"):
-        print(f"  | Confidence: {item['confidence']}", end="")
+        print(f"  | Confidence: {_one_line(item['confidence'])}", end="")
     if item.get("audit_ids"):
-        print(f"  | Evidence: {', '.join(item['audit_ids'])}", end="")
+        print(
+            f"  | Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}", end=""
+        )
     print()
     print(f"{'─' * 60}")
 
     if "title" in item:
         # It's a finding
-        print(f"  Observation: {item.get('observation', '')}")
-        print(f"  Interpretation: {item.get('interpretation', '')}")
+        print(f"  Observation: {_one_line(item.get('observation', ''))}")
+        print(f"  Interpretation: {_one_line(item.get('interpretation', ''))}")
         for line in _alternative_lines(item.get("alternatives")):
-            print(f"  Alternative: {line}")
+            print(f"  Alternative: {_one_line(line)}")
         if item.get("iocs"):
-            print(f"  IOCs: {item['iocs']}")
+            print(f"  IOCs: {_one_line(item['iocs'])}")
     else:
         # It's a timeline event
-        print(f"  Timestamp: {item.get('timestamp', '?')}")
-        print(f"  Description: {item.get('description', '')}")
+        print(f"  Timestamp: {_one_line(item.get('timestamp', '?'))}")
+        print(f"  Description: {_one_line(item.get('description', ''))}")
         if item.get("audit_ids"):
-            print(f"  Evidence: {', '.join(item['audit_ids'])}")
+            print(f"  Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}")
     print()
 
 
@@ -966,7 +969,7 @@ _RESET = "\033[0m"
 
 def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     """Print a terminal diff for a single delta item."""
-    item_id = delta_entry.get("id", "?")
+    item_id = _one_line(delta_entry.get("id", "?"))
     action = delta_entry.get("action", "?").upper()
     modifications = delta_entry.get("modifications", {})
 
@@ -991,12 +994,14 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     # Finding fields
     if "title" in item:
         print(f"  Title:          {_one_line(item.get('title', ''))}")
-        print(f"  {_challenge_line(item.get('challenged'))}")
+        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
         _render_field("Interpretation", item, modifications, "interpretation")
         if item.get("audit_ids"):
-            print(f"  Evidence:       {', '.join(item['audit_ids'])}")
+            print(
+                f"  Evidence:       {_one_line(', '.join(map(str, item['audit_ids'])))}"
+            )
         if item.get("mitre_ids"):
             _render_field("MITRE", item, modifications, "mitre_ids")
         if item.get("iocs"):
@@ -1004,39 +1009,41 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
         if "alternatives" in modifications:
             mod = modifications["alternatives"]
             for line in _alternative_lines(mod.get("original")):
-                print(f"  Alternative:    {_RED}- {line}{_RESET}")
+                print(f"  Alternative:    {_RED}- {_one_line(line)}{_RESET}")
             for line in _alternative_lines(mod.get("modified")):
-                print(f"  Alternative:    {_GREEN}+ {line}{_RESET}")
+                print(f"  Alternative:    {_GREEN}+ {_one_line(line)}{_RESET}")
         else:
             for line in _alternative_lines(item.get("alternatives")):
-                print(f"  Alternative:    {line}")
+                print(f"  Alternative:    {_one_line(line)}")
     else:
         # Timeline event
-        print(f"  Timestamp:      {item.get('timestamp', '?')}")
+        print(f"  Timestamp:      {_one_line(item.get('timestamp', '?'))}")
         _render_field("Description", item, modifications, "description")
         if item.get("source"):
-            print(f"  Source:         {item.get('source', '')}")
+            print(f"  Source:         {_one_line(item.get('source', ''))}")
 
     # Note
     note = delta_entry.get("note")
     if note:
-        print(f"  {_CYAN}Note: {note}{_RESET}")
+        print(f"  {_CYAN}Note: {_one_line(note)}{_RESET}")
 
     # Rejection reason
     if action == "REJECT":
         reason = delta_entry.get("rejection_reason", "") or delta_entry.get(
             "reason", ""
         )
-        print(f"  {_RED}Reason: {reason or '(no reason given)'}{_RESET}")
+        print(f"  {_RED}Reason: {_one_line(reason or '(no reason given)')}{_RESET}")
 
     # TODO details
     if action == "TODO":
         desc = delta_entry.get("todo_description", "")
         prio = delta_entry.get("todo_priority", "medium")
-        print(f"  {_YELLOW}TODO: {desc} (priority: {prio}){_RESET}")
+        print(
+            f"  {_YELLOW}TODO: {_one_line(desc)} (priority: {_one_line(prio)}){_RESET}"
+        )
 
     # Status line
-    current_status = item.get("status", "DRAFT")
+    current_status = _one_line(item.get("status", "DRAFT"))
     if action == "APPROVE":
         print(
             f"  Status:         {_DIM}{current_status}{_RESET} → {_GREEN}APPROVED{_RESET}"
@@ -1065,13 +1072,15 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
             original = ", ".join(str(x) for x in original)
         if isinstance(modified, list):
             modified = ", ".join(str(x) for x in modified)
-        print(f"{prefix}{_RED}- {original}{_RESET}")
-        print(f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {modified}{_RESET}")
+        print(f"{prefix}{_RED}- {_one_line(original)}{_RESET}")
+        print(
+            f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {_one_line(modified)}{_RESET}"
+        )
     else:
         val = item.get(field, "")
         if isinstance(val, list):
             val = ", ".join(str(x) for x in val)
-        print(f"{prefix}{val}")
+        print(f"{prefix}{_one_line(val)}")
 
 
 def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:

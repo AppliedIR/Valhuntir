@@ -372,3 +372,32 @@ def test_review_shows_the_challenge_under_the_title(capsys):
     lines = capsys.readouterr().out.splitlines()
     (title,) = [i for i, text in enumerate(lines) if text.startswith("  Title:")]
     assert lines[title + 1].startswith("  Challenged (client-reported): stands")
+
+
+def test_an_escape_in_any_field_can_t_rewrite_the_challenge_line(capsys):
+    """An interpretation (or any other field) carrying cursor-up and erase-line
+    is shown with "?" for its control characters, so no line above changes."""
+    item = _finding(
+        challenged=STANDS,
+        interpretation="benign\x1b[3A\x1b[2KNot challenged",
+        observation="seen\r\x9b1A",
+        confidence="LOW\x1b[8m",
+    )
+    _display_item(item)
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\x9b" not in out and "\r" not in out
+    assert "  Interpretation: benign?[3A?[2KNot challenged" in out.splitlines()
+    assert "  Challenged (client-reported): stands" in out
+
+
+def test_review_shows_a_control_character_title_escaped(capsys):
+    from vhir_cli.commands.approve import _render_terminal_diff
+
+    item = _finding(title="Benign\x1b[8m\rNot challenged", challenged=STANDS)
+    entry = {"id": "F-tester-001", "action": "approve", "note": "ok\x1b[1A"}
+    _render_terminal_diff(item, entry)
+    lines = capsys.readouterr().out.splitlines()
+    (title,) = [i for i, text in enumerate(lines) if text.startswith("  Title:")]
+    assert lines[title] == "  Title:          Benign?[8m?Not challenged"
+    assert lines[title + 1].startswith("  Challenged (client-reported): stands")
+    assert any("Note: ok?[1A" in text for text in lines)
