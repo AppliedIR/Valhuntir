@@ -1232,55 +1232,10 @@ def cmd_restore(args, identity: dict) -> None:
                 restore_ledger = False
                 ledger_declined = True
 
-    # Conflict checks
-    if target_dir.exists():
-        # Check for .restore-in-progress marker
-        if (target_dir / ".restore-in-progress").exists():
-            # Never removed without the examiner's yes, which defaults to no
-            count = sum(len(files) for _r, _d, files in os.walk(target_dir))
-            if sys.stdin.isatty():
-                resp = (
-                    input(
-                        f"A previous restore was interrupted: {target_dir} holds "
-                        f"{count} file(s). Delete it and restore again? [y/N] "
-                    )
-                    .strip()
-                    .lower()
-                )
-                if resp in ("y", "yes"):
-                    shutil.rmtree(target_dir)
-                else:
-                    print("Restore cancelled; nothing was changed.", file=sys.stderr)
-                    sys.exit(1)
-            else:
-                print(
-                    f"Error: A previous restore was interrupted: {target_dir} "
-                    f"({count} file(s), marked .restore-in-progress).\n"
-                    f"Remove it first, then re-run restore.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-        else:
-            print(
-                f"Error: Case directory already exists: {target_dir}\n"
-                f"Remove it first, then re-run restore.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    if restore_ledger:
-        ledger_target = VERIFICATION_DIR / f"{case_id}.jsonl"
-        if ledger_target.exists():
-            print(
-                f"Error: Verification ledger already exists: {ledger_target}\n"
-                f"Remove it first or use --skip-ledger.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
     # Restored to another folder (--target), the copy gets its own identity
     # and its indices are renamed into it; restored in its own place, it
-    # keeps both, and its indices must not still exist.
+    # keeps both, and its indices must not still exist. Checked before
+    # anything is written or removed.
     snap_info = manifest.get("opensearch_snapshot") or {}
     alongside = target_dir.resolve() != Path(source_path).resolve()
     if restore_opensearch:
@@ -1293,6 +1248,7 @@ def cmd_restore(args, identity: dict) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+    snap_info = {**snap_info, "case_uuid": _snapshot_uuid(snap_info) or ""}
     if restore_opensearch and _is_opensearch_available():
         try:
             from opensearch_mcp.client import get_client
@@ -1344,6 +1300,52 @@ def cmd_restore(args, identity: dict) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Conflict checks
+    if target_dir.exists():
+        # Check for .restore-in-progress marker
+        if (target_dir / ".restore-in-progress").exists():
+            # Never removed without the examiner's yes, which defaults to no
+            count = sum(len(files) for _r, _d, files in os.walk(target_dir))
+            if sys.stdin.isatty():
+                resp = (
+                    input(
+                        f"A previous restore was interrupted: {target_dir} holds "
+                        f"{count} file(s). Delete it and restore again? [y/N] "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if resp in ("y", "yes"):
+                    shutil.rmtree(target_dir)
+                else:
+                    print("Restore cancelled; nothing was changed.", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(
+                    f"Error: A previous restore was interrupted: {target_dir} "
+                    f"({count} file(s), marked .restore-in-progress).\n"
+                    f"Remove it first, then re-run restore.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            print(
+                f"Error: Case directory already exists: {target_dir}\n"
+                f"Remove it first, then re-run restore.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if restore_ledger:
+        ledger_target = VERIFICATION_DIR / f"{case_id}.jsonl"
+        if ledger_target.exists():
+            print(
+                f"Error: Verification ledger already exists: {ledger_target}\n"
+                f"Remove it first or use --skip-ledger.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Create target directory
     try:
@@ -1680,15 +1682,30 @@ def _verify_restored_password(examiner: str) -> None:
         print(f"  Password verification... FAILED: {e}", file=sys.stderr)
 
 
+def _snapshot_uuid(snap_info: dict) -> str | None:
+    """The snapshot's case identity in its canonical form: "" when it has
+    none (a backup from before case identities), None when it isn't one."""
+    import uuid
+
+    hexed = str(snap_info.get("case_uuid") or "").strip().lower().replace("-", "")
+    if not hexed:
+        return ""
+    if not re.fullmatch(r"[0-9a-f]{32}", hexed):
+        return None
+    return str(uuid.UUID(hex=hexed))
+
+
 def _snapshot_scope_problem(snap_info: dict, case_id: str, backup_path: Path) -> str:
     """Why the snapshot's recorded scope can't be restored for this case, or
-    "": its identity must be the backed-up case's, and every index pattern it
-    names must be the case's own (`case-<c12>-…` or its pre-0.7
-    `case-<case id>-…`)."""
+    "": its identity must be a UUID, the backed-up case's, and every index
+    pattern it names must be one of the case's own (`case-<c12>-…` or its
+    pre-0.7 `case-<case id>-…`), with at most a trailing wildcard."""
     scope = str(snap_info.get("index_scope") or "")
-    uuid = str(snap_info.get("case_uuid") or "").strip().lower()
+    uuid = _snapshot_uuid(snap_info)
+    if uuid is None:
+        return f"the snapshot's case identity ({snap_info.get('case_uuid')!r}) isn't a UUID"
     backed_up = _case_uuid(backup_path) if (backup_path / "CASE.yaml").is_file() else ""
-    if uuid and backed_up and uuid != backed_up:
+    if uuid and backed_up and uuid != _snapshot_uuid({"case_uuid": backed_up}):
         return (
             f"the snapshot's case identity ({uuid}) isn't the backed-up case's "
             f"({backed_up})"
@@ -1700,13 +1717,12 @@ def _snapshot_scope_problem(snap_info: dict, case_id: str, backup_path: Path) ->
     except ImportError:
         legacy = f"case-{case_id.lower()}-"
     own = [legacy] + ([f"case-{uuid.replace('-', '')[:12]}-"] if uuid else [])
+    shapes = [re.compile(re.escape(p) + r"[^*?,]*\*?") for p in own]
     for segment in scope.split(","):
         segment = segment.strip()
-        if (
-            segment
-            and not segment.startswith("-")
-            and not segment.startswith(tuple(own))
-        ):
+        # an exclusion (`-…`) narrows the scope, and is held to the same shape
+        name = segment[1:] if segment.startswith("-") else segment
+        if segment and not any(shape.fullmatch(name) for shape in shapes):
             return f"the snapshot names indices outside case {case_id} ({segment})"
     return ""
 

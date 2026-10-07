@@ -334,3 +334,71 @@ def test_a_copy_without_its_own_identity_restores_no_indices(box, monkeypatch, c
     _restore(path, box.tmp / "cases" / "C-1-copy")
     assert box.os.restored == []  # never under the original's names
     assert "couldn't be given its own identity" in capsys.readouterr().err
+
+
+def _crafted(box, older=False, **snapshot) -> str:
+    """A backup whose manifest's snapshot entry is then edited."""
+    own = "case-c-1-evtx-wks01" if older else f"case-{_identity(box.case)}-evtx-0"
+    box.os.existing = {own, "case-other-evtx-0"}
+    path = _backup(box)
+    manifest_path = B.Path(path) / "backup-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["opensearch_snapshot"].update(snapshot)
+    manifest_path.write_text(json.dumps(manifest))
+    return path
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"index_scope": "*"},
+        {"case_uuid": "*", "index_scope": "case-*-*"},
+        {"index_scope": "case-c-1-*,case-*"},
+        {"index_scope": "case-c-1-evtx-*-wks*"},
+    ],
+    ids=["everything", "wildcard-identity", "a-second-segment", "inner-wildcard"],
+)
+def test_a_manifest_reaching_past_the_case_is_refused(box, capsys, snapshot):
+    path = _crafted(box, **snapshot)
+    copy = box.tmp / "cases" / "C-1-copy"
+    with pytest.raises(SystemExit):
+        _restore(path, copy)
+    assert "Error: the snapshot" in capsys.readouterr().err
+    assert not copy.exists() and box.os.restored == []
+
+
+def test_a_wildcard_identity_on_a_case_from_before_identities_is_refused(box, capsys):
+    path = _crafted(box, older=True, case_uuid="*", index_scope="case-*-*")
+    copy = box.tmp / "cases" / "C-1-copy"
+    with pytest.raises(SystemExit):
+        _restore(path, copy)
+    assert "isn't a UUID" in capsys.readouterr().err
+    assert not copy.exists() and box.os.restored == []
+
+
+def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box):
+    path = _crafted(box)
+    uuid = _meta(box.case)["case_uuid"]
+    c12 = uuid.replace("-", "")[:12]
+    manifest_path = B.Path(path) / "backup-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["opensearch_snapshot"]["case_uuid"] = uuid.upper()
+    manifest_path.write_text(json.dumps(manifest))
+    copy = box.tmp / "cases" / "C-1-copy"
+    _restore(path, copy)
+    new = _meta(copy)["case_uuid"].replace("-", "")[:12]
+    assert f"case-{new}-evtx-0" in box.os.existing  # renamed from the case's own
+    assert f"case-{c12.upper()}-evtx-0" not in box.os.existing
+
+
+def test_a_refused_snapshot_leaves_an_interrupted_restore_in_place(box, monkeypatch):
+    path = _crafted(box, index_scope="*")
+    copy = box.tmp / "cases" / "C-1-copy"
+    copy.mkdir()
+    (copy / ".restore-in-progress").write_text("")
+    (copy / "findings.json").write_text("[]")
+    monkeypatch.setattr(B.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+    with pytest.raises(SystemExit):
+        _restore(path, copy)
+    assert (copy / "findings.json").is_file()  # checked before it was removed
