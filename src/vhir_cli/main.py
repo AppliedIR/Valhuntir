@@ -174,6 +174,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cases root directory (default: $VHIR_CASES_DIR or ~/cases)",
     )
 
+    p_case_new_id = case_sub.add_parser(
+        "new-identity", help="Give a copied case its own identity"
+    )
+    p_case_new_id.add_argument("case_id", help="Case ID of the copy")
+    p_case_new_id.add_argument(
+        "--cases-dir",
+        default=None,
+        help="Cases root directory (default: $VHIR_CASES_DIR or ~/cases)",
+    )
+
     p_case_close = case_sub.add_parser("close", help="Close a case")
     p_case_close.add_argument("case_id", help="Case ID to close")
     p_case_close.add_argument("--summary", default="", help="Closing summary")
@@ -640,6 +650,8 @@ def _cmd_case(args, identity: dict) -> None:
         _case_init(args, identity)
     elif action == "activate":
         _case_activate(args, identity)
+    elif action == "new-identity":
+        _case_new_identity(args)
     elif action == "close":
         _case_close(args, identity)
     elif action == "reopen":
@@ -656,7 +668,7 @@ def _cmd_case(args, identity: dict) -> None:
         _case_list(args, identity)
     else:
         print(
-            "Usage: vhir case {init|activate|close|reopen|status|list|migrate|prune-ingest-manifests}",
+            "Usage: vhir case {init|activate|new-identity|close|reopen|status|list|migrate|prune-ingest-manifests}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -943,6 +955,13 @@ def _case_init_data(
     # Set the active case pointer. Every session sharing it switches too, so
     # the result says which case was active before.
     activation = None
+    # The case's identity and host logs (on a SIFT workstation), before the
+    # case is used
+    from vhir_cli.case_identity import ensure_identity, record_case_path
+
+    ensure_identity(case_dir, naming_version=2)
+    record_case_path(case_dir)
+
     try:
         vhir_dir = Path.home() / ".vhir"
         vhir_dir.mkdir(exist_ok=True)
@@ -1176,11 +1195,45 @@ def _case_activate_data(case_id: str, cases_dir=None) -> dict:
     if not case_dir.exists():
         raise ValueError(f"Case not found: {case_id}")
 
+    # An older case gets its identity now; a copy of another case is refused
+    from vhir_cli.case_identity import ensure_identity, record_case_path
+
+    ensure_identity(case_dir)
+    record_case_path(case_dir)
+
     vhir_dir = Path.home() / ".vhir"
     vhir_dir.mkdir(exist_ok=True)
     _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
 
     return {"case_id": case_id, "case_dir": str(case_dir)}
+
+
+def _case_new_identity(args) -> None:
+    """CLI: give a copied case (cp -r of another) its own identity."""
+    import os
+    from pathlib import Path
+
+    from vhir_cli.case_identity import new_identity
+
+    cases_dir = Path(
+        getattr(args, "cases_dir", None)
+        or os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR)
+    )
+    case_id = args.case_id
+    if not case_id or ".." in case_id or "/" in case_id or "\\" in case_id:
+        print(f"Error: Invalid case ID: {case_id}", file=sys.stderr)
+        sys.exit(1)
+    case_dir = cases_dir / case_id
+    if not (case_dir / "CASE.yaml").is_file():
+        print(f"Error: Case not found: {case_id}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        new = new_identity(case_dir)
+    except (ValueError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"{case_dir} now has its own identity: {new}")
+    print("Its records will be stored under it; the original's are unchanged.")
 
 
 def _case_activate(args, identity: dict) -> None:
