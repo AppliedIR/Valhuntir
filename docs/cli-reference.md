@@ -198,6 +198,8 @@ Re-hash registered evidence files and report any modifications.
 vhir evidence verify
 ```
 
+Exits 0 only when every registered file verifies: 2 when any file was modified, 1 when any is missing or can't be read.
+
 ### `vhir evidence log`
 
 Show evidence access log.

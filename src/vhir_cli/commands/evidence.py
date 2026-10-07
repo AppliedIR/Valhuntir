@@ -517,6 +517,12 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     if data["modified"]:
         print("ALERT: Evidence files have been modified since registration.")
         sys.exit(2)
+    if data["missing"] or data["errors"]:
+        print(
+            f"ALERT: {data['missing']} evidence file(s) missing and "
+            f"{data['errors']} that couldn't be read: not verified."
+        )
+        sys.exit(1)
 
 
 def cmd_evidence_log(args, identity: dict) -> None:

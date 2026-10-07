@@ -181,10 +181,42 @@ class TestVerifyEvidence:
         ev_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
         ev_file.unlink()
 
-        cmd_verify_evidence(FakeArgs(), identity)
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_verify_evidence(FakeArgs(), identity)
+        assert exc_info.value.code == 1
         output = capsys.readouterr().out
         assert "MISSING" in output
         assert "1 missing" in output
+        assert "1 evidence file(s) missing" in output
+
+    def test_verify_unreadable_exits_non_zero(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        ev_file = case_dir / "evidence" / "locked.bin"
+        ev_file.write_bytes(b"data")
+        cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
+        capsys.readouterr()
+
+        ev_file.chmod(0)
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_verify_evidence(FakeArgs(), identity)
+        finally:
+            ev_file.chmod(stat.S_IRUSR)
+        assert exc_info.value.code == 1
+        output = capsys.readouterr().out
+        assert "ERROR" in output and "1 errors" in output
+
+    def test_anchor_verify_all_ok_exits_zero(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        ev_file = case_dir / "evidence" / "fine.bin"
+        ev_file.write_bytes(b"data")
+        cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
+        cmd_verify_evidence(FakeArgs(), identity)  # returns: exit status 0
+        assert "ALERT" not in capsys.readouterr().out
 
     def test_verify_empty_registry(self, case_dir, identity, monkeypatch, capsys):
         monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
