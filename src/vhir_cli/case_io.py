@@ -11,7 +11,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -542,6 +542,23 @@ def _at_or_after(ts: object, since: str) -> bool:
     if bound is None or value is None:
         return ts >= since
     return value >= bound
+
+
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _at_or_before(ts: object, end: str) -> bool:
+    """Compare instants, with a date-only end including its whole UTC day;
+    when either side doesn't parse, compare as text, as before."""
+    bound, value = _utc(end), _utc(ts)
+    if bound is None or value is None:
+        return ts <= end
+    if _DATE_ONLY.match(end):
+        try:
+            return value < bound + timedelta(days=1)
+        except OverflowError:  # the end is 9999-12-31
+            return True
+    return value <= bound
 
 
 def export_bundle(case_dir: Path, since: str = "") -> dict:

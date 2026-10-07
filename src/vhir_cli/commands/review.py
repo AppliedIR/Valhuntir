@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    _at_or_after,
+    _at_or_before,
     get_case_dir,
     hmac_text,
     load_audit_index,
@@ -578,9 +580,9 @@ def _show_timeline(
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
     if start:
-        timeline = [t for t in timeline if t.get("timestamp", "") >= start]
+        timeline = [t for t in timeline if _at_or_after(t.get("timestamp", ""), start)]
     if end:
-        timeline = [t for t in timeline if t.get("timestamp", "") <= end]
+        timeline = [t for t in timeline if _at_or_before(t.get("timestamp", ""), end)]
     if event_type:
         timeline = [t for t in timeline if t.get("event_type", "") == event_type]
     if not timeline:

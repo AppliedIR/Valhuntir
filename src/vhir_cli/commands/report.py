@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    _at_or_after,
+    _at_or_before,
     get_case_dir,
     load_case_meta,
     load_findings,
@@ -282,9 +284,13 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     to_date = getattr(args, "to_date", None)
 
     if from_date:
-        timeline = [t for t in timeline if t.get("timestamp", "") >= from_date]
+        timeline = [
+            t for t in timeline if _at_or_after(t.get("timestamp", ""), from_date)
+        ]
     if to_date:
-        timeline = [t for t in timeline if t.get("timestamp", "") <= to_date]
+        timeline = [
+            t for t in timeline if _at_or_before(t.get("timestamp", ""), to_date)
+        ]
 
     if not timeline:
         print("No timeline events found.")

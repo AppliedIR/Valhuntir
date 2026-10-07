@@ -258,7 +258,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument(
         "--start", help="Start date filter (ISO format, e.g. 2026-01-01)"
     )
-    p_review.add_argument("--end", help="End date filter (ISO format, e.g. 2026-12-31)")
+    p_review.add_argument(
+        "--end",
+        help="End date filter (ISO format, e.g. 2026-12-31; a date alone includes "
+        "that whole day, UTC)",
+    )
     p_review.add_argument("--type", help="Filter by event type (with --timeline)")
     p_review.add_argument("--limit", type=int, default=50, help="Limit entries shown")
 
@@ -451,7 +455,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument(
         "--from", dest="from_date", help="Start date filter (ISO format)"
     )
-    p_report.add_argument("--to", dest="to_date", help="End date filter (ISO format)")
+    p_report.add_argument(
+        "--to",
+        dest="to_date",
+        help="End date filter (ISO format; a date alone includes that whole day, UTC)",
+    )
     p_report.add_argument(
         "--ioc", action="store_true", help="IOC report from approved findings"
     )
