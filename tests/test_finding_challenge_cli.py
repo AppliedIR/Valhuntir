@@ -401,3 +401,58 @@ def test_review_shows_a_control_character_title_escaped(capsys):
     assert lines[title] == "  Title:          Benign?[8m?Not challenged"
     assert lines[title + 1].startswith("  Challenged (client-reported): stands")
     assert any("Note: ok?[1A" in text for text in lines)
+
+
+def _review_output(case, monkeypatch, capsys, finding_id, action):
+    """`vhir approve --review` on one challenged finding, stopped at the password."""
+    finding = _finding(challenged=STANDS)
+    finding.update(id=finding_id, content_hash="now")
+    (case / "findings.json").write_text(json.dumps([finding]))
+    (case / "timeline.json").write_text("[]")
+    entry = {"id": finding_id, "type": "finding", "action": action}
+    entry["content_hash_at_review"] = "then"  # changed since: a stale warning
+    (case / "pending-reviews.json").write_text(
+        json.dumps({"case_id": "C-1", "items": [entry]})
+    )
+
+    def decline(*a):  # the examiner stops at the password prompt
+        raise SystemExit(1)
+
+    monkeypatch.setattr(approve_mod, "require_confirmation", decline)
+    try:
+        approve_mod._review_mode(case, IDENT, Path("cfg"))
+    except SystemExit:
+        pass
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "finding_id, action",
+    [("F-tester-001", "approve\x1b[2J"), ("F-tester-001\x1b[2J", "approve")],
+    ids=["the delta's action", "a stale id"],
+)
+def test_a_review_file_can_t_clear_the_challenge_line(
+    case, monkeypatch, capsys, finding_id, action
+):
+    """The portal's review file is written outside vhir: its values are escaped."""
+    out = _review_output(case, monkeypatch, capsys, finding_id, action)
+    assert "\x1b[2J" not in out
+    assert "?[2J" in out
+    assert "Challenged (client-reported): stands" in out
+    assert "was modified after you reviewed it" in out
+
+
+def test_a_multi_line_interpretation_keeps_its_lines(capsys):
+    _display_item(_finding(interpretation="Credential dumping\nthen lateral movement"))
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index("  Interpretation: Credential dumping")
+    assert (
+        lines[at + 1] == " " * 18 + "then lateral movement"
+    )  # indented under the field
+
+
+def test_a_carriage_return_can_t_overwrite_a_line(capsys):
+    _display_item(_finding(interpretation="benign\rNot challenged", challenged=STANDS))
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    assert "  Interpretation: benign?Not challenged" in out.splitlines()

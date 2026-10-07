@@ -855,9 +855,21 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 def _one_line(text) -> str:
     """Free text for one terminal line, its control characters shown as "?",
-    so it can't move the cursor or hide another line. Every value approve and
-    review print from the case goes through it."""
+    so it can't move the cursor or hide another line. Every single-line value
+    approve and review print from the case or a review file goes through it;
+    multi-line text goes through `_lines`."""
     return _CONTROL.sub("?", str(text))
+
+
+def _lines(text, indent: str) -> str:
+    """Multi-line free text (an observation, an interpretation): each line
+    break stays a real one, indented under its field; every other control
+    character is shown as "?", as in `_one_line`."""
+    return f"\n{indent}".join(_one_line(line) for line in str(text).split("\n"))
+
+
+# Fields that hold multi-line text; every other value is one line
+_MULTI_LINE = {"observation", "interpretation", "description"}
 
 
 def _challenge_line(challenged) -> str:
@@ -922,8 +934,8 @@ def _display_item(item: dict) -> None:
 
     if "title" in item:
         # It's a finding
-        print(f"  Observation: {_one_line(item.get('observation', ''))}")
-        print(f"  Interpretation: {_one_line(item.get('interpretation', ''))}")
+        print(f"  Observation: {_lines(item.get('observation', ''), ' ' * 15)}")
+        print(f"  Interpretation: {_lines(item.get('interpretation', ''), ' ' * 18)}")
         for line in _alternative_lines(item.get("alternatives")):
             print(f"  Alternative: {_one_line(line)}")
         if item.get("iocs"):
@@ -931,7 +943,7 @@ def _display_item(item: dict) -> None:
     else:
         # It's a timeline event
         print(f"  Timestamp: {_one_line(item.get('timestamp', '?'))}")
-        print(f"  Description: {_one_line(item.get('description', ''))}")
+        print(f"  Description: {_lines(item.get('description', ''), ' ' * 15)}")
         if item.get("audit_ids"):
             print(f"  Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}")
     print()
@@ -970,7 +982,7 @@ _RESET = "\033[0m"
 def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     """Print a terminal diff for a single delta item."""
     item_id = _one_line(delta_entry.get("id", "?"))
-    action = delta_entry.get("action", "?").upper()
+    action = _one_line(delta_entry.get("action", "?")).upper()
     modifications = delta_entry.get("modifications", {})
 
     # Color for action
@@ -1063,6 +1075,9 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
     pad = max(0, 14 - len(label))
     prefix = f"  {label}:{' ' * pad}"
 
+    def shown(text, indent: str) -> str:
+        return _lines(text, indent) if field in _MULTI_LINE else _one_line(text)
+
     if field in modifications:
         mod = modifications[field]
         original = mod.get("original", "")
@@ -1072,15 +1087,16 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
             original = ", ".join(str(x) for x in original)
         if isinstance(modified, list):
             modified = ", ".join(str(x) for x in modified)
-        print(f"{prefix}{_RED}- {_one_line(original)}{_RESET}")
+        indent = " " * (len(prefix) + 2)
+        print(f"{prefix}{_RED}- {shown(original, indent)}{_RESET}")
         print(
-            f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {_one_line(modified)}{_RESET}"
+            f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {shown(modified, indent)}{_RESET}"
         )
     else:
         val = item.get(field, "")
         if isinstance(val, list):
             val = ", ".join(str(x) for x in val)
-        print(f"{prefix}{_one_line(val)}")
+        print(f"{prefix}{shown(val, ' ' * len(prefix))}")
 
 
 def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
@@ -1217,7 +1233,9 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
 
     # Stale warnings
     for sid in stale_warnings:
-        print(f"  {_YELLOW}WARNING: {sid} was modified after you reviewed it.{_RESET}")
+        print(
+            f"  {_YELLOW}WARNING: {_one_line(sid)} was modified after you reviewed it.{_RESET}"
+        )
 
     # Summary
     print(f"\n{'=' * 60}")
@@ -1498,7 +1516,7 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
             f"\n  {_YELLOW}Skipped {len(skipped)} item(s) (field changed since review):"
         )
         for sid, reason in skipped:
-            print(f"    {sid}: {reason}")
+            print(f"    {_one_line(sid)}: {_one_line(reason)}")
         print(f"  Re-review in browser.{_RESET}")
 
     print(
