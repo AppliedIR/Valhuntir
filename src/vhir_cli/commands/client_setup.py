@@ -786,7 +786,10 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         if settings and settings[1] != "kept":
             print("  Forensic controls deployed:")
             print("    Sandbox:     enabled (Bash writes restricted)")
-            print("    Audit hook:  forensic-audit.sh (captures all Bash commands)")
+            print(
+                "    Audit hook:  forensic-audit.sh (records Bash commands while a "
+                "case is active)"
+            )
             print("    Provenance:  enforced (findings require evidence trail)")
             print("    Discipline:  FORENSIC_DISCIPLINE.md + TOOL_REFERENCE.md")
         elif settings:

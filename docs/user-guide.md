@@ -585,7 +585,7 @@ vhir audit log --tool run_command    # Filter by tool
 vhir audit summary                   # Counts per MCP and tool
 ```
 
-When Claude Code is the LLM client, a PostToolUse hook additionally captures every Bash command to `audit/claude-code.jsonl`.
+When Claude Code is the LLM client, a PostToolUse hook also records each Bash command to `audit/claude-code.jsonl` while a case is active (with no active case, it records nothing).
 
 The LLM can also write to the audit trail:
 - `log_reasoning()` — record analytical decisions at decision points (no approval needed)

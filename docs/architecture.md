@@ -301,7 +301,7 @@ Nine layers of defense-in-depth protect the integrity of forensic findings. See 
 |-------|---------|------|
 | L1 | Structural approval gate (DRAFT → APPROVED requires human) | Structural |
 | L2 | HMAC verification ledger (PBKDF2 + HMAC-SHA256 signatures) | Cryptographic |
-| L3 | Case data deny rules (41 rules blocking Edit/Write to protected files) | Permission |
+| L3 | Case data deny rules (Edit/Write on protected files, Read on `/var/lib/vhir`) | Permission |
 | L4 | Sandbox filesystem write protection (bwrap) | Kernel |
 | L5 | File permission protection (chmod 444 after write) | Filesystem |
 | L6 | Report reconciliation (bidirectional ledger cross-check) | Integrity |
@@ -370,7 +370,7 @@ Every MCP tool call is logged to a per-backend JSONL file in the case `audit/` d
 - Case identifier
 - Result summary
 
-Evidence IDs resume sequence numbering across process restarts. When Claude Code is the client, a PostToolUse hook additionally captures every Bash command to `audit/claude-code.jsonl` with SHA-256 hashes.
+Evidence IDs resume sequence numbering across process restarts. When Claude Code is the client, a PostToolUse hook also records each Bash command, while a case is active, to `audit/claude-code.jsonl` with SHA-256 hashes.
 
 Findings recorded via `record_finding()` are classified by provenance tier based on audit trail evidence:
 

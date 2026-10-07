@@ -79,7 +79,7 @@ The LLM cannot forge ledger entries because it does not know the password-derive
 
 ### L3 — Case Data Deny Rules
 
-When Claude Code is the LLM client, 41 deny rules block Read/Edit/Write tool access to protected files:
+When Claude Code is the LLM client, deny rules block its Edit and Write tools on case data and control files, and its Read tool on `/var/lib/vhir`:
 
 - Case data: `findings.json`, `timeline.json`, `approvals.jsonl`, `todos.json`, `CASE.yaml`, `actions.jsonl`, `audit/*.jsonl`, `evidence.json`, `pending-reviews.json`
 - System: `/var/lib/vhir/**` (verification ledger + password hashes)
@@ -165,9 +165,9 @@ unsandboxed.
 When Claude Code is the LLM client, `vhir setup client --client=claude-code` deploys:
 
 - **Kernel-level sandbox**: Restricts Bash writes and network access via bubblewrap (L9). On Ubuntu 24.04+, requires AppArmor profile installed by `setup-sift.sh`
-- **Case data deny rules**: 41 rules blocking Read/Edit/Write to protected case files, evidence registry, verification ledger, and control files (L3)
+- **Case data deny rules**: Edit and Write blocked on protected case files, the evidence registry and control files, and Read blocked on `/var/lib/vhir` (the verification ledger and password files) (L3)
 - **PreToolUse case-data guard**: Refuses Bash commands that would delete or overwrite case records (findings, timeline, approvals, IOCs, evidence registry, TODOs, CASE.yaml, actions, pending reviews), `audit/` or evidence files, or `/` and the folders above the cases root (such as `~`): `rm`, `mv`, `cp`, `truncate`, `shred`, `unlink`, redirections and `find -delete`, seen through `sudo`, `env`, chains, newlines, `$(...)` and `cd`. Moving other files into `DELETE/`, filing new evidence and work in `reports/` are allowed. It is a best-effort check of those commands, not a security boundary: it does not see into `bash -c`, `xargs`, scripts, `tee`, in-place editors (`sed -i`, `perl -i`), `git clean`, `rsync --delete`, `dd of=`, `>&`, brace expansion, variables, backquotes, a quoted `"$(...)"` or an operand after a `$(...)` inside an argument, nor anything after a `#` comment (on later lines too), nor `timeout -s`/`env -u` options, an option value placed after the operands of `cp`, `install` or `ln` (`--suffix .bak`, `-m 0644`), a single-operand `ln` (the link is created in the current folder) or a `cd` inside a subshell or one that fails, and it reads a quoted `'>'` as a redirection (a false block), blocks `find` with `-exec` or `-delete` rooted at `/` or a folder above the cases root whatever its predicates (`find ~ -exec grep …` too), and can misread a quoted `'x$'` before `\(` as a `$(`; and it guards only cases under `$VHIR_CASES_DIR` (default `~/cases`)
-- **PostToolUse audit hook**: Captures every Bash command and output to `audit/claude-code.jsonl`
+- **PostToolUse audit hook**: While a case is active, records each Bash command and its output to the case's `audit/claude-code.jsonl` (with no active case, it records nothing)
 - **Provenance enforcement**: Findings without an evidence trail are rejected
 - **Password-gated human approval**: Approval requires the examiner's password + writes HMAC ledger entry (L2)
 
