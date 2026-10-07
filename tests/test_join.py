@@ -119,9 +119,11 @@ class TestUrlNormalization:
             import vhir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
-            join_mod._find_ca_cert = lambda: None
-            join_mod._write_config = lambda *a, **kw: None
-            join_mod.cmd_join(args, {"examiner": "tester"})
+            with (
+                patch.object(join_mod, "_find_ca_cert", lambda: None),
+                patch.object(join_mod, "_write_config", lambda *a, **kw: None),
+            ):
+                join_mod.cmd_join(args, {"examiner": "tester"})
 
         return mock_requests.post.call_args[0][0]
 
