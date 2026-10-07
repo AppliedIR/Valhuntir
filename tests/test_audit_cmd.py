@@ -6,7 +6,7 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from vhir_cli.commands.audit_cmd import cmd_audit
+from vhir_cli.commands.audit_cmd import _load_audit_entries, cmd_audit
 
 
 @pytest.fixture
@@ -237,3 +237,160 @@ class TestAuditNoAction:
     def test_no_action_exits(self, case_dir, identity):
         with pytest.raises(SystemExit):
             cmd_audit(_make_args(), identity)
+
+
+# A page is served from each file's tail, so these fixtures are deliberately
+# longer than that tail window.
+LONG = 6000
+
+
+def _seq_ts(i: int) -> str:
+    return (
+        f"2026-03-{1 + i // 86400:02d}"
+        f"T{(i // 3600) % 24:02d}:{(i // 60) % 60:02d}:{i % 60:02d}Z"
+    )
+
+
+def _write_trail(path, count, mcp="sift-mcp", step=1, first=0, tool="run_tool"):
+    """Write `count` entries with strictly increasing timestamps."""
+    with open(path, "w") as f:
+        for n in range(count):
+            f.write(
+                json.dumps(
+                    {
+                        "ts": _seq_ts(first + n * step),
+                        "mcp": mcp,
+                        "tool": tool,
+                        "examiner": "tester",
+                        "audit_id": f"{mcp}-{n:06d}",
+                    }
+                )
+                + "\n"
+            )
+
+
+class TestAuditLogLongTrail:
+    def test_log_shows_newest_of_a_long_file(self, case_dir, identity, capsys):
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG)
+        cmd_audit(_make_args("log", limit=5), identity)
+        output = capsys.readouterr().out
+        assert "Showing 5 entries" in output
+        for n in range(LONG - 5, LONG):
+            assert f"sift-mcp-{n:06d}" in output
+        assert "sift-mcp-000010" not in output
+
+    def test_log_merges_tails_across_files(self, case_dir, identity, capsys):
+        # Two long files whose timestamps interleave.
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG, "sift-mcp", 2, 0)
+        _write_trail(
+            case_dir / "audit" / "forensic-mcp.jsonl", LONG, "forensic-mcp", 2, 1
+        )
+        cmd_audit(_make_args("log", limit=4), identity)
+        output = capsys.readouterr().out
+        assert f"sift-mcp-{LONG - 1:06d}" in output
+        assert f"sift-mcp-{LONG - 2:06d}" in output
+        assert f"forensic-mcp-{LONG - 1:06d}" in output
+        assert f"forensic-mcp-{LONG - 2:06d}" in output
+
+    def test_log_matches_full_scan_on_a_long_trail(self, case_dir, identity):
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG, "sift-mcp", 2, 0)
+        _write_trail(
+            case_dir / "audit" / "forensic-mcp.jsonl", LONG, "forensic-mcp", 2, 1
+        )
+        with open(case_dir / "approvals.jsonl", "w") as f:
+            for n in range(20):
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": _seq_ts(n * 3),
+                            "item_id": f"F-tester-{n:03d}",
+                            "action": "APPROVED",
+                            "examiner": "tester",
+                        }
+                    )
+                    + "\n"
+                )
+        paged = _load_audit_entries(case_dir, 50)[-50:]
+        full = _load_audit_entries(case_dir)[-50:]
+        assert paged == full
+
+    def test_log_rereads_file_when_tail_is_out_of_order(
+        self, case_dir, identity, capsys
+    ):
+        """A clock step inside the tail forces a full read of that file."""
+        entries = [
+            {
+                "ts": _seq_ts(n),
+                "mcp": "wintools-mcp",
+                "tool": "run_tool",
+                "examiner": "tester",
+                "audit_id": f"wintools-mcp-{n:06d}",
+            }
+            for n in range(LONG)
+        ]
+        # A clock that jumped forward early in the file, then corrected.
+        entries[100]["ts"] = "2027-01-01T00:00:00Z"
+        # A later backward step, inside the tail, marks the file as unordered.
+        entries[LONG - 500]["ts"] = _seq_ts(0)
+        with open(case_dir / "audit" / "wintools-mcp.jsonl", "w") as f:
+            for entry in entries:
+                f.write(json.dumps(entry) + "\n")
+
+        cmd_audit(_make_args("log", limit=3), identity)
+        output = capsys.readouterr().out
+        assert "wintools-mcp-000100" in output
+
+    def test_log_filter_reaches_past_the_tail(self, case_dir, identity, capsys):
+        """--tool entries older than the tail window are still found."""
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG)
+        with open(case_dir / "audit" / "sift-mcp.jsonl") as f:
+            lines = f.readlines()
+        rare = json.loads(lines[10])
+        rare["tool"] = "carve_files"
+        rare["audit_id"] = "sift-mcp-rare"
+        lines[10] = json.dumps(rare) + "\n"
+        with open(case_dir / "audit" / "sift-mcp.jsonl", "w") as f:
+            f.writelines(lines)
+
+        cmd_audit(_make_args("log", limit=5, tool="carve_files"), identity)
+        output = capsys.readouterr().out
+        assert "sift-mcp-rare" in output
+        assert "Showing 1 entries" in output
+
+    def test_log_filter_by_mcp_on_a_long_trail(self, case_dir, identity, capsys):
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG, "sift-mcp", 2, 0)
+        _write_trail(
+            case_dir / "audit" / "forensic-mcp.jsonl", LONG, "forensic-mcp", 2, 1
+        )
+        cmd_audit(_make_args("log", limit=3, mcp="forensic-mcp"), identity)
+        output = capsys.readouterr().out
+        assert "sift-mcp" not in output
+        assert f"forensic-mcp-{LONG - 1:06d}" in output
+        assert "Showing 3 entries" in output
+
+    def test_log_includes_newest_approvals_from_a_long_trail(
+        self, case_dir, identity, capsys
+    ):
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG)
+        with open(case_dir / "approvals.jsonl", "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": "2027-01-01T00:00:00Z",
+                        "item_id": "F-tester-001",
+                        "action": "APPROVED",
+                        "examiner": "tester",
+                    }
+                )
+                + "\n"
+            )
+        cmd_audit(_make_args("log", limit=2), identity)
+        output = capsys.readouterr().out
+        assert "approval" in output
+        assert "vhir-cli" in output
+
+    def test_summary_still_counts_every_line(self, case_dir, identity, capsys):
+        _write_trail(case_dir / "audit" / "sift-mcp.jsonl", LONG)
+        cmd_audit(_make_args("summary"), identity)
+        output = capsys.readouterr().out
+        assert f"Total entries: {LONG}" in output

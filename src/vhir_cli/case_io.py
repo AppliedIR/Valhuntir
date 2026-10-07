@@ -480,6 +480,98 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
     return index
 
 
+# --- Audit trail tails ---
+
+_TAIL_BLOCK = 65536
+# A page of `limit` rows needs at most `limit` entries per file, but audit files
+# are ordered by their writer's own clock and some are appended over SMB from a
+# Windows host, so read a wide margin: enough that a run of out-of-order appends
+# has to be very long before it can push a newer entry out of the window, and
+# short enough to stay flat in the size of the trail.
+_TAIL_OVERREAD = 4
+_TAIL_MIN = 2000
+
+
+def _iter_lines_reversed(fh, block: int = _TAIL_BLOCK):
+    """Yield the raw lines of an open binary file from last to first."""
+    fh.seek(0, os.SEEK_END)
+    pos = fh.tell()
+    carry = b""
+    while pos > 0:
+        step = min(block, pos)
+        pos -= step
+        fh.seek(pos)
+        chunk = fh.read(step) + carry
+        parts = chunk.split(b"\n")
+        carry = parts.pop(0)
+        yield from reversed(parts)
+    if carry:
+        yield carry
+
+
+def tail_jsonl_entries(
+    path: Path, limit: int | None, keep=None
+) -> tuple[list[dict], int]:
+    """Read the newest entries of an append-ordered JSONL file.
+
+    With `limit` set, the file is read backwards and only enough of its tail is
+    parsed to cover a page of `limit` rows, so cost is proportional to the page
+    rather than to the whole trail. `keep(entry)` restricts which entries count
+    towards that page; entries it rejects are dropped. If the region read turns
+    out not to be in non-decreasing `ts` order the rest of the file is read too,
+    so a file written by a skewed clock falls back to a full scan. Disorder
+    entirely outside that region cannot be seen: an entry stamped far in the
+    future but written long ago would show up in a full scan and not here.
+
+    `limit=None` reads the whole file forwards (used by `vhir audit summary`,
+    which aggregates every line anyway).
+
+    Returns (entries in file order, count of corrupt lines in the region read).
+    """
+    entries: list[dict] = []
+    corrupt = 0
+
+    if limit is None:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    corrupt += 1
+                    continue
+                if keep is None or keep(entry):
+                    entries.append(entry)
+        return entries, corrupt
+
+    want = max(limit * _TAIL_OVERREAD, _TAIL_MIN)
+    later_ts: str | None = None
+    ordered = True
+    with open(path, "rb") as fh:
+        for raw in _iter_lines_reversed(fh):
+            line = raw.decode("utf-8").strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                corrupt += 1
+                continue
+            ts = entry.get("ts", "")
+            if later_ts is not None and ts > later_ts:
+                ordered = False
+            later_ts = ts
+            if keep is None or keep(entry):
+                entries.append(entry)
+                if ordered and len(entries) >= want:
+                    break
+
+    entries.reverse()
+    return entries, corrupt
+
+
 # --- Export / Merge ---
 
 

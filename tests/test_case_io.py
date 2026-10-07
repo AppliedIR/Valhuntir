@@ -9,6 +9,7 @@ import yaml
 
 from vhir_cli.case_io import (
     CaseError,
+    _iter_lines_reversed,
     compute_content_hash,
     export_bundle,
     get_case_dir,
@@ -17,6 +18,7 @@ from vhir_cli.case_io import (
     load_timeline,
     save_findings,
     save_timeline,
+    tail_jsonl_entries,
     verify_approval_integrity,
     write_approval_log,
 )
@@ -525,3 +527,74 @@ class TestCaseList:
         output = capsys.readouterr().out
         assert "INC-2026-001" in output
         assert "not-a-case" not in output
+
+
+class TestTailJsonlEntries:
+    """Backward block reads must not split or merge lines at a block edge."""
+
+    CONTENT = (
+        b"short\n"
+        b"\n"
+        b"a line comfortably longer than the smallest block size tested\n"
+        b"crlf\r\n"
+        b"\n"
+        b"last"
+    )
+
+    def _reversed(self, path, block):
+        with open(path, "rb") as fh:
+            return [raw for raw in _iter_lines_reversed(fh, block) if raw]
+
+    @pytest.mark.parametrize("block", [1, 2, 3, 7, 13, 64, 4096])
+    def test_reversed_lines_survive_any_block_size(self, tmp_path, block):
+        path = tmp_path / "trail.jsonl"
+        path.write_bytes(self.CONTENT)
+        expected = [line for line in self.CONTENT.split(b"\n") if line][::-1]
+        assert self._reversed(path, block) == expected
+
+    @pytest.mark.parametrize("block", [1, 3, 7, 4096])
+    def test_reversed_lines_with_trailing_newline(self, tmp_path, block):
+        path = tmp_path / "trail.jsonl"
+        path.write_bytes(self.CONTENT + b"\n")
+        expected = [line for line in self.CONTENT.split(b"\n") if line][::-1]
+        assert self._reversed(path, block) == expected
+
+    def test_empty_file(self, tmp_path):
+        path = tmp_path / "trail.jsonl"
+        path.write_bytes(b"")
+        assert tail_jsonl_entries(path, 10) == ([], 0)
+        assert tail_jsonl_entries(path, None) == ([], 0)
+
+    def test_blank_and_crlf_lines_and_no_trailing_newline(self, tmp_path):
+        path = tmp_path / "trail.jsonl"
+        path.write_bytes(
+            b'{"ts": "2026-01-01T00:00:00Z", "n": 1}\r\n'
+            b"\n"
+            b'{"ts": "2026-01-01T00:00:01Z", "n": 2}'
+        )
+        entries, corrupt = tail_jsonl_entries(path, 10)
+        assert [e["n"] for e in entries] == [1, 2]
+        assert corrupt == 0
+        assert tail_jsonl_entries(path, None)[0] == entries
+
+    def test_corrupt_lines_are_counted_not_raised(self, tmp_path):
+        path = tmp_path / "trail.jsonl"
+        path.write_bytes(
+            b'{"ts": "2026-01-01T00:00:00Z", "n": 1}\n'
+            b"not json at all\n"
+            b'{"ts": "2026-01-01T00:00:01Z", "n": 2}\n'
+        )
+        entries, corrupt = tail_jsonl_entries(path, 10)
+        assert [e["n"] for e in entries] == [1, 2]
+        assert corrupt == 1
+
+    def test_keep_predicate_drops_non_matching_entries(self, tmp_path):
+        path = tmp_path / "trail.jsonl"
+        path.write_bytes(
+            b'{"ts": "2026-01-01T00:00:00Z", "tool": "run_tool"}\n'
+            b'{"ts": "2026-01-01T00:00:01Z", "tool": "carve_files"}\n'
+        )
+        entries, _ = tail_jsonl_entries(
+            path, 10, lambda e: e.get("tool") == "carve_files"
+        )
+        assert [e["tool"] for e in entries] == ["carve_files"]

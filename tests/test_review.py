@@ -586,6 +586,77 @@ class TestVerifyTampered:
         assert "Investigate immediately" in output
 
 
+class TestAuditView:
+    """--audit serves a page from each file's tail, not the whole trail."""
+
+    LONG = 6000
+
+    def _write_trail(self, case_dir, mcp, count, first=0, step=1):
+        (case_dir / "audit").mkdir(exist_ok=True)
+        with open(case_dir / "audit" / f"{mcp}.jsonl", "w") as f:
+            for n in range(count):
+                i = first + n * step
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": f"2026-03-01T{(i // 3600) % 24:02d}"
+                            f":{(i // 60) % 60:02d}:{i % 60:02d}Z",
+                            "mcp": mcp,
+                            "tool": "run_tool",
+                            "examiner": "tester",
+                            "audit_id": f"{mcp}-{n:06d}",
+                        }
+                    )
+                    + "\n"
+                )
+
+    def _run(self, limit):
+        cmd_review(Namespace(case=None, audit=True, limit=limit), {})
+
+    def test_audit_shows_newest_of_a_long_trail(self, case_dir, capsys):
+        self._write_trail(case_dir, "sift-mcp", self.LONG)
+        self._run(5)
+        output = capsys.readouterr().out
+        assert "last 5 entries" in output
+        for n in range(self.LONG - 5, self.LONG):
+            assert f"sift-mcp-{n:06d}" in output
+        assert "sift-mcp-000010" not in output
+
+    def test_audit_merges_tails_across_files(self, case_dir, capsys):
+        self._write_trail(case_dir, "sift-mcp", self.LONG, first=0, step=2)
+        self._write_trail(case_dir, "forensic-mcp", self.LONG, first=1, step=2)
+        self._run(4)
+        output = capsys.readouterr().out
+        assert f"sift-mcp-{self.LONG - 1:06d}" in output
+        assert f"forensic-mcp-{self.LONG - 1:06d}" in output
+
+    def test_audit_includes_newest_approvals(self, case_dir, capsys):
+        self._write_trail(case_dir, "sift-mcp", self.LONG)
+        with open(case_dir / "approvals.jsonl", "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "ts": "2027-01-01T00:00:00Z",
+                        "item_id": "F-tester-001",
+                        "action": "APPROVED",
+                        "examiner": "tester",
+                    }
+                )
+                + "\n"
+            )
+        self._run(2)
+        output = capsys.readouterr().out
+        assert "vhir-cli" in output
+        assert "approval" in output
+
+    def test_audit_limit_below_one_still_shows_everything(self, case_dir, capsys):
+        self._write_trail(case_dir, "sift-mcp", 10)
+        self._run(0)
+        output = capsys.readouterr().out
+        assert "sift-mcp-000000" in output
+        assert "sift-mcp-000009" in output
+
+
 # --- --verify with no findings still checks the ledger ----------------------
 # load_findings returns [] when findings.json is absent, empty or corrupt;
 # the verifier then printed "No findings recorded." and stopped, skipping the

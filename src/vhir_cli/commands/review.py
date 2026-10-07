@@ -27,6 +27,7 @@ from vhir_cli.case_io import (
     load_findings,
     load_timeline,
     load_todos,
+    tail_jsonl_entries,
     verify_approval_integrity,
 )
 
@@ -609,49 +610,40 @@ def _show_evidence(case_dir: Path) -> None:
 def _show_audit(case_dir: Path, limit: int) -> None:
     """Show audit trail entries from audit/."""
     entries = []
+    # A page of `limit` rows only needs each file's tail; a limit below 1 keeps
+    # its old meaning of "everything" (entries[-0:] is the whole list).
+    want = limit if limit >= 1 else None
 
     # Read from audit/
     audit_dir = case_dir / "audit"
     if audit_dir.is_dir():
         for jsonl_file in audit_dir.glob("*.jsonl"):
             try:
-                with open(jsonl_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            print(
-                                f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
-                                file=sys.stderr,
-                            )
+                found, corrupt = tail_jsonl_entries(jsonl_file, want)
             except OSError as e:
                 print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
                 continue
+            for _ in range(corrupt):
+                print(
+                    f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
+                    file=sys.stderr,
+                )
+            entries.extend(found)
 
     # Read approvals
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
         try:
-            with open(approvals_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        print(
-                            "  Warning: skipping corrupt approval line", file=sys.stderr
-                        )
-                        continue
-                    entry["tool"] = "approval"
-                    entry["mcp"] = "vhir-cli"
-                    entries.append(entry)
+            found, corrupt = tail_jsonl_entries(approvals_file, want)
         except OSError as e:
             print(f"  Warning: could not read {approvals_file}: {e}", file=sys.stderr)
+            found, corrupt = [], 0
+        for _ in range(corrupt):
+            print("  Warning: skipping corrupt approval line", file=sys.stderr)
+        for entry in found:
+            entry["tool"] = "approval"
+            entry["mcp"] = "vhir-cli"
+            entries.append(entry)
 
     entries.sort(key=lambda e: e.get("ts", ""))
     entries = entries[-limit:]
