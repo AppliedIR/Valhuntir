@@ -23,6 +23,7 @@ from pathlib import Path
 from vhir_cli.case_io import (
     _at_or_after,
     _at_or_before,
+    display_instant,
     get_case_dir,
     load_case_meta,
     load_findings,
@@ -302,7 +303,7 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     for t in timeline:
         tid = t.get("id", "?")
         status = t.get("status", "?")
-        ts = t.get("timestamp", "?")[:19] if t.get("timestamp") else "?"
+        ts = display_instant(t.get("timestamp"))
         desc = t.get("description", "")
         if len(desc) > 35:
             desc = desc[:32] + "..."

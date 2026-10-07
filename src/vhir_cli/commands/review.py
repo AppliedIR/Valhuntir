@@ -22,6 +22,7 @@ from pathlib import Path
 from vhir_cli.case_io import (
     _at_or_after,
     _at_or_before,
+    display_instant,
     get_case_dir,
     hmac_text,
     load_audit_index,
@@ -611,7 +612,7 @@ def _show_timeline(
         for t in timeline:
             tid = one_line(t.get("id", "?"))
             item_status = one_line(t.get("status", "?"))
-            ts = one_line(t.get("timestamp", "?")[:19] if t.get("timestamp") else "?")
+            ts = one_line(display_instant(t.get("timestamp")))
             desc = one_line(t.get("description", ""))  # one row per event
             if len(desc) > 40:
                 desc = desc[:37] + "..."

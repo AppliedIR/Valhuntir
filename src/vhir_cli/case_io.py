@@ -536,6 +536,25 @@ def _utc(ts: object) -> datetime | None:
         return None
 
 
+_ZONED = re.compile(r"(Z|[+-]\d{2}:?\d{2})$")
+
+
+def display_instant(ts: object) -> str:
+    """A timestamp for a table column, to the second. One with an offset (or
+    Z) shows its UTC instant ("…Z"); one without shows as written; one that
+    doesn't parse shows whole. Never a time cut off its offset, which reads
+    as UTC."""
+    if not ts:
+        return "?"
+    text = str(ts)
+    value = _utc(text)
+    if value is None:
+        return text
+    if _ZONED.search(text):
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return text[:19]
+
+
 def _at_or_after(ts: object, since: str) -> bool:
     """Compare instants; when either side doesn't parse, compare as text, as before."""
     bound, value = _utc(since), _utc(ts)
