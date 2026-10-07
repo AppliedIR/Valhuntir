@@ -188,3 +188,81 @@ def test_anchor_without_sift_common_a_case_is_made_as_before(home, monkeypatch):
 def test_the_new_identity_command_is_on_the_cli():
     args = main.build_parser().parse_args(["case", "new-identity", "C-1-copy"])
     assert (args.case_action, args.case_id) == ("new-identity", "C-1-copy")
+
+
+@needs_sift
+def test_an_older_case_s_copy_is_refused_after_its_first_activation(home):
+    case_dir, _ = _init(home)
+    meta = _meta(case_dir)
+    for key in ("case_uuid", "naming_version"):
+        del meta[key]
+    (case_dir / "CASE.yaml").write_text(yaml.safe_dump(meta))
+    (home / ".vhir" / "case-paths.json").unlink()
+    for name in ("host-observations.jsonl", "host-decisions.jsonl", "host-ops.json"):
+        (case_dir / name).unlink()
+    main._case_activate_data("C-1", cases_dir=str(home / "cases"))  # mints
+    shutil.copytree(case_dir, home / "cases" / "C-1-copy")
+    with pytest.raises(ValueError, match="copy of the case"):
+        main._case_activate_data("C-1-copy", cases_dir=str(home / "cases"))
+
+
+@needs_sift
+def test_reopening_a_copied_closed_case_is_refused(home, monkeypatch, capsys):
+    monkeypatch.setenv("VHIR_CASES_DIR", str(home / "cases"))
+    case_dir, _ = _init(home)
+    meta = _meta(case_dir)
+    meta["status"] = "closed"
+    (case_dir / "CASE.yaml").write_text(yaml.safe_dump(meta))
+    shutil.copytree(case_dir, home / "cases" / "C-1-copy")
+    pointer = (home / ".vhir" / "active_case").read_text()
+    with pytest.raises(SystemExit):
+        main._case_reopen(argparse.Namespace(case_id="C-1-copy"), {})
+    assert "copy of the case" in capsys.readouterr().err
+    assert _meta(home / "cases" / "C-1-copy")["status"] == "closed"
+    assert (home / ".vhir" / "active_case").read_text() == pointer
+
+
+@needs_sift
+def test_a_new_identity_cut_short_still_drops_the_legacy_alias(home, monkeypatch):
+    from sift_common import host_identity
+
+    case_dir, _ = _init(home)
+    copy = home / "cases" / "C-1-copy"
+    shutil.copytree(case_dir, copy)
+
+    def fail(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(host_identity, "write_case_header", fail)
+    with pytest.raises(SystemExit):
+        main._case_new_identity(
+            argparse.Namespace(case_id="C-1-copy", cases_dir=str(home / "cases"))
+        )
+    assert _meta(copy)["legacy_alias"] == "none"
+
+
+@needs_sift
+def test_new_identity_waits_for_the_case_to_be_idle(home, capsys):
+    from sift_common import host_identity
+
+    case_dir, _ = _init(home)
+    copy = home / "cases" / "C-1-copy"
+    shutil.copytree(case_dir, copy)
+    before = _meta(copy)["case_uuid"]
+    with host_identity.case_lock(copy, shared=True):  # an ingest, say
+        with pytest.raises(SystemExit):
+            main._case_new_identity(
+                argparse.Namespace(case_id="C-1-copy", cases_dir=str(home / "cases"))
+            )
+    assert "in use" in capsys.readouterr().err
+    assert _meta(copy)["case_uuid"] == before
+
+
+@needs_sift
+def test_a_corrupt_case_paths_file_is_refused_not_overwritten(home):
+    _init(home)
+    paths = home / ".vhir" / "case-paths.json"
+    paths.write_text("{not json")
+    with pytest.raises(ValueError, match="can't be read"):
+        main._case_activate_data("C-1", cases_dir=str(home / "cases"))
+    assert paths.read_text() == "{not json"

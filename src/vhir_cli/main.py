@@ -1378,6 +1378,18 @@ def _case_reopen(args, identity: dict) -> None:
         )
         return
 
+    # As at activation: an older case gets its identity, a copy is refused
+    from vhir_cli.case_identity import ensure_identity, record_case_path
+
+    try:
+        ensure_identity(case_dir)
+        record_case_path(case_dir)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    with open(meta_file) as f:  # the mint may have added keys
+        meta = yaml.safe_load(f) or {}
+
     meta["status"] = "open"
     meta.pop("closed", None)
     meta.pop("close_summary", None)

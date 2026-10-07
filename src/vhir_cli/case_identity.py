@@ -87,11 +87,26 @@ def _paths_lock():
 
 
 def _read_paths() -> dict:
+    """The recorded folders; refused, never read as empty, when the file
+    can't be read: overwriting it would drop every record and the copy check."""
+    path = _paths_file()
     try:
-        data = json.loads(_paths_file().read_text())
-    except (OSError, ValueError):
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"{path} can't be read ({e}). It records which folder holds each "
+            "case; fix or move it aside, then try again."
+        ) from None
+    if not isinstance(data, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+    ):
+        raise ValueError(
+            f"{path} isn't a map of case identities to folders; fix or move it "
+            "aside, then try again."
+        )
+    return data
 
 
 def _holds(folder: str, identity: str) -> bool:
@@ -151,11 +166,20 @@ def new_identity(case_dir: Path) -> str:
         )
     new = str(uuid.uuid4())
     c12 = new.replace("-", "")[:12]
-    # The logs first: if CASE.yaml isn't written after, the next open names
-    # this UUID to restore, which completes the change.
-    module.write_case_header(
-        case_dir, c12, f"new identity for a copy of {old}", case_uuid=new
-    )
-    module.update_case_meta(case_dir, {"case_uuid": new, "legacy_alias": "none"})
+    try:
+        with module.case_lock(case_dir, shared=False):
+            # One write of both keys, before the logs learn the new identity:
+            # whatever happens after it, the copy no longer reads the
+            # original's older indices.
+            module.update_case_meta(
+                case_dir, {"case_uuid": new, "legacy_alias": "none"}
+            )
+            module.write_case_header(
+                case_dir, c12, f"new identity for a copy of {old}", case_uuid=new
+            )
+    except module.CaseLockBusy as e:
+        raise ValueError(
+            f"{case_dir} is in use ({e}); try again when it's idle."
+        ) from None
     record_case_path(case_dir)
     return new
