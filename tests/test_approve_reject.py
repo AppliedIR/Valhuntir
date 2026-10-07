@@ -934,3 +934,56 @@ def test_without_a_concurrent_write_the_outcome_is_unchanged(
     )
     assert iocs["IOC-steve-001"]["status"] == "APPROVED"
     assert sorted(signed) == ["F-steve-001", "IOC-steve-001", "T-steve-001"]
+
+
+# --- a concurrent change to an existing record the examiner did not act on ----
+# _keep_landed appends records whose ids are new, so a record *staged* during
+# the wait survives. A record that already existed but was *changed* on disk
+# during the wait — approved by another examiner from another terminal, say —
+# is still written back from the stale in-memory copy.
+
+
+def _approve_concurrently(case, fid, by="alice"):
+    """What `vhir approve <fid>` in another terminal writes for that finding."""
+    path = case / "findings.json"
+    data = json.loads(path.read_text())
+    for f in data:
+        if f["id"] == fid:
+            f.update(status="APPROVED", approved_at=_NOW, approved_by=by)
+    _write(path, data)
+
+
+@pytest.fixture
+def two_finding_case(wait_case):
+    path = wait_case / "findings.json"
+    _write(
+        path,
+        json.loads(path.read_text()) + [_f("F-steve-002", "Second", "T-steve-003")],
+    )
+    return wait_case
+
+
+@pytest.mark.parametrize(
+    "mode,answers",
+    [("ids", ()), ("int", ("a", "s", "s", "s")), ("rev", ())],
+    ids=["ids", "interactive", "review"],
+)
+def test_a_concurrent_approval_of_an_untouched_finding_is_kept(
+    two_finding_case, monkeypatch, mode, answers
+):
+    _, signed = _run(
+        two_finding_case,
+        monkeypatch,
+        mode,
+        lambda: _approve_concurrently(two_finding_case, "F-steve-002"),
+        answers=answers,
+    )
+    # Keeping someone else's change must not make it this examiner's: only
+    # what this run acted on is signed into the ledger.
+    assert "F-steve-002" not in signed
+    F, _, _ = _on_disk(two_finding_case)
+    assert F["F-steve-001"]["status"] == "APPROVED"
+    assert F["F-steve-002"]["status"] == "APPROVED", (
+        "another examiner's approval made during the wait was reverted to DRAFT"
+    )
+    assert F["F-steve-002"]["approved_by"] == "alice"
