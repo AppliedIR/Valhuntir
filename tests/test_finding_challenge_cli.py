@@ -242,8 +242,16 @@ def test_approve_prints_the_withdrawal_count_once_in_every_mode(
     case, monkeypatch, capsys, mode
 ):
     _two_withdrawals(case)
-    for name in ("_approve_specific", "_review_mode", "_interactive_review"):
-        monkeypatch.setattr(approve_mod, name, lambda *a, **k: None)
+    seen = []
+
+    def mode_run(*a, withdrawn_line="", **k):
+        if withdrawn_line:  # interactive and review print it before the prompt
+            print(withdrawn_line)
+        seen.append(withdrawn_line)
+
+    monkeypatch.setattr(approve_mod, "_approve_specific", lambda *a, **k: None)
+    monkeypatch.setattr(approve_mod, "_review_mode", mode_run)
+    monkeypatch.setattr(approve_mod, "_interactive_review", mode_run)
     args = Namespace(
         case=None,
         ids=["F-tester-001"] if mode == "ids" else [],

@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,14 +62,15 @@ def cmd_approve(args, identity: dict) -> None:
     except Exception as e:  # the count is information; a bad line mustn't block
         print(f"  Warning: withdrawn candidates not counted: {e}", file=sys.stderr)
         withdrawn = 0
-    if withdrawn:
-        print(
-            f"  {withdrawn} candidate finding(s) withdrawn after challenge"
-            " — `vhir review --withdrawn`"
-        )
+    withdrawn_line = (
+        f"  {withdrawn} candidate finding(s) withdrawn after challenge"
+        " — `vhir review --withdrawn`"
+        if withdrawn
+        else ""
+    )
 
     if review:
-        _review_mode(case_dir, identity, config_path)
+        _review_mode(case_dir, identity, config_path, withdrawn_line=withdrawn_line)
         return
 
     # Inform about pending dashboard reviews (non-blocking)
@@ -86,6 +88,8 @@ def cmd_approve(args, identity: dict) -> None:
             pass
 
     if args.ids:
+        if withdrawn_line:
+            print(withdrawn_line)
         # Specific-ID mode with optional flags
         note = getattr(args, "note", None)
         edit = getattr(args, "edit", False)
@@ -111,6 +115,7 @@ def cmd_approve(args, identity: dict) -> None:
             by_filter=by_filter,
             findings_only=findings_only,
             timeline_only=timeline_only,
+            withdrawn_line=withdrawn_line,
         )
 
 
@@ -303,8 +308,13 @@ def _interactive_review(
     by_filter: str | None = None,
     findings_only: bool = False,
     timeline_only: bool = False,
+    withdrawn_line: str = "",
 ) -> None:
-    """Review each DRAFT item with full per-item options."""
+    """Review each DRAFT item with full per-item options.
+
+    Every item's evidence is shown before the password prompt; each decision
+    then shows a short header.
+    """
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
@@ -327,6 +337,11 @@ def _interactive_review(
         return
 
     print(f"Reviewing {len(all_items)} DRAFT item(s)...\n")
+    for item in all_items:
+        _print_pending_item(item, timeline)
+    print()
+    if withdrawn_line:
+        print(withdrawn_line)
 
     # Authenticate before review so examiner doesn't lose work on password failure
     mode, password = require_confirmation(config_path, identity["examiner"])
@@ -336,7 +351,7 @@ def _interactive_review(
     todos_to_create: list[dict] = []
 
     for item in all_items:
-        _display_item(item)
+        _print_decision_header(item)
         choice = _prompt_choice()
 
         if choice == "approve":
@@ -874,11 +889,11 @@ def _challenge_line(challenged) -> str:
 def _alternative_lines(alternatives) -> list[str]:
     """One line per alternative; any other shape (an examiner's edit) as text."""
     if not isinstance(alternatives, list):
-        return [str(alternatives)] if alternatives else []
+        return [_safe(alternatives)] if alternatives else []
     lines = []
     for a in alternatives:
         if not isinstance(a, dict):
-            lines.append(str(a))
+            lines.append(_safe(a))
             continue
         status = str(a.get("status") or "open").replace("_", " ")
         line = f"[{status}] {a.get('explanation', '')}"
@@ -886,8 +901,146 @@ def _alternative_lines(alternatives) -> list[str]:
             line += f" — {a['evidence']}"
         if isinstance(a.get("audit_ids"), list) and a["audit_ids"]:
             line += f" (audit: {', '.join(str(i) for i in a['audit_ids'])})"
-        lines.append(line)
+        lines.append(_safe(line))
     return lines
+
+
+# --- Evidence before the decision -------------------------------------------
+#
+# Artifact content and the finding's text come from evidence and the model,
+# and now print before the password prompt: every line goes through _safe,
+# and content lines carry a gutter so they can't pass for a banner or prompt.
+
+_GUTTER = "      │ "
+_UNSAFE_CATEGORIES = {"Cc", "Cf", "Cs", "Zl", "Zp"}
+
+
+def _safe(text) -> str:
+    """Text shown as written, with control, format, surrogate and line or
+    paragraph separator characters (newlines included) as visible escapes."""
+    out = []
+    for ch in str(text):
+        if unicodedata.category(ch) in _UNSAFE_CATEGORIES:
+            cp = ord(ch)
+            if cp <= 0xFF:
+                out.append(f"\\x{cp:02x}")
+            elif cp <= 0xFFFF:
+                out.append(f"\\u{cp:04x}")
+            else:
+                out.append(f"\\U{cp:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _content_lines(text) -> list[str]:
+    """Content line by line, each behind the gutter; a run of more than two
+    blank lines is shown as one."""
+    lines: list[str] = []
+    blanks = 0
+
+    def flush() -> None:
+        if blanks > 2:
+            lines.append(f"{_GUTTER}({blanks} blank lines)")
+        else:
+            lines.extend([_GUTTER.rstrip()] * blanks)
+
+    for line in str(text).split("\n"):
+        if not line.strip():
+            blanks += 1
+            continue
+        flush()
+        blanks = 0
+        lines.append(_GUTTER + _safe(line))
+    flush()
+    return lines
+
+
+def _linked_events(item: dict, timeline: list[dict]) -> list[dict]:
+    """The DRAFT timeline events approving this finding approves with it."""
+    return [
+        t
+        for t in timeline
+        if t.get("auto_created_from") == item.get("id")
+        and t.get("status") == "DRAFT"
+        and not t.get("examiner_modifications")
+    ]
+
+
+def _evidence_lines(item: dict, timeline: list[dict]) -> list[str]:
+    """A finding's artifacts, then the events approved with it."""
+    artifacts = item.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    lines = []
+    if not artifacts:
+        lines.append("  Artifacts: no artifacts recorded")
+    else:
+        lines.append(f"  Artifacts ({len(artifacts)}):")
+    for n, art in enumerate(artifacts, 1):
+        if not isinstance(art, dict):
+            lines.append(f"    {n}. {_safe(art)}")
+            continue
+        lines.append(f"    {n}. source:     {_safe(art.get('source', ''))}")
+        lines.append(f"       extraction: {_safe(art.get('extraction', ''))}")
+        lines.append(f"       audit id:   {_safe(art.get('audit_id', ''))}")
+        lines.append("       content:")
+        lines.extend(_content_lines(art.get("content", "")))
+    linked = _linked_events(item, timeline)
+    if linked:
+        lines.append("  Timeline events approved with it:")
+        for t in linked:
+            lines.append(
+                f"    [{_safe(t.get('id', ''))}] {_safe(t.get('timestamp', '?'))}"
+                f"  {_safe(t.get('description', ''))}"
+            )
+    return lines
+
+
+def _print_pending_item(item: dict, timeline: list[dict]) -> None:
+    """Everything the examiner decides on, before the password prompt."""
+    print(f"{'─' * 60}")
+    if "title" in item:
+        print(f"  {_safe(_challenge_line(item.get('challenged')))}")
+        print(f"  [{_safe(item['id'])}]  {_safe(item.get('title', 'Untitled'))}")
+        meta = [
+            f"{label}: {_safe(item[key])}"
+            for label, key in (
+                ("Examiner", "examiner"),
+                ("By", "created_by"),
+                ("Confidence", "confidence"),
+            )
+            if item.get(key)
+        ]
+        if item.get("audit_ids"):
+            meta.append(f"Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+        if meta:
+            print(f"  {' | '.join(meta)}")
+        print(f"  Observation: {_safe(item.get('observation', ''))}")
+        print(f"  Interpretation: {_safe(item.get('interpretation', ''))}")
+        for line in _alternative_lines(item.get("alternatives")):
+            print(f"  Alternative: {line}")
+        if item.get("iocs"):
+            print(f"  IOCs: {_safe(item['iocs'])}")
+        for line in _evidence_lines(item, timeline):
+            print(line)
+    else:
+        print(f"  [{_safe(item['id'])}]  {_safe(item.get('timestamp', '?'))}")
+        print(f"  Description: {_safe(item.get('description', ''))}")
+        if item.get("audit_ids"):
+            print(f"  Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+
+
+def _print_decision_header(item: dict) -> None:
+    """One line per decision: the evidence was shown before the prompt."""
+    if "title" in item:
+        artifacts = item.get("artifacts")
+        count = len(artifacts) if isinstance(artifacts, list) else 0
+        label = f"{_safe(item.get('title', 'Untitled'))} — {count} artifact(s)"
+    else:
+        label = (
+            f"{_safe(item.get('timestamp', '?'))}  {_safe(item.get('description', ''))}"
+        )
+    print(f"\n── [{_safe(item['id'])}]  {label}")
 
 
 def _display_item(item: dict) -> None:
@@ -1079,7 +1232,9 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
         print(f"{prefix}{shown(val, ' ' * len(prefix))}")
 
 
-def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
+def _review_mode(
+    case_dir: Path, identity: dict, config_path: Path, withdrawn_line: str = ""
+) -> None:
     """Apply pending dashboard reviews from pending-reviews.json."""
     delta_path = case_dir / "pending-reviews.json"
     processing_path = case_dir / "pending-reviews.processing"
@@ -1201,6 +1356,9 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
 
         # Render each item
         _render_terminal_diff(item, entry)
+        if action == "approve" and item is not None and "title" in item:
+            for line in _evidence_lines(item, timeline):
+                print(line)
 
         if action == "approve":
             approvals.append(entry)
@@ -1223,6 +1381,8 @@ def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
         f"  Apply {len(approvals)} approval(s), {len(rejections)} rejection(s), "
         f"{len(edits)} edit(s), {len(todos)} TODO(s)?"
     )
+    if withdrawn_line:
+        print(withdrawn_line)
     print(f"{'=' * 60}")
 
     if not approvals and not rejections and not todos and not edits:
