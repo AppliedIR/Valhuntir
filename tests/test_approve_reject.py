@@ -13,9 +13,11 @@ from vhir_cli.approval_auth import setup_password
 from vhir_cli.case_io import (
     load_approval_log,
     load_findings,
+    load_iocs,
     load_timeline,
     load_todos,
     save_findings,
+    save_iocs,
     save_timeline,
 )
 from vhir_cli.commands.approve import _approve_specific, cmd_approve
@@ -556,6 +558,46 @@ class TestReject:
         f002 = next(f for f in findings if f["id"] == "F-tester-002")
         assert f001["status"] == "REJECTED"
         assert f002["status"] == "DRAFT"
+
+
+class TestIOCCoupling:
+    @pytest.fixture
+    def staged_ioc(self, case_dir):
+        """Stage a DRAFT IOC cascaded from the staged finding."""
+        iocs = [
+            {
+                "id": "IOC-001",
+                "status": "DRAFT",
+                "type": "ipv4",
+                "value": "10.0.0.5",
+                "source_findings": ["F-tester-001"],
+                "created_by": "steve",
+            }
+        ]
+        save_iocs(case_dir, iocs)
+        return iocs
+
+    @pytest.fixture
+    def ledger_dir(self, tmp_path, monkeypatch):
+        """Redirect the HMAC verification ledger to a temp dir."""
+        d = tmp_path / "verification"
+        monkeypatch.setattr("vhir_cli.verification.VERIFICATION_DIR", d)
+        return d
+
+    def test_cascaded_ioc_logs_and_signs_whole_batch(
+        self, case_dir, identity, staged_finding, staged_ioc, pw_config, ledger_dir
+    ):
+        """An IOC cascade must not abort the audit log or the HMAC ledger."""
+        from vhir_cli.verification import read_ledger
+
+        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
+            _approve_specific(case_dir, ["F-tester-001"], identity, pw_config)
+
+        assert load_iocs(case_dir)[0]["status"] == "APPROVED"
+        log_ids = {e["item_id"] for e in load_approval_log(case_dir)}
+        assert log_ids == {"F-tester-001", "IOC-001"}
+        ledger_ids = {e["finding_id"] for e in read_ledger("INC-2026-TEST")}
+        assert ledger_ids == {"F-tester-001", "IOC-001"}
 
 
 # --- approve saves what's on disk after the wait, not what it read before ----

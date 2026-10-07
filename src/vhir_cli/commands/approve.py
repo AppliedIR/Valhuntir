@@ -256,7 +256,7 @@ def _approve_specific(
             "APPROVED",
             identity,
             mode=mode,
-            content_hash=item["content_hash"],
+            content_hash=item.get("content_hash", ""),
         ):
             log_failures.append(item["id"])
 
