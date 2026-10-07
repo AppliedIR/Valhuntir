@@ -494,25 +494,31 @@ def getpass_prompt(prompt: str) -> str:
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            chars = []
+            # Accumulate raw bytes and decode once: decoding byte by byte
+            # would turn every multi-byte character into U+FFFD.
+            buf = bytearray()
             while True:
-                ch = os.read(fd, 1).decode("utf-8", errors="replace")
-                if ch in ("\r", "\n"):
+                byte = os.read(fd, 1)
+                if byte in (b"\r", b"\n"):
                     break
-                elif ch in ("\x7f", "\x08"):  # backspace/delete
-                    if chars:
-                        chars.pop()
+                elif byte in (b"\x7f", b"\x08"):  # backspace/delete
+                    if buf:
+                        # Drop the whole UTF-8 sequence, not just one byte.
+                        while len(buf) > 1 and 0x80 <= buf[-1] < 0xC0:
+                            del buf[-1]
+                        del buf[-1]
                         sys.stderr.write("\b \b")
                         sys.stderr.flush()
-                elif ch == "\x03":  # Ctrl-C
+                elif byte == b"\x03":  # Ctrl-C
                     sys.stderr.write("\n")
                     sys.stderr.flush()
                     raise KeyboardInterrupt
-                elif ch >= " ":  # printable
-                    chars.append(ch)
-                    sys.stderr.write("*")
-                    sys.stderr.flush()
-            return "".join(chars)
+                elif byte >= b" ":  # printable
+                    buf.extend(byte)
+                    if not 0x80 <= byte[0] < 0xC0:  # one * per character
+                        sys.stderr.write("*")
+                        sys.stderr.flush()
+            return bytes(buf).decode("utf-8", errors="replace")
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             sys.stderr.write("\n")

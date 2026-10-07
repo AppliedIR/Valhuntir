@@ -1,6 +1,9 @@
 """Tests for approval authentication module."""
 
 import json
+import os
+import pty
+import tty
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +21,7 @@ from vhir_cli.approval_auth import (
     _record_failure,
     _validate_examiner_name,
     get_analyst_salt,
+    getpass_prompt,
     has_password,
     require_confirmation,
     require_tty_confirmation,
@@ -477,3 +481,50 @@ class TestPasswordLockout:
         _record_failure("analyst1")
         assert isolate_lockout_file.exists()
         assert (isolate_lockout_file.stat().st_mode & 0o777) == 0o600
+
+
+def _type_password(keystrokes: bytes) -> str:
+    """Feed raw keystroke bytes to getpass_prompt through a real pty.
+
+    The bytes are written once the prompt has put the tty in raw mode —
+    tty.setraw() uses TCSAFLUSH, which would discard earlier input.
+    """
+    master_fd, slave_fd = pty.openpty()
+    slave_file = os.fdopen(slave_fd)
+    real_open = open
+    real_setraw = tty.setraw
+
+    def fake_open(path, *args, **kwargs):
+        if path == "/dev/tty":
+            return slave_file
+        return real_open(path, *args, **kwargs)
+
+    def setraw_then_type(fd, *args, **kwargs):
+        real_setraw(fd, *args, **kwargs)
+        os.write(master_fd, keystrokes)
+
+    try:
+        with patch("builtins.open", fake_open):
+            with patch("vhir_cli.approval_auth.tty.setraw", setraw_then_type):
+                return getpass_prompt("Enter password: ")
+    finally:
+        os.close(master_fd)
+
+
+class TestGetpassPrompt:
+    def test_ascii_password_read_verbatim(self):
+        assert _type_password(b"mypasswd1\n") == "mypasswd1"
+
+    def test_non_ascii_password_read_verbatim(self):
+        """Multi-byte characters must survive the raw-mode read loop."""
+        assert _type_password("pässwörd".encode() + b"\n") == "pässwörd"
+
+    def test_distinct_non_ascii_passwords_stay_distinct(self):
+        """Different passwords must not collapse to the same string."""
+        first = _type_password("pässwörd".encode() + b"\n")
+        second = _type_password("pøsswürd".encode() + b"\n")
+        assert first != second
+
+    def test_backspace_deletes_a_whole_character(self):
+        """Backspace after a multi-byte character removes all of its bytes."""
+        assert _type_password("pä".encode() + b"\x7fb\n") == "pb"
