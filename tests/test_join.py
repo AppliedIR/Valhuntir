@@ -1,6 +1,7 @@
 """Tests for vhir join and vhir setup join-code commands."""
 
 import sys
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import yaml
@@ -8,6 +9,7 @@ import yaml
 from vhir_cli.commands.join import (
     _get_local_gateway_token,
     _get_local_gateway_url,
+    _push_smb_credentials,
     _write_config,
     derive_smb_password,
 )
@@ -239,3 +241,68 @@ class TestGetLocalConfig:
     def test_get_gateway_token_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
         assert _get_local_gateway_token() is None
+
+
+def _write_wintools_gateway_config(tmp_path):
+    """Write a gateway.yaml with a plain-http wintools-mcp backend."""
+    config_dir = tmp_path / ".vhir"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "gateway.yaml").write_text(
+        yaml.dump(
+            {
+                "backends": {
+                    "wintools-mcp": {
+                        "url": "http://10.0.0.9:8443/mcp",
+                        "bearer_token": "stale-token",
+                    }
+                }
+            }
+        )
+    )
+
+
+class TestPushSmbCredentials:
+    def test_http_401_is_reported_and_not_retried(self, tmp_path, monkeypatch, capsys):
+        """A rejected push must be reported, not swallowed as 'not running yet'."""
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
+        _write_wintools_gateway_config(tmp_path)
+
+        calls = []
+        sleeps = []
+
+        def fake_urlopen(req, **kwargs):
+            calls.append(req)
+            raise urllib.error.HTTPError(
+                "http://10.0.0.9:8443/config/update-smb", 401, "Unauthorized", {}, None
+            )
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+
+        _push_smb_credentials("hunter2")
+
+        captured = capsys.readouterr()
+        assert "401" in captured.err
+        assert len(calls) == 1
+        assert sleeps == []
+
+    def test_connection_refused_stays_silent(self, tmp_path, monkeypatch, capsys):
+        """wintools not running yet is still best-effort and silent."""
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
+        _write_wintools_gateway_config(tmp_path)
+
+        calls = []
+
+        def fake_urlopen(req, **kwargs):
+            calls.append(req)
+            raise urllib.error.URLError(ConnectionRefusedError())
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+        _push_smb_credentials("hunter2")
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+        assert len(calls) == 3

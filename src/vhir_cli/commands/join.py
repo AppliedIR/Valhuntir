@@ -870,6 +870,7 @@ def _wintools_ssl_context():
 
 def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
     """Push updated SMB credentials to wintools-mcp after smbpasswd change."""
+    import urllib.error
     import urllib.request
     from urllib.parse import urlparse, urlunparse
 
@@ -908,6 +909,19 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
             with urllib.request.urlopen(req, **kwargs):
                 print("  SMB credentials pushed to wintools-mcp")
                 return
+        except urllib.error.HTTPError as e:
+            # A status code means wintools answered, so this is never the
+            # "not running yet" case the silent path below covers.
+            if e.code < 500 or attempt == 2:
+                print(
+                    f"  WARNING: wintools-mcp rejected the SMB credential push "
+                    f"(HTTP {e.code}); it did not receive the new SMB password",
+                    file=sys.stderr,
+                )
+            if e.code < 500:
+                return
+            if attempt < 2:
+                _time.sleep(5)
         except Exception:
             if attempt < 2:
                 _time.sleep(5)
