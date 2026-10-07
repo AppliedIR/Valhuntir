@@ -207,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show full detail (with --findings or --timeline)",
     )
     p_review.add_argument(
+        "--lint",
+        action="store_true",
+        help="Flag findings whose confidence outruns their evidence (with --findings)",
+    )
+    p_review.add_argument(
         "--verify",
         action="store_true",
         help="Cross-check findings against approval records",

@@ -29,6 +29,7 @@ from vhir_cli.case_io import (
     load_todos,
     verify_approval_integrity,
 )
+from vhir_cli.evidence_lint import lint_findings
 
 _EM_DASH = "\u2014"
 
@@ -60,7 +61,9 @@ def cmd_review(args, identity: dict) -> None:
         _show_evidence(case_dir)
     elif getattr(args, "findings", False):
         detail = getattr(args, "detail", False)
-        if detail:
+        if getattr(args, "lint", False):
+            _show_findings_lint(case_dir)
+        elif detail:
             _show_findings_detail(case_dir)
         else:
             _show_findings_table(case_dir)
@@ -145,6 +148,40 @@ def _show_findings_table(case_dir: Path) -> None:
         provenance = f.get("provenance", _EM_DASH)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
+
+
+def _show_findings_lint(case_dir: Path) -> None:
+    """Flag findings whose stated confidence outruns their cited evidence.
+
+    Surfaces flags beside the finding's own confidence; never overwrites or
+    hides it, and never touches status. These are prompts for attention, not
+    judgements that the evidence does or does not support the claim.
+    """
+    findings = load_findings(case_dir)
+    if not findings:
+        print("No findings recorded.")
+        return
+
+    flagged = lint_findings(findings)
+    if not flagged:
+        print(f"{len(findings)} finding(s) checked. Nothing flagged.")
+        return
+
+    by_id = {str(f.get("id", "?")): f for f in findings}
+    print(f"{len(flagged)} of {len(findings)} finding(s) flagged.\n")
+    for fid, flags in flagged.items():
+        finding = by_id.get(fid, {})
+        title = finding.get("title", "Untitled")
+        confidence = finding.get("confidence", "?")
+        print(f"  [{fid}] {title}  (stated confidence: {confidence})")
+        for flag in flags:
+            print(f"      {flag.code}: {flag.message}")
+        print()
+
+    print(
+        "Surface checks only — a flag is a prompt to look, not a finding of error,\n"
+        "and an unflagged finding has not been verified. Stated confidence is unchanged."
+    )
 
 
 def _show_findings_detail(case_dir: Path) -> None:
