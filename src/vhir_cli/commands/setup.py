@@ -238,6 +238,7 @@ def _run_connectivity_test() -> None:
         return
 
     ok_count = 0
+    stopped_count = 0
     fail_count = 0
 
     print()
@@ -245,15 +246,24 @@ def _run_connectivity_test() -> None:
         bstatus = health.get("status", "unknown")
         if bstatus == "ok":
             tools = health.get("tools", "?")
-            print(f"  {name:25s} OK ({tools} tools)")
+            print(f"  {name:25s} running ({tools} tools)")
             ok_count += 1
+        elif bstatus == "stopped":
+            print(f"  {name:25s} not started (the gateway retries every 30 s)")
+            stopped_count += 1
         else:
             err = health.get("error", "unknown error")
             print(f"  {name:25s} FAIL ({err})")
             fail_count += 1
 
-    print(f"\n{ok_count} of {ok_count + fail_count} backends operational.", end="")
+    total = ok_count + stopped_count + fail_count
+    print(f"\n{ok_count} of {total} backends running.", end="")
+    if stopped_count:
+        print(f" {stopped_count} not started.", end="")
     if fail_count:
-        print(f" {fail_count} failed.")
-    else:
-        print()
+        print(f" {fail_count} failed.", end="")
+    print()
+    print(
+        "This checks each backend's own process, not the services behind it "
+        "(OpenSearch, OpenCTI, REMnux, the Windows host)."
+    )
