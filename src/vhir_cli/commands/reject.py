@@ -14,12 +14,14 @@ from vhir_cli.case_io import (
     check_case_file_integrity,
     find_draft_item,
     get_case_dir,
+    load_case_meta,
     load_findings,
     load_timeline,
     save_findings,
     save_timeline,
     write_approval_log,
 )
+from vhir_cli.ranking import rank_findings
 
 
 def cmd_reject(args, identity: dict) -> None:
@@ -33,7 +35,9 @@ def cmd_reject(args, identity: dict) -> None:
         sys.exit(1)
 
     if review:
-        _interactive_reject(case_dir, identity, config_path)
+        _interactive_reject(
+            case_dir, identity, config_path, rank=getattr(args, "rank", False)
+        )
         return
 
     if not args.ids:
@@ -163,7 +167,9 @@ def cmd_reject(args, identity: dict) -> None:
         print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
 
 
-def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> None:
+def _interactive_reject(
+    case_dir: Path, identity: dict, config_path: Path, rank: bool = False
+) -> None:
     """Walk through DRAFT items, prompting to reject or skip each."""
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
@@ -177,6 +183,11 @@ def _interactive_reject(case_dir: Path, identity: dict, config_path: Path) -> No
     if not all_items:
         print("No DRAFT items to review.")
         return
+
+    if rank:
+        # Ordering only: nothing is filtered and no status is touched.
+        all_items = [r.item for r in rank_findings(all_items, load_case_meta(case_dir))]
+        print("Queue ordered by investigative value (--rank).")
 
     print(f"Reviewing {len(all_items)} DRAFT item(s) for rejection...\n")
 

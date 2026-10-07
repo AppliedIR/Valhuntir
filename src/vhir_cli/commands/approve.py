@@ -32,6 +32,7 @@ from vhir_cli.case_io import (
     find_draft_item,
     get_case_dir,
     hmac_text,
+    load_case_meta,
     load_findings,
     load_timeline,
     load_todos,
@@ -40,6 +41,7 @@ from vhir_cli.case_io import (
     save_todos,
     write_approval_log,
 )
+from vhir_cli.ranking import rank_findings
 
 
 def cmd_approve(args, identity: dict) -> None:
@@ -96,6 +98,7 @@ def cmd_approve(args, identity: dict) -> None:
             by_filter=by_filter,
             findings_only=findings_only,
             timeline_only=timeline_only,
+            rank=getattr(args, "rank", False),
         )
 
 
@@ -288,6 +291,7 @@ def _interactive_review(
     by_filter: str | None = None,
     findings_only: bool = False,
     timeline_only: bool = False,
+    rank: bool = False,
 ) -> None:
     """Review each DRAFT item with full per-item options."""
     check_case_file_integrity(case_dir, "findings.json")
@@ -310,6 +314,12 @@ def _interactive_review(
     if not all_items:
         print("No staged items to review.")
         return
+
+    if rank:
+        # Ordering only: every item is still shown, and nothing about the item
+        # or its status is altered.
+        all_items = [r.item for r in rank_findings(all_items, load_case_meta(case_dir))]
+        print("Queue ordered by investigative value (--rank).")
 
     print(f"Reviewing {len(all_items)} DRAFT item(s)...\n")
 

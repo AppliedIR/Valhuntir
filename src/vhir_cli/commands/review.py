@@ -29,6 +29,7 @@ from vhir_cli.case_io import (
     load_todos,
     verify_approval_integrity,
 )
+from vhir_cli.ranking import DEFAULT_WEIGHTS, rank_findings
 
 _EM_DASH = "\u2014"
 
@@ -60,7 +61,9 @@ def cmd_review(args, identity: dict) -> None:
         _show_evidence(case_dir)
     elif getattr(args, "findings", False):
         detail = getattr(args, "detail", False)
-        if detail:
+        if getattr(args, "rank", False):
+            _show_findings_ranked(case_dir, getattr(args, "explain", False))
+        elif detail:
             _show_findings_detail(case_dir)
         else:
             _show_findings_table(case_dir)
@@ -145,6 +148,42 @@ def _show_findings_table(case_dir: Path) -> None:
         provenance = f.get("provenance", _EM_DASH)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
+
+
+def _show_findings_ranked(case_dir: Path, explain: bool = False) -> None:
+    """Show findings ordered by investigative value.
+
+    Ordering only: every finding is listed, nothing is filtered or hidden, and
+    no status is read or written. Scores are recomputed here on every run and
+    never stored, so a finding's content_hash is untouched.
+    """
+    findings = load_findings(case_dir)
+    if not findings:
+        print("No findings recorded.")
+        return
+
+    ranked = rank_findings(findings, load_case_meta(case_dir))
+
+    print(f"{'Score':<8} {'Title':<40} {'Confidence':<12} {'Status':<10}")
+    print("-" * 74)
+    for r in ranked:
+        title = r.item.get("title", "Untitled")
+        if len(title) > 37:
+            title = title[:37] + "..."
+        confidence = r.item.get("confidence", "?")
+        status = r.item.get("status", "?")
+        print(f"{r.score:<8.2f} {title:<40} {confidence:<12} {status:<10}")
+        if explain:
+            contributions = [
+                f"{name}={value:.2f}x{DEFAULT_WEIGHTS[name]:g}"
+                for name, value in r.signals.items()
+                if value
+            ]
+            print(f"         {r.id}: {', '.join(contributions) or 'no signals'}")
+            if r.capabilities:
+                print(f"         capability: {', '.join(r.capabilities)}")
+
+    print("\nOrdering only — every finding is listed and no status was changed.")
 
 
 def _show_findings_detail(case_dir: Path) -> None:

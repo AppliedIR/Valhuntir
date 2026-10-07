@@ -108,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--by", help="Filter items by creator examiner (interactive mode)"
     )
     p_approve.add_argument(
+        "--rank",
+        action="store_true",
+        help="Order the interactive queue by investigative value",
+    )
+    p_approve.add_argument(
         "--findings-only", action="store_true", help="Review only findings"
     )
     p_approve.add_argument(
@@ -122,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
     # reject
     p_reject = sub.add_parser("reject", help="Reject staged findings/timeline events")
     p_reject.add_argument("ids", nargs="*", help="Finding/event IDs to reject")
+    p_reject.add_argument(
+        "--rank",
+        action="store_true",
+        help="Order the interactive queue by investigative value",
+    )
     p_reject.add_argument(
         "--reason", default="", help="Reason for rejection (optional)"
     )
@@ -205,6 +215,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--detail",
         action="store_true",
         help="Show full detail (with --findings or --timeline)",
+    )
+    p_review.add_argument(
+        "--rank",
+        action="store_true",
+        help="Order findings by investigative value (with --findings)",
+    )
+    p_review.add_argument(
+        "--explain",
+        action="store_true",
+        help="Show the per-signal score breakdown (with --rank)",
     )
     p_review.add_argument(
         "--verify",
