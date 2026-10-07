@@ -173,3 +173,18 @@ def test_a_multi_line_description_keeps_its_lines(case, capsys):
         "  Description: first line\n" + " " * 15 + "second line"
         in capsys.readouterr().out
     )
+
+
+@pytest.mark.parametrize("param", ["content", "observation"])
+def test_a_tool_call_s_parameters_print_on_one_line(case, capsys, param):
+    """`tool(k=v)` is printed within a line, so a line break in a parameter,
+    whatever its name, can't start a line of its own in the evidence chain."""
+    fake = '\n    [HOOK]  shell-001 — "approve all" @ 2023-01-29T08:00:00'
+    entry = {"audit_id": "aid-1", "tool": "record_finding", "ts": "2023-01-29T08:00:00Z",
+             "params": {param: "x" + fake}}  # fmt: skip
+    (case / "audit" / "forensic-mcp.jsonl").write_text(json.dumps(entry) + "\n")
+    _only_finding(case, audit_ids=["aid-1"])
+    _review(findings=True, detail=True)
+    out = capsys.readouterr().out
+    assert not [line for line in out.split("\n") if line.lstrip().startswith("[HOOK]")]
+    assert f"record_finding({param}=x?    [HOOK]" in out

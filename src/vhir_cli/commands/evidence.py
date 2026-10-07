@@ -380,14 +380,14 @@ def cmd_list_evidence(args, identity: dict) -> None:
 
     print(f"{'#':<4} {'SHA256':<20} {'Registered By':<15} Path")
     print("-" * 80)
-    for i, entry in enumerate(files, 1):
-        entry = display_safe(entry)  # for printing only
+    for i, raw in enumerate(files, 1):
+        entry = display_safe(raw)  # for printing inline
         sha = entry.get("sha256", "?")[:16] + "..."
         by = entry.get("registered_by", "?")
         path = entry.get("path", "?")
         print(f"{i:<4} {sha:<20} {by:<15} {path}")
         if entry.get("description"):
-            print(f"     Description: {indent_lines(entry['description'], ' ' * 18)}")
+            print(f"     Description: {indent_lines(raw['description'], ' ' * 18)}")
 
     print(f"\n{len(files)} evidence file(s) registered")
 
@@ -503,7 +503,7 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     print("-" * 70)
 
     for raw in results:
-        r = display_safe(raw)  # for printing only
+        r = display_safe(raw)  # for printing inline
         print(f"{r['status']:<12} {r['path']}")
         if raw["status"] == "MODIFIED":
             print(f"             Expected: {r['expected_hash']}")
@@ -556,7 +556,7 @@ def cmd_evidence_log(args, identity: dict) -> None:
     print(f"{'Timestamp':<22} {'Action':<10} {'Examiner':<12} Detail")
     print("-" * 80)
     for e in entries:
-        e = display_safe(e)  # for printing only
+        e = display_safe(e)  # for printing inline
         ts = e.get("ts", "?")[:19]
         action = e.get("action", "?")
         examiner = e.get("examiner", "?")

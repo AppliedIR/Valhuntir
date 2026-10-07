@@ -107,7 +107,7 @@ def _audit_log(args) -> None:
     print(f"{'Timestamp':<22} {'Examiner':<12} {'MCP':<20} {'Tool':<25} Audit ID")
     print("-" * 100)
     for e in entries:
-        e = display_safe(e)  # for printing only
+        e = display_safe(e)  # for printing inline
         ts = e.get("ts", "?")[:19]
         examiner = e.get("examiner", "?")
         mcp = e.get("mcp", "?")

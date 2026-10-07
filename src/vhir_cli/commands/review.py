@@ -120,7 +120,7 @@ def _show_todos(case_dir: Path, open_only: bool = False) -> None:
     print(f"{'ID':<16} {'Status':<11} {'Priority':<9} {'Assignee':<12} Description")
     print("-" * 90)
     for t in todos:
-        t = display_safe(t)  # for printing only
+        t = display_safe(t)  # for printing inline
         todo_id = t["todo_id"]
         status = t.get("status", "open")
         priority = t.get("priority", "medium")
@@ -146,7 +146,7 @@ def _show_findings_table(case_dir: Path) -> None:
     print(f"{'Title':<40} {'Confidence':<12} {'Provenance':<12} {'Status':<10}")
     print("-" * 76)
     for f in findings:
-        f = display_safe(f)  # for printing only
+        f = display_safe(f)  # for printing inline
         title = f.get("title", "Untitled")
         if len(title) > 37:
             title = title[:37] + "..."
@@ -162,7 +162,7 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
         entry = audit_index.get(raw_eid)
         eid = one_line(raw_eid)
         if entry:
-            entry = display_safe(entry)  # for printing only
+            entry = display_safe(entry)  # for printing inline
             source_file = entry.get("_source_file", "")
             ts = entry.get("ts", "")[:19]
             if source_file == "claude-code.jsonl":
@@ -194,9 +194,9 @@ def _show_withdrawn(case_dir: Path) -> None:
         return
     audit_index = load_audit_index(case_dir)
     print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
-    for entry in withdrawals:
-        skeptic_ids = entry["result_summary"].get("skeptic_audit_ids") or []
-        entry = display_safe(entry)  # for printing only
+    for raw in withdrawals:
+        skeptic_ids = raw["result_summary"].get("skeptic_audit_ids") or []
+        entry = display_safe(raw)  # for printing inline
         result = entry["result_summary"]
         print(f"\n{'=' * 60}")
         print(
@@ -205,7 +205,7 @@ def _show_withdrawn(case_dir: Path) -> None:
         )
         print(f"  Title:         {result.get('title', '')}")
         print(
-            f"  Observation:   {indent_lines(result.get('observation', ''), ' ' * 17)}"
+            f"  Observation:   {indent_lines(raw['result_summary'].get('observation', ''), ' ' * 17)}"
         )
         print(f"  Contradiction: {result.get('contradiction', '')}")
         if isinstance(skeptic_ids, list) and skeptic_ids:
@@ -223,7 +223,7 @@ def _show_findings_detail(case_dir: Path) -> None:
     audit_index = load_audit_index(case_dir)
 
     for raw in findings:
-        f = display_safe(raw)  # for printing only
+        f = display_safe(raw)  # for printing inline
         print(f"\n{'=' * 60}")
         print(f"  [{f['id']}] {f.get('title', 'Untitled')}")
         print(f"{'=' * 60}")
@@ -234,9 +234,9 @@ def _show_findings_detail(case_dir: Path) -> None:
             print(f"  Justification: {f['confidence_justification']}")
         print(f"  Provenance:   {f.get('provenance', _EM_DASH)}")
         print(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
-        print(f"  Observation:  {indent_lines(f.get('observation', ''), ' ' * 16)}")
+        print(f"  Observation:  {indent_lines(raw.get('observation', ''), ' ' * 16)}")
         print(
-            f"  Interpretation: {indent_lines(f.get('interpretation', ''), ' ' * 18)}"
+            f"  Interpretation: {indent_lines(raw.get('interpretation', ''), ' ' * 18)}"
         )
         if f.get("iocs"):
             print(f"  IOCs:         {f['iocs']}")
@@ -258,10 +258,12 @@ def _show_findings_detail(case_dir: Path) -> None:
         artifacts = f.get("artifacts", [])
         if artifacts:
             print("\n  Artifacts:")
-            for i, art in enumerate(artifacts, 1):
+            for i, (art, raw_art) in enumerate(
+                zip(artifacts, raw["artifacts"], strict=True), 1
+            ):
                 source = art.get("source", "?")
                 extraction = art.get("extraction", "")
-                content = art.get("content", "")
+                content = str(raw_art.get("content") or "")
                 content_type = art.get("content_type", "")
                 badge = f" [{content_type}]" if content_type else ""
                 print(f"    [{i}]{badge} {source}")
@@ -271,11 +273,8 @@ def _show_findings_detail(case_dir: Path) -> None:
                     display = content[:200]
                     if len(content) > 200:
                         display += "..."
-                    # Indent multiline content
-                    lines = display.split("\n")
-                    print(f"        {lines[0]}")
-                    for line in lines[1:]:
-                        print(f"        {line}")
+                    # A block: each line indented under the artifact
+                    print(f"        {indent_lines(display, ' ' * 8)}")
 
         # Supporting commands
         supporting = f.get("supporting_commands", [])
@@ -589,13 +588,15 @@ def _show_timeline(
         return
 
     if detail:
-        for t in timeline:
-            t = display_safe(t)  # for printing only
+        for raw in timeline:
+            t = display_safe(raw)  # for printing inline
             print(f"\n{'=' * 60}")
             print(f"  [{t['id']}] {t.get('timestamp', '?')}")
             print(f"{'=' * 60}")
             print(f"  Status:      {t.get('status', '?')}")
-            print(f"  Description: {indent_lines(t.get('description', ''), ' ' * 15)}")
+            print(
+                f"  Description: {indent_lines(raw.get('description', ''), ' ' * 15)}"
+            )
             if t.get("audit_ids"):
                 print(f"  Evidence:    {', '.join(t['audit_ids'])}")
             if t.get("source"):
@@ -626,11 +627,11 @@ def _show_evidence(case_dir: Path) -> None:
     print(f"  Registered Evidence ({len(evidence)} files)")
     print(f"{'=' * 60}")
 
-    for e in evidence:
-        e = display_safe(e)  # for printing only
+    for raw in evidence:
+        e = display_safe(raw)  # for printing inline
         print(f"\n  {e.get('path', '?')}")
         print(f"    SHA256: {e.get('sha256', '?')}")
-        print(f"    Description: {indent_lines(e.get('description', ''), ' ' * 17)}")
+        print(f"    Description: {indent_lines(raw.get('description', ''), ' ' * 17)}")
         print(
             f"    Registered: {e.get('registered_at', '?')} by {e.get('registered_by', '?')}"
         )
@@ -652,7 +653,7 @@ def _show_evidence(case_dir: Path) -> None:
                     except json.JSONDecodeError:
                         print("  Warning: skipping corrupt log line", file=sys.stderr)
                         continue
-                    entry = display_safe(entry)  # for printing only
+                    entry = display_safe(entry)  # for printing inline
                     print(
                         f"  {entry.get('ts', '?')} | {entry.get('action', '?')} | {entry.get('path', '?')} | {entry.get('examiner', '?')}"
                     )
@@ -721,7 +722,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
     print(f"{'=' * 60}")
 
     for e in entries:
-        e = display_safe(e)  # for printing only
+        e = display_safe(e)  # for printing inline
         ts = e.get("ts", "?")[:19]
         mcp = e.get("mcp", "?")
         tool = e.get("tool", "?")

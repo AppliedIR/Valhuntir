@@ -46,7 +46,7 @@ def _todo_list(case_dir, args) -> None:
     print(f"{'ID':<16} {'Status':<11} {'Priority':<9} {'Assignee':<12} Description")
     print("-" * 80)
     for t in todos:
-        t = display_safe(t)  # for printing only
+        t = display_safe(t)  # for printing inline
         todo_id = t["todo_id"]
         status = t.get("status", "open")
         priority = t.get("priority", "medium")

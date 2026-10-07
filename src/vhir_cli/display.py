@@ -3,9 +3,11 @@
 Case records hold text written by the AI or read from evidence, and a terminal
 acts on control characters in it: an ESC sequence can clear rows, move the
 cursor or retitle the window. Every command that prints case records shows
-them through this module. A single-line value has every control character
-shown as "?"; a multi-line field keeps its line breaks. Machine output (JSON)
-and files written are left as they are.
+them through this module, and the print site decides: text printed within a
+line (a header, a table cell, `tool(k=v)`) goes through `one_line`, which shows
+every control character as "?"; only a block that indents its continuation
+lines keeps line breaks, through `lines`. Machine output (JSON) and files
+written are left as they are.
 """
 
 from __future__ import annotations
@@ -15,10 +17,8 @@ import re
 # C0 and C1 controls: escape sequences and line breaks
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
-# Fields that hold multi-line text; every other value is one line
-MULTI_LINE = frozenset(
-    {"observation", "interpretation", "description", "context", "content"}
-)
+# Fields `vhir approve` shows as indented blocks
+MULTI_LINE = frozenset({"observation", "interpretation", "description", "context"})
 
 
 def one_line(text) -> str:
@@ -33,19 +33,17 @@ def lines(text, indent: str) -> str:
     return f"\n{indent}".join(one_line(line) for line in str(text).split("\n"))
 
 
-def display_safe(value, field: str = ""):
-    """A copy of loaded case records to print from: every string by `one_line`,
-    except a multi-line field's, which keeps its line breaks. Numbers, booleans
-    and None are unchanged."""
+def display_safe(value):
+    """A copy of loaded case records to print inline from: every string, keys
+    included, by `one_line`. Numbers, booleans and None are unchanged. A block
+    that keeps line breaks reads its text from the records, through `lines`."""
     if isinstance(value, str):
-        return lines(value, "") if field in MULTI_LINE else one_line(value)
+        return one_line(value)
     if isinstance(value, dict):
         return {
-            (one_line(k) if isinstance(k, str) else k): display_safe(
-                v, k if isinstance(k, str) else ""
-            )
+            (one_line(k) if isinstance(k, str) else k): display_safe(v)
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [display_safe(v, field) for v in value]
+        return [display_safe(v) for v in value]
     return value
