@@ -1157,8 +1157,10 @@ def cmd_restore(args, identity: dict) -> None:
         expected = entry["sha256"]
         fpath = (backup_path if _is_control(rel) else target_dir) / rel
         if not fpath.exists():
+            print(f"  MISSING: {rel}")
             missing_count += 1
         elif sha256_file(fpath) != expected:
+            print(f"  MISMATCH: {rel}")
             mismatch_count += 1
         else:
             ok_count += 1
@@ -1166,20 +1168,37 @@ def cmd_restore(args, identity: dict) -> None:
     if total:
         print()
 
-    # Remove restore marker
-    try:
-        restore_marker.unlink()
-    except OSError:
-        pass
+    integrity_ok = not (mismatch_count or missing_count)
+
+    # Remove restore marker — only once every file verified, so a bad restore
+    # stays flagged and is cleaned up when restore is re-run.
+    if integrity_ok:
+        try:
+            restore_marker.unlink()
+        except OSError:
+            pass
 
     # Summary
-    print(f"\nRestored case {case_id} to {target_dir}")
+    if integrity_ok:
+        print(f"\nRestored case {case_id} to {target_dir}")
+    else:
+        print(f"\nRestore of case {case_id} to {target_dir} FAILED verification")
     print(f"  Files: {ok_count} verified", end="")
     if mismatch_count:
         print(f", {mismatch_count} MISMATCH", end="")
     if missing_count:
         print(f", {missing_count} MISSING", end="")
     print()
+
+    if not integrity_ok:
+        print(
+            f"\nError: Restored case does not match the backup manifest.\n"
+            f"  {target_dir} is marked .restore-in-progress — do not use it.\n"
+            f"  Verify the backup first: vhir backup --verify {backup_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if os_restored:
         snap = manifest.get("opensearch_snapshot", {})
         print(
