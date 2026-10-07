@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -848,6 +849,16 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
     save_todos(case_dir, todos)
 
 
+# C0 and C1 controls: escape sequences and line breaks
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _one_line(text) -> str:
+    """Free text for one terminal line, its control characters shown as "?",
+    so it can't move the cursor or hide the lines printed after it."""
+    return _CONTROL.sub("?", str(text))
+
+
 def _challenge_line(challenged) -> str:
     """The finding's challenge state, in one line."""
     if not isinstance(challenged, dict):
@@ -891,10 +902,10 @@ def _display_item(item: dict) -> None:
     created_by = item.get("created_by", "")
     examiner = item.get("examiner", "")
     print(f"\n{'─' * 60}")
-    if "title" in item:
-        # Before any free text, which can carry terminal control sequences
+    title = item.get("title", item.get("description", "Untitled"))
+    print(f"  [{_one_line(item['id'])}]  {_one_line(title)}")
+    if "title" in item:  # under the title, which can't hide it
         print(f"  {_challenge_line(item.get('challenged'))}")
-    print(f"  [{item['id']}]  {item.get('title', item.get('description', 'Untitled'))}")
     if examiner:
         print(f"  Examiner: {examiner}", end="")
     if created_by:
@@ -979,8 +990,8 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
 
     # Finding fields
     if "title" in item:
+        print(f"  Title:          {_one_line(item.get('title', ''))}")
         print(f"  {_challenge_line(item.get('challenged'))}")
-        print(f"  Title:          {item.get('title', '')}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
         _render_field("Interpretation", item, modifications, "interpretation")

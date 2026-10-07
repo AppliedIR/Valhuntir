@@ -75,13 +75,15 @@ def case(tmp_path, monkeypatch):
 # --- the approval display ---------------------------------------------------
 
 
-def test_a_finding_shows_its_challenge_first_then_its_alternatives(capsys):
+def test_a_finding_shows_its_challenge_under_its_title_then_its_alternatives(capsys):
     _display_item(_finding(alternatives=ALTERNATIVES, challenged=STANDS))
-    out = capsys.readouterr().out
+    lines = capsys.readouterr().out.splitlines()
     challenge = (
-        "Challenged (client-reported): stands — skeptic: sift-tester-20261007-002"
+        "  Challenged (client-reported): stands — skeptic: sift-tester-20261007-002"
     )
-    assert out.index(challenge) < out.index("[F-tester-001]")
+    title = next(i for i, line in enumerate(lines) if "[F-tester-001]" in line)
+    assert lines[title + 1] == challenge  # which finding it is, then its challenge
+    out = "\n".join(lines)
     assert out.index(challenge) < out.index("Observation:")
     assert "Alternative: [open] An admin's test" in out
     assert (
@@ -114,9 +116,9 @@ def test_a_finding_shows_its_challenge_first_then_its_alternatives(capsys):
 def test_the_challenge_line(capsys, challenged, line):
     item = _finding() if challenged is None else _finding(challenged=challenged)
     _display_item(item)
-    out = capsys.readouterr().out
-    assert line in out
-    assert out.index(line) < out.index("[F-tester-001]")
+    lines = capsys.readouterr().out.splitlines()
+    title = next(i for i, text in enumerate(lines) if "[F-tester-001]" in text)
+    assert lines[title + 1] == f"  {line}"
 
 
 def test_an_examiners_own_shape_of_alternative_is_shown_as_text(capsys):
@@ -349,3 +351,24 @@ def test_review_withdrawn_says_a_damaged_audit_line_stopped_the_read(
     assert exited.value.code not in (0, None)
     assert "Withdrawn candidates couldn't be read: " in out
     assert "No candidate findings withdrawn" not in out
+
+
+def test_a_title_can_t_hide_the_challenge_line_under_it(capsys):
+    """Escape sequences and line breaks in a title are shown as "?"."""
+    title = "Benign\x1b[8m\rNot challenged\x9b2K\nmore"
+    _display_item(_finding(title=title, challenged=STANDS))
+    lines = capsys.readouterr().out.splitlines()
+    (line,) = [i for i, text in enumerate(lines) if "[F-tester-001]" in text]
+    assert lines[line] == "  [F-tester-001]  Benign?[8m?Not challenged?2K?more"
+    assert lines[line + 1].startswith("  Challenged (client-reported): stands")
+
+
+def test_review_shows_the_challenge_under_the_title(capsys):
+    from vhir_cli.commands.approve import _render_terminal_diff
+
+    _render_terminal_diff(
+        _finding(challenged=STANDS), {"id": "F-tester-001", "action": "approve"}
+    )
+    lines = capsys.readouterr().out.splitlines()
+    (title,) = [i for i, text in enumerate(lines) if text.startswith("  Title:")]
+    assert lines[title + 1].startswith("  Challenged (client-reported): stands")
