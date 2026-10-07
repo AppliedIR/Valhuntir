@@ -245,6 +245,20 @@ def test_a_longer_local_case_s_older_index_in_the_snapshot_isn_t_restored(box):
     assert restored == {"case-c-1-evtx-wks01"}
 
 
+def test_a_copy_whose_folder_name_extends_the_case_id_keeps_its_indices(box, capsys):
+    """Restoring C-1 into C-1-evtx: the target's own name isn't another case
+    whose `case-c-1-evtx-` names would be left out."""
+    box.os.existing = {"case-c-1-evtx-wks01"}
+    path = _backup(box)
+    copy = box.tmp / "cases" / "C-1-evtx"
+    _restore(path, copy)
+    restored = {i for body in box.os.restored for i in body["indices"].split(",")}
+    assert restored == {"case-c-1-evtx-wks01"}
+    new = _meta(copy)["case_uuid"].replace("-", "")[:12]
+    assert f"case-{new}-evtx-v1-wks01" in box.os.existing
+    assert "none of case" not in capsys.readouterr().out
+
+
 def test_a_restore_in_the_case_s_own_place_keeps_its_identity(box):
     import shutil
 

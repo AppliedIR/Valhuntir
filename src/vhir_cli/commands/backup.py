@@ -1262,7 +1262,7 @@ def cmd_restore(args, identity: dict) -> None:
                     [row["index"] for row in listed or []],
                     snap_info["case_uuid"],
                     case_id,
-                    target_dir.parent,
+                    target_dir,
                 )
             except Exception as e:
                 print(
@@ -1571,7 +1571,7 @@ def cmd_restore(args, identity: dict) -> None:
                     snapshot_dir,
                     progress,
                     case_uuid=snap_info["case_uuid"],
-                    cases_dir=target_dir.parent,
+                    target=target_dir,
                     rename=rename,
                 )
                 os_restored = True
@@ -1738,14 +1738,20 @@ def _own_prefixes(case_uuid: str, case_id: str) -> str:
 
 
 def _own_indices(
-    names, case_uuid: str, case_id: str, cases_dir: Path
+    names, case_uuid: str, case_id: str, target: Path
 ) -> tuple[list[str], list[str]]:
     """The case's own indices among `names`, by name: its 0.7 ones
     (`case-<c12>-…`, from its identity) and its pre-0.7 ones (`case-<case
-    id>-…`, less those of a local case whose id is longer, `case-<id>-2-…`)."""
+    id>-…`, less those of another local case whose id is longer,
+    `case-<id>-2-…`). The restore's own folder (`target`) is never one of
+    those others, whatever it's called."""
     legacy = f"case-{_index_component(case_id)}-"
     try:
-        local = [d for d in cases_dir.iterdir() if (d / "CASE.yaml").is_file()]
+        local = [
+            d
+            for d in target.parent.iterdir()
+            if d.resolve() != target.resolve() and (d / "CASE.yaml").is_file()
+        ]
     except OSError:
         local = []
     ids = {d.name for d in local} | {
@@ -1839,7 +1845,7 @@ def _restore_opensearch_snapshot(
     snapshot_dir: Path,
     progress_fn=None,
     case_uuid: str = "",
-    cases_dir: Path | None = None,
+    target: Path | None = None,
     rename: dict | None = None,
 ) -> None:
     """Restore the case's own indices from a snapshot directory, each named
@@ -1901,7 +1907,7 @@ def _restore_opensearch_snapshot(
             n for snap in held.get("snapshots") or [] for n in snap.get("indices") or []
         ]
         current, legacy = _own_indices(
-            names, case_uuid, case_id, cases_dir or _SNAPSHOTS_DIR
+            names, case_uuid, case_id, target or _SNAPSHOTS_DIR / case_id
         )
         if not current and not legacy:
             print(f"  OpenSearch indices... none of case {case_id}'s in the snapshot")
