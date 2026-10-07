@@ -24,6 +24,8 @@ EVENTS = {
     "T-tester-003": ("2023-01-29T08:00:00.1234567Z", "2023-01-29T08:00:00Z"),
     "T-tester-004": ("2023-01-29T08:00:00", "2023-01-29T08:00:00"),
     "T-tester-005": ("early on the 29th", "early on the 29th"),
+    # longer than the 19 characters the column used to show
+    "T-tester-006": ("2023-01-29 around 08:00 local", "2023-01-29 around 08:00 local"),
 }
 
 
