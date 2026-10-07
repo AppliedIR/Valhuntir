@@ -254,6 +254,58 @@ def test_a_withdrawal_s_reasons_show_when_approving_by_id(case, monkeypatch, cap
     assert "\x1b]0;" not in out and "Withdrawal refused" in out
 
 
+def _withdrawn_audit(case):
+    entry = {
+        "ts": "2026-10-07T08:00:00Z",
+        "tool": "record_finding",
+        "audit_id": "forensic-tester-20261007-001",
+        "result_summary": {"status": "WITHDRAWN", "title": "x"},
+    }
+    (case / "audit" / "forensic-mcp.jsonl").write_text(json.dumps(entry) + "\n")
+
+
+@pytest.mark.parametrize(
+    "args, empty",
+    [
+        (INTERACTIVE, "No staged items to review."),
+        (REVIEW, "No pending dashboard reviews."),
+    ],
+    ids=["interactive", "review"],
+)
+def test_the_withdrawn_notice_shows_when_nothing_is_left_to_approve(
+    case, capsys, args, empty
+):
+    _stage(case, [])  # every candidate was withdrawn
+    _withdrawn_audit(case)
+    cmd_approve(args, IDENT)
+    out = capsys.readouterr().out
+    assert empty in out
+    assert "1 candidate finding(s) withdrawn after challenge" in out
+
+
+def test_every_field_review_prints_before_the_prompt_is_escaped(
+    case, monkeypatch, capsys
+):
+    event = {**EVENT, "id": "T-tester-002", "timestamp": f"2026-10-01{ESC}"}
+    del event["auto_created_from"]
+    review = [
+        {"id": "F-tester-001", "type": "finding", "action": "approve"},
+        {"id": f"T-tester-002{ESC}", "type": "timeline", "action": "approve"},
+        {
+            "id": "T-tester-002",
+            "type": "timeline",
+            "action": "todo",
+            "todo_description": f"check {ESC}",
+            "todo_priority": f"high{ESC}",
+        },
+    ]
+    _stage(case, [_finding(audit_ids=[f"sift-x{ESC}"])], [event], review=review)
+    out = _until_prompt(monkeypatch, capsys, REVIEW)
+    assert "\x1b]0;" not in out and "\x07" not in out and "\x1b[2J" not in out
+    assert "Evidence:       sift-x\\x1b]0;owned" in out
+    assert "\\x1b]0;owned\\x07\\x1b[2J" in out
+
+
 def test_anchor_approve_by_id_prints_what_it_did_before(case, monkeypatch, capsys):
     finding = _finding()
     _stage(case, [finding])

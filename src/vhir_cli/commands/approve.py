@@ -334,6 +334,8 @@ def _interactive_review(
 
     if not all_items:
         print("No staged items to review.")
+        if withdrawn_line:  # every candidate may have been withdrawn
+            print(withdrawn_line)
         return
 
     print(f"Reviewing {len(all_items)} DRAFT item(s)...\n")
@@ -1276,6 +1278,8 @@ def _review_mode(
 
     if not delta_path.exists():
         print("No pending dashboard reviews.")
+        if withdrawn_line:
+            print(withdrawn_line)
         return
 
     # Atomically rename to .processing (TOCTOU mitigation)
@@ -1300,6 +1304,8 @@ def _review_mode(
     if not items:
         processing_path.unlink(missing_ok=True)
         print("No pending dashboard reviews.")
+        if withdrawn_line:
+            print(withdrawn_line)
         return
 
     # Validate case_id
