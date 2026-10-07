@@ -1145,21 +1145,35 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
 
+    def share_with_group(path: Path, mode: int, directory: bool = False) -> None:
+        # Never through a link: one planted here would widen another file
+        flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if directory else 0)
+        try:
+            fd = os.open(path, flags)
+            try:
+                os.fchown(fd, -1, sift_gid)
+                os.fchmod(fd, mode)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            e.filename = str(path)
+            raise
+
     try:
         # Create extractions/wintools/ with setgid + group-writable
         wintools_dir = case_dir / "extractions" / "wintools"
         wintools_dir.mkdir(parents=True, exist_ok=True)
-        os.chown(str(wintools_dir), -1, sift_gid)
-        os.chmod(str(wintools_dir), 0o2775)
+        share_with_group(wintools_dir, 0o2775, directory=True)
 
         # Create audit/wintools-mcp.jsonl with group-writable
         audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
-        if not audit_file.exists():
+        if not audit_file.exists() and not audit_file.is_symlink():
             audit_file.parent.mkdir(parents=True, exist_ok=True)
             audit_file.touch()
-        os.chown(str(audit_file), -1, sift_gid)
-        os.chmod(str(audit_file), 0o664)
+        share_with_group(audit_file, 0o664)
     except OSError as e:
+        if os.path.islink(e.filename):
+            return f"Group permissions not applied: {e.filename} is a symbolic link."
         return (
             f"Group permissions not applied to {e.filename or case_dir}: "
             f"{e.strerror or e}. Log out and back in, then activate the case again."
