@@ -1100,11 +1100,9 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
     placeholder = Path.home() / ".vhir" / "share-inactive"
     target = str(case_dir) if case_dir else str(placeholder)
 
+    check_share_path(target)  # before the no-op, so a bad tracked target is still said
     if target == current_target:
         return  # No-op
-    # A line break would start a new smb.conf line, written as root
-    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in target):
-        raise ValueError(f"case path has a control character: {target!r}")
 
     placeholder.mkdir(parents=True, exist_ok=True)
 
