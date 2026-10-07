@@ -107,6 +107,38 @@ class TestRegisterEvidence:
         assert reg["files"][0]["sha256"] != original_hash
         assert reg["files"][0]["previous_hashes"][0]["sha256"] == original_hash
 
+    def test_a_file_the_ai_registers_is_marked_and_the_cli_never_marks(self, case_dir):
+        from vhir_cli.commands.evidence import register_evidence_data
+
+        ai = case_dir / "evidence" / "a.csv"
+        ai.write_text("Computer\nWKS01\n")
+        mine = case_dir / "evidence" / "b.csv"
+        mine.write_text("Computer\nWKS02\n")
+        register_evidence_data(case_dir, str(ai), "analyst1", registered_via="mcp")
+        register_evidence_data(case_dir, str(mine), "analyst1")
+        files = json.loads((case_dir / "evidence.json").read_text())["files"]
+        assert [f.get("registered_via") for f in files] == ["mcp", None]
+
+    def test_a_changed_file_takes_the_way_it_was_registered_again(self, case_dir):
+        from vhir_cli.commands.evidence import register_evidence_data
+
+        f = case_dir / "evidence" / "a.csv"
+        f.write_text("one\n")
+        register_evidence_data(case_dir, str(f), "analyst1")
+        f.write_text("two\n")
+        out = register_evidence_data(
+            case_dir, str(f), "analyst1", force_reregister=True, registered_via="mcp"
+        )
+        assert out["note"] == "updated (same path, hash changed)"
+        assert out["registered_via"] == "mcp"
+        f.write_text("three\n")  # the examiner registers it again, from the CLI
+        out = register_evidence_data(
+            case_dir, str(f), "analyst1", force_reregister=True
+        )
+        assert "registered_via" not in out
+        (entry,) = json.loads((case_dir / "evidence.json").read_text())["files"]
+        assert "registered_via" not in entry
+
 
 class TestListEvidence:
     def test_list_shows_registered_files(self, case_dir, identity, monkeypatch, capsys):

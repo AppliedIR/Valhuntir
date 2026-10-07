@@ -130,6 +130,7 @@ def register_evidence_data(
     examiner: str,
     description: str = "",
     force_reregister: bool = False,
+    registered_via: str | None = None,
 ) -> dict:
     """Register an evidence file and return structured data.
 
@@ -141,6 +142,8 @@ def register_evidence_data(
         examiner: Examiner identity slug.
         description: Optional description.
         force_reregister: Allow re-registering a file whose hash changed.
+        registered_via: "mcp" when the AI registered it (case-mcp passes it);
+            host names from such a file are the AI's, never artifact evidence.
 
     Returns:
         Dict with path, sha256, description, registered_at, registered_by.
@@ -261,6 +264,10 @@ def register_evidence_data(
                 existing["sha256"] = file_hash
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
                 existing["registered_by"] = examiner
+                if registered_via:
+                    existing["registered_via"] = registered_via
+                else:  # the examiner's registration now
+                    existing.pop("registered_via", None)
                 if description:
                     existing["description"] = description
                 _atomic_write(
@@ -279,6 +286,8 @@ def register_evidence_data(
         "registered_at": datetime.now(timezone.utc).isoformat(),
         "registered_by": examiner,
     }
+    if registered_via:
+        entry["registered_via"] = registered_via
     registry["files"].append(entry)
 
     _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
