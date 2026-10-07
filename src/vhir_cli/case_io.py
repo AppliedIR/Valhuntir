@@ -611,6 +611,9 @@ def _merge_items(
             pass
 
     local_by_id = {item[id_field]: item for item in local if id_field in item}
+    index_by_id = {
+        item[id_field]: i for i, item in enumerate(local) if id_field in item
+    }
     added = 0
     updated = 0
     skipped = 0
@@ -642,6 +645,7 @@ def _merge_items(
         cleaned[id_field] = item_id  # Restore id after stripping
 
         if item_id not in local_by_id:
+            index_by_id[item_id] = len(local)
             local.append(cleaned)
             local_by_id[item_id] = cleaned
             added += 1
@@ -653,8 +657,7 @@ def _merge_items(
             inc_ts = item.get("modified_at", item.get("staged", ""))
             loc_ts = existing.get("modified_at", existing.get("staged", ""))
             if _parse_ts(inc_ts) > _parse_ts(loc_ts):
-                idx = next(i for i, x in enumerate(local) if x.get(id_field) == item_id)
-                local[idx] = cleaned
+                local[index_by_id[item_id]] = cleaned
                 local_by_id[item_id] = cleaned
                 updated += 1
             else:

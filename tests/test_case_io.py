@@ -419,6 +419,28 @@ class TestImportBundle:
         loaded = load_findings(case_dir)
         assert loaded[0]["title"] == "Newer"
 
+    def test_merge_updates_item_added_in_same_bundle(self, case_dir):
+        bundle = {
+            "findings": [
+                {
+                    "id": "F-alice-001",
+                    "title": "First",
+                    "staged": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "id": "F-alice-001",
+                    "title": "Second",
+                    "staged": "2026-06-01T00:00:00Z",
+                },
+            ],
+        }
+        result = import_bundle(case_dir, bundle)
+        assert result["findings"]["added"] == 1
+        assert result["findings"]["updated"] == 1
+        loaded = load_findings(case_dir)
+        assert len(loaded) == 1
+        assert loaded[0]["title"] == "Second"
+
     def test_non_dict_returns_error(self, case_dir):
         result = import_bundle(case_dir, "not a dict")
         assert result["status"] == "error"
