@@ -322,10 +322,17 @@ Routine tool output is NOT a finding. "Ran AmcacheParser, got 42 entries" goes i
 
 The intended flow:
 
-1. LLM analyzes tool output
-2. LLM presents evidence to the examiner with the actual log entry/record (not a summary)
-3. Examiner gives conversational approval
-4. LLM calls `record_finding()` with evidence artifacts and provenance
+1. LLM analyzes tool output and drafts the finding
+2. Where the client provides it (Claude Code, Codex), the `finding-skeptic` skill challenges the draft before you see it: a separate agent re-runs the cited tools and tries to refute it, and the LLM reassesses
+3. LLM presents evidence to the examiner with the actual log entry/record (not a summary)
+4. Examiner gives conversational approval
+5. LLM calls `record_finding()` with evidence artifacts and provenance
+
+### Challenge, Alternatives and Withdrawals
+
+- **Challenge line.** At approval, each finding shows how it was challenged: "stands", "revised after challenge", or "withdrawal refused" (the skeptic gave no contradicting output, so the finding was staged for your decision). The client reports this, and the skeptic's audit ids are shown so you can check them. **"Not challenged"** means no skeptic ran: the model skipped it, or the client can't run one. MCP-only chat clients (LibreChat, Open WebUI) have no skeptic, so all their findings read "Not challenged"; your review is their only challenge.
+- **Alternatives.** A finding can carry other explanations: **open** (still possible) or **ruled out** (with the tool output and its audit ids). The server keeps "ruled out" only with tool output from the case's audit trail; otherwise it stays open. You can edit alternatives at review: in the portal (as JSON) or with `vhir approve --edit`.
+- **Withdrawals.** A candidate is withdrawn only when re-run output contradicts a fact in its observation. It is not staged, so it isn't in your queue. `vhir approve` and the portal show a one-line count when there are any: open them with `vhir review --withdrawn` or the list on the portal Overview, each with the contradiction and the skeptic's tool calls. Withdrawals stay in the case's audit trail and are not carried in export bundles.
 
 ### Finding Fields
 
@@ -454,6 +461,7 @@ vhir approve F-steve-004 --edit                 # Edit in $EDITOR first
 vhir approve --findings-only                    # Review only findings
 vhir approve --timeline-only                    # Review only timeline
 vhir approve --review                           # Apply pending portal edits
+vhir review --withdrawn                         # Candidates withdrawn after challenge
 ```
 
 ### Rejecting Findings
