@@ -1278,11 +1278,21 @@ def cmd_restore(args, identity: dict) -> None:
             )
             sys.exit(1)
 
-    # Restored beside the case it was backed up from (another folder, or the
-    # original's indices are still there), the copy gets its own identity
-    # and its indices are renamed into it; restored in its place, it keeps both.
+    # Restored to another folder (--target), the copy gets its own identity
+    # and its indices are renamed into it; restored in its own place, it
+    # keeps both, and its indices must not still exist.
     snap_info = manifest.get("opensearch_snapshot") or {}
     alongside = target_dir.resolve() != Path(source_path).resolve()
+    if restore_opensearch:
+        problem = _snapshot_scope_problem(snap_info, case_id, backup_path)
+        if problem:
+            print(
+                f"Error: {problem}. The snapshot's indices weren't restored and "
+                "nothing was written.\nUse --skip-opensearch to restore the case "
+                "files alone.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     if restore_opensearch and _is_opensearch_available():
         try:
             from opensearch_mcp.client import get_client
@@ -1292,10 +1302,39 @@ def cmd_restore(args, identity: dict) -> None:
             scope = snap_info.get("index_scope") or (
                 f"case-{sanitize_index_component(case_id)}-*"
             )
-            if client.cat.indices(index=scope, format="json"):
-                alongside = True
+            existing = client.cat.indices(index=scope, format="json")
         except Exception:
-            pass  # OpenSearch query failed — will handle during restore
+            existing = []  # OpenSearch query failed — will handle during restore
+        if existing and not alongside:
+            print(
+                f"Error: OpenSearch indices of case {case_id} still exist ({scope}).\n"
+                "Restore it as a copy beside them with --target <another folder>, "
+                "delete them first, or use --skip-opensearch.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        # Version check
+        backup_version = snap_info.get("opensearch_version", "")
+        if backup_version:
+            try:
+                info = get_client().info()
+                current_version = info.get("version", {}).get("number", "")
+            except Exception:
+                current_version = ""
+            if (
+                current_version
+                and backup_version.split(".")[0] != current_version.split(".")[0]
+            ):
+                print(
+                    f"Error: OpenSearch version mismatch.\n"
+                    f"  Backup: {backup_version}\n"
+                    f"  Current: {current_version}\n"
+                    "Snapshots are not compatible across major versions.\n"
+                    "Use --skip-opensearch to restore without indices.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
     if alongside and restore_opensearch and _host_identity() is None:
         print(
             "Error: this restore is beside the case it was backed up from, so its "
@@ -1305,30 +1344,6 @@ def cmd_restore(args, identity: dict) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-
-        # Version check
-        snap_info = manifest.get("opensearch_snapshot", {})
-        backup_version = snap_info.get("opensearch_version", "")
-        if backup_version:
-            try:
-                client = get_client()
-                info = client.info()
-                current_version = info.get("version", {}).get("number", "")
-                if (
-                    current_version
-                    and backup_version.split(".")[0] != current_version.split(".")[0]
-                ):
-                    print(
-                        f"Error: OpenSearch version mismatch.\n"
-                        f"  Backup: {backup_version}\n"
-                        f"  Current: {current_version}\n"
-                        "Snapshots are not compatible across major versions.\n"
-                        "Use --skip-opensearch to restore without indices.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-            except Exception:
-                pass
 
     # Create target directory
     try:
@@ -1665,6 +1680,37 @@ def _verify_restored_password(examiner: str) -> None:
         print(f"  Password verification... FAILED: {e}", file=sys.stderr)
 
 
+def _snapshot_scope_problem(snap_info: dict, case_id: str, backup_path: Path) -> str:
+    """Why the snapshot's recorded scope can't be restored for this case, or
+    "": its identity must be the backed-up case's, and every index pattern it
+    names must be the case's own (`case-<c12>-…` or its pre-0.7
+    `case-<case id>-…`)."""
+    scope = str(snap_info.get("index_scope") or "")
+    uuid = str(snap_info.get("case_uuid") or "").strip().lower()
+    backed_up = _case_uuid(backup_path) if (backup_path / "CASE.yaml").is_file() else ""
+    if uuid and backed_up and uuid != backed_up:
+        return (
+            f"the snapshot's case identity ({uuid}) isn't the backed-up case's "
+            f"({backed_up})"
+        )
+    try:
+        from opensearch_mcp.paths import sanitize_index_component
+
+        legacy = f"case-{sanitize_index_component(case_id)}-"
+    except ImportError:
+        legacy = f"case-{case_id.lower()}-"
+    own = [legacy] + ([f"case-{uuid.replace('-', '')[:12]}-"] if uuid else [])
+    for segment in scope.split(","):
+        segment = segment.strip()
+        if (
+            segment
+            and not segment.startswith("-")
+            and not segment.startswith(tuple(own))
+        ):
+            return f"the snapshot names indices outside case {case_id} ({segment})"
+    return ""
+
+
 def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
     """Give a case restored beside its original its own identity, with no
     legacy alias (its older indices are renamed into the new identity).
@@ -1683,7 +1729,12 @@ def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
         )
         return None
     if not (target_dir / "CASE.yaml").is_file():
-        return None  # not a case: nothing carries an identity
+        print(
+            "  No OpenSearch indices were restored: the restored folder has no "
+            "CASE.yaml, so there's no case identity to restore them under.",
+            file=sys.stderr,
+        )
+        return None
     new = str(uuid.uuid4())
     c12 = new.replace("-", "")[:12]
     try:
@@ -1808,11 +1859,14 @@ def _restore_opensearch_snapshot(
                 )
             ]
             if legacy:
+                # case-<id>-<type>-<host> -> case-<new>-<type>-v1-<host>:
+                # typed reads (case-<c12>-<type>-*) find them, and they stay
+                # apart from the 0.7 indices (case-<c12>-<type>-0)
                 renames.append(
                     (
                         ",".join(legacy),
-                        f"{re.escape(rename['legacy_prefix'])}(.+)",
-                        f"{new}v1-$1",
+                        f"{re.escape(rename['legacy_prefix'])}(.+)-([^-]+)",
+                        f"{new}$1-v1-$2",
                     )
                 )
             for indices, pattern, replacement in renames:

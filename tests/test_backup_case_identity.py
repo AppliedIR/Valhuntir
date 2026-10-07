@@ -97,7 +97,7 @@ class FakeOpenSearch:
             if not _matches(name, body["indices"]):
                 continue
             if "rename_pattern" in body:
-                java = body["rename_replacement"].replace("$1", r"\1")
+                java = re.sub(r"\$(\d)", r"\\\1", body["rename_replacement"])
                 name = re.sub(body["rename_pattern"].replace("\\-", "-"), java, name)
             self.existing.add(name)
 
@@ -224,7 +224,7 @@ def test_an_older_case_restored_beside_its_original_keeps_its_indices_apart(box)
     copy = box.tmp / "cases" / "C-1-copy"
     _restore(path, copy)
     new = _meta(copy)["case_uuid"].replace("-", "")[:12]
-    assert f"case-{new}-v1-evtx-wks01" in box.os.existing
+    assert f"case-{new}-evtx-v1-wks01" in box.os.existing
     assert "case-c-1-evtx-wks01" in box.os.existing  # the original's, untouched
 
 
@@ -244,17 +244,80 @@ def test_a_restore_in_the_case_s_own_place_keeps_its_identity(box):
     assert box.os.existing == {f"case-{c12}-evtx-0"}
 
 
-def test_the_original_s_indices_still_there_make_it_a_copy(box):
+def test_restoring_in_place_over_surviving_indices_is_refused(box, capsys):
     import shutil
 
     c12 = _identity(box.case)
     box.os.existing = {f"case-{c12}-evtx-0"}
     path = _backup(box)
     shutil.rmtree(box.case)  # the folder is gone, its indices aren't
-    _restore(path, box.case)
-    new = _meta(box.case)["case_uuid"].replace("-", "")[:12]
-    assert new != c12
-    assert box.os.existing == {f"case-{c12}-evtx-0", f"case-{new}-evtx-0"}
+    with pytest.raises(SystemExit):
+        _restore(path, box.case)
+    assert "--target" in capsys.readouterr().err
+    assert not box.case.exists() and box.os.restored == []
+
+
+def test_a_cross_major_snapshot_is_refused_before_anything_is_written(box, capsys):
+    c12 = _identity(box.case)
+    box.os.existing = {f"case-{c12}-evtx-0"}
+    path = _backup(box)
+    box.os.info = lambda: {"version": {"number": "3.5.0"}}
+    copy = box.tmp / "cases" / "C-1-copy"
+    with pytest.raises(SystemExit):
+        _restore(path, copy)
+    assert "version mismatch" in capsys.readouterr().err
+    assert not copy.exists() and box.os.restored == []
+
+
+def test_a_manifest_naming_another_case_s_indices_is_refused(box, capsys):
+    c12 = _identity(box.case)
+    box.os.existing = {f"case-{c12}-evtx-0", "case-other-evtx-0"}
+    path = _backup(box)
+    manifest_path = B.Path(path) / "backup-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["opensearch_snapshot"]["index_scope"] = "case-other-*"
+    manifest_path.write_text(json.dumps(manifest))
+    copy = box.tmp / "cases" / "C-1-copy"
+    with pytest.raises(SystemExit):
+        _restore(path, copy)
+    assert "outside case C-1" in capsys.readouterr().err
+    assert not copy.exists() and box.os.restored == []
+
+
+def test_a_manifest_with_another_identity_is_refused(box, capsys):
+    c12 = _identity(box.case)
+    box.os.existing = {f"case-{c12}-evtx-0"}
+    path = _backup(box)
+    manifest_path = B.Path(path) / "backup-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["opensearch_snapshot"]["case_uuid"] = (
+        "00000000-0000-4000-8000-000000000000"
+    )
+    manifest["opensearch_snapshot"]["index_scope"] = "case-000000000000-*"
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(SystemExit):
+        _restore(path, box.tmp / "cases" / "C-1-copy")
+    assert "isn't the backed-up case's" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("artifact", ["hayabusa", "evtx"])
+def test_restored_older_indices_are_found_by_typed_reads(box, artifact):
+    from opensearch_mcp.case_scope import case_read_scope
+
+    box.os.existing = {f"case-c-1-{artifact}-wks01"}
+    path = _backup(box)
+    _restore(path, box.tmp / "cases" / "C-1-copy")
+    expression = case_read_scope("C-1-copy", box.os, artifact_type=artifact)
+    found = [n for n in box.os.existing if _matches(n, expression)]
+    new = _meta(box.tmp / "cases" / "C-1-copy")["case_uuid"].replace("-", "")[:12]
+    assert found == [f"case-{new}-{artifact}-v1-wks01"], (expression, box.os.existing)
+
+
+def test_a_copy_without_case_yaml_says_why_no_indices_were_restored(box, capsys):
+    bare = box.tmp / "bare"
+    bare.mkdir()
+    assert B._new_identity_for_copy(bare, "C-1", {}) is None
+    assert "No OpenSearch indices were restored" in capsys.readouterr().err
 
 
 def test_a_copy_without_its_own_identity_restores_no_indices(box, monkeypatch, capsys):
