@@ -571,6 +571,25 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
 
+    # A local file that can't be read as JSON would merge as empty and be
+    # written back holding only the bundle's items: refuse before writing either.
+    for key, filename in (("findings", "findings.json"), ("timeline", "timeline.json")):
+        local_file = case_dir / filename
+        if key not in bundle or not local_file.exists():
+            continue
+        try:
+            text = local_file.read_text()
+            if text.strip():
+                json.loads(text)
+        except (OSError, ValueError) as e:
+            return {
+                "status": "error",
+                "message": (
+                    f"{filename} can't be read as JSON ({e}); nothing was merged. "
+                    "Fix or restore it, then merge again."
+                ),
+            }
+
     if "findings" in bundle:
         findings_result = _merge_items(
             case_dir, "findings.json", bundle["findings"], "id"

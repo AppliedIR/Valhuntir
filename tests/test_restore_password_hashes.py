@@ -16,6 +16,7 @@ import json
 import shutil
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
@@ -97,7 +98,12 @@ def box(tmp_path, monkeypatch):
             )
             monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
         args = types.SimpleNamespace(
-            backup_path=str(path), skip_ledger=skip_ledger, skip_opensearch=False
+            backup_path=str(path),
+            skip_ledger=skip_ledger,
+            skip_opensearch=False,
+            target=json.loads((Path(path) / "backup-manifest.json").read_text())[
+                "source"
+            ],  # where it came from, without the prompt
         )
         try:
             B.cmd_restore(args, {"examiner": "steve"})

@@ -453,9 +453,10 @@ Creates a timestamped backup with SHA-256 manifest. Password hash files are alwa
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Restore from backup
 vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch restore
 vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger
+vhir restore /path/to/backup/... --target /cases/INC-1   # Restore here, without asking
 ```
 
-Restores a case from backup to its original path. Includes case files, verification ledger, password hashes, and OpenSearch indices (if present in backup). Prompts for the examiner password to verify HMAC integrity. Never auto-activates — run `vhir case activate` after restore.
+Restores a case from backup. Restore asks where to put the case, offering the folder it was backed up from; without a terminal (scripts), `--target` is required. A folder left by an interrupted restore is removed only after you answer yes (default no); without a terminal, remove it yourself first. Includes case files, verification ledger, password hashes, and OpenSearch indices (if present in backup). Prompts for the examiner password to verify HMAC integrity. Never auto-activates — run `vhir case activate` after restore.
 
 #### case
 

@@ -342,12 +342,13 @@ Creates a timestamped directory with all case metadata, findings, timeline, audi
 
 ### `vhir restore`
 
-Restore a case from a backup directory. Enforces the original case path for audit trail integrity.
+Restore a case from a backup directory, into a folder you confirm.
 
 ```bash
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Full restore
 vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch index restore
 vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger + password hash
+vhir restore /path/to/backup/... --target /cases/INC-1   # Restore here, without asking
 ```
 
 | Argument/Option | Description |
@@ -355,8 +356,9 @@ vhir restore /path/to/backup/... --skip-ledger           # Skip verification led
 | `backup_path` | Path to backup directory (contains backup-manifest.json) |
 | `--skip-opensearch` | Skip OpenSearch index restore |
 | `--skip-ledger` | Skip verification ledger and password hash restore |
+| `--target DIR` | Restore into `DIR` instead of being asked. Required without a terminal |
 
-Restore always uses the original case path from the backup manifest. If the path can't be created (permission denied), prints exact `mkdir`/`chown` commands to fix it. Never auto-activates the case — prints activation instructions after restore. Prompts for the examiner password to verify HMAC integrity.
+Restore asks `Restore case <id> to [<folder it was backed up from>]:`; Enter accepts that folder, or type another path. Without a terminal (scripts, agents), `--target` is required and restore refuses without it. If the folder holds an interrupted restore (`.restore-in-progress`), restore names it and asks before removing it, defaulting to no; without a terminal it refuses, and you remove the folder yourself. An existing folder without that marker is never overwritten. If the folder can't be created (permission denied), prints exact `mkdir`/`chown` commands to fix it. Never auto-activates the case — prints activation instructions after restore. Prompts for the examiner password to verify HMAC integrity.
 
 ## Execution
 

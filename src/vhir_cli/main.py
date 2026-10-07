@@ -86,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip verification ledger + password hash restore",
     )
+    p_restore.add_argument(
+        "--target",
+        metavar="DIR",
+        help="Folder to restore the case into, instead of being asked "
+        "(required without a terminal)",
+    )
 
     # approve
     p_approve = sub.add_parser(

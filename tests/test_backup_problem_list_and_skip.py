@@ -206,7 +206,12 @@ def test_restore_says_what_was_skipped(case, outside, tmp_path, capsys, monkeypa
     capsys.readouterr()
     B.cmd_restore(
         argparse.Namespace(
-            backup_path=result["backup_path"], skip_opensearch=True, skip_ledger=True
+            backup_path=result["backup_path"],
+            skip_opensearch=True,
+            skip_ledger=True,
+            target=json.loads(
+                (Path(result["backup_path"]) / "backup-manifest.json").read_text()
+            )["source"],
         ),
         {"examiner": "tester"},
     )

@@ -13,10 +13,11 @@ CASE_ID = "INC-2026-001"
 
 
 class FakeArgs:
-    def __init__(self, backup_path):
+    def __init__(self, backup_path, target):
         self.backup_path = str(backup_path)
         self.skip_opensearch = True
         self.skip_ledger = True
+        self.target = str(target)
 
 
 @pytest.fixture
@@ -76,7 +77,7 @@ class TestRestoreIntegrity:
         (backup_path / "findings.json").write_text('{"findings": ["injected"]}')
 
         with pytest.raises(SystemExit) as exc:
-            cmd_restore(FakeArgs(backup_path), identity)
+            cmd_restore(FakeArgs(backup_path, target_dir), identity)
 
         assert exc.value.code == 1
         out = capsys.readouterr()
@@ -91,7 +92,7 @@ class TestRestoreIntegrity:
         (backup_path / "findings.json").unlink()
 
         with pytest.raises(SystemExit) as exc:
-            cmd_restore(FakeArgs(backup_path), identity)
+            cmd_restore(FakeArgs(backup_path, target_dir), identity)
 
         assert exc.value.code == 1
         assert "MISSING" in capsys.readouterr().out
@@ -102,24 +103,32 @@ class TestRestoreIntegrity:
             tmp_path, {"case.json": "{}", "findings.json": '{"findings": []}'}
         )
 
-        cmd_restore(FakeArgs(backup_path), identity)
+        cmd_restore(FakeArgs(backup_path, target_dir), identity)
 
         assert (target_dir / "case.json").read_text() == "{}"
         assert not (target_dir / ".restore-in-progress").exists()
         assert "MISMATCH" not in capsys.readouterr().out
 
-    def test_retry_after_repair_succeeds(self, tmp_path, identity):
+    def test_retry_after_repair_succeeds(self, tmp_path, identity, monkeypatch):
         backup_path, target_dir = make_backup(
             tmp_path, {"case.json": "{}", "findings.json": '{"findings": []}'}
         )
         (backup_path / "findings.json").write_text('{"findings": ["injected"]}')
 
         with pytest.raises(SystemExit):
-            cmd_restore(FakeArgs(backup_path), identity)
+            cmd_restore(FakeArgs(backup_path, target_dir), identity)
 
-        # Repair the backup and re-run: the marker lets restore clean up.
+        # Repair the backup and re-run. Without a terminal the interrupted
+        # restore's folder is kept; on one, the examiner agrees to remove it.
         (backup_path / "findings.json").write_text('{"findings": []}')
-        cmd_restore(FakeArgs(backup_path), identity)
+        with pytest.raises(SystemExit):
+            cmd_restore(FakeArgs(backup_path, target_dir), identity)
+        assert (target_dir / ".restore-in-progress").exists()
+        monkeypatch.setattr(
+            sys, "stdin", type("Tty", (), {"isatty": lambda self: True})()
+        )
+        monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+        cmd_restore(FakeArgs(backup_path, target_dir), identity)
 
         assert (target_dir / "findings.json").read_text() == '{"findings": []}'
         assert not (target_dir / ".restore-in-progress").exists()

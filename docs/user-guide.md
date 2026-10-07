@@ -128,7 +128,7 @@ To restore a case from backup:
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13
 ```
 
-Restore enforces the original case path for audit trail integrity. After restoring, the case must be activated manually (`vhir case activate`). The restore wizard prompts for the examiner password to verify HMAC integrity. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
+Restore asks where to put the case, offering the folder it was backed up from (Enter accepts it); in a script, pass `--target <folder>`. It never removes an existing folder without asking. After restoring, the case must be activated manually (`vhir case activate`). The restore wizard prompts for the examiner password to verify HMAC integrity. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
 
 ## Evidence Indexing with OpenSearch
 

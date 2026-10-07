@@ -1,7 +1,8 @@
 """Back up and restore case data for archival, legal preservation, and disaster recovery.
 
 Creates timestamped backup with SHA-256 manifest for integrity verification.
-Restore enforces original case path for audit trail integrity.
+Restore asks where to restore, offering the folder the case was backed up
+from; without a terminal, --target names it.
 """
 
 from __future__ import annotations
@@ -16,7 +17,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli.case_io import _EXAMINER_RE, get_case_dir, load_case_meta
+from vhir_cli.case_io import (
+    _EXAMINER_RE,
+    CaseError,
+    _validate_case_id,
+    get_case_dir,
+    load_case_meta,
+)
 from vhir_cli.verification import VERIFICATION_DIR
 
 _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
@@ -959,6 +966,19 @@ def _release_lock(lock_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _stays_inside(rel) -> bool:
+    """True for a relative path that names something inside its folder:
+    no absolute path, no `..` component (a `..` inside a name is fine)."""
+    if not isinstance(rel, str) or not rel:
+        return False
+    parts = Path(rel).parts
+    return (
+        not Path(rel).is_absolute()
+        and ".." not in parts
+        and os.path.normpath(rel) not in (".", "")
+    )
+
+
 def cmd_restore(args, identity: dict) -> None:
     """Entry point for 'vhir restore'."""
     backup_path = Path(args.backup_path)
@@ -1001,8 +1021,22 @@ def cmd_restore(args, identity: dict) -> None:
         print("Error: manifest missing case_id or source.", file=sys.stderr)
         sys.exit(1)
 
-    target_dir = Path(source_path)
-    cases_parent = target_dir.parent
+    # The manifest is data from the backup folder: check what it names before
+    # anything is created, prompted for or removed.
+    try:
+        _validate_case_id(case_id)
+    except CaseError as e:
+        print(f"Error: the backup's case_id can't be used: {e}", file=sys.stderr)
+        sys.exit(1)
+    for entry in manifest.get("files", []):
+        rel = entry.get("path") if isinstance(entry, dict) else None
+        if not _stays_inside(rel):
+            print(
+                f"Error: the backup lists a file outside the case folder: {rel!r}. "
+                "Nothing was restored.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Show backup summary
     print(f"\nBackup: {case_id} ({manifest.get('timestamp', '?')})")
@@ -1024,6 +1058,23 @@ def cmd_restore(args, identity: dict) -> None:
     if manifest.get("password_examiners"):
         print(f"  Passwords:    {', '.join(manifest['password_examiners'])}")
     print()
+
+    # Where to restore: the examiner says so, defaulting to where it came from
+    target = getattr(args, "target", None)
+    if target:
+        target_dir = Path(target).expanduser()
+    elif sys.stdin.isatty():
+        answer = input(f"Restore case {case_id} to [{source_path}]: ").strip()
+        target_dir = Path(answer).expanduser() if answer else Path(source_path)
+    else:
+        print(
+            f"Error: no terminal to confirm where to restore case {case_id}.\n"
+            f"  It was backed up from {source_path}.\n"
+            f"  Re-run with --target <folder>, e.g. --target {source_path}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    cases_parent = target_dir.parent
 
     # Interactive prompts
     restore_opensearch = (
@@ -1049,21 +1100,30 @@ def cmd_restore(args, identity: dict) -> None:
     if target_dir.exists():
         # Check for .restore-in-progress marker
         if (target_dir / ".restore-in-progress").exists():
+            # Never removed without the examiner's yes, which defaults to no
+            count = sum(len(files) for _r, _d, files in os.walk(target_dir))
             if sys.stdin.isatty():
                 resp = (
                     input(
-                        "Previous restore was interrupted. Clean up and retry? [Y/n] "
+                        f"A previous restore was interrupted: {target_dir} holds "
+                        f"{count} file(s). Delete it and restore again? [y/N] "
                     )
                     .strip()
                     .lower()
                 )
-                if resp not in ("n", "no"):
+                if resp in ("y", "yes"):
                     shutil.rmtree(target_dir)
                 else:
+                    print("Restore cancelled; nothing was changed.", file=sys.stderr)
                     sys.exit(1)
             else:
-                # Non-TTY: auto-clean interrupted restore (it's partial data, not real)
-                shutil.rmtree(target_dir)
+                print(
+                    f"Error: A previous restore was interrupted: {target_dir} "
+                    f"({count} file(s), marked .restore-in-progress).\n"
+                    f"Remove it first, then re-run restore.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         else:
             print(
                 f"Error: Case directory already exists: {target_dir}\n"
@@ -1135,7 +1195,7 @@ def cmd_restore(args, identity: dict) -> None:
             f"Fix with:\n"
             f"  sudo mkdir -p {cases_parent}\n"
             f"  sudo chown $(whoami):$(whoami) {cases_parent}\n\n"
-            f"Then re-run: vhir restore {backup_path}",
+            f"Then re-run: vhir restore {backup_path} --target {target_dir}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1328,7 +1388,7 @@ def cmd_restore(args, identity: dict) -> None:
     integrity_ok = not (mismatch_count or missing_count)
 
     # Remove restore marker — only once every file verified, so a bad restore
-    # stays flagged and is cleaned up when restore is re-run.
+    # stays flagged, and a re-run asks before removing it.
     if integrity_ok:
         try:
             restore_marker.unlink()
