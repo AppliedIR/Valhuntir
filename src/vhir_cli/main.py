@@ -1128,8 +1128,13 @@ def _case_init_data(
     return result
 
 
-def _set_case_wintools_permissions(case_dir: Path) -> None:
-    """Set group-based permissions for wintools access on a case directory."""
+def _set_case_wintools_permissions(case_dir: Path) -> str | None:
+    """Set group-based permissions for wintools access on a case directory.
+
+    Returns a warning when the group step can't be applied (a process that
+    doesn't have the sift group yet), so the caller still repoints the share
+    and notifies wintools.
+    """
     import grp
     import os
 
@@ -1140,19 +1145,26 @@ def _set_case_wintools_permissions(case_dir: Path) -> None:
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
 
-    # Create extractions/wintools/ with setgid + group-writable
-    wintools_dir = case_dir / "extractions" / "wintools"
-    wintools_dir.mkdir(parents=True, exist_ok=True)
-    os.chown(str(wintools_dir), -1, sift_gid)
-    os.chmod(str(wintools_dir), 0o2775)
+    try:
+        # Create extractions/wintools/ with setgid + group-writable
+        wintools_dir = case_dir / "extractions" / "wintools"
+        wintools_dir.mkdir(parents=True, exist_ok=True)
+        os.chown(str(wintools_dir), -1, sift_gid)
+        os.chmod(str(wintools_dir), 0o2775)
 
-    # Create audit/wintools-mcp.jsonl with group-writable
-    audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
-    if not audit_file.exists():
-        audit_file.parent.mkdir(parents=True, exist_ok=True)
-        audit_file.touch()
-    os.chown(str(audit_file), -1, sift_gid)
-    os.chmod(str(audit_file), 0o664)
+        # Create audit/wintools-mcp.jsonl with group-writable
+        audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
+        if not audit_file.exists():
+            audit_file.parent.mkdir(parents=True, exist_ok=True)
+            audit_file.touch()
+        os.chown(str(audit_file), -1, sift_gid)
+        os.chmod(str(audit_file), 0o664)
+    except OSError as e:
+        return (
+            f"Group permissions not applied to {e.filename or case_dir}: "
+            f"{e.strerror or e}. Log out and back in, then activate the case again."
+        )
+    return None
 
 
 def _wintools_configured() -> bool:
@@ -1286,10 +1298,13 @@ def _case_init(args, identity: dict) -> None:
                     notify_wintools_case_activated,
                 )
 
-                _set_case_wintools_permissions(Path(data["case_dir"]))
+                warning = _set_case_wintools_permissions(Path(data["case_dir"]))
                 _repoint_samba_share(Path(data["case_dir"]))
                 notify_wintools_case_activated(data["case_id"])
-                print("Case permissions set for wintools")
+                if warning:
+                    print(f"  WARNING: {warning}")
+                else:
+                    print("Case permissions set for wintools")
             except Exception as e:
                 print(
                     f"Warning: Failed to set up wintools sharing: {e}",
