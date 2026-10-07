@@ -845,7 +845,8 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
             "completed_at": None,
         }
         todos.append(todo)
-        print(f"  Created {todo_id}: {td['description']}")
+        shown = f"  Created {_one_line(todo_id)}: "
+        print(shown + _lines(td["description"], " " * len(shown)))
     save_todos(case_dir, todos)
 
 

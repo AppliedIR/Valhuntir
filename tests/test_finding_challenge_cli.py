@@ -11,6 +11,7 @@ audit trail.
 from __future__ import annotations
 
 import json
+import re
 from argparse import Namespace
 from pathlib import Path
 
@@ -456,3 +457,75 @@ def test_a_carriage_return_can_t_overwrite_a_line(capsys):
     out = capsys.readouterr().out
     assert "\r" not in out
     assert "  Interpretation: benign?Not challenged" in out.splitlines()
+
+
+def test_a_multi_line_timeline_description_keeps_its_lines(capsys):
+    _display_item(
+        {
+            "id": "T-tester-001",
+            "timestamp": "2023-01-29T08:00:00Z",
+            "description": "Logon from WKS01\nthen RDP\x1b[2J to SRV01",
+        }
+    )
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index("  Description: Logon from WKS01")
+    assert lines[at + 1] == " " * 15 + "then RDP?[2J to SRV01"
+
+
+def test_multi_line_fields_in_a_review_diff_keep_their_lines(capsys):
+    from vhir_cli.commands.approve import _render_terminal_diff
+
+    entry = {
+        "id": "F-tester-001",
+        "action": "edit",
+        "modifications": {
+            "interpretation": {"original": "one\ntwo", "modified": "three\nfour\x1b[1A"}
+        },
+    }
+    _render_terminal_diff(_finding(interpretation="one\ntwo"), entry)
+    # vhir's own colour codes aside, each value keeps its line break,
+    # indented under the value
+    out = re.sub(r"\x1b\[\d+m", "", capsys.readouterr().out)
+    pad = " " * (len("  Interpretation:") + 2)
+    assert f"- one\n{pad}two" in out
+    assert f"+ three\n{pad}four?[1A" in out
+
+
+def test_skipped_ids_and_reasons_are_escaped(case, monkeypatch, capsys):
+    """An id not in the case and a changed field's name both come from the
+    review file, and are printed in the skipped list."""
+    (case / "findings.json").write_text(json.dumps([_finding()]))
+    (case / "timeline.json").write_text("[]")
+    items = [
+        {"id": "F-ghost\x1b[2J", "type": "finding", "action": "approve"},
+        {
+            "id": "F-tester-001",
+            "type": "finding",
+            "action": "edit",
+            "modifications": {
+                "interp\x1b[2J": {"original": "not this", "modified": "x"}
+            },
+        },
+    ]
+    (case / "pending-reviews.json").write_text(
+        json.dumps({"case_id": "C-1", "items": items})
+    )
+    monkeypatch.setattr(approve_mod, "require_confirmation", lambda *a: ("p", "p"))
+    monkeypatch.setattr(approve_mod, "_write_verification_entries", lambda *a, **k: [])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    approve_mod._review_mode(case, IDENT, Path("cfg"))
+    out = capsys.readouterr().out
+    assert "\x1b[2J" not in out
+    assert "    F-ghost?[2J: not found" in out.splitlines()
+    assert (
+        "    F-tester-001: field 'interp?[2J' changed since review" in out.splitlines()
+    )
+
+
+def test_a_todo_description_is_shown_by_the_same_rule(case, capsys):
+    approve_mod._create_todos(
+        case, [{"description": "Check WKS01\nand SRV01\x1b[2J"}], {"examiner": "tester"}
+    )
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index("  Created TODO-tester-001: Check WKS01")
+    assert lines[at + 1] == " " * len("  Created TODO-tester-001: ") + "and SRV01?[2J"
