@@ -115,8 +115,10 @@ def _decision_lines(text):
 
 
 def _report(case_dir, fid, capsys):
-    _report_findings(case_dir, Namespace(report_findings=fid, save=None))
-    return _block(capsys.readouterr().out, fid)
+    # The report's text, as cmd_report prints it
+    return _block(
+        _report_findings(case_dir, Namespace(report_findings=fid, save=None)), fid
+    )
 
 
 @pytest.mark.parametrize("how", ["added", "overwritten"])
