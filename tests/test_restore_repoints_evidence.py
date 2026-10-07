@@ -204,6 +204,25 @@ def test_restore_counts_restored_and_missing_evidence_on_separate_lines(
     assert absent.startswith("Evidence: 1 registry path(s)")
 
 
+def test_evidence_registered_outside_the_case_is_not_counted_as_not_held(
+    tmp_path, capsys
+):
+    case = _case(tmp_path / "cases")
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "mem.raw").write_bytes(b"memory")
+    (case / "evidence" / "mem.raw").symlink_to(store / "mem.raw")
+    register_evidence_data(case, str(case / "evidence" / "mem.raw"), "analyst1")
+    backup = _backup(case, tmp_path / "out")
+    copy = tmp_path / "elsewhere" / "CASE1"
+    capsys.readouterr()
+    _restore(backup, copy)
+    lines = [ln.strip() for ln in capsys.readouterr().out.splitlines()]
+    assert f"Evidence: 1 registry path(s) now point to {copy}" in lines
+    assert not [ln for ln in lines if "doesn't hold" in ln]
+    assert str((store / "mem.raw").resolve()) in lines
+
+
 def test_a_relocated_case_can_be_backed_up_with_its_evidence(tmp_path):
     case = _case(tmp_path / "cases")
     backup = _backup(case, tmp_path / "out")
