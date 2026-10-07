@@ -27,6 +27,7 @@ from pathlib import Path
 from vhir_cli.approval_auth import require_tty_confirmation
 from vhir_cli.case_io import get_case_dir
 from vhir_cli.display import display_safe
+from vhir_cli.display import lines as indent_lines
 
 
 def cmd_evidence(args, identity: dict) -> None:
@@ -363,7 +364,7 @@ def cmd_list_evidence(args, identity: dict) -> None:
     case_dir = get_case_dir(getattr(args, "case", None))
 
     try:
-        data = display_safe(list_evidence_data(case_dir))
+        data = list_evidence_data(case_dir)
     except (json.JSONDecodeError, OSError) as e:
         print(f"Failed to read evidence registry: {e}", file=sys.stderr)
         sys.exit(1)
@@ -380,12 +381,13 @@ def cmd_list_evidence(args, identity: dict) -> None:
     print(f"{'#':<4} {'SHA256':<20} {'Registered By':<15} Path")
     print("-" * 80)
     for i, entry in enumerate(files, 1):
+        entry = display_safe(entry)  # for printing only
         sha = entry.get("sha256", "?")[:16] + "..."
         by = entry.get("registered_by", "?")
         path = entry.get("path", "?")
         print(f"{i:<4} {sha:<20} {by:<15} {path}")
         if entry.get("description"):
-            print(f"     Description: {entry['description']}")
+            print(f"     Description: {indent_lines(entry['description'], ' ' * 18)}")
 
     print(f"\n{len(files)} evidence file(s) registered")
 
@@ -487,7 +489,7 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     case_dir = get_case_dir(getattr(args, "case", None))
 
     try:
-        data = display_safe(verify_evidence_data(case_dir))
+        data = verify_evidence_data(case_dir)
     except (json.JSONDecodeError, OSError) as e:
         print(f"Failed to read evidence registry: {e}", file=sys.stderr)
         sys.exit(1)
@@ -500,12 +502,13 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     print(f"{'Status':<12} {'Path'}")
     print("-" * 70)
 
-    for r in results:
+    for raw in results:
+        r = display_safe(raw)  # for printing only
         print(f"{r['status']:<12} {r['path']}")
-        if r["status"] == "MODIFIED":
+        if raw["status"] == "MODIFIED":
             print(f"             Expected: {r['expected_hash']}")
             print(f"             Actual:   {r['actual_hash']}")
-        elif r["status"] == "ERROR" and r.get("error"):
+        elif raw["status"] == "ERROR" and raw.get("error"):
             print(f"             Error: {r['error']}")
 
     print(
@@ -538,7 +541,7 @@ def cmd_evidence_log(args, identity: dict) -> None:
         if not line:
             continue
         try:
-            entry = display_safe(json.loads(line))
+            entry = json.loads(line)
             entries.append(entry)
         except json.JSONDecodeError:
             continue
@@ -553,6 +556,7 @@ def cmd_evidence_log(args, identity: dict) -> None:
     print(f"{'Timestamp':<22} {'Action':<10} {'Examiner':<12} Detail")
     print("-" * 80)
     for e in entries:
+        e = display_safe(e)  # for printing only
         ts = e.get("ts", "?")[:19]
         action = e.get("action", "?")
         examiner = e.get("examiner", "?")

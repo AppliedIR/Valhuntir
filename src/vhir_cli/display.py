@@ -16,7 +16,9 @@ import re
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 # Fields that hold multi-line text; every other value is one line
-MULTI_LINE = frozenset({"observation", "interpretation", "description", "context"})
+MULTI_LINE = frozenset(
+    {"observation", "interpretation", "description", "context", "content"}
+)
 
 
 def one_line(text) -> str:

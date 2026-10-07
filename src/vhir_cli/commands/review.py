@@ -32,6 +32,7 @@ from vhir_cli.case_io import (
     verify_approval_integrity,
 )
 from vhir_cli.display import display_safe, one_line
+from vhir_cli.display import lines as indent_lines
 
 _EM_DASH = "\u2014"
 
@@ -76,15 +77,15 @@ def cmd_review(args, identity: dict) -> None:
 def _show_summary(case_dir: Path) -> None:
     """Show case overview with status counts."""
     meta = load_case_meta(case_dir)
-    findings = display_safe(load_findings(case_dir))
-    timeline = display_safe(load_timeline(case_dir))
-    evidence = display_safe(_load_evidence(case_dir))
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
+    evidence = _load_evidence(case_dir)
 
-    print(f"Case: {meta.get('case_id', '?')}")
-    print(f"Name: {meta.get('name', '')}")
-    print(f"Status: {meta.get('status', 'unknown')}")
-    print(f"Examiner: {meta.get('examiner', '?')}")
-    print(f"Created: {meta.get('created', '?')}")
+    print(f"Case: {one_line(meta.get('case_id', '?'))}")
+    print(f"Name: {one_line(meta.get('name', ''))}")
+    print(f"Status: {one_line(meta.get('status', 'unknown'))}")
+    print(f"Examiner: {one_line(meta.get('examiner', '?'))}")
+    print(f"Created: {one_line(meta.get('created', '?'))}")
     print()
 
     draft_f = sum(1 for f in findings if f.get("status") == "DRAFT")
@@ -100,7 +101,7 @@ def _show_summary(case_dir: Path) -> None:
 
     print(f"Evidence: {len(evidence)} registered files")
 
-    todos = display_safe(load_todos(case_dir))
+    todos = load_todos(case_dir)
     open_t = sum(1 for t in todos if t.get("status") == "open")
     completed_t = sum(1 for t in todos if t.get("status") == "completed")
     print(f"TODOs: {len(todos)} total ({open_t} open, {completed_t} completed)")
@@ -108,7 +109,7 @@ def _show_summary(case_dir: Path) -> None:
 
 def _show_todos(case_dir: Path, open_only: bool = False) -> None:
     """Show TODO items in a table."""
-    todos = display_safe(load_todos(case_dir))
+    todos = load_todos(case_dir)
     if open_only:
         todos = [t for t in todos if t.get("status") == "open"]
 
@@ -119,23 +120,25 @@ def _show_todos(case_dir: Path, open_only: bool = False) -> None:
     print(f"{'ID':<16} {'Status':<11} {'Priority':<9} {'Assignee':<12} Description")
     print("-" * 90)
     for t in todos:
+        t = display_safe(t)  # for printing only
         todo_id = t["todo_id"]
         status = t.get("status", "open")
         priority = t.get("priority", "medium")
         assignee = t.get("assignee", "") or "-"
-        desc = t.get("description", "")[:40]
+        desc = one_line(t.get("description", ""))[:40]  # one row per todo
         print(f"{todo_id:<16} {status:<11} {priority:<9} {assignee:<12} {desc}")
 
     if any(t.get("notes") for t in todos):
         print()
         for t in todos:
+            t = display_safe(t)
             for note in t.get("notes", []):
                 print(f"  {t['todo_id']}: [{note.get('by', '?')}] {note['note']}")
 
 
 def _show_findings_table(case_dir: Path) -> None:
     """Show findings as a summary table."""
-    findings = display_safe(load_findings(case_dir))
+    findings = load_findings(case_dir)
     if not findings:
         print("No findings recorded.")
         return
@@ -143,6 +146,7 @@ def _show_findings_table(case_dir: Path) -> None:
     print(f"{'Title':<40} {'Confidence':<12} {'Provenance':<12} {'Status':<10}")
     print("-" * 76)
     for f in findings:
+        f = display_safe(f)  # for printing only
         title = f.get("title", "Untitled")
         if len(title) > 37:
             title = title[:37] + "..."
@@ -154,15 +158,17 @@ def _show_findings_table(case_dir: Path) -> None:
 
 def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
     """One line per audit id: where it came from, and the tool or command."""
-    for eid in audit_ids:
-        entry = audit_index.get(eid)
+    for raw_eid in audit_ids:
+        entry = audit_index.get(raw_eid)
+        eid = one_line(raw_eid)
         if entry:
+            entry = display_safe(entry)  # for printing only
             source_file = entry.get("_source_file", "")
             ts = entry.get("ts", "")[:19]
             if source_file == "claude-code.jsonl":
                 cmd = entry.get("command", "?")
                 print(f'    [HOOK]  {eid} {_EM_DASH} "{cmd}" @ {ts}')
-            elif eid.startswith("shell-"):
+            elif raw_eid.startswith("shell-"):
                 cmd = entry.get("params", {}).get("command", "?")
                 print(f'    [SHELL] {eid} {_EM_DASH} "{cmd}"')
             else:
@@ -179,16 +185,18 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
 def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
     try:
-        withdrawals = display_safe(load_withdrawals(case_dir))
+        withdrawals = load_withdrawals(case_dir)
     except Exception as e:  # a damaged audit line: say so, never "none"
         print(f"Withdrawn candidates couldn't be read: {e}")
         sys.exit(1)
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
-    audit_index = display_safe(load_audit_index(case_dir))
+    audit_index = load_audit_index(case_dir)
     print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
     for entry in withdrawals:
+        skeptic_ids = entry["result_summary"].get("skeptic_audit_ids") or []
+        entry = display_safe(entry)  # for printing only
         result = entry["result_summary"]
         print(f"\n{'=' * 60}")
         print(
@@ -196,9 +204,10 @@ def _show_withdrawn(case_dir: Path) -> None:
             f"  {entry.get('audit_id', '')}"
         )
         print(f"  Title:         {result.get('title', '')}")
-        print(f"  Observation:   {result.get('observation', '')}")
+        print(
+            f"  Observation:   {indent_lines(result.get('observation', ''), ' ' * 17)}"
+        )
         print(f"  Contradiction: {result.get('contradiction', '')}")
-        skeptic_ids = result.get("skeptic_audit_ids") or []
         if isinstance(skeptic_ids, list) and skeptic_ids:
             print("\n  Skeptic's tool calls:")
             _print_evidence_chain(skeptic_ids, audit_index)
@@ -206,14 +215,15 @@ def _show_withdrawn(case_dir: Path) -> None:
 
 def _show_findings_detail(case_dir: Path) -> None:
     """Show full findings with all fields."""
-    findings = display_safe(load_findings(case_dir))
+    findings = load_findings(case_dir)
     if not findings:
         print("No findings recorded.")
         return
 
-    audit_index = display_safe(load_audit_index(case_dir))
+    audit_index = load_audit_index(case_dir)
 
-    for f in findings:
+    for raw in findings:
+        f = display_safe(raw)  # for printing only
         print(f"\n{'=' * 60}")
         print(f"  [{f['id']}] {f.get('title', 'Untitled')}")
         print(f"{'=' * 60}")
@@ -224,8 +234,10 @@ def _show_findings_detail(case_dir: Path) -> None:
             print(f"  Justification: {f['confidence_justification']}")
         print(f"  Provenance:   {f.get('provenance', _EM_DASH)}")
         print(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
-        print(f"  Observation:  {f.get('observation', '')}")
-        print(f"  Interpretation: {f.get('interpretation', '')}")
+        print(f"  Observation:  {indent_lines(f.get('observation', ''), ' ' * 16)}")
+        print(
+            f"  Interpretation: {indent_lines(f.get('interpretation', ''), ' ' * 18)}"
+        )
         if f.get("iocs"):
             print(f"  IOCs:         {f['iocs']}")
         if f.get("mitre_techniques"):
@@ -237,7 +249,7 @@ def _show_findings_detail(case_dir: Path) -> None:
             print(f"  Reason:       {f.get('rejection_reason', '?')}")
 
         # Evidence chain
-        audit_ids = f.get("audit_ids", [])
+        audit_ids = raw.get("audit_ids", [])
         if audit_ids:
             print("\n  Evidence Chain:")
             _print_evidence_chain(audit_ids, audit_index)
@@ -467,7 +479,7 @@ def _show_hmac_verification(
 
 def _show_iocs(case_dir: Path) -> None:
     """Extract IOCs from findings, grouped by approval status."""
-    findings = display_safe(load_findings(case_dir))
+    findings = load_findings(case_dir)
     if not findings:
         print("No findings recorded.")
         return
@@ -492,7 +504,8 @@ def _show_iocs(case_dir: Path) -> None:
         any_iocs = True
         print(f"\n=== {labels[status]} ===")
         for ioc_type, values in sorted(iocs.items()):
-            print(f"  {ioc_type + ':':<10} {', '.join(sorted(values))}")
+            shown = ", ".join(one_line(v) for v in sorted(values))
+            print(f"  {one_line(ioc_type) + ':':<10} {shown}")
 
     if not any_iocs:
         print("No IOCs found in findings.")
@@ -561,7 +574,7 @@ def _show_timeline(
     event_type: str | None = None,
 ) -> None:
     """Show timeline events with optional filters."""
-    timeline = display_safe(load_timeline(case_dir))
+    timeline = load_timeline(case_dir)
     timeline.sort(key=lambda t: t.get("timestamp", ""))
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
@@ -577,11 +590,12 @@ def _show_timeline(
 
     if detail:
         for t in timeline:
+            t = display_safe(t)  # for printing only
             print(f"\n{'=' * 60}")
             print(f"  [{t['id']}] {t.get('timestamp', '?')}")
             print(f"{'=' * 60}")
             print(f"  Status:      {t.get('status', '?')}")
-            print(f"  Description: {t.get('description', '')}")
+            print(f"  Description: {indent_lines(t.get('description', ''), ' ' * 15)}")
             if t.get("audit_ids"):
                 print(f"  Evidence:    {', '.join(t['audit_ids'])}")
             if t.get("source"):
@@ -592,10 +606,10 @@ def _show_timeline(
         print(f"{'ID':<20} {'Status':<10} {'Timestamp':<22} Description")
         print("-" * 80)
         for t in timeline:
-            tid = t.get("id", "?")
-            item_status = t.get("status", "?")
-            ts = t.get("timestamp", "?")[:19] if t.get("timestamp") else "?"
-            desc = t.get("description", "")
+            tid = one_line(t.get("id", "?"))
+            item_status = one_line(t.get("status", "?"))
+            ts = one_line(t.get("timestamp", "?")[:19] if t.get("timestamp") else "?")
+            desc = one_line(t.get("description", ""))  # one row per event
             if len(desc) > 40:
                 desc = desc[:37] + "..."
             print(f"{tid:<20} {item_status:<10} {ts:<22} {desc}")
@@ -603,7 +617,7 @@ def _show_timeline(
 
 def _show_evidence(case_dir: Path) -> None:
     """Show evidence registry and integrity status."""
-    evidence = display_safe(_load_evidence(case_dir))
+    evidence = _load_evidence(case_dir)
     if not evidence:
         print("No evidence registered.")
         return
@@ -613,9 +627,10 @@ def _show_evidence(case_dir: Path) -> None:
     print(f"{'=' * 60}")
 
     for e in evidence:
+        e = display_safe(e)  # for printing only
         print(f"\n  {e.get('path', '?')}")
         print(f"    SHA256: {e.get('sha256', '?')}")
-        print(f"    Description: {e.get('description', '')}")
+        print(f"    Description: {indent_lines(e.get('description', ''), ' ' * 17)}")
         print(
             f"    Registered: {e.get('registered_at', '?')} by {e.get('registered_by', '?')}"
         )
@@ -633,10 +648,11 @@ def _show_evidence(case_dir: Path) -> None:
                     if not line:
                         continue
                     try:
-                        entry = display_safe(json.loads(line))
+                        entry = json.loads(line)
                     except json.JSONDecodeError:
                         print("  Warning: skipping corrupt log line", file=sys.stderr)
                         continue
+                    entry = display_safe(entry)  # for printing only
                     print(
                         f"  {entry.get('ts', '?')} | {entry.get('action', '?')} | {entry.get('path', '?')} | {entry.get('examiner', '?')}"
                     )
@@ -661,7 +677,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                         if not line:
                             continue
                         try:
-                            entries.append(display_safe(json.loads(line)))
+                            entries.append(json.loads(line))
                         except json.JSONDecodeError:
                             print(
                                 f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
@@ -681,7 +697,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                     if not line:
                         continue
                     try:
-                        entry = display_safe(json.loads(line))
+                        entry = json.loads(line)
                     except json.JSONDecodeError:
                         print(
                             "  Warning: skipping corrupt approval line", file=sys.stderr
@@ -705,6 +721,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
     print(f"{'=' * 60}")
 
     for e in entries:
+        e = display_safe(e)  # for printing only
         ts = e.get("ts", "?")[:19]
         mcp = e.get("mcp", "?")
         tool = e.get("tool", "?")

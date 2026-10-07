@@ -121,3 +121,55 @@ def test_a_saved_report_is_written_from_the_stored_text(case, capsys):
     saved = (case / "reports" / "timeline.txt").read_text()
     assert CLEAR not in shown and "Saved to:" in shown
     assert CLEAR in saved  # the file holds the text as stored
+
+
+def _only_finding(case_dir, **fields):
+    finding = {"id": "F-tester-001", "status": "APPROVED", "title": "t", "confidence": "HIGH",
+               "observation": "", "interpretation": "x", "audit_ids": []}  # fmt: skip
+    save_findings(case_dir, [{**finding, **fields}])
+
+
+def test_iocs_are_read_from_the_stored_text(case, capsys):
+    """Two paths split by a tab are two IOCs, not one joined by a "?"."""
+    _only_finding(case, observation="Ran C:\\first.exe\tC:\\second.exe")
+    _review(iocs=True)
+    assert "C:\\first.exe, C:\\second.exe" in capsys.readouterr().out
+    _report(ioc=True, save="ioc.txt")
+    assert "    C:\\first.exe\n    C:\\second.exe" in capsys.readouterr().out
+    saved = (case / "reports" / "ioc.txt").read_text()
+    assert "    C:\\first.exe\n    C:\\second.exe" in saved
+    _report(full=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["iocs"]["File"] == ["C:\\first.exe", "C:\\second.exe"]
+
+
+def test_a_second_line_can_t_pose_as_a_field(case, capsys):
+    _only_finding(
+        case, status="DRAFT", observation="Seen on WKS01\n  Status:       APPROVED"
+    )
+    _review(findings=True, detail=True)
+    out = capsys.readouterr().out
+    assert "  Status:       APPROVED" not in out.split("\n")
+    assert "Seen on WKS01\n" + " " * 16 + "  Status:       APPROVED" in out
+
+
+def test_the_case_name_shows_its_control_characters(case, capsys):
+    (case / "CASE.yaml").write_text(
+        yaml.dump({"case_id": "INC-1", "name": f"Ops{RETITLE}"})
+    )
+    _review()
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "Name: Ops?]0;owned?" in out
+
+
+def test_a_multi_line_description_keeps_its_lines(case, capsys):
+    save_timeline(
+        case,
+        [{"id": "T-tester-001", "status": "DRAFT", "timestamp": "2023-01-29T08:00:00Z",
+          "description": "first line\nsecond line"}],
+    )  # fmt: skip
+    _review(timeline=True, detail=True)
+    assert (
+        "  Description: first line\n" + " " * 15 + "second line"
+        in capsys.readouterr().out
+    )

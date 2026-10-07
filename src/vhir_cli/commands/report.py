@@ -27,7 +27,8 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
 )
-from vhir_cli.display import display_safe
+from vhir_cli.display import lines as indent_lines
+from vhir_cli.display import one_line
 
 
 def cmd_report(args, identity: dict) -> None:
@@ -71,9 +72,16 @@ def cmd_report(args, identity: dict) -> None:
         sys.exit(1)
 
 
-def _shown(records, safe: bool):
-    """Loaded records as the terminal shows them (`safe`), or as stored."""
-    return display_safe(records) if safe else records
+def _d(value, safe: bool):
+    """One value for a report line: as the terminal shows it (`safe`), else as
+    stored. Only formatting goes through here; every count, match and
+    extraction reads the stored records."""
+    return one_line(value) if safe else value
+
+
+def _ml(value, safe: bool, indent: str):
+    """A multi-line field: its lines under the value (`safe`), else as stored."""
+    return indent_lines(value, indent) if safe else value
 
 
 def _shown_and_saved(case_dir: Path, args, report) -> None:
@@ -224,10 +232,10 @@ def _report_full(case_dir: Path, args) -> None:
 
 def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | None:
     """Executive summary: counts and key statistics."""
-    meta = _shown(load_case_meta(case_dir), safe)
-    findings = _shown(load_findings(case_dir), safe)
-    timeline = _shown(load_timeline(case_dir), safe)
-    todos = _shown(load_todos(case_dir), safe)
+    meta = load_case_meta(case_dir)
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
+    todos = load_todos(case_dir)
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
@@ -237,24 +245,26 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
     lines = []
     lines.append("EXECUTIVE SUMMARY")
     lines.append("=" * 50)
-    lines.append(f"Case:       {meta.get('case_id', '?')} - {meta.get('name', '')}")
-    lines.append(f"Status:     {meta.get('status', '?')}")
-    lines.append(f"Examiner:   {meta.get('examiner', '?')}")
-    lines.append(f"Created:    {meta.get('created', '?')}")
+    lines.append(
+        f"Case:       {_d(meta.get('case_id', '?'), safe)} - {_d(meta.get('name', ''), safe)}"
+    )
+    lines.append(f"Status:     {_d(meta.get('status', '?'), safe)}")
+    lines.append(f"Examiner:   {_d(meta.get('examiner', '?'), safe)}")
+    lines.append(f"Created:    {_d(meta.get('created', '?'), safe)}")
     lines.append("")
     lines.append("Findings:")
     lines.append(f"  Total: {len(findings)}")
     for status, count in sorted(f_counts.items()):
-        lines.append(f"  {status}: {count}")
+        lines.append(f"  {_d(status, safe)}: {count}")
     lines.append("")
     lines.append("Timeline Events:")
     lines.append(f"  Total: {len(timeline)}")
     for status, count in sorted(t_counts.items()):
-        lines.append(f"  {status}: {count}")
+        lines.append(f"  {_d(status, safe)}: {count}")
     lines.append("")
     lines.append(f"IOCs (from approved findings): {total_iocs}")
     for ioc_type, values in iocs.items():
-        lines.append(f"  {ioc_type}: {len(values)}")
+        lines.append(f"  {_d(ioc_type, safe)}: {len(values)}")
     lines.append("")
     open_todos = sum(1 for t in todos if t.get("status") == "open")
     lines.append(f"Open TODOs: {open_todos}")
@@ -265,7 +275,7 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
 
 def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     """Timeline report with optional date filtering."""
-    timeline = _shown(load_timeline(case_dir), safe)
+    timeline = load_timeline(case_dir)
     timeline.sort(key=lambda t: t.get("timestamp", ""))
 
     from_date = getattr(args, "from_date", None)
@@ -290,7 +300,9 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
         desc = t.get("description", "")
         if len(desc) > 35:
             desc = desc[:32] + "..."
-        lines.append(f"{tid:<22} {status:<10} {ts:<22} {desc}")
+        lines.append(
+            f"{_d(tid, safe):<22} {_d(status, safe):<10} {_d(ts, safe):<22} {_d(desc, safe)}"
+        )
 
     lines.append("")
     lines.append(f"Total: {len(timeline)} events")
@@ -301,7 +313,7 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
 
 def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
     """IOC report from approved findings."""
-    findings = _shown(load_findings(case_dir), safe)
+    findings = load_findings(case_dir)
     approved = [f for f in findings if f.get("status") == "APPROVED"]
 
     if not approved:
@@ -317,9 +329,9 @@ def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
     lines.append("IOC REPORT (Approved Findings Only)")
     lines.append("=" * 50)
     for ioc_type, values in iocs.items():
-        lines.append(f"\n  {ioc_type} ({len(values)}):")
+        lines.append(f"\n  {_d(ioc_type, safe)} ({len(values)}):")
         for v in values:
-            lines.append(f"    {v}")
+            lines.append(f"    {_d(v, safe)}")
 
     total = sum(len(v) for v in iocs.values())
     lines.append(f"\nTotal: {total} IOCs across {len(iocs)} types")
@@ -336,7 +348,7 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         sys.exit(1)
 
     requested_ids = [fid.strip() for fid in ids_str.split(",") if fid.strip()]
-    findings = _shown(load_findings(case_dir), safe)
+    findings = load_findings(case_dir)
 
     by_id = {f["id"]: f for f in findings if "id" in f}
     found = []
@@ -357,24 +369,26 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
     lines = []
     for f in found:
         lines.append(f"{'=' * 60}")
-        lines.append(f"  [{f['id']}] {f.get('title', 'Untitled')}")
+        lines.append(f"  [{_d(f['id'], safe)}] {_d(f.get('title', 'Untitled'), safe)}")
         lines.append(f"{'=' * 60}")
-        lines.append(f"  Status:       {f.get('status', '?')}")
-        lines.append(f"  Confidence:   {f.get('confidence', '?')}")
+        lines.append(f"  Status:       {_d(f.get('status', '?'), safe)}")
+        lines.append(f"  Confidence:   {_d(f.get('confidence', '?'), safe)}")
         if f.get("confidence_justification"):
-            lines.append(f"  Justification: {f['confidence_justification']}")
-        lines.append(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
-        lines.append(f"  Observation:  {f.get('observation', '')}")
-        lines.append(f"  Interpretation: {f.get('interpretation', '')}")
+            lines.append(f"  Justification: {_d(f['confidence_justification'], safe)}")
+        lines.append(f"  Evidence:     {_d(', '.join(f.get('audit_ids', [])), safe)}")
+        lines.append(f"  Observation:  {_ml(f.get('observation', ''), safe, ' ' * 16)}")
+        lines.append(
+            f"  Interpretation: {_ml(f.get('interpretation', ''), safe, ' ' * 18)}"
+        )
         if f.get("iocs"):
             lines.append(f"  IOCs:         {json.dumps(f['iocs'], default=str)}")
         if f.get("mitre_techniques"):
-            lines.append(f"  MITRE:        {f['mitre_techniques']}")
+            lines.append(f"  MITRE:        {_d(f['mitre_techniques'], safe)}")
         if f.get("approved_at"):
-            lines.append(f"  Approved:     {f['approved_at']}")
+            lines.append(f"  Approved:     {_d(f['approved_at'], safe)}")
         if f.get("rejected_at"):
-            lines.append(f"  Rejected:     {f['rejected_at']}")
-            lines.append(f"  Reason:       {f.get('rejection_reason', '?')}")
+            lines.append(f"  Rejected:     {_d(f['rejected_at'], safe)}")
+            lines.append(f"  Reason:       {_d(f.get('rejection_reason', '?'), safe)}")
         lines.append("")
 
     output = "\n".join(lines)
@@ -383,23 +397,23 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
 
 def _report_status_brief(case_dir: Path, args, safe: bool = True) -> str | None:
     """Quick status counts."""
-    meta = _shown(load_case_meta(case_dir), safe)
-    findings = _shown(load_findings(case_dir), safe)
-    timeline = _shown(load_timeline(case_dir), safe)
-    todos = _shown(load_todos(case_dir), safe)
+    meta = load_case_meta(case_dir)
+    findings = load_findings(case_dir)
+    timeline = load_timeline(case_dir)
+    todos = load_todos(case_dir)
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
     open_todos = sum(1 for t in todos if t.get("status") == "open")
 
     lines = []
-    lines.append(f"Case {meta.get('case_id', '?')}: {meta.get('status', '?')}")
     lines.append(
-        f"Findings: {len(findings)} ({', '.join(f'{s} {c}' for s, c in sorted(f_counts.items()))})"
+        f"Case {_d(meta.get('case_id', '?'), safe)}: {_d(meta.get('status', '?'), safe)}"
     )
-    lines.append(
-        f"Timeline: {len(timeline)} ({', '.join(f'{s} {c}' for s, c in sorted(t_counts.items()))})"
-    )
+    f_parts = ", ".join(f"{_d(s, safe)} {c}" for s, c in sorted(f_counts.items()))
+    t_parts = ", ".join(f"{_d(s, safe)} {c}" for s, c in sorted(t_counts.items()))
+    lines.append(f"Findings: {len(findings)} ({f_parts})")
+    lines.append(f"Timeline: {len(timeline)} ({t_parts})")
     lines.append(f"Open TODOs: {open_todos}")
 
     output = "\n".join(lines)
