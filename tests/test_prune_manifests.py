@@ -262,3 +262,97 @@ class TestPruneIngestManifests:
         contents = {s.read_text() for s in survivors}
         assert '{"first": true}' in contents
         assert '{"second": true}' in contents
+
+    def test_failed_move_keeps_entry_registered(
+        self, tmp_path, monkeypatch, identity, capsys
+    ):
+        """A manifest whose move fails must stay in the registry.
+
+        `vhir evidence lock` sets case/evidence/ to 0555, so shutil.move
+        raises PermissionError. Unregistering the entry anyway leaves the
+        file sitting in case/evidence/ with no registry entry — invisible
+        to `vhir evidence verify` and `vhir evidence list`.
+        """
+        case_dir, n_real, n_manifests = _seed_case(tmp_path, polluted=True)
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+
+        import vhir_cli.commands.prune_manifests as pm
+
+        def _denied(src, dst):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(pm.shutil, "move", _denied)
+
+        args = Namespace(case_id=None)
+        cmd_prune_ingest_manifests(args, identity)
+
+        data = json.loads((case_dir / "evidence.json").read_text())
+        registered = {f["path"] for f in data["files"]}
+        stranded = list((case_dir / "evidence").glob("*.manifest.json"))
+        assert len(stranded) == n_manifests
+        for mf in stranded:
+            assert str(mf) in registered, (
+                f"{mf.name} is still in case/evidence/ but was unregistered"
+            )
+        assert len(data["files"]) == n_real + n_manifests
+
+        out = capsys.readouterr().out
+        assert "Manifests unregistered: 0" in out
+
+    def test_overflow_skipped_manifest_stays_registered(
+        self, tmp_path, monkeypatch, identity
+    ):
+        """The >999-collision skip must not unregister the skipped file.
+
+        The overflow guard deliberately leaves the source in evidence/;
+        dropping its registry entry produces exactly the orphan the guard
+        exists to prevent.
+        """
+        case_dir = tmp_path / "INC-OVERFLOW"
+        case_dir.mkdir()
+        (case_dir / "CASE.yaml").write_text(yaml.dump({"case_id": "INC-OVERFLOW"}))
+        ev = case_dir / "evidence"
+        ev.mkdir()
+
+        audit_dir = case_dir / "audit" / "ingest-manifests"
+        audit_dir.mkdir(parents=True)
+        base = "foo.manifest.json"
+        (audit_dir / base).write_text("original")
+
+        mf = ev / base
+        mf.write_text("new")
+        (case_dir / "evidence.json").write_text(
+            json.dumps({"files": [{"path": str(mf.resolve())}]})
+        )
+
+        import vhir_cli.commands.prune_manifests as pm
+
+        monkeypatch.setattr(pm, "range", lambda *a, **kw: iter([]), raising=False)
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+
+        args = Namespace(case_id=None)
+        pm.cmd_prune_ingest_manifests(args, identity)
+
+        assert mf.exists()
+        remaining = json.loads((case_dir / "evidence.json").read_text())["files"]
+        assert [f["path"] for f in remaining] == [str(mf.resolve())]
+
+    def test_unregister_is_logged(self, tmp_path, monkeypatch, identity):
+        """Each removed registry entry gets an evidence access-log record.
+
+        `vhir evidence register` logs every registration; removing an entry
+        must leave a matching chain-of-custody record.
+        """
+        case_dir, _, n_manifests = _seed_case(tmp_path, polluted=True)
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+
+        args = Namespace(case_id=None)
+        cmd_prune_ingest_manifests(args, identity)
+
+        log_file = case_dir / "evidence_access.jsonl"
+        assert log_file.exists(), "no evidence_access.jsonl written"
+        records = [json.loads(line) for line in log_file.read_text().splitlines()]
+        assert len(records) == n_manifests
+        assert all(r["action"] == "unregister" for r in records)
+        assert all(r["examiner"] == "alice" for r in records)
+        assert all(r["detail"].endswith(".manifest.json") for r in records)

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import _atomic_write, get_case_dir
+from vhir_cli.commands.evidence import _log_evidence_action
 
 
 def cmd_prune_ingest_manifests(args, identity: dict) -> None:
@@ -60,15 +61,12 @@ def cmd_prune_ingest_manifests(args, identity: dict) -> None:
         pass  # symlink target missing — stick with the literal prefix
 
     manifests_removed = []
-    retained = []
     for entry in files:
         path = entry.get("path", "") if isinstance(entry, dict) else ""
         if path.endswith(".manifest.json") and any(
             path.startswith(p) for p in prefixes
         ):
             manifests_removed.append(path)
-        else:
-            retained.append(entry)
 
     if not manifests_removed:
         print(f"No ingest manifests found in {evidence_file}. Nothing to prune.")
@@ -79,10 +77,12 @@ def cmd_prune_ingest_manifests(args, identity: dict) -> None:
     moved_count = 0
     missing_count = 0
     overflow_count = 0
+    unregistered = []
     for src_path in manifests_removed:
         src = Path(src_path)
         if not src.exists():
             missing_count += 1
+            unregistered.append(src_path)
             continue
         # Collision-safe: pre-fix `_write_ingest_manifest` used a 50-char
         # stem truncation that collided on Windows EVTX channel names
@@ -107,18 +107,42 @@ def cmd_prune_ingest_manifests(args, identity: dict) -> None:
         try:
             shutil.move(str(src), str(dest))
             moved_count += 1
+            unregistered.append(src_path)
         except OSError as e:
             print(f"  WARNING: could not move {src} → {dest}: {e}", file=sys.stderr)
+
+    # Only unregister manifests that actually left `case/evidence/`. A file
+    # skipped by the overflow guard or stranded by a failed move (e.g. the
+    # 0555 directory `vhir evidence lock` leaves behind) is still sitting in
+    # the evidence directory: dropping its registry entry would make it an
+    # unregistered artifact that `evidence verify` and `evidence list` can
+    # never see again. Missing-on-disk entries leave no such orphan, so they
+    # are unregistered as before.
+    unregistered_paths = set(unregistered)
+    retained = [
+        entry
+        for entry in files
+        if not (isinstance(entry, dict) and entry.get("path") in unregistered_paths)
+    ]
 
     if isinstance(data, dict):
         data["files"] = retained
     _atomic_write(evidence_file, json.dumps(data, indent=2, default=str))
 
+    # Registry removals are chain-of-custody events, same as the "register"
+    # records cmd_register_evidence writes for every addition.
+    for path in unregistered:
+        _log_evidence_action(case_dir, "unregister", path, identity)
+
+    still_registered = len(manifests_removed) - len(unregistered)
+
     print(f"Pruned case: {case_dir}")
-    print(f"  Manifests unregistered: {len(manifests_removed)}")
+    print(f"  Manifests unregistered: {len(unregistered)}")
     print(f"  Manifest files moved: {moved_count}")
     if missing_count:
         print(f"  Manifest files missing on disk: {missing_count}")
     if overflow_count:
         print(f"  Manifest files skipped (>999 collisions): {overflow_count}")
-    print(f"  Real evidence entries retained: {len(retained)}")
+    if still_registered:
+        print(f"  Manifests left registered (file not relocated): {still_registered}")
+    print(f"  Real evidence entries retained: {len(retained) - still_registered}")
