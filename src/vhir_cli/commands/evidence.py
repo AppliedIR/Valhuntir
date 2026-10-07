@@ -208,14 +208,20 @@ def register_evidence_data(
     file_hash = sha.hexdigest()
 
     # Record in evidence registry
+    # Absent, 0-byte or whitespace-only means an empty registry. Anything else
+    # that can't be read or parsed is refused before writing: starting a new
+    # registry over it would throw away every earlier registration.
     reg_file = case_dir / "evidence.json"
+    registry = {"files": []}
     try:
-        if reg_file.exists():
-            registry = json.loads(reg_file.read_text())
-        else:
-            registry = {"files": []}
-    except (json.JSONDecodeError, OSError):
-        registry = {"files": []}
+        text = reg_file.read_text() if reg_file.exists() else ""
+        if text.strip():
+            registry = json.loads(text)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"{reg_file} can't be read as JSON ({e}); nothing was registered. "
+            "Fix or restore it, then register again."
+        ) from e
 
     # Dedup check — match by resolved path
     for existing in registry.get("files", []):
