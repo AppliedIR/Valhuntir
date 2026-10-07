@@ -523,9 +523,37 @@ def scan_case_dir(case_dir: Path) -> dict:
     # Registered evidence is evidence wherever it sits (the case root, work/).
     registered = _registered_paths(case_dir)
 
+    # (st_dev, st_ino) of every directory from case_dir down to the current
+    # root, keyed by the path os.walk yields. A directory symlink pointing back
+    # at one of them (evidence/ is normally itself a symlink to a collection
+    # mount) is re-entered until the kernel's symlink limit bites, so the same
+    # subtree gets listed — and copied and hashed — up to 41 times.
+    try:
+        case_st = case_dir.stat()
+        chains = {str(case_dir): ((case_st.st_dev, case_st.st_ino),)}
+    except OSError:
+        chains = {}
+
     for root, dirs, files in os.walk(case_dir, followlinks=True):
         # Filter out skip names
         dirs[:] = [d for d in dirs if d not in _SKIP_NAMES]
+
+        # Drop subdirectories that loop back onto the path we came in by
+        chain = chains.pop(str(root), ())
+        kept = []
+        for d in dirs:
+            sub = os.path.join(str(root), d)
+            try:
+                sub_st = os.stat(sub)
+            except OSError:
+                kept.append(d)  # unreadable — os.walk skips it as before
+                continue
+            key = (sub_st.st_dev, sub_st.st_ino)
+            if key in chain:
+                continue
+            chains[sub] = chain + (key,)
+            kept.append(d)
+        dirs[:] = kept
 
         root_path = Path(root)
         for fname in files:
