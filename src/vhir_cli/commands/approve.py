@@ -886,6 +886,18 @@ def _challenge_line(challenged) -> str:
     return f"Challenged (client-reported): {outcome}"
 
 
+def _challenge_reasons(challenged) -> list[str]:
+    """The marker's stated contradiction and the server's refusal, escaped."""
+    if not isinstance(challenged, dict):
+        return []
+    lines = []
+    if challenged.get("contradiction"):
+        lines.append(f"Contradiction (client-reported): {challenged['contradiction']}")
+    if challenged.get("refused"):
+        lines.append(f"Server: {challenged['refused']}")
+    return [_safe(line) for line in lines]
+
+
 def _alternative_lines(alternatives) -> list[str]:
     """One line per alternative; any other shape (an examiner's edit) as text."""
     if not isinstance(alternatives, list):
@@ -1001,6 +1013,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
     print(f"{'─' * 60}")
     if "title" in item:
         print(f"  {_safe(_challenge_line(item.get('challenged')))}")
+        for line in _challenge_reasons(item.get("challenged")):
+            print(f"    {line}")
         print(f"  [{_safe(item['id'])}]  {_safe(item.get('title', 'Untitled'))}")
         meta = [
             f"{label}: {_safe(item[key])}"
@@ -1052,6 +1066,8 @@ def _display_item(item: dict) -> None:
     print(f"  [{_one_line(item['id'])}]  {_one_line(title)}")
     if "title" in item:  # under the title, which can't hide it
         print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
+        for line in _challenge_reasons(item.get("challenged")):
+            print(f"    {line}")
     if examiner:
         print(f"  Examiner: {_one_line(examiner)}", end="")
     if created_by:
@@ -1140,6 +1156,8 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     if "title" in item:
         print(f"  Title:          {_one_line(item.get('title', ''))}")
         print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
+        for line in _challenge_reasons(item.get("challenged")):
+            print(f"    {line}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
         _render_field("Interpretation", item, modifications, "interpretation")

@@ -223,6 +223,37 @@ def test_the_withdrawn_line_comes_just_before_the_prompt(
     assert line in tail[-1]
 
 
+REFUSED = {
+    "outcome": "withdrawn",
+    "skeptic_audit_ids": [],
+    "contradiction": f"the re-run shows no PSEXESVC{ESC}",
+    "refused": "challenged: skeptic audit id(s) ['sift-x'] removed, not tool "
+    "output in this case's audit trail. Withdrawal refused: it needs the "
+    "skeptic's tool output and the output that contradicts the observation. "
+    "Staged for the examiner.",
+}
+
+
+@pytest.mark.parametrize("args", [INTERACTIVE, REVIEW], ids=["interactive", "review"])
+def test_a_withdrawal_s_reasons_show_before_the_prompt(case, monkeypatch, capsys, args):
+    _stage(case, [_finding(challenged=REFUSED)], review=APPROVE)
+    out = _until_prompt(monkeypatch, capsys, args)
+    assert "Contradiction (client-reported): the re-run shows no PSEXESVC" in out
+    assert "\\x1b]0;owned" in out and "\x1b]0;" not in out
+    assert (
+        "Server: challenged: skeptic audit id(s) ['sift-x'] removed, not tool " in out
+    )
+    assert "Withdrawal refused" in out
+
+
+def test_a_withdrawal_s_reasons_show_when_approving_by_id(case, monkeypatch, capsys):
+    _stage(case, [_finding(challenged=REFUSED)])
+    args = Namespace(case=None, ids=["F-tester-001"], review=False)
+    out = _until_prompt(monkeypatch, capsys, args)
+    assert "Contradiction (client-reported): the re-run shows no PSEXESVC" in out
+    assert "\x1b]0;" not in out and "Withdrawal refused" in out
+
+
 def test_anchor_approve_by_id_prints_what_it_did_before(case, monkeypatch, capsys):
     finding = _finding()
     _stage(case, [finding])
