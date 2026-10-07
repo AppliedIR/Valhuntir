@@ -164,6 +164,46 @@ def test_a_restore_without_evidence_reports_it_missing_not_ok(tmp_path):
     assert [s for s, _ in _status(copy)] == ["MISSING"]
 
 
+def test_restore_counts_apart_the_entries_whose_files_the_backup_does_not_hold(
+    tmp_path, capsys
+):
+    case = _case(tmp_path / "cases")
+    backup = _backup(case, tmp_path / "out", evidence=False)
+    copy = tmp_path / "elsewhere" / "CASE1"
+    capsys.readouterr()
+    _restore(backup, copy)
+    out = capsys.readouterr().out
+    assert "now point to" in out
+    line = next(ln for ln in out.splitlines() if "now point to" in ln)
+    assert line.strip().startswith("Evidence: 1 registry path(s)")
+    assert "this backup doesn't hold their files" in line
+    assert [s for s, _ in _status(copy)] == ["MISSING"]
+
+
+def test_restore_counts_restored_and_missing_evidence_on_separate_lines(
+    tmp_path, capsys
+):
+    case = _case(tmp_path / "cases")
+    gone = case / "evidence" / "gone.raw"
+    gone.write_bytes(b"gone")
+    register_evidence_data(case, str(gone), "analyst1")
+    gone.unlink()
+    backup = B.create_backup_data(
+        case,
+        str(tmp_path / "out"),
+        "analyst1",
+        include_evidence=True,
+        skip_unreadable=True,
+    )["backup_path"]
+    copy = tmp_path / "elsewhere" / "CASE1"
+    capsys.readouterr()
+    _restore(backup, copy)
+    lines = [ln.strip() for ln in capsys.readouterr().out.splitlines()]
+    assert f"Evidence: 1 registry path(s) now point to {copy}" in lines
+    (absent,) = [ln for ln in lines if "doesn't hold" in ln]
+    assert absent.startswith("Evidence: 1 registry path(s)")
+
+
 def test_a_relocated_case_can_be_backed_up_with_its_evidence(tmp_path):
     case = _case(tmp_path / "cases")
     backup = _backup(case, tmp_path / "out")

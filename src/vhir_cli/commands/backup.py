@@ -1071,19 +1071,23 @@ def _stays_inside(rel) -> bool:
     )
 
 
-def _repoint_evidence(target_dir: Path, source: str) -> tuple[int, list[str]] | None:
+def _repoint_evidence(
+    target_dir: Path, source: str, restored: set[str] = frozenset()
+) -> tuple[int, int, list[str]] | None:
     """Point evidence.json entries under the backed-up case at the restored copy.
 
     Registration stores absolute paths, so after a restore elsewhere they still
     name the original's files. An entry under the recorded source, or under
     its real path, gets the same relative path under the restored folder;
     entries elsewhere (evidence linked in from outside) are kept and listed.
-    Returns (entries re-pointed, entries left outside the case), or None when
-    the registry can't be read, in which case it's left untouched.
+    ``restored`` holds the case-relative paths the backup restored.
+    Returns (entries re-pointed, of those the ones whose file the backup
+    doesn't hold, entries left outside the case), or None when the registry
+    can't be read, in which case it's left untouched.
     """
     reg = target_dir / "evidence.json"
     if not reg.exists():
-        return 0, []
+        return 0, 0, []
     try:
         data = json.loads(reg.read_text())
         files = data["files"]
@@ -1094,7 +1098,7 @@ def _repoint_evidence(target_dir: Path, source: str) -> tuple[int, list[str]] | 
         return None
     new_root = target_dir.resolve()
     roots = [Path(os.path.abspath(source)), Path(os.path.realpath(source))]
-    moved, outside = 0, []
+    moved, absent, outside = 0, 0, []
     for entry in files:
         path = entry.get("path") if isinstance(entry, dict) else None
         if not isinstance(path, str):
@@ -1105,7 +1109,9 @@ def _repoint_evidence(target_dir: Path, source: str) -> tuple[int, list[str]] | 
             except ValueError:
                 continue
             entry["path"] = str(new_root / rel)
-            moved += entry["path"] != path
+            if entry["path"] != path:
+                moved += 1
+                absent += os.path.normpath(rel) not in restored
             break
         else:
             try:
@@ -1118,7 +1124,7 @@ def _repoint_evidence(target_dir: Path, source: str) -> tuple[int, list[str]] | 
         mode = reg.stat().st_mode & 0o777
         _atomic_write(reg, json.dumps(data, indent=2, default=str))
         os.chmod(reg, mode)
-    return moved, outside
+    return moved, absent, outside
 
 
 def cmd_restore(args, identity: dict) -> None:
@@ -1554,7 +1560,11 @@ def cmd_restore(args, identity: dict) -> None:
     # write leaves the restore flagged.
     if integrity_ok and target_dir.resolve() != Path(os.path.realpath(source_path)):
         try:
-            repointed = _repoint_evidence(target_dir, source_path)
+            repointed = _repoint_evidence(
+                target_dir,
+                source_path,
+                {os.path.normpath(e["path"]) for e in files},
+            )
         except OSError as e:
             print(
                 f"Error: evidence.json could not be updated for {target_dir}: {e}\n"
@@ -1563,9 +1573,18 @@ def cmd_restore(args, identity: dict) -> None:
             )
             sys.exit(1)
         if repointed:
-            moved, outside = repointed
-            if moved:
-                print(f"  Evidence: {moved} registry path(s) now point to {target_dir}")
+            moved, absent, outside = repointed
+            if moved - absent:
+                print(
+                    f"  Evidence: {moved - absent} registry path(s) now point to "
+                    f"{target_dir}"
+                )
+            if absent:
+                print(
+                    f"  Evidence: {absent} registry path(s) now point to "
+                    f"{target_dir}, but this backup doesn't hold their files, "
+                    "so they weren't restored"
+                )
             if outside:
                 print("  Evidence still registered outside the restored case:")
                 for path in outside:
