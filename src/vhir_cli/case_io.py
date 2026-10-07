@@ -451,10 +451,12 @@ def verify_approval_integrity(case_dir: Path) -> list[dict]:
 # --- Audit Index ---
 
 
-def load_audit_index(case_dir: Path) -> dict[str, dict]:
+def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str, dict]:
     """Scan audit/*.jsonl and build {audit_id: {**entry, "_source_file": filename}}.
 
-    Used by review --detail to resolve evidence chains.
+    Used by review --detail to resolve evidence chains. Pass `wanted` to keep
+    only those audit_ids, so the index stays bounded by what the caller
+    resolves rather than by the size of the audit trail.
     """
     audit_dir = case_dir / "audit"
     index: dict[str, dict] = {}
@@ -470,7 +472,7 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
                     try:
                         entry = json.loads(line)
                         eid = entry.get("audit_id", "")
-                        if eid:
+                        if eid and (wanted is None or eid in wanted):
                             entry["_source_file"] = jsonl_file.name
                             index[eid] = entry
                     except json.JSONDecodeError:

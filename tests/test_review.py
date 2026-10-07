@@ -180,6 +180,62 @@ class TestFindingsDetail:
         assert "Interpretation:" in output
         assert "Evidence:" in output
 
+    def test_detail_evidence_chain_resolves(self, case_dir, capsys):
+        audit_dir = case_dir / "audit"
+        audit_dir.mkdir()
+        with open(audit_dir / "sift-mcp.jsonl", "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "audit_id": "ev-001",
+                        "ts": "2026-02-19T10:00:00Z",
+                        "tool": "opensearch_query",
+                        "params": {"index": "winlogbeat-*"},
+                    }
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "audit_id": "ev-999",
+                        "ts": "2026-02-19T11:00:00Z",
+                        "tool": "unreferenced_tool",
+                        "params": {},
+                    }
+                )
+                + "\n"
+            )
+        save_findings(
+            case_dir,
+            [
+                {
+                    "id": "F-tester-001",
+                    "status": "DRAFT",
+                    "title": "Cited evidence",
+                    "audit_ids": ["ev-001", "ev-002"],
+                },
+                {"id": "F-tester-002", "status": "DRAFT", "title": "No audit_ids key"},
+            ],
+        )
+        args = Namespace(
+            case=None,
+            findings=True,
+            detail=True,
+            verify=False,
+            iocs=False,
+            timeline=False,
+            audit=False,
+            evidence=False,
+            limit=50,
+        )
+        cmd_review(args, {})
+        output = capsys.readouterr().out
+        assert "[MCP]   ev-001" in output
+        assert "opensearch_query(index=winlogbeat-*)" in output
+        assert "[NONE]  ev-002" in output
+        assert "unreferenced_tool" not in output
+
 
 class TestFindingsVerify:
     def test_verified_finding(self, case_dir, sample_findings, identity, capsys):

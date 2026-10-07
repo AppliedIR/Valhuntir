@@ -409,6 +409,36 @@ class TestLoadAuditIndex:
         index = load_audit_index(case_dir)
         assert index == {}
 
+    def test_wanted_filters_index(self, case_dir):
+        audit_dir = case_dir / "audit"
+        audit_dir.mkdir(exist_ok=True)
+        (audit_dir / "a-mcp.jsonl").write_text(
+            json.dumps({"audit_id": "sift-001", "tool": "run_command"})
+            + "\n"
+            + json.dumps({"audit_id": "sift-002", "tool": "list_tools"})
+            + "\n"
+        )
+        # Later file wins for a duplicate audit_id (sorted glob order).
+        (audit_dir / "b-mcp.jsonl").write_text(
+            json.dumps({"audit_id": "sift-001", "tool": "record_finding"})
+            + "\n"
+            + json.dumps({"audit_id": "sift-003", "tool": "hash_file"})
+            + "\n"
+        )
+        index = load_audit_index(case_dir, {"sift-001", "sift-003"})
+        assert set(index) == {"sift-001", "sift-003"}
+        assert index["sift-001"]["tool"] == "record_finding"
+        assert index["sift-001"]["_source_file"] == "b-mcp.jsonl"
+        assert index["sift-003"]["_source_file"] == "b-mcp.jsonl"
+
+    def test_wanted_empty_set(self, case_dir):
+        audit_dir = case_dir / "audit"
+        audit_dir.mkdir(exist_ok=True)
+        (audit_dir / "test.jsonl").write_text(
+            json.dumps({"audit_id": "ok-001", "tool": "test"}) + "\n"
+        )
+        assert load_audit_index(case_dir, set()) == {}
+
 
 # --- Provenance in _HASH_EXCLUDE_KEYS ---
 
