@@ -327,3 +327,16 @@ def test_a_damaged_audit_line_does_not_block_approval(
     captured = capsys.readouterr()
     assert ran == [1]
     assert "withdrawn candidates not counted" in captured.err
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [b"null\n", b'{"tool": "record_finding", "ts": 7}\n{"ts": "x"}\n', b"\xff\xfe\n"],
+    ids=["a null line", "an int ts", "invalid utf-8"],
+)
+def test_review_withdrawn_survives_a_damaged_audit_line(case, capsys, damage):
+    (case / "audit" / "forensic-mcp.jsonl").write_bytes(damage)
+    cmd_review(build_parser().parse_args(["review", "--withdrawn"]), IDENT)
+    captured = capsys.readouterr()
+    assert "withdrawn candidates not read" in captured.err
+    assert "No candidate findings withdrawn" in captured.out

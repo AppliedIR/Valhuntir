@@ -177,7 +177,11 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
 
 def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
-    withdrawals = load_withdrawals(case_dir)
+    try:
+        withdrawals = load_withdrawals(case_dir)
+    except Exception as e:  # a damaged audit line mustn't stop the review
+        print(f"  Warning: withdrawn candidates not read: {e}", file=sys.stderr)
+        withdrawals = []
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
