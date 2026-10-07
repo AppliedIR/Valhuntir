@@ -308,7 +308,7 @@ audit/
 ├── sift-mcp.jsonl
 ├── forensic-rag-mcp.jsonl
 ├── windows-triage-mcp.jsonl
-├── opencti-mcp.jsonl
+├── opencti-mcp.jsonl         # threatintel-mcp writes here too
 ├── wintools-mcp.jsonl
 └── claude-code.jsonl          # PostToolUse hook (Claude Code only)
 ```

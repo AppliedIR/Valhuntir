@@ -297,9 +297,9 @@ Verdicts:
 - **SUSPICIOUS** — anomaly detected (wrong path, Unicode homoglyphs, known C2 pipe, vulnerable driver)
 - **UNKNOWN** — not in the database (neutral, not an indicator — most third-party software returns this)
 
-### Threat Intelligence (opencti-mcp)
+### Threat Intelligence (threatintel-mcp)
 
-Live threat intelligence from your configured OpenCTI instance. Ask the LLM to look up IOCs, search for threat actors or malware families, check recent indicators, map entity relationships, or search threat reports. For example: "Look up this IP in threat intel" or "What malware is associated with APT29?"
+Live threat intelligence from your configured OpenCTI instance, and MISP if configured. `lookup_ioc` shows each platform's own records for an IOC, not a verdict. Ask the LLM to look up IOCs, search for threat actors or malware families, check recent indicators, map entity relationships, or search threat reports. For example: "Look up this IP in threat intel" or "What malware is associated with APT29?"
 
 ### Malware Analysis (remnux-mcp)
 

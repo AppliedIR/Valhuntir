@@ -25,7 +25,7 @@ report-mcp ── reports
 sift-mcp ── SIFT forensic tools
 forensic-rag-mcp ── knowledge search
 windows-triage-mcp ── baseline DB
-opencti-mcp ── threat intel
+threatintel-mcp ── threat intel
 opensearch-mcp ── evidence indexing    OpenSearch :9200
 case-dashboard ── Examiner Portal
 ```
@@ -76,7 +76,7 @@ http://localhost:4508/mcp/report-mcp
 http://localhost:4508/mcp/sift-mcp
 http://localhost:4508/mcp/forensic-rag-mcp
 http://localhost:4508/mcp/windows-triage-mcp
-http://localhost:4508/mcp/opencti-mcp
+http://localhost:4508/mcp/threatintel-mcp   (also /mcp/opencti-mcp)
 http://localhost:4508/mcp/opensearch-mcp
 ```
 
@@ -120,9 +120,9 @@ Semantic search across 22,000+ forensic knowledge records from 23 authoritative 
 
 Offline Windows baseline validation against 2.6 million known-good records. 13 tools. Databases cover files, processes, services, scheduled tasks, autorun entries, registry keys, hashes (LOLDrivers), LOLBins, hijackable DLLs, and named pipes across multiple Windows versions. All lookups are local — no network calls.
 
-### opencti-mcp
+### threatintel-mcp
 
-Read-only threat intelligence from OpenCTI. 8 tools with rate limiting (configurable, default 60 calls/minute) and circuit breaker (opens after 5 consecutive failures, recovers after 60 seconds). Label-based retry handles transient label creation failures.
+Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP) and returns each one's own records with MATCH, NO_MATCH or UNAVAILABLE, not a verdict; the other tools search OpenCTI. The backend is named `opencti-mcp` in configurations from before; a gateway configured with `threatintel-mcp` also serves `/mcp/opencti-mcp`, and its audit file stays `opencti-mcp.jsonl`. 8 tools with rate limiting (configurable, default 60 calls/minute) and circuit breaker (opens after 5 consecutive failures, recovers after 60 seconds). Label-based retry handles transient label creation failures.
 
 ### case-dashboard (Examiner Portal)
 

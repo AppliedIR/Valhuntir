@@ -445,7 +445,7 @@ Manage backend services through the gateway API.
 
 ```bash
 vhir service start forensic-mcp
-vhir service stop opencti-mcp
+vhir service stop threatintel-mcp
 vhir service restart                   # All backends
 ```
 

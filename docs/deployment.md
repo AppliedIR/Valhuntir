@@ -210,7 +210,7 @@ backends:
   windows-triage-mcp:
     type: stdio
     command: ["python", "-m", "windows_triage"]
-  opencti-mcp:
+  threatintel-mcp:                # opencti-mcp in configurations from before
     type: stdio
     command: ["python", "-m", "opencti_mcp"]
   wintools-mcp:

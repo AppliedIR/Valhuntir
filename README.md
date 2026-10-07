@@ -204,7 +204,7 @@ These layers reinforce each other through consistent, contextual repetition acro
 | opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (17 tools). Optional. |
 | forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more (3 tools) |
 | windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation (13 tools) |
-| opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (8 tools) |
+| threatintel-mcp | SIFT | (via gateway) | Threat intelligence: `lookup_ioc` returns each configured platform's records (OpenCTI, MISP), with no verdict; the other tools search OpenCTI. `opencti-mcp` in configurations from before (8 tools) |
 | OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
 | Examiner Portal | SIFT | (via gateway) | Browser-based review and approval. Primary review UI. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (10 tools) |
@@ -222,7 +222,7 @@ http://localhost:4508/mcp/sift-mcp
 http://localhost:4508/mcp/opensearch-mcp
 http://localhost:4508/mcp/windows-triage-mcp
 http://localhost:4508/mcp/forensic-rag-mcp
-http://localhost:4508/mcp/opencti-mcp
+http://localhost:4508/mcp/threatintel-mcp   # also /mcp/opencti-mcp
 ```
 
 #### Multi-Examiner Team
@@ -234,7 +234,7 @@ graph LR
         BR1["Browser<br/>(human interface)"]
         CLI1["vhir CLI"]
         GW1["sift-gateway<br/>:4508"]
-        MCPs1["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · opencti-mcp"]
+        MCPs1["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · threatintel-mcp"]
         CASE1["Case Directory"]
 
         CC1 -->|"streamable-http"| GW1
@@ -249,7 +249,7 @@ graph LR
         BR2["Browser<br/>(human interface)"]
         CLI2["vhir CLI"]
         GW2["sift-gateway<br/>:4508"]
-        MCPs2["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · opencti-mcp"]
+        MCPs2["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · threatintel-mcp"]
         CASE2["Case Directory"]
 
         CC2 -->|"streamable-http"| GW2
@@ -742,7 +742,7 @@ graph LR
         CC["Claude Code<br/>(human interface)"]
         FR["forensic-rag-mcp<br/>Knowledge search"]
         WTR["windows-triage-mcp<br/>Baseline validation"]
-        OC["opencti-mcp<br/>Threat intelligence"]
+        OC["threatintel-mcp<br/>Threat intelligence"]
 
         CC -->|stdio| FR
         CC -->|stdio| WTR
@@ -774,8 +774,8 @@ graph LR
 |-----------|----------|-------|
 | Claude Code → forensic-rag-mcp | stdio | Local Python process, always present |
 | Claude Code → windows-triage-mcp | stdio | Local Python process, always present |
-| Claude Code → opencti-mcp | stdio | Local Python process, connects out to OpenCTI via HTTP(S) |
-| opencti-mcp → OpenCTI Instance | HTTP(S) | opencti-mcp runs locally, calls out to the OpenCTI server |
+| Claude Code → threatintel-mcp | stdio | Local Python process, connects out to OpenCTI (and MISP, if configured) via HTTP(S) |
+| threatintel-mcp → OpenCTI or MISP instance | HTTP(S) | threatintel-mcp runs locally, calls out to each configured platform |
 | Claude Code → remnux-mcp | streamable-http | Remote, on its own REMnux workstation |
 | Claude Code → MS Learn MCP | HTTPS | `https://learn.microsoft.com/api/mcp` — streamable-http type in .mcp.json |
 | Claude Code → Zeltser IR Writing MCP | HTTPS | `https://website-mcp.zeltser.com/mcp` — streamable-http type in .mcp.json |

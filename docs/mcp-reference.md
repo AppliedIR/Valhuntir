@@ -271,20 +271,20 @@ Offline Windows baseline validation. Checks artifacts against 2.6 million known-
 ### Important Notes
 
 - `os_version` is REQUIRED for service, scheduled task, and autorun checks — these artifacts vary significantly between Windows versions.
-- `check_hash` checks against LOLDrivers only. For broader threat intel (malware hashes, IOCs), use `opencti-mcp lookup_ioc`.
+- `check_hash` checks against LOLDrivers only. For broader threat intel (malware hashes, IOCs), use `threatintel-mcp lookup_ioc`.
 - `check_registry` requires the full registry baseline database (~12GB). `check_autorun` is faster for persistence checks.
 - UNKNOWN is the most common result. It means "not in the baseline database" — not "suspicious."
 
-## opencti-mcp (8 tools)
+## threatintel-mcp (8 tools)
 
-Read-only threat intelligence from a configured OpenCTI instance.
+Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP); the other seven tools search OpenCTI. Named `opencti-mcp` in configurations from before.
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `get_health` | — | OpenCTI connectivity check | Before investigation, to verify intel source |
 | `search_threat_intel` | `query`, `limit` (5), `offset`, `labels`, `confidence_min`, `created_after`, `created_before` | Broad cross-entity search (up to 20 results per type) | For initial IOC/threat actor research |
 | `search_entity` | `type`, `query`, `limit` (10), `offset`, `labels`, `confidence_min`, `created_after`, `created_before` | Type-specific search (up to 50 results) | For focused queries on a single entity type |
-| `lookup_ioc` | `ioc` | Full context for an IOC (IP, hash, domain, URL) with related entities | When a specific IOC needs to be contextualized |
+| `lookup_ioc` | `ioc` | Each configured platform's own records for an IOC (IP, hash, domain, URL), with MATCH, NO_MATCH or UNAVAILABLE per platform; no verdict | When a specific IOC needs to be contextualized |
 | `get_recent_indicators` | `days` (7), `limit` (20) | Recently added IOCs | For situational awareness |
 | `get_entity` | `entity_id` | Full entity details by UUID | To get complete context after finding an entity via search |
 | `get_relationships` | `entity_id`, `direction`, `relationship_types`, `limit` (50) | Entity relationships (uses, indicates, targets) | To map threat actor toolkits, malware capabilities |

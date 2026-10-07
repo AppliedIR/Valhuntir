@@ -23,7 +23,7 @@ Valhuntir is a forensic investigation platform that connects LLM clients to fore
 | **sift-mcp** | Linux forensic tool execution with FK enrichment (5 tools) |
 | **forensic-rag-mcp** | Semantic search across 22K+ forensic knowledge records (3 tools) |
 | **windows-triage-mcp** | Offline Windows baseline validation (13 tools) |
-| **opencti-mcp** | Read-only threat intelligence from OpenCTI (8 tools) |
+| **threatintel-mcp** | Read-only threat intelligence: each configured platform's records (OpenCTI, MISP), no verdict (8 tools) |
 | **opensearch-mcp** | Evidence indexing, structured querying, enrichment (17 tools, separate repo) |
 | **wintools-mcp** | Windows forensic tool execution (10 tools, separate repo) |
 | **remnux-mcp** | Automated malware analysis on REMnux VM (optional, user-provided) |

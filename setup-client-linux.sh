@@ -606,6 +606,7 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "mcp__forensic-rag-mcp__*",
       "mcp__windows-triage-mcp__*",
       "mcp__opencti-mcp__*",
+      "mcp__threatintel-mcp__*",
       "mcp__wintools-mcp__*",
       "mcp__remnux-mcp__*",
       "mcp__vhir__*",
