@@ -613,6 +613,13 @@ def _registered_paths(case_dir: Path) -> set[str]:
     return paths
 
 
+def _is_backup(path: Path) -> bool:
+    return any(
+        (path / name).is_file()
+        for name in ("backup-manifest.json", ".backup-in-progress")
+    )
+
+
 def scan_case_dir(case_dir: Path) -> dict:
     """Scan case directory and categorize files.
 
@@ -672,13 +679,15 @@ def scan_case_dir(case_dir: Path) -> dict:
         case_dir, followlinks=True, onerror=unreadable.append
     ):
         root_path = Path(root)
-        # Filter out skip names, links that lead out of the case, and loops
+        # Filter out skip names, links that lead out of the case, loops, and
+        # backups (finished or in progress) made into a folder inside the case
         dirs[:] = [
             d
             for d in dirs
             if d not in _SKIP_NAMES
             and not _leaves_case(root_path / d)
             and not _loops(root_path / d)
+            and not _is_backup(root_path / d)
         ]
 
         # Drop subdirectories that loop back onto the path we came in by
