@@ -29,6 +29,7 @@ from vhir_cli.case_io import (
     load_todos,
     verify_approval_integrity,
 )
+from vhir_cli.clustering import cluster_findings
 
 _EM_DASH = "\u2014"
 
@@ -60,7 +61,9 @@ def cmd_review(args, identity: dict) -> None:
         _show_evidence(case_dir)
     elif getattr(args, "findings", False):
         detail = getattr(args, "detail", False)
-        if detail:
+        if getattr(args, "cluster", False):
+            _show_findings_clustered(case_dir, detail)
+        elif detail:
             _show_findings_detail(case_dir)
         else:
             _show_findings_table(case_dir)
@@ -145,6 +148,48 @@ def _show_findings_table(case_dir: Path) -> None:
         provenance = f.get("provenance", _EM_DASH)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
+
+
+def _show_findings_clustered(case_dir: Path, detail: bool = False) -> None:
+    """Show findings grouped into near-duplicate clusters.
+
+    Presentation only: every finding keeps its own id, content_hash and
+    approval record. Nothing here reads or writes status.
+    """
+    findings = load_findings(case_dir)
+    if not findings:
+        print("No findings recorded.")
+        return
+
+    clusters = cluster_findings(findings)
+    grouped = sum(1 for c in clusters if c.is_duplicate_group)
+    saved = len(findings) - len(clusters)
+
+    print(f"{len(findings)} finding(s) in {len(clusters)} cluster(s).")
+    if saved > 0:
+        print(
+            f"{grouped} cluster(s) hold near-duplicates: {saved} fewer item(s) to read."
+        )
+    print()
+
+    for n, cluster in enumerate(clusters, 1):
+        rep = cluster.representative
+        title = rep.get("title", "Untitled")
+        if cluster.is_duplicate_group:
+            print(f"[{n}] {title}  ({cluster.size} findings)")
+        else:
+            print(f"[{n}] {title}")
+        for member in cluster.members:
+            status = member.get("status", "?")
+            confidence = member.get("confidence", "?")
+            print(f"      {member['id']:<20} {status:<10} {confidence}")
+            if detail:
+                print(f"        Observation: {member.get('observation', '')}")
+        print()
+
+    print(
+        "Each finding keeps its own id and approval record; this view only groups them."
+    )
 
 
 def _show_findings_detail(case_dir: Path) -> None:

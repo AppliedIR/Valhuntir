@@ -207,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show full detail (with --findings or --timeline)",
     )
     p_review.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Group near-duplicate findings (with --findings)",
+    )
+    p_review.add_argument(
         "--verify",
         action="store_true",
         help="Cross-check findings against approval records",
