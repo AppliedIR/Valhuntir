@@ -100,11 +100,16 @@ def test_a_finding_shows_its_challenge_first_then_its_alternatives(capsys):
         ),
         (
             {"outcome": "withdrawn", "skeptic_audit_ids": []},
-            "Challenged (client-reported): withdrawal refused, no contradicting "
-            "output cited — staged for your decision",
+            "Challenged (client-reported): withdrawn, not applied, staged for your "
+            "decision — skeptic: none",
+        ),
+        (
+            {"outcome": "withdrawn", "skeptic_audit_ids": ["s-1", "s-2"]},
+            "Challenged (client-reported): withdrawn, not applied, staged for your "
+            "decision — skeptic: s-1, s-2",
         ),
     ],
-    ids=["absent", "revised", "refused withdrawal"],
+    ids=["absent", "revised", "withdrawal without ids", "withdrawal with ids"],
 )
 def test_the_challenge_line(capsys, challenged, line):
     item = _finding() if challenged is None else _finding(challenged=challenged)
@@ -289,3 +294,36 @@ def test_an_import_keeps_the_alternatives_but_not_the_challenge(case):
     (merged,) = load_findings(case)
     assert merged["alternatives"] == ALTERNATIVES
     assert "challenged" not in merged
+
+
+def test_an_alternative_of_any_status_shape_renders(capsys):
+    _display_item(
+        _finding(
+            alternatives=[
+                {"explanation": "a", "status": ["ruled_out"]},
+                {"explanation": "b", "status": {"x": 1}},
+            ]
+        )
+    )
+    out = capsys.readouterr().out
+    assert "Alternative: [['ruled out']] a" in out
+    assert "Alternative: [{'x': 1}] b" in out
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [b"null\n", b'{"tool": "record_finding", "ts": 7}\n{"ts": "x"}\n', b"\xff\xfe\n"],
+    ids=["a null line", "an int ts", "invalid utf-8"],
+)
+def test_a_damaged_audit_line_does_not_block_approval(
+    case, monkeypatch, capsys, damage
+):
+    (case / "audit" / "forensic-mcp.jsonl").write_bytes(damage)
+    ran = []
+    monkeypatch.setattr(
+        approve_mod, "_interactive_review", lambda *a, **k: ran.append(1)
+    )
+    cmd_approve(Namespace(case=None, ids=[], review=False), IDENT)
+    captured = capsys.readouterr()
+    assert ran == [1]
+    assert "withdrawn candidates not counted" in captured.err

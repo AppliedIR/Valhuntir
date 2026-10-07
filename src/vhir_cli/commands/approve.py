@@ -53,7 +53,11 @@ def cmd_approve(args, identity: dict) -> None:
         print("Error: --review cannot be used with specific IDs.", file=sys.stderr)
         sys.exit(1)
 
-    withdrawn = len(load_withdrawals(case_dir))
+    try:
+        withdrawn = len(load_withdrawals(case_dir))
+    except Exception as e:  # the count is information; a bad line mustn't block
+        print(f"  Warning: withdrawn candidates not counted: {e}", file=sys.stderr)
+        withdrawn = 0
     if withdrawn:
         print(
             f"  {withdrawn} candidate finding(s) withdrawn after challenge"
@@ -857,8 +861,8 @@ def _challenge_line(challenged) -> str:
         return f"Challenged (client-reported): revised after challenge — skeptic: {ids}"
     if outcome == "withdrawn":
         return (
-            "Challenged (client-reported): withdrawal refused, no contradicting "
-            "output cited — staged for your decision"
+            "Challenged (client-reported): withdrawn, not applied, staged for "
+            f"your decision — skeptic: {ids or 'none'}"
         )
     return f"Challenged (client-reported): {outcome}"
 
@@ -872,9 +876,7 @@ def _alternative_lines(alternatives) -> list[str]:
         if not isinstance(a, dict):
             lines.append(str(a))
             continue
-        status = {"ruled_out": "ruled out", "open": "open"}.get(
-            a.get("status"), str(a.get("status") or "open")
-        )
+        status = str(a.get("status") or "open").replace("_", " ")
         line = f"[{status}] {a.get('explanation', '')}"
         if a.get("evidence"):
             line += f" — {a['evidence']}"
