@@ -1216,12 +1216,13 @@ def _verify_restored_password(examiner: str) -> None:
     try:
         from vhir_cli.approval_auth import verify_password
 
+        config_path = Path.home() / ".vhir" / "config.yaml"
         print(f"\nVerification ledger restored for examiner '{examiner}'.")
         while True:
             pw = getpass.getpass(
                 "Enter the examiner password used when findings were approved: "
             )
-            if verify_password(examiner, pw):
+            if verify_password(config_path, examiner, pw):
                 print("Password correct. HMAC verification will work.")
                 return
             print(
@@ -1238,8 +1239,10 @@ def _verify_restored_password(examiner: str) -> None:
                     "to set a new password if the original is lost."
                 )
                 return
-    except (ImportError, Exception):
+    except ImportError:
         pass  # approval_auth not available — skip verification
+    except Exception as e:
+        print(f"  Password verification... FAILED: {e}", file=sys.stderr)
 
 
 def _restore_opensearch_snapshot(
