@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,13 @@ from vhir_cli.case_io import get_case_dir
 
 _MCP_NAME = "cli-exec"
 _EVIDENCE_PREFIX = "cliexec"
+_TIMEOUT_SECONDS = 300
+_READ_CHUNK = 65536
+_STDOUT_HEAD_CHARS = 10000
+_STDERR_HEAD_CHARS = 5000
+# Characters str.splitlines() treats as line boundaries. Universal-newline
+# decoding has already folded "\r\n" and "\r" into "\n" by the time we see them.
+_LINE_BOUNDARIES = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 def cmd_exec(args, identity: dict) -> None:
@@ -59,24 +67,16 @@ def cmd_exec(args, identity: dict) -> None:
     # Execute
     start = time.monotonic()
     try:
-        result = subprocess.run(
-            cmd_parts,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(case_dir),
-        )
-        exit_code = result.returncode
-        stdout = result.stdout
-        stderr = result.stderr
+        exit_code, stdout, stdout_lines, stderr = _run_capture(cmd_parts, case_dir)
     except subprocess.TimeoutExpired:
         exit_code = -1
         stdout = ""
-        stderr = "Command timed out (300s)"
+        stdout_lines = 0
+        stderr = f"Command timed out ({_TIMEOUT_SECONDS}s)"
     except OSError as e:
         exit_code = -1
         stdout = ""
+        stdout_lines = 0
         stderr = f"Failed to execute command: {e}"
         if e.errno == 2:
             stderr = f"Command not found: {cmd_parts[0]}"
@@ -84,9 +84,9 @@ def cmd_exec(args, identity: dict) -> None:
 
     # Display output
     if stdout:
-        print(f"\n--- stdout ---\n{stdout[:10000]}")
+        print(f"\n--- stdout ---\n{stdout}")
     if stderr:
-        print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
+        print(f"\n--- stderr ---\n{stderr}", file=sys.stderr)
     print(f"\nExit code: {exit_code}")
 
     # Write audit entry
@@ -95,13 +95,106 @@ def cmd_exec(args, identity: dict) -> None:
         command_str,
         purpose,
         exit_code,
-        stdout,
+        stdout_lines,
         stderr,
         examiner,
         audit_id,
         elapsed_ms,
     )
     print(f"Audit ID: {audit_id}")
+
+
+class _StreamCapture(threading.Thread):
+    """Drain a child pipe to EOF, keeping only a bounded head and a line count.
+
+    Forensic tools can emit gigabytes within the timeout window; buffering all
+    of it is pointless because only the head is displayed and only the line
+    count reaches the audit trail.
+    """
+
+    def __init__(self, stream, head_chars: int) -> None:
+        super().__init__(daemon=True)
+        self._stream = stream
+        self._head_chars = head_chars
+        self.head = ""
+        self.lines = 0
+        self.error: Exception | None = None
+
+    def run(self) -> None:
+        parts: list[str] = []
+        kept = 0
+        terminators = 0
+        open_segment = False
+        try:
+            while True:
+                chunk = self._stream.read(_READ_CHUNK)
+                if not chunk:
+                    break
+                if kept < self._head_chars:
+                    piece = chunk[: self._head_chars - kept]
+                    parts.append(piece)
+                    kept += len(piece)
+                # len(chunk.splitlines()) counts the boundaries in the chunk
+                # plus a trailing unterminated segment; carry that segment
+                # across chunks so the total matches splitlines() on the whole
+                # stream.
+                count = len(chunk.splitlines())
+                if chunk[-1] in _LINE_BOUNDARIES:
+                    terminators += count
+                    open_segment = False
+                else:
+                    terminators += count - 1
+                    open_segment = True
+        except Exception as e:  # decoding is strict, as it was with run()
+            self.error = e
+            # Keep draining so the child never blocks on a full pipe.
+            try:
+                while self._stream.buffer.read(_READ_CHUNK):
+                    pass
+            except (OSError, ValueError):
+                pass
+        finally:
+            self.head = "".join(parts)
+            self.lines = terminators + (1 if open_segment else 0)
+            try:
+                self._stream.close()
+            except OSError:
+                pass
+
+
+def _run_capture(cmd_parts: list[str], case_dir: Path) -> tuple[int, str, int, str]:
+    """Run a command, returning (exit_code, stdout head, stdout lines, stderr head).
+
+    Both pipes are drained concurrently by reader threads, so neither the child
+    nor this process is ever holding the full output.
+    """
+    proc = subprocess.Popen(
+        cmd_parts,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(case_dir),
+    )
+    out = _StreamCapture(proc.stdout, _STDOUT_HEAD_CHARS)
+    err = _StreamCapture(proc.stderr, _STDERR_HEAD_CHARS)
+    out.start()
+    err.start()
+    deadline = time.monotonic() + _TIMEOUT_SECONDS
+    try:
+        proc.wait(timeout=_TIMEOUT_SECONDS)
+        for cap in (out, err):
+            cap.join(max(0.0, deadline - time.monotonic()))
+            if cap.is_alive():
+                raise subprocess.TimeoutExpired(cmd_parts, _TIMEOUT_SECONDS)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    for cap in (out, err):
+        if cap.error is not None:
+            raise cap.error
+    return proc.returncode, out.head, out.lines, err.head
 
 
 def _next_audit_id(case_dir: Path, examiner: str) -> str:
@@ -141,7 +234,7 @@ def _log_exec(
     command: str,
     purpose: str,
     exit_code: int,
-    stdout: str,
+    stdout_lines: int,
     stderr: str,
     examiner: str,
     audit_id: str,
@@ -153,7 +246,7 @@ def _log_exec(
     log_file = audit_dir / f"{_MCP_NAME}.jsonl"
 
     # Summarize output for audit (not full stdout/stderr)
-    stdout_summary = f"{len(stdout.splitlines())} lines"
+    stdout_summary = f"{stdout_lines} lines"
     if exit_code != 0 and stderr:
         stdout_summary += f"; stderr: {stderr[:200]}"
 
