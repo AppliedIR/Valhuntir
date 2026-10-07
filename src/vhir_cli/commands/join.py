@@ -433,7 +433,11 @@ def _ensure_remote_binding() -> None:
         return
 
     # Wait for gateway to become healthy
-    from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
+    from vhir_cli.gateway import (
+        RECONNECT_HINT,
+        get_local_gateway_url,
+        get_local_ssl_context,
+    )
 
     port = gw.get("port", 4508)
     health_url = f"{get_local_gateway_url()}/health"
@@ -450,6 +454,7 @@ def _ensure_remote_binding() -> None:
                 if resp.status == 200:
                     print(" done.")
                     print(f"Gateway now listening on 0.0.0.0:{port} (all interfaces).")
+                    print(RECONNECT_HINT)
                     return
         except OSError:
             print(".", end="", flush=True)

@@ -951,6 +951,10 @@ def cmd_update(args, identity: dict) -> None:
     print(f"\n  Updated to {', '.join(parts)}")
     if client == "claude-code":
         print("  Restart your LLM client to pick up new rules.")
+    if not no_restart and restart_ok:
+        from vhir_cli.gateway import RECONNECT_HINT
+
+        print(f"  {RECONNECT_HINT}")
 
 
 def _git_head(path: Path) -> str:
