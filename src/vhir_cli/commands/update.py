@@ -786,8 +786,7 @@ def cmd_update(args, identity: dict) -> None:
 
     # Step 4: Reinstall packages (batched for unified dependency resolution).
     # Every third-party package comes from the lock in the freshly pulled
-    # sift-mcp, except what OpenCTI's client pins: it installs afterwards,
-    # unlocked, as the installer does.
+    # sift-mcp.
     torch_installed = _torch_installed(venv_python)
     variant, torch_record = _torch_variant(args, manifest, torch_installed)
     lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
@@ -802,10 +801,10 @@ def cmd_update(args, identity: dict) -> None:
     installed = manifest.get("packages", {})
     pkg_paths = []
     for pkg_name in _INSTALL_ORDER:
-        if pkg_name == "opencti-mcp":
-            continue  # unlocked, after the rest
+        # Installed but not in the manifest still counts (an earlier install).
+        unrecorded = {"opensearch-mcp": "opensearch_mcp", "opencti-mcp": "opencti_mcp"}
         if pkg_name not in installed and not (
-            pkg_name == "opensearch-mcp" and _module_installed("opensearch_mcp")
+            pkg_name in unrecorded and _module_installed(unrecorded[pkg_name])
         ):
             continue
         if pkg_name == "vhir-cli":
@@ -844,10 +843,13 @@ def cmd_update(args, identity: dict) -> None:
     # a package already installed at a version the new constraint
     # forbids). UAT 2026-04-23 B81.
     reinstall = _detect_constraint_changed_packages(repos, pre_update_git)
+    # OpenCTI's old client is no longer a dependency: a leftover is left
+    # alone, and the dependency check says how to remove it.
+    reinstall.discard("pycti")
     for pkg in sorted(reinstall):
         cmd.extend(["--reinstall-package", pkg])
-    # Packages already in the venv that the lock names (pip's seeds, what
-    # OpenCTI's client pulled in) join the install, so -c moves them too.
+    # Packages already in the venv that the lock names (pip's seeds, what an
+    # earlier OpenCTI install pulled in) join the install, so -c moves them too.
     try:
         held = subprocess.run(
             [venv_python, str(checker), "--installed", "--lock", str(lock)],
@@ -884,28 +886,6 @@ def cmd_update(args, identity: dict) -> None:
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
     _check_lock(args, venv_python, checker, lock, "--strict")
 
-    opencti = source / _PACKAGE_PATHS["opencti-mcp"]
-    if (
-        "opencti-mcp" in installed or _module_installed("opencti_mcp")
-    ) and opencti.is_dir():
-        try:
-            result = subprocess.run(
-                ["uv", "pip", "install", "--python", venv_python, "--quiet"]
-                + ["-e", str(opencti)],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-        except subprocess.TimeoutExpired:
-            print("  opencti-mcp install timed out after 300 seconds.", file=sys.stderr)
-            _stop_part_way(args)
-        if result.returncode != 0:
-            print(
-                f"  opencti-mcp install failed: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-            _stop_part_way(args)
-        print("  Reinstalling opencti-mcp (outside the dependency lock)... done")
     _check_lock(args, venv_python, checker, lock, "--final")
     if variant == "cpu" and sys.stdin.isatty():
         _offer_cuda_cleanup(venv_python, checker, lock)
