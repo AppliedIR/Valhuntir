@@ -600,6 +600,18 @@ def _set_smb_password(join_code: str) -> None:
     _push_smb_credentials(derived_password)
 
 
+def check_share_path(path: str) -> None:
+    """Refuse a path that can't be written as one smb.conf value.
+
+    A line break would start a new smb.conf line, written as root, and a
+    trailing backslash would join the next line onto this one.
+    """
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path):
+        raise ValueError(f"case path has a control character: {path!r}")
+    if path.endswith("\\"):
+        raise ValueError(f"case path ends with a backslash: {path!r}")
+
+
 def _active_case_dir() -> Path | None:
     """The active case's directory, if the pointer names one with a CASE.yaml."""
     try:
@@ -717,6 +729,7 @@ def _setup_samba_share(join_code: str) -> str:
     placeholder = Path.home() / ".vhir" / "share-inactive"
     placeholder.mkdir(parents=True, exist_ok=True)
     share_target = str(_active_case_dir() or placeholder)
+    check_share_path(share_target)
 
     # Write Samba config — force user ensures SMB file operations run as the
     # local installer user, eliminating the need to re-login for sift group

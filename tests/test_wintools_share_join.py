@@ -111,3 +111,13 @@ def test_a_join_with_no_valid_active_case_points_the_share_at_the_placeholder(
     placeholder = box.home / ".vhir" / "share-inactive"
     assert f"path = {placeholder}\n" in _share_conf(box)
     assert placeholder.is_dir()
+
+
+@pytest.mark.parametrize("name", ["INC-1\n[evil]", "INC-1\\"])
+def test_a_case_path_that_would_break_the_share_config_is_refused(box, name):
+    _case(box, name)
+    box.answers.append("10.0.0.20")
+    with pytest.raises(ValueError, match="case path"):
+        join._setup_samba_share("CODE-ONE")
+    assert not [cmd for cmd, _ in box.ran if "tee" in cmd]  # no smb.conf write
+    assert not (box.home / ".vhir" / "samba.yaml").exists()
