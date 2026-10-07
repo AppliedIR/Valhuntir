@@ -334,9 +334,18 @@ def test_a_damaged_audit_line_does_not_block_approval(
     [b"null\n", b'{"tool": "record_finding", "ts": 7}\n{"ts": "x"}\n', b"\xff\xfe\n"],
     ids=["a null line", "an int ts", "invalid utf-8"],
 )
-def test_review_withdrawn_survives_a_damaged_audit_line(case, capsys, damage):
-    (case / "audit" / "forensic-mcp.jsonl").write_bytes(damage)
-    cmd_review(build_parser().parse_args(["review", "--withdrawn"]), IDENT)
-    captured = capsys.readouterr()
-    assert "withdrawn candidates not read" in captured.err
-    assert "No candidate findings withdrawn" in captured.out
+def test_review_withdrawn_says_a_damaged_audit_line_stopped_the_read(
+    case, capsys, damage
+):
+    real = [
+        _withdrawal("forensic-tester-20261007-001", "2026-10-07T08:00:00Z", "one"),
+        _withdrawal("forensic-tester-20261007-002", "2026-10-07T09:00:00Z", "two"),
+    ]
+    lines = b"".join(json.dumps(e).encode() + b"\n" for e in real)
+    (case / "audit" / "forensic-mcp.jsonl").write_bytes(lines + damage)
+    with pytest.raises(SystemExit) as exited:
+        cmd_review(build_parser().parse_args(["review", "--withdrawn"]), IDENT)
+    out = capsys.readouterr().out
+    assert exited.value.code not in (0, None)
+    assert "Withdrawn candidates couldn't be read: " in out
+    assert "No candidate findings withdrawn" not in out

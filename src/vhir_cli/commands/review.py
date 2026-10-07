@@ -179,9 +179,9 @@ def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
     try:
         withdrawals = load_withdrawals(case_dir)
-    except Exception as e:  # a damaged audit line mustn't stop the review
-        print(f"  Warning: withdrawn candidates not read: {e}", file=sys.stderr)
-        withdrawals = []
+    except Exception as e:  # a damaged audit line: say so, never "none"
+        print(f"Withdrawn candidates couldn't be read: {e}")
+        sys.exit(1)
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
