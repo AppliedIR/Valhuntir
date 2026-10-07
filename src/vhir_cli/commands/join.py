@@ -1067,6 +1067,9 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
 
     if target == current_target:
         return  # No-op
+    # A line break would start a new smb.conf line, written as root
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in target):
+        raise ValueError(f"case path has a control character: {target!r}")
 
     placeholder.mkdir(parents=True, exist_ok=True)
 
