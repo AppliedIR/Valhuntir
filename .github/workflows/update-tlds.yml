@@ -1,0 +1,46 @@
+name: Update TLD list
+
+# Keeps the vendored IANA TLD snapshot current. The list is not fetched at
+# runtime — IOC extraction must work offline and must stay reproducible — so it
+# is refreshed here and lands through review like any other change.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays, 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Refresh the vendored list
+        run: python scripts/update_tlds.py
+
+      - name: Open a PR if it changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(iocs): refresh vendored IANA TLD list"
+          branch: chore/update-tlds
+          delete-branch: true
+          title: "chore(iocs): refresh vendored IANA TLD list"
+          body: |
+            Automated refresh of `src/vhir_cli/data/tlds.txt` from
+            https://data.iana.org/TLD/tlds-alpha-by-domain.txt
+
+            New TLDs become recognisable as domain IOCs; removed ones stop being
+            recognised. The updater refuses to write a list with fewer than 1000
+            entries or one missing COM/NET/ORG/UK/DE, so a truncated or failed
+            fetch cannot land here.
+
+            Review the diff as you would any other change to detection coverage.
+          labels: dependencies

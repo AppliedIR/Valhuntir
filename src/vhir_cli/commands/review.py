@@ -29,6 +29,7 @@ from vhir_cli.case_io import (
     load_todos,
     verify_approval_integrity,
 )
+from vhir_cli.tlds import extract_domains
 
 _EM_DASH = "\u2014"
 
@@ -503,13 +504,13 @@ def _extract_text_iocs(text: str, collected: dict[str, set[str]]) -> None:
     for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])", text):
         collected.setdefault("MD5", set()).add(h.lower())
 
-    for fp in re.findall(r"[A-Z]:\\(?:[^\s,;]+)", text):
+    file_paths = set(re.findall(r"[A-Z]:\\(?:[^\s,;]+)", text))
+    for fp in file_paths:
         collected.setdefault("File", set()).add(fp)
 
-    for d in re.findall(
-        r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|info|biz|xyz|top|cc|tk)\b", text
-    ):
-        collected.setdefault("Domain", set()).add(d.lower())
+    domains = extract_domains(text, exclude=file_paths)
+    if domains:
+        collected.setdefault("Domain", set()).update(domains)
 
 
 def _show_timeline(
