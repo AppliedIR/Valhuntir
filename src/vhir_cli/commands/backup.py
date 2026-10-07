@@ -7,10 +7,12 @@ from; without a terminal, --target names it.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -193,6 +195,15 @@ def _create_backup(args, identity: dict) -> None:
 
 
 def create_backup_data(
+    case_dir: Path, destination: str, examiner: str, **kwargs
+) -> dict:
+    """Create a case backup (see _create_backup_data), holding the case lock
+    shared: ingest and enrichment may run alongside, a host operation may not."""
+    with _shared_case_lock(case_dir):
+        return _create_backup_data(case_dir, destination, examiner, **kwargs)
+
+
+def _create_backup_data(
     case_dir: Path,
     destination: str,
     examiner: str,
@@ -358,7 +369,7 @@ def create_backup_data(
     if include_opensearch:
         try:
             opensearch_snapshot_info = _create_opensearch_snapshot(
-                case_id, backup_dir, progress_fn
+                case_id, backup_dir, progress_fn, case_dir=case_dir
             )
         except Exception as e:
             opensearch_snapshot_info = {"error": str(e)}
@@ -779,11 +790,11 @@ def _detect_opensearch(case_dir: Path) -> dict:
         # Get case index stats
         meta = load_case_meta(case_dir)
         case_id = meta.get("case_id", case_dir.name)
-        from opensearch_mcp.paths import sanitize_index_component
-
-        pattern = f"case-{sanitize_index_component(case_id)}-*"
+        pattern = _index_scope(case_dir, case_id)
         try:
-            indices = client.cat.indices(index=pattern, format="json")
+            indices = (
+                client.cat.indices(index=pattern, format="json") if pattern else []
+            )
         except Exception:
             indices = []
 
@@ -820,8 +831,77 @@ def _parse_size(size_str: str) -> int:
         return 0
 
 
+# --- The case's identity and index scope --------------------------------
+#
+# A case's indices are named from its identity (case_uuid in CASE.yaml),
+# `case-<c12>-…`; a case from before 0.7 also has `case-<case id>-…` ones.
+# sift-common (the identity, the case lock) and opensearch-mcp (the scope)
+# are used when installed, as on a SIFT workstation.
+
+
+def _host_identity():
+    """sift-common's host_identity, or None without it (or an older one)."""
+    import importlib.util
+
+    if importlib.util.find_spec("sift_common") is None:
+        return None
+    try:
+        from sift_common import host_identity
+    except ImportError:
+        return None
+    return host_identity if hasattr(host_identity, "update_case_meta") else None
+
+
+@contextlib.contextmanager
+def _shared_case_lock(case_dir: Path):
+    module = _host_identity()
+    with contextlib.ExitStack() as stack:
+        # Only a case that has the lock file: taking the lock would otherwise
+        # create the case's host files, and a backup changes nothing in it
+        if module is not None and (case_dir / module.CASE_LOCK).is_file():
+            try:
+                stack.enter_context(module.case_lock(case_dir, shared=True))
+            except module.CaseLockBusy as e:
+                raise OSError(
+                    f"Backup not started: a host operation is running on this case "
+                    f"({e}). Try again when it has finished."
+                ) from None
+        yield
+
+
+def _case_uuid(case_dir: Path) -> str:
+    raw = str(load_case_meta(case_dir).get("case_uuid") or "").strip().lower()
+    return raw if len(raw.replace("-", "")) == 32 else ""
+
+
+def _index_scope(case_dir: Path, case_id: str) -> str:
+    """The index expression of the case's indices: `case-<c12>-*`, plus its
+    pre-0.7 ones; `case-<case id>-*` with an opensearch-mcp from before case
+    identities. "" when it has none."""
+    from opensearch_mcp.paths import sanitize_index_component
+
+    try:
+        from opensearch_mcp.case_scope import CaseScope, legacy_expression
+        from opensearch_mcp.write_context import case_identity
+    except ImportError:
+        return f"case-{sanitize_index_component(case_id)}-*"
+    c12, version = case_identity(case_dir)
+    scope = CaseScope(
+        case_id=case_dir.name,
+        case_dir=case_dir,
+        c12=c12,
+        naming_version=version,
+        legacy_id=case_id,
+    )
+    parts = [f"{scope.prefix}*"] if c12 else []
+    old = legacy_expression(scope)
+    if old:
+        parts.append(old)
+    return ",".join(parts)
+
+
 def _create_opensearch_snapshot(
-    case_id: str, backup_dir: Path, progress_fn=None
+    case_id: str, backup_dir: Path, progress_fn=None, case_dir: Path | None = None
 ) -> dict:
     """Create OpenSearch snapshot for a case's indices. Local Docker only."""
     import time
@@ -832,7 +912,9 @@ def _create_opensearch_snapshot(
     client = get_client()
     safe_id = sanitize_index_component(case_id)
     repo_name = f"vhir-backup-{safe_id}"
-    pattern = f"case-{safe_id}-*"
+    pattern = _index_scope(case_dir, case_id) if case_dir else f"case-{safe_id}-*"
+    if not pattern:
+        raise RuntimeError("the case has no indices to snapshot")
     snapshot_name = "snap"
     staging = _SNAPSHOTS_DIR / repo_name
 
@@ -922,6 +1004,10 @@ def _create_opensearch_snapshot(
             "opensearch_version": os_version,
             "index_count": len(indices),
             "total_docs": total_docs,
+            # What restore needs to bring the indices back under this case,
+            # or rename them for a copy restored beside it
+            "index_scope": pattern,
+            "case_uuid": _case_uuid(case_dir) if case_dir else "",
         }
     except Exception:
         # Cleanup on failure
@@ -1192,24 +1278,33 @@ def cmd_restore(args, identity: dict) -> None:
             )
             sys.exit(1)
 
+    # Restored beside the case it was backed up from (another folder, or the
+    # original's indices are still there), the copy gets its own identity
+    # and its indices are renamed into it; restored in its place, it keeps both.
+    snap_info = manifest.get("opensearch_snapshot") or {}
+    alongside = target_dir.resolve() != Path(source_path).resolve()
     if restore_opensearch and _is_opensearch_available():
-        # Check for existing indices
         try:
             from opensearch_mcp.client import get_client
             from opensearch_mcp.paths import sanitize_index_component
 
             client = get_client()
-            safe = sanitize_index_component(case_id)
-            existing = client.cat.indices(index=f"case-{safe}-*", format="json")
-            if existing:
-                print(
-                    f"Error: OpenSearch indices for case-{safe}-* already exist.\n"
-                    "Delete them first or use --skip-opensearch.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+            scope = snap_info.get("index_scope") or (
+                f"case-{sanitize_index_component(case_id)}-*"
+            )
+            if client.cat.indices(index=scope, format="json"):
+                alongside = True
         except Exception:
             pass  # OpenSearch query failed — will handle during restore
+    if alongside and restore_opensearch and _host_identity() is None:
+        print(
+            "Error: this restore is beside the case it was backed up from, so its "
+            "indices must be renamed into a new case identity, which needs the "
+            "SIFT workstation's sift-common.\n"
+            "Restore in the case's own place, or use --skip-opensearch.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
         # Version check
         snap_info = manifest.get("opensearch_snapshot", {})
@@ -1403,18 +1498,6 @@ def cmd_restore(args, identity: dict) -> None:
     if pw_restored and current_examiner in pw_restored and sys.stdin.isatty():
         _verify_restored_password(current_examiner)
 
-    # Restore OpenSearch indices
-    os_restored = False
-    if restore_opensearch:
-        snapshot_dir = backup_path / "opensearch-snapshot"
-        if snapshot_dir.is_dir():
-            try:
-                _restore_opensearch_snapshot(case_id, snapshot_dir, progress)
-                os_restored = True
-            except Exception as e:
-                print(f"  OpenSearch restore... FAILED: {e}", file=sys.stderr)
-                print("  Re-ingest from evidence if needed.")
-
     # Verify restored files
     ok_count = 0
     mismatch_count = 0
@@ -1436,6 +1519,34 @@ def cmd_restore(args, identity: dict) -> None:
         print()
 
     integrity_ok = not (mismatch_count or missing_count)
+
+    # A copy beside the original gets its own identity before its indices
+    # are restored under it
+    # (after the copied files are verified: it changes CASE.yaml and the
+    # host log, as the evidence re-pointing below changes evidence.json)
+    rename = None
+    if alongside and integrity_ok:
+        rename = _new_identity_for_copy(target_dir, case_id, snap_info)
+
+    # Restore OpenSearch indices
+    os_restored = False
+    # A copy beside the original restores its indices only under its own
+    # identity, never under the original's names
+    if restore_opensearch and (not alongside or rename is not None):
+        snapshot_dir = backup_path / "opensearch-snapshot"
+        if snapshot_dir.is_dir():
+            try:
+                _restore_opensearch_snapshot(
+                    case_id,
+                    snapshot_dir,
+                    progress,
+                    scope=snap_info.get("index_scope", ""),
+                    rename=rename,
+                )
+                os_restored = True
+            except Exception as e:
+                print(f"  OpenSearch restore... FAILED: {e}", file=sys.stderr)
+                print("  Re-ingest from evidence if needed.")
 
     # Evidence registered in the backed-up case is re-pointed at the restored
     # copy, so verify checks these files. Before the marker goes: a failed
@@ -1554,10 +1665,76 @@ def _verify_restored_password(examiner: str) -> None:
         print(f"  Password verification... FAILED: {e}", file=sys.stderr)
 
 
+def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
+    """Give a case restored beside its original its own identity, with no
+    legacy alias (its older indices are renamed into the new identity).
+    Returns what the snapshot restore renames from and to, or None without
+    sift-common (the copy then keeps the original's identity, and says so)."""
+    import uuid
+
+    module = _host_identity()
+    old = snap_info.get("case_uuid") or _case_uuid(target_dir)
+    if module is None:
+        print(
+            "  Restored beside the original: this copy still has the original's "
+            "identity. Give it its own with `vhir case new-identity` before "
+            "using it.",
+            file=sys.stderr,
+        )
+        return None
+    if not (target_dir / "CASE.yaml").is_file():
+        return None  # not a case: nothing carries an identity
+    new = str(uuid.uuid4())
+    c12 = new.replace("-", "")[:12]
+    try:
+        module.update_case_meta(target_dir, {"case_uuid": new, "legacy_alias": "none"})
+        module.write_case_header(
+            target_dir,
+            c12,
+            f"restored beside the case it was backed up from ({old or case_id})",
+            case_uuid=new,
+        )
+    except (OSError, module.HostLogError) as e:
+        print(
+            f"  Restored beside the original, but this copy couldn't be given its "
+            f"own identity ({e}). Run `vhir case new-identity` before using it.",
+            file=sys.stderr,
+        )
+        return None
+    print(f"  Restored beside the original: this copy has its own identity, {new}.")
+    try:
+        from opensearch_mcp.paths import sanitize_index_component
+    except ImportError:  # no OpenSearch here: nothing to rename
+        return None
+    return {
+        "old_c12": old.replace("-", "")[:12] if old else "",
+        "legacy_prefix": f"case-{sanitize_index_component(case_id)}-",
+        "new_c12": c12,
+    }
+
+
+def _template_aliases(client, prefix: str) -> list[dict]:
+    """The alias actions each restored index's own index template gives it
+    (restored with include_aliases false, so a legacy or other case's alias
+    can't come with them)."""
+    actions = []
+    for index in sorted(client.indices.get(index=f"{prefix}*") or {}):
+        template = client.indices.simulate_index_template(name=index) or {}
+        aliases = (template.get("template") or {}).get("aliases") or {}
+        for alias, options in sorted(aliases.items()):
+            actions.append({"add": {"index": index, "alias": alias, **(options or {})}})
+    return actions
+
+
 def _restore_opensearch_snapshot(
-    case_id: str, snapshot_dir: Path, progress_fn=None
+    case_id: str,
+    snapshot_dir: Path,
+    progress_fn=None,
+    scope: str = "",
+    rename: dict | None = None,
 ) -> None:
-    """Restore OpenSearch indices from a snapshot directory."""
+    """Restore OpenSearch indices from a snapshot directory: under their own
+    names in the case's place, or renamed into the copy's identity (`rename`)."""
 
     from opensearch_mcp.client import get_client
     from opensearch_mcp.paths import sanitize_index_component
@@ -1605,16 +1782,56 @@ def _restore_opensearch_snapshot(
         # number_of_replicas=0 prevents RED status on single-node clusters.
         if progress_fn:
             progress_fn("Restoring OpenSearch indices", 0, 1)
-        client.snapshot.restore(
-            repository=repo_name,
-            snapshot="snap",
-            body={
-                "indices": f"case-{safe_id}-*",
-                "include_global_state": False,
-                "index_settings": {"index.number_of_replicas": 0},
-            },
-            wait_for_completion=True,
-        )
+        common = {
+            "include_global_state": False,
+            "index_settings": {"index.number_of_replicas": 0},
+        }
+        if rename is None:
+            client.snapshot.restore(
+                repository=repo_name,
+                snapshot="snap",
+                body={"indices": scope or f"case-{safe_id}-*", **common},
+                wait_for_completion=True,
+            )
+        else:
+            new = f"case-{rename['new_c12']}-"
+            renames = []
+            if rename["old_c12"]:  # 0.7 indices: the same names, the new identity
+                old = f"case-{rename['old_c12']}-"
+                renames.append((f"{old}*", f"{re.escape(old)}(.+)", f"{new}$1"))
+            # pre-0.7 indices, kept apart under v1-
+            legacy = [
+                seg
+                for seg in (scope or f"case-{safe_id}-*").split(",")
+                if not (
+                    rename["old_c12"] and seg.startswith(f"case-{rename['old_c12']}-")
+                )
+            ]
+            if legacy:
+                renames.append(
+                    (
+                        ",".join(legacy),
+                        f"{re.escape(rename['legacy_prefix'])}(.+)",
+                        f"{new}v1-$1",
+                    )
+                )
+            for indices, pattern, replacement in renames:
+                client.snapshot.restore(
+                    repository=repo_name,
+                    snapshot="snap",
+                    body={
+                        "indices": indices,
+                        "rename_pattern": pattern,
+                        "rename_replacement": replacement,
+                        "include_aliases": False,
+                        "ignore_unavailable": True,
+                        **common,
+                    },
+                    wait_for_completion=True,
+                )
+            actions = _template_aliases(client, new)
+            if actions:
+                client.indices.update_aliases(body={"actions": actions})
 
         print("  OpenSearch indices... restored")
     finally:
