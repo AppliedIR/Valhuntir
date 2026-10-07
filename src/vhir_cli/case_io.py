@@ -451,6 +451,30 @@ def verify_approval_integrity(case_dir: Path) -> list[dict]:
 # --- Audit Index ---
 
 
+def load_withdrawals(case_dir: Path) -> list[dict]:
+    """The candidate findings withdrawn after challenge, oldest first.
+
+    Each is a record_finding audit entry whose result is WITHDRAWN. An entry
+    repeated in the trail counts once, by audit id and time together, so two
+    withdrawals never collapse into one.
+    """
+    from vhir_cli.commands.audit_cmd import _load_audit_entries
+
+    seen: set[tuple] = set()
+    withdrawals = []
+    for entry in _load_audit_entries(case_dir):
+        if not isinstance(entry, dict) or entry.get("tool") != "record_finding":
+            continue
+        result = entry.get("result_summary")
+        if not isinstance(result, dict) or result.get("status") != "WITHDRAWN":
+            continue
+        key = (entry.get("audit_id"), entry.get("ts"))
+        if key not in seen:
+            seen.add(key)
+            withdrawals.append(entry)
+    return withdrawals
+
+
 def load_audit_index(case_dir: Path) -> dict[str, dict]:
     """Scan audit/*.jsonl and build {audit_id: {**entry, "_source_file": filename}}.
 
@@ -655,6 +679,9 @@ def _merge_items(
         "rejected_by",
         "rejection_reason",
         "verification",
+        # The challenge cites this case's audit trail; the incoming case's
+        # skeptic ids don't resolve here.
+        "challenged",
     }
 
     for item in incoming:

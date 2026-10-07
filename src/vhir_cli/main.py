@@ -237,6 +237,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review.add_argument("--todos", action="store_true", help="Show TODO items")
     p_review.add_argument(
+        "--withdrawn",
+        action="store_true",
+        help="Show candidate findings withdrawn after challenge, with the evidence",
+    )
+    p_review.add_argument(
         "--open", action="store_true", help="Show only open TODOs (with --todos)"
     )
     p_review.add_argument("--status", help="Filter by status (DRAFT/APPROVED/REJECTED)")

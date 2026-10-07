@@ -35,6 +35,7 @@ from vhir_cli.case_io import (
     load_findings,
     load_timeline,
     load_todos,
+    load_withdrawals,
     save_findings,
     save_timeline,
     save_todos,
@@ -51,6 +52,13 @@ def cmd_approve(args, identity: dict) -> None:
     if review and args.ids:
         print("Error: --review cannot be used with specific IDs.", file=sys.stderr)
         sys.exit(1)
+
+    withdrawn = len(load_withdrawals(case_dir))
+    if withdrawn:
+        print(
+            f"  {withdrawn} candidate finding(s) withdrawn after challenge"
+            " — `vhir review --withdrawn`"
+        )
 
     if review:
         _review_mode(case_dir, identity, config_path)
@@ -700,6 +708,7 @@ def _apply_edit(item: dict, identity: dict) -> None:
         ):
             if key in item or key == "context":
                 editable[key] = item.get(key, "")
+        editable["alternatives"] = item.get("alternatives", [])
     else:
         # Timeline event
         for key in ("timestamp", "description", "source"):
@@ -835,11 +844,54 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
     save_todos(case_dir, todos)
 
 
+def _challenge_line(challenged) -> str:
+    """The finding's challenge state, in one line."""
+    if not isinstance(challenged, dict):
+        return "Not challenged"
+    ids = challenged.get("skeptic_audit_ids") or []
+    ids = ", ".join(str(i) for i in ids) if isinstance(ids, list) else str(ids)
+    outcome = challenged.get("outcome")
+    if outcome == "stands":
+        return f"Challenged (client-reported): stands — skeptic: {ids}"
+    if outcome == "revised":
+        return f"Challenged (client-reported): revised after challenge — skeptic: {ids}"
+    if outcome == "withdrawn":
+        return (
+            "Challenged (client-reported): withdrawal refused, no contradicting "
+            "output cited — staged for your decision"
+        )
+    return f"Challenged (client-reported): {outcome}"
+
+
+def _alternative_lines(alternatives) -> list[str]:
+    """One line per alternative; any other shape (an examiner's edit) as text."""
+    if not isinstance(alternatives, list):
+        return [str(alternatives)] if alternatives else []
+    lines = []
+    for a in alternatives:
+        if not isinstance(a, dict):
+            lines.append(str(a))
+            continue
+        status = {"ruled_out": "ruled out", "open": "open"}.get(
+            a.get("status"), str(a.get("status") or "open")
+        )
+        line = f"[{status}] {a.get('explanation', '')}"
+        if a.get("evidence"):
+            line += f" — {a['evidence']}"
+        if isinstance(a.get("audit_ids"), list) and a["audit_ids"]:
+            line += f" (audit: {', '.join(str(i) for i in a['audit_ids'])})"
+        lines.append(line)
+    return lines
+
+
 def _display_item(item: dict) -> None:
     """Display a finding or timeline event."""
     created_by = item.get("created_by", "")
     examiner = item.get("examiner", "")
     print(f"\n{'─' * 60}")
+    if "title" in item:
+        # Before any free text, which can carry terminal control sequences
+        print(f"  {_challenge_line(item.get('challenged'))}")
     print(f"  [{item['id']}]  {item.get('title', item.get('description', 'Untitled'))}")
     if examiner:
         print(f"  Examiner: {examiner}", end="")
@@ -856,6 +908,8 @@ def _display_item(item: dict) -> None:
         # It's a finding
         print(f"  Observation: {item.get('observation', '')}")
         print(f"  Interpretation: {item.get('interpretation', '')}")
+        for line in _alternative_lines(item.get("alternatives")):
+            print(f"  Alternative: {line}")
         if item.get("iocs"):
             print(f"  IOCs: {item['iocs']}")
     else:
@@ -879,6 +933,7 @@ _DELTA_EDITABLE_FIELDS = {
     "mitre_ids",
     "iocs",
     "context",
+    "alternatives",
     # Timeline event fields
     "timestamp",
     "description",
@@ -922,6 +977,7 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
 
     # Finding fields
     if "title" in item:
+        print(f"  {_challenge_line(item.get('challenged'))}")
         print(f"  Title:          {item.get('title', '')}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
@@ -932,6 +988,15 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
             _render_field("MITRE", item, modifications, "mitre_ids")
         if item.get("iocs"):
             _render_field("IOCs", item, modifications, "iocs")
+        if "alternatives" in modifications:
+            mod = modifications["alternatives"]
+            for line in _alternative_lines(mod.get("original")):
+                print(f"  Alternative:    {_RED}- {line}{_RESET}")
+            for line in _alternative_lines(mod.get("modified")):
+                print(f"  Alternative:    {_GREEN}+ {line}{_RESET}")
+        else:
+            for line in _alternative_lines(item.get("alternatives")):
+                print(f"  Alternative:    {line}")
     else:
         # Timeline event
         print(f"  Timestamp:      {item.get('timestamp', '?')}")

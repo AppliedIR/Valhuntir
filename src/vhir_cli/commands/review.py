@@ -28,6 +28,7 @@ from vhir_cli.case_io import (
     load_iocs,
     load_timeline,
     load_todos,
+    load_withdrawals,
     verify_approval_integrity,
 )
 
@@ -43,6 +44,8 @@ def cmd_review(args, identity: dict) -> None:
         _show_findings_verify(case_dir, identity=identity, mine_only=mine_only)
     elif getattr(args, "todos", False):
         _show_todos(case_dir, open_only=getattr(args, "open", False))
+    elif getattr(args, "withdrawn", False):
+        _show_withdrawn(case_dir)
     elif getattr(args, "iocs", False):
         _show_iocs(case_dir)
     elif getattr(args, "timeline", False):
@@ -148,6 +151,54 @@ def _show_findings_table(case_dir: Path) -> None:
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
 
 
+def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
+    """One line per audit id: where it came from, and the tool or command."""
+    for eid in audit_ids:
+        entry = audit_index.get(eid)
+        if entry:
+            source_file = entry.get("_source_file", "")
+            ts = entry.get("ts", "")[:19]
+            if source_file == "claude-code.jsonl":
+                cmd = entry.get("command", "?")
+                print(f'    [HOOK]  {eid} {_EM_DASH} "{cmd}" @ {ts}')
+            elif eid.startswith("shell-"):
+                cmd = entry.get("params", {}).get("command", "?")
+                print(f'    [SHELL] {eid} {_EM_DASH} "{cmd}"')
+            else:
+                tool = entry.get("tool", "?")
+                params = entry.get("params", {})
+                params_summary = ", ".join(
+                    f"{k}={v}" for k, v in list(params.items())[:3]
+                )
+                print(f"    [MCP]   {eid} {_EM_DASH} {tool}({params_summary}) @ {ts}")
+        else:
+            print(f"    [NONE]  {eid} {_EM_DASH} no audit record")
+
+
+def _show_withdrawn(case_dir: Path) -> None:
+    """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
+    withdrawals = load_withdrawals(case_dir)
+    if not withdrawals:
+        print("No candidate findings withdrawn after challenge.")
+        return
+    audit_index = load_audit_index(case_dir)
+    print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
+    for entry in withdrawals:
+        result = entry["result_summary"]
+        print(f"\n{'=' * 60}")
+        print(
+            f"  {entry.get('ts', '')[:19]}  {entry.get('examiner', '')}"
+            f"  {entry.get('audit_id', '')}"
+        )
+        print(f"  Title:         {result.get('title', '')}")
+        print(f"  Observation:   {result.get('observation', '')}")
+        print(f"  Contradiction: {result.get('contradiction', '')}")
+        skeptic_ids = result.get("skeptic_audit_ids") or []
+        if isinstance(skeptic_ids, list) and skeptic_ids:
+            print("\n  Skeptic's tool calls:")
+            _print_evidence_chain(skeptic_ids, audit_index)
+
+
 def _show_findings_detail(case_dir: Path) -> None:
     """Show full findings with all fields."""
     findings = load_findings(case_dir)
@@ -184,28 +235,7 @@ def _show_findings_detail(case_dir: Path) -> None:
         audit_ids = f.get("audit_ids", [])
         if audit_ids:
             print("\n  Evidence Chain:")
-            for eid in audit_ids:
-                entry = audit_index.get(eid)
-                if entry:
-                    source_file = entry.get("_source_file", "")
-                    ts = entry.get("ts", "")[:19]
-                    if source_file == "claude-code.jsonl":
-                        cmd = entry.get("command", "?")
-                        print(f'    [HOOK]  {eid} {_EM_DASH} "{cmd}" @ {ts}')
-                    elif eid.startswith("shell-"):
-                        cmd = entry.get("params", {}).get("command", "?")
-                        print(f'    [SHELL] {eid} {_EM_DASH} "{cmd}"')
-                    else:
-                        tool = entry.get("tool", "?")
-                        params = entry.get("params", {})
-                        params_summary = ", ".join(
-                            f"{k}={v}" for k, v in list(params.items())[:3]
-                        )
-                        print(
-                            f"    [MCP]   {eid} {_EM_DASH} {tool}({params_summary}) @ {ts}"
-                        )
-                else:
-                    print(f"    [NONE]  {eid} {_EM_DASH} no audit record")
+            _print_evidence_chain(audit_ids, audit_index)
 
         # Artifacts (raw evidence)
         artifacts = f.get("artifacts", [])
