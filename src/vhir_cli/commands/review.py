@@ -29,6 +29,7 @@ from vhir_cli.case_io import (
     load_todos,
     verify_approval_integrity,
 )
+from vhir_cli.defang import refang
 
 _EM_DASH = "\u2014"
 
@@ -489,6 +490,9 @@ def _extract_iocs_from_findings(findings: list[dict]) -> dict[str, set[str]]:
 
 def _extract_text_iocs(text: str, collected: dict[str, set[str]]) -> None:
     """Extract common IOC patterns from free text."""
+    # Analysts habitually defang indicators in notes; every pattern below
+    # matches the live form only, so normalise before matching.
+    text = refang(text)
     ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
     for ip in re.findall(ipv4_pattern, text):
         if not ip.startswith(("0.", "127.", "255.")):

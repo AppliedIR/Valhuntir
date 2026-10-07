@@ -25,6 +25,7 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
 )
+from vhir_cli.defang import refang
 
 
 def cmd_report(args, identity: dict) -> None:
@@ -137,6 +138,9 @@ def _extract_all_iocs(findings: list[dict]) -> dict[str, list[str]]:
 
         # Text extraction from observation/interpretation
         text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
+        # Analysts habitually defang indicators in notes; every pattern below
+        # matches the live form only, so normalise before matching.
+        text = refang(text)
         ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
         for ip in re.findall(ipv4_pattern, text):
             if not ip.startswith(("0.", "127.", "255.")):
