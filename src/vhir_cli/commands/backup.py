@@ -1746,12 +1746,23 @@ def _own_indices(
     `case-<id>-2-…`). The restore's own folder (`target`) is never one of
     those others, whatever it's called."""
     legacy = f"case-{_index_component(case_id)}-"
+
+    def resolved(path: Path) -> Path | None:
+        try:
+            return path.resolve()
+        except (OSError, RuntimeError):  # a symlink loop (RuntimeError before 3.13)
+            return None
+
+    def other_case(d: Path) -> bool:
+        try:
+            where = resolved(d)
+            return where is not None and where != here and (d / "CASE.yaml").is_file()
+        except OSError:
+            return False
+
+    here = resolved(target) or target.absolute()
     try:
-        local = [
-            d
-            for d in target.parent.iterdir()
-            if d.resolve() != target.resolve() and (d / "CASE.yaml").is_file()
-        ]
+        local = [d for d in target.parent.iterdir() if other_case(d)]
     except OSError:
         local = []
     ids = {d.name for d in local} | {

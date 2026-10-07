@@ -259,6 +259,16 @@ def test_a_copy_whose_folder_name_extends_the_case_id_keeps_its_indices(box, cap
     assert "none of case" not in capsys.readouterr().out
 
 
+def test_a_looping_symlink_beside_the_target_is_skipped(box):
+    box.os.existing = {"case-c-1-evtx-wks01"}
+    path = _backup(box)
+    loop = box.tmp / "cases" / "loop"
+    loop.symlink_to(loop)  # resolve() raises on it
+    _restore(path, box.tmp / "cases" / "C-1-copy")
+    restored = {i for body in box.os.restored for i in body["indices"].split(",")}
+    assert restored == {"case-c-1-evtx-wks01"}
+
+
 def test_a_restore_in_the_case_s_own_place_keeps_its_identity(box):
     import shutil
 
