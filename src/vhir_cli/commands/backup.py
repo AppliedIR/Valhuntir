@@ -377,9 +377,9 @@ def _create_backup_data(
     all_backup_files = []
     for root, _dirs, filenames in os.walk(backup_dir, followlinks=True):
         for fname in filenames:
-            if fname == ".backup-in-progress":
-                continue
             fpath = Path(root) / fname
+            if fpath == marker:  # this backup's own; another is case data
+                continue
             rel = fpath.relative_to(backup_dir)
             all_backup_files.append((str(rel), fpath))
 
@@ -642,7 +642,9 @@ def _json_file(path: Path):
         if not path.is_file():
             return None
         return json.loads(path.read_text())
-    except (OSError, ValueError):  # a folder it can't search: the walk reports it
+    # A folder it can't search (the walk reports it), or a file that isn't
+    # vhir's: not JSON, or nested too deep to parse
+    except (OSError, ValueError, RecursionError):
         return None
 
 

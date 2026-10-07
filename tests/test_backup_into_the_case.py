@@ -111,3 +111,24 @@ def test_evidence_beside_another_tools_manifest_is_backed_up(case, tmp_path, man
     backup = Path(result["backup_path"])
     assert (backup / "work" / "collected" / "notes.txt").is_file()
     assert result["skipped"] == []
+
+
+def test_a_manifest_nested_too_deep_is_not_vhir_s(case, tmp_path):
+    folder = case / "work" / "deep"
+    folder.mkdir(parents=True)
+    (folder / "backup-manifest.json").write_text("[" * 100_000 + "]" * 100_000)
+    (folder / "notes.txt").write_text("examiner notes")
+    result = create_backup_data(case, str(tmp_path / "out"), "tester")
+    assert (Path(result["backup_path"]) / "work" / "deep" / "notes.txt").is_file()
+
+
+def test_another_tool_s_in_progress_file_is_backed_up_and_listed(case, tmp_path):
+    folder = case / "work" / "collected"
+    folder.mkdir(parents=True)
+    (folder / ".backup-in-progress").write_text("another tool's")
+    result = create_backup_data(case, str(tmp_path / "out"), "tester")
+    backup = Path(result["backup_path"])
+    manifest = json.loads((backup / "backup-manifest.json").read_text())
+    listed = {f["path"] for f in manifest["files"]}
+    assert "work/collected/.backup-in-progress" in listed, sorted(listed)
+    assert not (backup / ".backup-in-progress").exists()  # its own is gone
