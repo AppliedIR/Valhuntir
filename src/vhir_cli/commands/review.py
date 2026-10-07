@@ -29,6 +29,7 @@ from vhir_cli.case_io import (
     load_todos,
     verify_approval_integrity,
 )
+from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
 
 _EM_DASH = "\u2014"
 
@@ -450,9 +451,13 @@ def _show_iocs(case_dir: Path) -> None:
         if not iocs:
             continue
         any_iocs = True
+        scoped = scope_iocs(iocs)
         print(f"\n=== {labels[status]} ===")
-        for ioc_type, values in sorted(iocs.items()):
-            print(f"  {ioc_type + ':':<10} {', '.join(sorted(values))}")
+        for ioc_type, values in sorted(scoped.routable.items()):
+            print(f"  {ioc_type + ':':<10} {', '.join(values)}")
+        for ioc_type, entries in sorted(scoped.non_routable.items()):
+            listed = ", ".join(f"{v} ({SCOPE_NOTES[s]})" for v, s in entries)
+            print(f"  {ioc_type + ' (non-routable):':<10} {listed}")
 
     if not any_iocs:
         print("No IOCs found in findings.")
