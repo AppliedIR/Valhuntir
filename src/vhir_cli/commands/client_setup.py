@@ -2167,7 +2167,12 @@ _LIBRECHAT_POST_INSTALL = """\
    field. Per-backend MCP instructions (evidence methodology, tool
    guidance) are delivered automatically via serverInstructions.
 
-3. See full setup guide: docs/librechat-setup.md
+3. KEEP USERS FROM ADDING MCP SERVERS: the file seeds
+   interface.mcpServers.create: false, which LibreChat applies to the USER
+   role only at first start. After that, check it in LibreChat's Admin Panel
+   (role permissions, MCP servers: create off).
+
+4. See full setup guide: docs/librechat-setup.md
 
 """
 
@@ -2177,16 +2182,21 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     from urllib.parse import urlparse
 
     lines = ["# Valhuntir MCP servers — merge into your librechat.yaml", "mcpServers:"]
-    gateway_host = None
+    addresses: list[str] = []  # host:port of each Valhuntir server (not internet)
     for name, info in servers.items():
-        # Skip non-streamable-http entries (Claude Desktop npx bridge)
-        if "url" not in info:
+        if "url" not in info:  # stdio entries aren't for LibreChat
             continue
-        if gateway_host is None:
-            gateway_host = urlparse(info["url"]).hostname or "localhost"
+        if name not in _INTERNET_MCPS:
+            u = urlparse(info["url"])
+            port = u.port or (443 if u.scheme == "https" else 80)
+            host = u.hostname or "localhost"
+            address = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+            if address not in addresses:
+                addresses.append(address)
         lines.append(f"  {name}:")
         lines.append(f'    type: "{info["type"]}"')
         lines.append(f'    url: "{info["url"]}"')
+        lines.append("    requiresOAuth: false")
         headers = info.get("headers")
         if headers:
             lines.append("    headers:")
@@ -2198,13 +2208,22 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
         lines.append(f"    initTimeout: {init_timeout}")
         lines.append("    serverInstructions: true")
 
-    # allowedDomains — LibreChat blocks private IPs by default
-    if gateway_host:
+    # LibreChat blocks private addresses by default. allowedAddresses opens
+    # just these; allowedDomains would be a whitelist that blocks the
+    # internet MCPs listed above.
+    if addresses:
         lines.append("")
-        lines.append("# Required: LibreChat blocks private IPs by default")
+        lines.append("# Required: LibreChat blocks private addresses by default")
         lines.append("mcpSettings:")
-        lines.append("  allowedDomains:")
-        lines.append(f'    - "{gateway_host}"')
+        lines.append("  allowedAddresses:")
+        lines.extend(f'    - "{a}"' for a in addresses)
+
+    # Users can't add their own MCP servers. This seeds the USER role at
+    # LibreChat's first start; after that its Admin Panel holds the setting.
+    lines.append("")
+    lines.append("interface:")
+    lines.append("  mcpServers:")
+    lines.append("    create: false")
 
     # Model settings with promptPrefix
     indent = "          "

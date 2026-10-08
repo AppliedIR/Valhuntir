@@ -408,6 +408,30 @@ class TestCmdSetupClient:
         content = (tmp_path / "librechat_mcp.yaml").read_text()
         assert "serverInstructions: true" in content
 
+    def test_librechat_allows_only_valhuntir_s_private_addresses_and_no_user_servers(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """allowedAddresses opens the gateway and wintools (host:port) and
+        leaves the internet MCPs reachable; allowedDomains, a whitelist,
+        blocked them. Users can't add their own MCP servers."""
+        import yaml
+
+        monkeypatch.chdir(tmp_path)
+        self._isolate_home(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "vhir_cli.commands.client_setup._prompt_windows_token", lambda: "wt"
+        )
+        args = self._make_args(client="librechat", windows="192.168.1.20:4624")
+        cmd_setup_client(args, {"examiner": "testuser"})
+        doc = yaml.safe_load((tmp_path / "librechat_mcp.yaml").read_text())
+        assert doc["mcpSettings"] == {
+            "allowedAddresses": ["127.0.0.1:9", "192.168.1.20:4624"]
+        }
+        assert doc["interface"] == {"mcpServers": {"create": False}}
+        assert all(e["requiresOAuth"] is False for e in doc["mcpServers"].values())
+        assert "zeltser-ir-writing" in doc["mcpServers"]
+        assert "Admin Panel" in capsys.readouterr().out
+
     def test_librechat_no_json_merge(self, tmp_path, monkeypatch):
         """LibreChat writes YAML, not JSON — no .mcp.json created."""
         monkeypatch.chdir(tmp_path)
