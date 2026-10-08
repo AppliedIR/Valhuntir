@@ -169,7 +169,7 @@ sequenceDiagram
     Human->>Case: vhir report --full
 ```
 
-The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Sign button lists every decision, then signs them with the examiner's passphrase. The CLI's `vhir approve` provides the same capability from the terminal.
+The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Commit button lists every decision, then signs them with the examiner's passphrase. The CLI's `vhir approve` provides the same capability from the terminal.
 
 Examiners review findings in the Examiner Portal — validating artifacts, observations, and interpretations, with the full command audit trail from original evidence to final result.
 
@@ -376,7 +376,7 @@ vhir approve --review                                    # Sign reviews staged i
 vhir approve --reattest F-alice-005                      # Fresh signed approval of an item approved under 0.6
 ```
 
-Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Sign button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
+Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Commit button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
 
 #### reject
 
@@ -436,7 +436,7 @@ The remaining commands can also be performed through MCP tools (case-mcp, forens
 vhir portal                                              # Open the Examiner Portal in your browser
 ```
 
-Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Sign button (Shift+C) lists every decision, then signs them with the examiner's passphrase. Alternatively, `vhir approve --review` signs the staged reviews from the CLI.
+Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Commit button (Shift+C) lists every decision, then signs them with the examiner's passphrase. Alternatively, `vhir approve --review` signs the staged reviews from the CLI.
 
 #### backup
 

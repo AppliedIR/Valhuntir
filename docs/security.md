@@ -108,7 +108,7 @@ Every place that says whether an approval holds takes it from the same verificat
 - Reports (report-mcp and `vhir report`) list as approved only the items that verify, and those approved under 0.6 (labelled). Every other APPROVED item is listed as not verified, with its status.
 - Every report profile, every saved report and every export carries the case's signing keys with their full fingerprints and each chain's head. A copy that leaves this machine is an anchor you can compare with later.
 - `save_report` appends a verification block made by the server.
-- The Examiner Portal's badges come from the same verification. A valid item reads "Valid (not anchored): compare the fingerprint with a copy kept off this machine."
+- The Examiner Portal's badges come from the same verification. A valid item's badge reads `valid (not anchored)`; a finding's Integrity panel adds "Valid (not anchored): compare the fingerprint with a copy kept off this machine." with the key of its signing line.
 - An IOC's sources, sightings, confidence and MITRE techniques are derived from the findings that cite it and aren't signed; reports and the portal label them so.
 
 ### L7-L8 — Integrity Controls
@@ -203,8 +203,8 @@ Valhuntir assumes the AI client keeps administrative rights (sudo) on this machi
 4. **Key changes.**
    - `--forgot-password` creates a new key and keeps the old public key as a retired record. The new key's first line in each case ledger carries a signed `supersedes` record.
    - Lines signed with a superseded key after that record fail `RETIRED_KEY_USE`. That holds for the ledger presented: a copy cut back to before the record shows no retirement. The seq-bounded pin `--forgot-password` prints, and a head recorded after the new key's first line, cover that case.
-   - A key you didn't pin is listed under "Not anchored", with its fingerprint and its first and last seq. Compare it with an earlier report, export or backup.
-   - When one examiner has more than one key in the chains presented, and a key isn't endorsed by a signed change from another of that examiner's keys, verify warns "Key changed at seq N without the previous key's signature" and exits 2, unless every one of that examiner's keys is pinned with `--expect-key`.
+   - A key you didn't pin is listed under "Not anchored": an examiner with no pin at all as "no key list for examiner X", and an unpinned key of an examiner you did pin with its fingerprint and seqs. "Signing keys:" lists every key with its fingerprint and its first and last seq. Compare them with an earlier report, export or backup.
+   - When one examiner has more than one key in the chains presented, verify warns "Key changed at seq N without the previous key's signature" and exits 2, unless every one of that examiner's keys is pinned with `--expect-key`. Every new key warns this way, including one made by `--forgot-password`.
    - Valhuntir commands never replace a key without a retired record. The file itself stays writable (limit 2).
    - A password change re-wraps the same key; it doesn't revoke it. If the password or key may have been exposed, use `--forgot-password`.
    - Rotating a key doesn't invalidate lines already signed with it. Lines signed with an exposed key before its `supersedes` record still verify. Bounded pins (`:FROM-TO`) limit which seqs you accept for that key.
@@ -218,12 +218,13 @@ Valhuntir assumes the AI client keeps administrative rights (sudo) on this machi
    - The signature covers the whole recorded item, including fields the display may not show (for example `artifacts`).
    - A cascaded line is signed by the same key, with the same `at`, as its source decision, at a higher seq, and its link is checked (`CASCADE_UNSUPPORTED` otherwise). That it was listed before signing is a property of unmodified code (limit 3).
 7. **Anchors.** An anchor is a fingerprint (or head) held somewhere this machine can't change: a report, export or backup that has left it, or a note you made. Every report and export prints the signing keys and fingerprints, so each copy that leaves the machine anchors the keys as of the time it left. A copy still on this machine isn't an anchor. A copy made after a key change carries the changed fingerprint, so compare with the earliest copy you have. Pass fingerprints with `--expect-key`, and heads with `--expect-head`, to have verify print `anchored`. A verdict is independent of this machine only when it's run off it (limit 8).
+   - A saved report ends with a verification block that the server appends. How a viewer renders the report depends on the content above the block (an unclosed HTML comment, for example, can hide it); the raw file and `vhir review --findings --verify` are authoritative.
 8. **Verification code.**
    - Verification runs Valhuntir's own code.
    - A check that doesn't depend on this machine copies the case directory after close (which writes the chain copies) to a clean Valhuntir install on another machine, and runs `vhir review --findings --verify` there, with your own `--expect-key` and `--expect-head`.
-   - `--ledger PATH` adds a chain copy that was taken separately.
+   - `--ledger PATH` (repeatable) reads only the given chain copies, instead of this machine's chain and the case's copies.
    - No separate verifier ships in this release.
-9. **Approvals made under 0.6** show as "approved under 0.6 (before signing)". They carry no signature that 0.7 can check. They record that an approval was made, not who made it. Once a case has its first signed line, its 0.6 records are fixed by length and hash, and a 0.6-format record added later fails (`LEGACY_AFTER_GENESIS`). In a case with no signed line yet, a file write can add or remove such a record. `vhir approve --reattest` (optional) adds a signed approval of the current content, dated now; the original record is unchanged.
+9. **Approvals made under 0.6** show as "approved under 0.6 (before signing)". They carry no signature that 0.7 can check. They record that an approval was made, not who made it. Once a case has its first signed line, its 0.6 records are fixed by length and hash, and a 0.6-format record added later doesn't count: an APPROVED item whose only support it is fails as `APPROVED_NO_LINE`. In a case with no signed line yet, a file write can add or remove such a record. `vhir approve --reattest` (optional) adds a signed approval of the current content, dated now; the original record is unchanged.
 10. **Clocks.** `at`, `created_at` and retired dates come from the signer's local clock and aren't verified. Order comes from `seq` within a chain, and across chains from the signed `prior_chains` references.
 11. **Status counters and labels.**
     - Status counters and status-only displays (`vhir case status`, `get_case_status`, `/api/summary`, forensic-mcp `get_findings`/`get_timeline`, `vhir review --iocs` grouping, the portal's "By <approved_by>") are based on status and aren't verification. report-mcp's approved-findings count comes from verification.

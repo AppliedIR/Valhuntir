@@ -117,6 +117,23 @@ def test_the_package_s_docstrings_make_no_old_claim():
     )
 
 
+def test_a_failed_verify_ends_with_the_failure_footer(tmp_path):
+    from vhir_cli import ledger_verify
+
+    (tmp_path / "CASE.yaml").write_text("case_id: C-L\n")
+    (tmp_path / "findings.json").write_text(
+        '[{"id": "F-x-001", "status": "APPROVED", "title": "t"}]'
+    )
+    (tmp_path / "timeline.json").write_text("[]")
+    result = ledger_verify.verify_case(tmp_path)
+    assert result.exit_code == 2
+    lines = ledger_verify.render(result).splitlines()
+    assert lines[-2] == ledger_verify.FAILED_FOOTER and lines[-1] == "Exit 2"
+    assert (
+        ledger_verify.LIMITS not in lines
+    )  # "the files agree" isn't said of a failure
+
+
 def test_verify_ends_with_the_limits(tmp_path, monkeypatch):
     from vhir_cli import ledger_verify
 
@@ -142,3 +159,19 @@ def test_every_client_script_denies_approve_and_reject_as_vhir_does(script):
     shipped = set(re.findall(r'"(Bash\([^"]*vhir (?:approve|reject)[^"]*\))"', text))
     ours = {r for r in _FORENSIC_DENY_RULES if "approve" in r or "reject" in r}
     assert shipped == ours == RULES
+
+
+def test_every_code_the_model_names_is_one_vhir_prints():
+    """A status or error code named in the public model is one the code has."""
+    src = "\n".join(p.read_text() for p in (ROOT / "src" / "vhir_cli").rglob("*.py"))
+    codes = set(re.findall(r"`([A-Z][A-Z0-9]*_[A-Z0-9_]+)`", SECURITY))
+    assert codes and sorted(c for c in codes if c not in src) == []
+
+
+def test_ledger_is_described_as_the_cli_does():
+    from vhir_cli.main import build_parser
+
+    review = build_parser()._subparsers._group_actions[0].choices["review"]
+    (action,) = [a for a in review._actions if "--ledger" in a.option_strings]
+    assert "instead of" in action.help
+    assert "reads only the given chain copies, instead of" in " ".join(SECURITY.split())

@@ -449,7 +449,7 @@ Examiners can edit finding fields inline (confidence, justification, observation
 
 Keyboard shortcuts: `1`-`8` switch tabs, `j`/`k` navigate items, `a` approve, `r` reject, `e` edit, `Shift+C` commit.
 
-The Sign button (`Shift+C`) opens a dialog that lists every decision to be signed, including items decided with them and entries another examiner staged (included only if you tick them). Your passphrase then signs exactly those, in the browser; it never leaves the browser. A LAN examiner enrols once at the SIFT terminal with `vhir enrol --name NAME`.
+The Commit button (`Shift+C`) opens a dialog that lists every decision to be signed, including items decided with them and entries another examiner staged (included only if you tick them). Your passphrase then signs exactly those, in the browser; it never leaves the browser. A LAN examiner enrols once at the SIFT terminal with `vhir enrol --name NAME`.
 
 ### CLI Approval
 

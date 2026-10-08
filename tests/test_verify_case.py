@@ -363,6 +363,24 @@ def test_a_key_change_fails_unless_the_new_key_is_pinned(case, steve):
     assert pinned.exit_code == 0
 
 
+def test_an_unpinned_extra_key_of_a_pinned_examiner_is_listed_as_not_anchored(
+    case, steve
+):
+    f1, f2 = _finding(1), _finding(2)
+    _save(case, findings=[f1, f2])
+    _approve(case, steve, f1)
+    new = Examiner("steve")
+    _approve(case, new, f2)
+    result = verify_case(case, expect_keys=[steve.pin()])
+    assert not result.anchored
+    assert any(
+        m.startswith(f"key {new.fp} of examiner steve isn't pinned for chain ")
+        and m.endswith("seq 2–2")
+        for m in result.missing
+    ), result.missing
+    assert f"key {new.fp} of examiner steve isn't pinned" in render(result)
+
+
 def test_a_retired_key_signing_after_its_supersedes_record_fails(case, steve):
     f1, f2, f3 = _finding(1), _finding(2), _finding(3)
     _save(case, findings=[f1, f2, f3])
@@ -482,7 +500,16 @@ def test_a_timeline_cascade_is_valid_only_through_the_signed_link(case, steve):
         timeline=[dict(t, status="APPROVED", approved_by="steve", approved_at=AT)],
     )
     v = verify_case(case).verdict("T-steve-001")
-    assert v.status == "VALID" and v.label == "cascade from F-steve-001"
+    assert v.status == "VALID"
+    assert v.label == "cascade from F-steve-001; F-steve-001 is now APPROVED"
+    # the source's status as it stands now is printed beside the cascade
+    _save(
+        case,
+        findings=[dict(f, status="REJECTED", approved_by="steve", approved_at=AT)],
+        timeline=[dict(t, status="APPROVED", approved_by="steve", approved_at=AT)],
+    )
+    v = verify_case(case).verdict("T-steve-001")
+    assert v.label == "cascade from F-steve-001; F-steve-001 is now REJECTED"
 
 
 def test_a_cascade_without_its_link_is_unsupported(case, steve):

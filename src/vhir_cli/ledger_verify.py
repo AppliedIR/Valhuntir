@@ -43,6 +43,11 @@ KEY_CHANGED = (
     "Key changed at seq {seq} without the previous key's signature (expected only "
     "after a forgotten-password reset): compare the fingerprint with an earlier copy."
 )
+LIMITS_URL = "https://appliedir.github.io/Valhuntir/security/#stated-limits"
+FAILED_FOOTER = (
+    "This result is a failure: each failure above says what it is and how to recover. "
+    f"All stated limits: {LIMITS_URL}"
+)
 LIMITS = (
     "What this shows: the case files and the ledger agree, and each line was signed "
     "by the key it carries. The keys are your examiners' own only if their "
@@ -918,6 +923,11 @@ def verify_case(
             )  # fmt: skip
             line, _ = latest_line(item_id)
             v.view = line.obj.get("view", 1) if line else 1
+            source = line.obj.get("coupled_from") if line else None
+            if v.status == "VALID" and source:  # the source as it stands now
+                held = items.get(str(source))
+                now = held[1].get("status", "DRAFT") if held else "not in the case"
+                v.label = f"{v.label}; {source} is now {now}"
         elif item_id in legacy_by_item and status == "APPROVED":
             v = _legacy_verdict(item_id, kind, item, legacy_by_item[item_id])
             v.view = 0
@@ -1330,12 +1340,20 @@ def _anchor(result: Result, chains, heads, pins, every_line, pinned) -> None:
                     f"  seq {ln.seq}: {o.get('item_id')} {o.get('decision')} by {o.get('examiner')} {ln.fp}"
                 )
     names = {p.examiner for p in pins}
+    unpinned: dict[tuple, list[int]] = {}
     for ln in every_line:
         ex = ln.obj.get("examiner")
         if ex not in names:
             msg = f"no key list for examiner {ex}"
             if msg not in result.missing:
                 result.missing.append(msg)
+        elif not pinned(ln):  # a pinned examiner's key, or seqs, you didn't pin
+            unpinned.setdefault((ex, ln.fp, ln.chain), []).append(ln.seq)
+    for (ex, fp, cid), seqs in unpinned.items():
+        result.missing.append(
+            f"key {fp} of examiner {ex} isn't pinned for chain {cid} seq "
+            f"{min(seqs)}–{max(seqs)}"
+        )
     result.anchored = (
         not result.missing and all(pinned(ln) for ln in every_line) and bool(chains)
     )
@@ -1401,7 +1419,7 @@ def render(result: Result) -> str:
         out.append(NOT_ANCHORED)
         out += [f"  {s(m)}" for m in result.missing]
     out += [s(x) for x in result.after_head]
-    out.append(LIMITS)
+    out.append(LIMITS if result.exit_code == 0 else FAILED_FOOTER)
     out.append(f"Exit {result.exit_code}")
     return "\n".join(out)
 
