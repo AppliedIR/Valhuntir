@@ -280,6 +280,8 @@ def test_another_account_s_folder_is_never_taken(folders, capsys, monkeypatch):
     keys_dir, ledger_dir = folders.dirs
     keys_dir.mkdir(parents=True)
     ledger_dir.mkdir()
+    for var in ("USER", "LOGNAME"):  # getuser() would otherwise look the uid up
+        monkeypatch.setenv(var, "examiner")
     real = os.getuid()
     monkeypatch.setattr(
         os, "getuid", lambda: real + 1
@@ -297,6 +299,8 @@ def test_another_account_s_folder_is_never_taken(folders, capsys, monkeypatch):
 def test_signing_names_another_account_s_folder_with_the_installer_s_words(monkeypatch):
     import os
 
+    for var in ("USER", "LOGNAME"):  # getuser() would otherwise look the uid up
+        monkeypatch.setenv(var, "examiner")
     real = os.getuid()
     monkeypatch.setattr(os, "getuid", lambda: real + 1)
     problem = credentials.signing_folders_problem()
