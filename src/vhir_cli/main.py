@@ -464,6 +464,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Remote setup mode (gateway on another host)",
     )
+    p_client.add_argument(  # deploys failIfUnavailable: false, after a typed phrase
+        "--allow-unsandboxed", action="store_true", help=argparse.SUPPRESS
+    )
     p_client.add_argument("--token", help="Bearer token for gateway authentication")
     p_client.add_argument(
         "--uninstall",

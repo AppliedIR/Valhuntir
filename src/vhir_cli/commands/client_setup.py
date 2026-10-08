@@ -139,12 +139,14 @@ def cmd_setup_client(args, identity: dict) -> None:
     With -y (unless --ask-user-files), a user file that would change is
     changed after a backup, with an alert, and the commands that undo it are
     printed at exit, even after an error."""
-    global _APPLIED
+    global _APPLIED, _ALLOW_UNSANDBOXED
     auto = getattr(args, "yes", False) and not getattr(args, "ask_user_files", False)
     _APPLIED = [] if auto else None
+    _ALLOW_UNSANDBOXED = _allow_unsandboxed(args)
     try:
         _setup_client(args, identity)
     finally:
+        _ALLOW_UNSANDBOXED = False
         changed, _APPLIED = _APPLIED or [], None
         if changed:
             import shlex
@@ -160,6 +162,37 @@ def cmd_setup_client(args, identity: dict) -> None:
                         " close Claude Code first."
                     )
                 print(f"    cp -p {shlex.quote(str(bak))} {shlex.quote(str(path))}")
+
+
+def _allow_unsandboxed(args) -> bool:
+    """Whether --allow-unsandboxed is confirmed: only by the phrase typed on
+    a terminal. -y never gives it (the sandbox then stays required); with no
+    terminal to type it on, nothing is deployed."""
+    if not getattr(args, "allow_unsandboxed", False):
+        return False
+    if getattr(args, "yes", False):
+        print(
+            "  --allow-unsandboxed needs the typed phrase, which -y doesn't give: "
+            "Claude Code still refuses to start without a working sandbox."
+        )
+        return False
+    if not sys.stdin.isatty():
+        print(
+            "Error: --allow-unsandboxed needs the phrase typed on a terminal. "
+            "Nothing was deployed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        "  With this, Claude Code runs Bash with NO sandbox when bubblewrap can't "
+        "start,\n  instead of refusing to start. The forensic write and read "
+        "limits on Bash are then gone."
+    )
+    typed = input(f"  Type {UNSANDBOXED_PHRASE} to go on: ")
+    if typed.strip() != UNSANDBOXED_PHRASE:
+        print("Error: the phrase didn't match. Nothing was deployed.", file=sys.stderr)
+        sys.exit(1)
+    return True
 
 
 def _setup_client(args, identity: dict) -> None:
@@ -799,7 +832,13 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         print("")
         if settings and settings[1] != "kept":
             print("  Forensic controls deployed:")
-            print("    Sandbox:     enabled (Bash writes restricted)")
+            if _ALLOW_UNSANDBOXED:
+                print(
+                    "    Sandbox:     SANDBOX OFF when bubblewrap can't start: Bash then "
+                    "runs unrestricted (--allow-unsandboxed)"
+                )
+            else:
+                print("    Sandbox:     enabled (Bash writes restricted)")
             if sift:
                 print(
                     "    Audit hook:  forensic-audit.sh (records Bash commands while a "
@@ -891,6 +930,11 @@ _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh"
 # read by the audit hooks: the shell commands with an MCP route, and the
 # sidecar that looks a command up
 _HOOK_DATA = ("mcp-route.py", "mcp-routes.tsv")
+
+# `--allow-unsandboxed`, confirmed with the typed phrase: Claude Code may then
+# run without a sandbox when bwrap can't start (failIfUnavailable: false).
+_ALLOW_UNSANDBOXED = False
+UNSANDBOXED_PHRASE = "RUN CLAUDE CODE WITHOUT A SANDBOX"
 # `vhir setup client -y`: (backup, path) of each user file it changed. None
 # when a change is asked about on a terminal, or kept, instead.
 _APPLIED: list | None = None
@@ -1357,6 +1401,8 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                 existing_sandbox[k] = add_missing(existing_sandbox[k], v)
             else:
                 existing_sandbox[k] = v
+        if _ALLOW_UNSANDBOXED:  # confirmed with the typed phrase
+            existing_sandbox["failIfUnavailable"] = False
     return existing
 
 
