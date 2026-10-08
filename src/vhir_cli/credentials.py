@@ -469,13 +469,34 @@ FINISH_UPDATE = (
 
 
 def signing_folders_problem() -> str:
-    """FINISH_UPDATE when the signing folders (keys/, ledger/) are missing or
-    not writable here, else "". A vhir updated from 0.6 by one `vhir update`
-    of the old code can lack them."""
+    """Why this user can't sign here, or "": FINISH_UPDATE when a signing
+    folder (keys/, ledger/) is missing (a vhir updated from 0.6 by one
+    `vhir update` of the old code can lack them), or, when one exists but
+    this user can't write it, which folder and whose it is (`vhir update`
+    gives it back)."""
     for folder in (keys.KEYS_DIR, ledger.LEDGER_DIR):
-        if not (folder.is_dir() and os.access(folder, os.W_OK | os.X_OK)):
+        if not folder.is_dir():
             return FINISH_UPDATE
+    for folder in (keys.KEYS_DIR, ledger.LEDGER_DIR):
+        if not os.access(folder, os.W_OK | os.X_OK):
+            return not_writable_text(folder)
     return ""
+
+
+def not_writable_text(folder: Path) -> str:
+    import getpass
+    import pwd
+
+    try:
+        uid = folder.stat().st_uid
+        owner = pwd.getpwuid(uid).pw_name
+    except (OSError, KeyError):
+        owner = "another account"
+    user = getpass.getuser()
+    return (
+        f"{folder} exists but {user} can't write to it (it belongs to {owner}); "
+        f"run `vhir update`, which gives it back to {user}"
+    )
 
 
 def on_signing_folders(path) -> bool:
@@ -498,8 +519,9 @@ def preflight(examiner: str, config_path: Path) -> bool:
     upgraded here, with its own prompts. Returns True when a new passphrase
     was set (the final prompt then says so). The signing folders come first:
     without them nothing can be signed, or upgraded."""
-    if signing_folders_problem():
-        raise CredentialError(FINISH_UPDATE)
+    folders = signing_folders_problem()
+    if folders:
+        raise CredentialError(folders)
     try:
         current = state(examiner, config_path)
     except keys.KeysFileInvalid as e:

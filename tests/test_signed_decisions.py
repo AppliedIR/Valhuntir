@@ -461,24 +461,34 @@ def test_every_path_refuses_before_the_first_item_is_shown(
     assert asked == [] and _signed() == []
 
 
+@pytest.mark.parametrize("state", ["missing", "not writable"])
 @pytest.mark.parametrize("folder", ["keys", "ledger"])
 @pytest.mark.parametrize("path", ["ids", "interactive", "review", "reattest", "reject"])
 def test_without_the_signing_folders_every_path_says_finish_the_update_first(
-    case, monkeypatch, capsys, path, folder
+    case, monkeypatch, capsys, path, folder, state
 ):
     """A box updated once by 0.6's update code can lack them: one line, before
     anything is shown or asked, and no traceback."""
     run = _path(case, path, monkeypatch)
     target = keys.KEYS_DIR if folder == "keys" else ledger.LEDGER_DIR
-    target.chmod(0o500)  # as a root-owned folder is to the examiner
+    aside = target.with_name(target.name + ".aside")
+    if state == "missing":
+        target.rename(aside)
+        expected = credentials.FINISH_UPDATE
+    else:
+        target.chmod(0o500)  # as a root-owned folder is to the examiner
+        expected = credentials.not_writable_text(target)
     asked = []
     monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": asked.append(p))
     try:
         assert _run(run) == 1
     finally:
-        target.chmod(0o700)
+        if state == "missing":
+            aside.rename(target)
+        else:
+            target.chmod(0o700)
     out = capsys.readouterr()
-    assert out.err.strip().splitlines()[-1] == credentials.FINISH_UPDATE
+    assert out.err.strip().splitlines()[-1] == expected
     assert "Other" not in out.out and "F-steve-002]" not in out.out
     assert asked == [] and _signed() == []
 

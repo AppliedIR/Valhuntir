@@ -91,10 +91,20 @@ def bound_uuid(lines: list[tuple[int, str, dict | None]]) -> str | None:
     return value if isinstance(value, str) else None
 
 
+CHAIN_UNREADABLE = (
+    "This case's signed chain can't be read; signing is disabled; run "
+    "`vhir review --verify`."
+)
+
+
 def copy_problem(case_id: str, case_uuid: str | None) -> str:
     """`copy_text` when this box's chain for `case_id` binds a case folder
-    other than the one whose identity is `case_uuid`, else "". Read-only."""
-    bound = bound_uuid(read_lines(chain_path(case_id)))
+    other than the one whose identity is `case_uuid`; CHAIN_UNREADABLE when
+    the chain can't be read (or isn't UTF-8); else "". Read-only; never raises."""
+    try:
+        bound = bound_uuid(read_lines(chain_path(case_id)))
+    except (OSError, ValueError):  # unreadable, not UTF-8, a bad case id
+        return CHAIN_UNREADABLE
     return copy_text(case_id) if bound is not None and bound != case_uuid else ""
 
 

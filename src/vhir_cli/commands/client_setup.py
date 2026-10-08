@@ -920,8 +920,21 @@ def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
 SIGNING_DIRS = (Path("/var/lib/vhir/keys"), Path("/var/lib/vhir/ledger"))
 
 
+def _signing_dir_fine(folder: Path) -> bool:
+    """The folder exists, is this user's, and this user can write it."""
+    try:
+        return (
+            folder.is_dir()
+            and folder.stat().st_uid == os.getuid()
+            and os.access(folder, os.W_OK | os.X_OK)
+        )
+    except OSError:
+        return False
+
+
 def ensure_signing_dirs() -> None:
-    """Make the signing folders this box lacks, owned by this user, 0700
+    """Make the signing folders this box lacks, and give back one that exists
+    but isn't this user's or can't be written: owned by this user, 0700
     (/var/lib/vhir is root's: sudo). Never raises: a failure prints the
     command to run instead."""
     import getpass
@@ -929,9 +942,10 @@ def ensure_signing_dirs() -> None:
 
     user = getpass.getuser()
     for folder in SIGNING_DIRS:
-        if folder.is_dir():
+        if _signing_dir_fine(folder):
             continue
-        print(f"  Creating {folder}... ", end="", flush=True)
+        what = "Giving back" if folder.is_dir() else "Creating"
+        print(f"  {what} {folder}... ", end="", flush=True)
         try:
             ok = (
                 subprocess.run(

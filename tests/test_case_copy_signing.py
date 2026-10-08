@@ -146,3 +146,32 @@ def test_verify_checks_the_field_s_form():
     assert _malformed(line) == ""
     assert _malformed({**line, "case_uuid": UUID}) == ""
     assert _malformed({**line, "case_uuid": 7}) == "case_uuid"
+
+
+@pytest.mark.parametrize("how", ["not UTF-8", "unreadable"])
+def test_an_unreadable_chain_disables_signing_by_name(case, monkeypatch, capsys, how):
+    """The check before anything is shown never raises: it names the problem."""
+    from vhir_cli import approval_auth
+
+    A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")
+    path = ledger.chain_path("C-9")
+    if how == "not UTF-8":
+        path.write_bytes(path.read_bytes() + b"\xff\xfe\n")
+    else:
+        path.chmod(0o000)
+    asked = []
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": asked.append(p))
+    capsys.readouterr()
+    try:
+        assert ledger.copy_problem("C-9", None) == ledger.CHAIN_UNREADABLE
+        assert (
+            _run(
+                lambda: A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+            )
+            == 1
+        )
+    finally:
+        path.chmod(0o600)
+    err = capsys.readouterr().err
+    assert err.strip().splitlines()[-1] == ledger.CHAIN_UNREADABLE
+    assert "Traceback" not in err and asked == []

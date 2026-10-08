@@ -82,6 +82,26 @@ def test_an_older_update_makes_the_folders_through_the_launcher_step(
     assert capsys.readouterr().out.count("... done") == 2
 
 
+def test_an_update_gives_back_a_folder_this_user_can_t_write(
+    folders, monkeypatch, capsys
+):
+    """The preflight sends the examiner to `vhir update` for it, so the
+    update's folder step must fix it (still never under pytest's own run)."""
+    keys_dir, ledger_dir = folders.dirs
+    keys_dir.mkdir(parents=True)
+    ledger_dir.mkdir()
+    keys_dir.chmod(0o500)  # as a folder root left behind is, to the examiner
+    try:
+        from vhir_cli.commands import update
+
+        update._ensure_signing_dirs()
+    finally:
+        keys_dir.chmod(0o700)
+    (cmd,) = _sudo(folders.calls)
+    assert f"mkdir -p {keys_dir} && chown " in cmd[3] and "chmod 700" in cmd[3]
+    assert f"Giving back {keys_dir}... done" in capsys.readouterr().out
+
+
 def test_folders_that_exist_are_left_alone(folders, monkeypatch):
     for f in folders.dirs:
         f.mkdir(parents=True)
@@ -130,7 +150,13 @@ def test_a_missing_or_read_only_folder_is_the_problem(which, state):
     else:
         folder.chmod(0o500)
     try:
-        assert credentials.signing_folders_problem() == credentials.FINISH_UPDATE
+        if state == "missing":
+            assert credentials.signing_folders_problem() == credentials.FINISH_UPDATE
+        else:  # named, with its owner; an update gives it back
+            problem = credentials.signing_folders_problem()
+            assert problem == credentials.not_writable_text(folder)
+            assert str(folder) in problem and "run `vhir update`" in problem
+            assert "it belongs to " in problem
     finally:
         if state != "missing":
             folder.chmod(0o700)

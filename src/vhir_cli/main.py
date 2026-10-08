@@ -745,7 +745,10 @@ def main() -> None:
 
             if not credentials.on_signing_folders(e.filename):
                 raise
-            print(credentials.FINISH_UPDATE, file=sys.stderr)  # never a traceback
+            print(  # never a traceback
+                credentials.signing_folders_problem() or credentials.FINISH_UPDATE,
+                file=sys.stderr,
+            )
             sys.exit(1)
     elif hasattr(args, "func"):
         try:
