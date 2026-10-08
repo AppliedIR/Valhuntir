@@ -52,8 +52,11 @@ def _review(case, capsys, start=None, end=None):
 
 
 def _report(case, capsys, start=None, end=None):
-    _report_timeline(case, Namespace(from_date=start, to_date=end, save=None))
-    return sorted(set(re.findall(r"T-x-(E\d)", capsys.readouterr().out)))
+    # the report's text is returned; cmd_report prints it
+    text = (
+        _report_timeline(case, Namespace(from_date=start, to_date=end, save=None)) or ""
+    )
+    return sorted(set(re.findall(r"T-x-(E\d)", text + capsys.readouterr().out)))
 
 
 SITES = pytest.mark.parametrize("site", [_review, _report], ids=["review", "report"])
