@@ -593,11 +593,14 @@ if (Test-Path $settingsPath) {
 $githubRaw = "https://raw.githubusercontent.com/AppliedIR"
 $errors = 0
 
+$agentsDir = Join-Path $deployDir ".claude\agents"
+New-Item -ItemType Directory -Force -Path $agentsDir | Out-Null
+
 $assets = @(
     @{ Name = "CLAUDE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/CLAUDE.md"; Dest = (Join-Path $deployDir "CLAUDE.md") },
     @{ Name = "AGENTS.md"; Url = "$githubRaw/sift-mcp/main/AGENTS.md"; Dest = (Join-Path $deployDir "AGENTS.md") },
     @{ Name = "FORENSIC_DISCIPLINE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/FORENSIC_DISCIPLINE.md"; Dest = (Join-Path $deployDir "FORENSIC_DISCIPLINE.md") },
-    @{ Name = "TOOL_REFERENCE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/TOOL_REFERENCE.md"; Dest = (Join-Path $deployDir "TOOL_REFERENCE.md") },
+    @{ Name = "finding-skeptic agent"; Url = "$githubRaw/sift-mcp/main/agents/finding-skeptic/claude.md"; Dest = (Join-Path $agentsDir "finding-skeptic.md") },
     @{ Name = "forensic-audit.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/shared/hooks/forensic-audit.sh"; Dest = $hookPath }
 )
 
@@ -610,6 +613,37 @@ foreach ($asset in $assets) {
         Write-Warn "Could not fetch $($asset.Name)"
         $errors++
     }
+}
+
+# Skills, as skills/MANIFEST lists them. Each file is fetched and replaced: an
+# edit to a vhir skill is lost on re-run.
+$skillsDir = Join-Path $deployDir ".claude\skills"
+Write-Info "Fetching skills..."
+try {
+    $manifest = (Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/skills/MANIFEST" -UseBasicParsing).Content
+    if ($manifest -is [byte[]]) { $manifest = [System.Text.Encoding]::UTF8.GetString($manifest) }
+    $fetched = 0
+    foreach ($rel in ($manifest -split "`r?`n")) {
+        if (-not $rel -or $rel.StartsWith("#")) { continue }
+        if ($rel -notmatch '^[A-Za-z0-9._/-]+$' -or $rel.Contains("..") -or $rel.StartsWith("/")) {
+            Write-Warn "Skipped an unexpected skills path: $rel"
+            $errors++
+            continue
+        }
+        $dest = Join-Path $skillsDir ($rel -replace '/', '\')
+        New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+        try {
+            Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/skills/$rel" -OutFile $dest -UseBasicParsing
+            $fetched++
+        } catch {
+            Write-Warn "Could not fetch skills/$rel"
+            $errors++
+        }
+    }
+    Write-Ok "$fetched skill files"
+} catch {
+    Write-Warn "Could not fetch the skills list"
+    $errors++
 }
 
 # Note: forensic-audit.sh is a POSIX shell script. Claude Code hooks on Windows

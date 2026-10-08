@@ -541,12 +541,39 @@ if [[ "$CLIENT" == "claude-code" ]]; then
         ERRORS=$((ERRORS + 1))
     fi
 
-    # Fetch TOOL_REFERENCE.md
-    info "Fetching TOOL_REFERENCE.md..."
-    if curl -fsSL "$GITHUB_RAW/sift-mcp/main/claude-code/full/TOOL_REFERENCE.md" -o "$DEPLOY_DIR/TOOL_REFERENCE.md" 2>/dev/null; then
-        ok "TOOL_REFERENCE.md"
+    # Skills and the finding skeptic's agent, as skills/MANIFEST lists them. Each
+    # file is fetched and replaced: an edit to a vhir skill is lost on re-run.
+    info "Fetching skills..."
+    SKILLS_DIR="$DEPLOY_DIR/.claude/skills"
+    if MANIFEST=$(curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/MANIFEST" 2>/dev/null); then
+        FETCHED=0
+        while IFS= read -r rel; do
+            case "$rel" in
+                "" | \#*) continue ;;
+                /* | *..* | *[!A-Za-z0-9._/-]*)
+                    warn "Skipped an unexpected skills path: $rel"
+                    ERRORS=$((ERRORS + 1))
+                    continue
+                    ;;
+            esac
+            mkdir -p "$(dirname "$SKILLS_DIR/$rel")"
+            if curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/$rel" -o "$SKILLS_DIR/$rel" 2>/dev/null; then
+                FETCHED=$((FETCHED + 1))
+            else
+                warn "Could not fetch skills/$rel"
+                ERRORS=$((ERRORS + 1))
+            fi
+        done <<< "$MANIFEST"
+        ok "$FETCHED skill files"
     else
-        warn "Could not fetch TOOL_REFERENCE.md"
+        warn "Could not fetch the skills list"
+        ERRORS=$((ERRORS + 1))
+    fi
+    mkdir -p "$DEPLOY_DIR/.claude/agents"
+    if curl -fsSL "$GITHUB_RAW/sift-mcp/main/agents/finding-skeptic/claude.md" -o "$DEPLOY_DIR/.claude/agents/finding-skeptic.md" 2>/dev/null; then
+        ok "finding-skeptic agent"
+    else
+        warn "Could not fetch the finding-skeptic agent"
         ERRORS=$((ERRORS + 1))
     fi
 
