@@ -114,6 +114,27 @@ def _holds(folder: str, identity: str) -> bool:
     return Path(folder).is_dir() and case_uuid(Path(folder)) == identity
 
 
+def copy_of(case_dir: Path) -> str:
+    """Why this folder can't sign as the case: another recorded folder still
+    holds its identity (a copy made with `cp -r`), or "". `record_case_path`'s
+    check, read-only (no record is written); an unreadable record is left to
+    activation to report."""
+    identity = case_uuid(case_dir)
+    if not identity:
+        return ""
+    try:
+        recorded = _read_paths().get(identity)
+    except ValueError:
+        return ""
+    here = str(Path(case_dir).resolve())
+    if recorded and recorded != here and _holds(recorded, identity):
+        return (
+            f"{here} is a copy of the case in {recorded}: both have case identity "
+            f"{identity}. Sign in {recorded}."
+        )
+    return ""
+
+
 def record_case_path(case_dir: Path) -> None:
     """Record the case's folder for its identity, refusing a second folder.
 

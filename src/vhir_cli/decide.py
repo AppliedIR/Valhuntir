@@ -278,9 +278,11 @@ def copy_problem(case_dir: Path) -> str:
     """Why this case folder can't sign (it's a copy of a case whose chain on
     this box began in another folder), or "". Read-only: checked before any
     item is shown; the commit checks again under the lock."""
+    from vhir_cli.case_identity import copy_of
+
     return ledger.copy_problem(
         case_id_of(case_dir), load_case_meta(case_dir).get("case_uuid")
-    )
+    ) or copy_of(case_dir)
 
 
 def _find(lists: dict[str, list[dict]], kind: str, item_id: str) -> dict | None:

@@ -1238,7 +1238,15 @@ def cmd_restore(args, identity: dict) -> None:
     # keeps both, and its indices must not still exist. Checked before
     # anything is written or removed.
     snap_info = manifest.get("opensearch_snapshot") or {}
-    alongside = target_dir.resolve() != Path(source_path).resolve()
+    # A copy only while the folder it was backed up from still holds the
+    # case: restored after the original is gone, it is the case, and keeps
+    # its identity (and can sign)
+    from vhir_cli.case_identity import _holds
+
+    alongside = target_dir.resolve() != Path(source_path).resolve() and _holds(
+        source_path,
+        _case_uuid(backup_path) if (backup_path / "CASE.yaml").is_file() else "",
+    )
     if restore_opensearch:
         problem = _snapshot_identity_problem(snap_info, backup_path)
         if problem:
@@ -1514,6 +1522,8 @@ def cmd_restore(args, identity: dict) -> None:
     rename = None
     if alongside and integrity_ok:
         rename = _new_identity_for_copy(target_dir, case_id, snap_info)
+    if alongside and ledger_path_of(case_id).exists():
+        print(f"  {cannot_sign_text(case_id, source_path)}")
 
     # Restore OpenSearch indices
     os_restored = False
@@ -1609,12 +1619,26 @@ def cmd_restore(args, identity: dict) -> None:
     print("=" * 64)
     print("CASE IS NOT ACTIVE. You must activate it before use:")
     print()
-    print(f"  vhir case activate {case_id}")
+    print(f"  vhir case activate {target_dir.name} --cases-dir {target_dir.parent}")
     print()
     print("If using Claude Code, launch from the case directory:")
     print()
     print(f"  cd {target_dir} && claude")
     print("=" * 64)
+
+
+def ledger_path_of(case_id: str) -> Path:
+    """This box's signed chain for the case id."""
+    from vhir_cli import ledger
+
+    return ledger.chain_path(case_id)
+
+
+def cannot_sign_text(case_id: str, original: str) -> str:
+    return (
+        f"This copy can be read and verified, but can't sign: this box's signed "
+        f"chain for {case_id} belongs to the case in {original}."
+    )
 
 
 def _merge_keys(case_dir: Path) -> None:

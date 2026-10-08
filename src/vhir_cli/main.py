@@ -1373,6 +1373,15 @@ def _case_new_identity(args) -> None:
         sys.exit(1)
     print(f"{case_dir} now has its own identity: {new}")
     print("Its records will be stored under it; the original's are unchanged.")
+    from vhir_cli import ledger
+    from vhir_cli.case_io import case_id_of
+
+    signed_as = case_id_of(case_dir)
+    if ledger.chain_path(signed_as).exists():
+        print(
+            "It can be read and verified, but can't sign: this box's signed chain "
+            f"for {signed_as} belongs to the original folder."
+        )
 
 
 def _case_activate(args, identity: dict) -> None:
