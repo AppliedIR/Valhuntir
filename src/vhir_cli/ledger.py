@@ -56,6 +56,10 @@ class LedgerBusy(LedgerError):
     """Another writer held the case lock past the timeout (LEDGER_BUSY)."""
 
 
+class LedgerTorn(LedgerError):
+    """A failed append that couldn't be cut back: the chain may hold part of it."""
+
+
 class LockDirMissing(LedgerError):
     """The ledger folder is missing or can't be written."""
 
@@ -424,12 +428,32 @@ def commit(
         ):
             raise BadSignature(f"the signature on {body.get('item_id')} doesn't verify")
     LEDGER_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # created 0600; nothing after the append can fail but the fsync
+    # All or nothing: whatever stops the write (an error, Ctrl-C) cuts the
+    # file back to its size before it, so no part of this write is left
+    size = path.stat().st_size if path.exists() else 0
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    with os.fdopen(fd, "a", encoding="ascii") as f:
-        f.write(lead)
-        for text in lines:
-            f.write(text + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    try:
+        with os.fdopen(fd, "a", encoding="ascii") as f:
+            f.write(lead)
+            for text in lines:
+                f.write(text + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        _cut_back(path, size)
+        raise
     return bodies[-1]["seq"], body_hash(bodies[-1])
+
+
+def _cut_back(path: Path, size: int) -> None:
+    """Truncate the chain to `size` and make it durable, or LedgerTorn."""
+    try:
+        with open(path, "r+b") as f:
+            f.truncate(size)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        raise LedgerTorn(
+            f"a write to {path} failed and couldn't be cut back ({e}); it may hold part "
+            "of that write. Restore it from a copy before signing again."
+        ) from e

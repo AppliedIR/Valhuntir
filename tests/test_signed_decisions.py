@@ -725,22 +725,100 @@ def test_an_id_named_twice_is_signed_once(case):
 # --- What a failure leaves (CR's five probes) -----------------------------------------
 
 
-def test_a_failure_after_the_lines_are_appended_still_applies_what_was_signed(
-    case, monkeypatch, capsys
+class _FaultyOs:
+    """The os module as ledger.py sees it, with one call made to fail."""
+
+    def __init__(self, fail_on: str, error: BaseException, writes_before: int = 0):
+        import os as real
+
+        self._os, self._fail_on, self._error = real, fail_on, error
+        self._writes_before = writes_before
+
+    def __getattr__(self, name):
+        if name == "fdopen" and self._fail_on == "write":
+            real = self._os.fdopen
+
+            def fdopen(*a, **k):
+                f = real(*a, **k)
+                left = [self._writes_before]
+                write = f.write
+
+                def failing(text):
+                    if left[0] <= 0:
+                        raise self._error
+                    left[0] -= 1
+                    return write(text)
+
+                f.write = failing
+                return f
+
+            return fdopen
+        if name == self._fail_on:
+
+            def fail(*a, **k):
+                raise self._error
+
+            return fail
+        return getattr(self._os, name)
+
+
+def _chain_bytes(case_id="C-9"):
+    path = ledger.chain_path(case_id)
+    return path.read_bytes() if path.exists() else b""
+
+
+@pytest.mark.parametrize("where", ["fsync", "write"])
+def test_a_write_that_fails_part_way_leaves_the_chain_as_it_was(
+    case, monkeypatch, capsys, where
 ):
-    real = ledger.commit
+    A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")  # one line before
+    before = _chain_bytes()
+    # approving F-steve-001 writes three lines (its event and IOC cascade);
+    # the write fails after the first, or at the fsync
+    monkeypatch.setattr(
+        ledger, "os", _FaultyOs(where, OSError("disk full"), writes_before=2)
+    )
+    code = _run(lambda: A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg"))
+    assert code == 1 and _chain_bytes() == before  # cut back: no part of it left
+    for name, item_id in (("findings.json", "F-steve-001"), ("timeline.json", "T-steve-001"),
+                          ("iocs.json", "IOC-steve-001")):  # fmt: skip
+        assert _status(case, name, item_id) == "DRAFT"
+    (entry,) = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert entry["id"] == "F-steve-001"  # kept; its cascades are planned again
+    assert "Nothing was signed" in capsys.readouterr().err
+    import os as real_os
 
-    def appended_then_failed(*a, **k):
-        real(*a, **k)
-        raise OSError("fsync failed")
+    monkeypatch.setattr(
+        ledger, "os", real_os
+    )  # only this patch: the box stays redirected
+    assert verify_case(case).exit_code == 0
 
-    monkeypatch.setattr(ledger, "commit", appended_then_failed)
+
+def test_ctrl_c_inside_the_write_leaves_the_chain_as_it_was(case, monkeypatch):
+    A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")
+    before = _chain_bytes()
+    monkeypatch.setattr(ledger, "os", _FaultyOs("fsync", KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    assert _chain_bytes() == before
+
+
+def test_a_write_that_can_t_be_cut_back_says_so(case, monkeypatch, capsys):
+    import builtins
+
+    real_open = builtins.open
+
+    def no_truncate(path, mode="r", *a, **k):
+        if mode == "r+b":
+            raise PermissionError("read-only")
+        return real_open(path, mode, *a, **k)
+
+    monkeypatch.setattr(ledger, "os", _FaultyOs("fsync", OSError("disk full")))
+    monkeypatch.setattr(builtins, "open", no_truncate)
     code = _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
-    assert _signed() == [("F-steve-002", "approve")]  # one line, never re-staged
-    assert _status(case, "findings.json", "F-steve-002") == "APPROVED"
-    assert not (case / "pending-reviews.json").exists()
-    assert "Nothing was signed" not in capsys.readouterr().err
-    assert code == 0 and verify_case(case).exit_code == 0
+    monkeypatch.setattr(builtins, "open", real_open)
+    assert code == 1
+    assert "couldn't be cut back" in capsys.readouterr().err
 
 
 def test_a_saved_todo_survives_a_later_saved_decision_for_the_same_item(case):

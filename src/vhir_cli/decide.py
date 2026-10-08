@@ -351,8 +351,7 @@ def sign_and_commit(
     case_id = case_id_of(case_dir)
     head, every, items, discarded = None, [], [], []
     unreadable: list[str] = []
-    bodies: list[dict] = []
-    save_error = None
+    committed, save_error = False, None
     try:
         with ledger.case_lock(
             case_id,
@@ -377,7 +376,8 @@ def sign_and_commit(
                     retired=credentials.retired_fingerprints(examiner),
                 )  # fmt: skip
                 lines = [ledger.sign_body(b, private) for b in bodies]
-                head = ledger.commit(lock, bodies, lines, public)
+                head = ledger.commit(lock, bodies, lines, public)  # all or nothing
+                committed = True
                 for d, item, body in zip(every, items, bodies, strict=True):
                     set_status(item, d.decision, d.status_after, body["examiner"],
                                body["at"], reason=d.reason,
@@ -388,28 +388,9 @@ def sign_and_commit(
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001 - never a traceback that loses the work
-        # what was committed is read from the ledger, never assumed: a commit
-        # can fail after its lines were appended (fsync, chmod)
-        in_chain = _in_chain(case_id, bodies)
-        if not in_chain:
+        if not committed:  # the commit wrote nothing: keep every decision
             keep(type(e).__name__, f"The commit couldn't go ahead: {one_line(str(e))}")
-        save_error = _apply_committed(case_dir, every, bodies, in_chain)
-        head = _head(case_id)
-        signed = [
-            d for d, b in zip(every, bodies, strict=True)
-            if ledger.body_hash(b) in in_chain
-        ]  # fmt: skip
-        unsigned = [d for d in direct if d in every and d not in signed]
-        every = signed
-        items = [_find_now(case_dir, d) for d in every]
-        if inside_lock is not None and signed and save_error is None:
-            with ledger.case_lock(case_id):  # remove exactly the entries signed
-                inside_lock({}, signed)
-        if unsigned:
-            print(f"Signed decisions were recorded for: {', '.join(d.id for d in signed)}",
-                  file=sys.stderr)  # fmt: skip
-            keep(type(e).__name__, f"The rest couldn't be signed: {one_line(str(e))}",
-                 which=unsigned)  # fmt: skip
+        save_error = save_error or e
 
     if unreadable:  # no per-item judgement is possible: keep every decision
         keep(
@@ -456,54 +437,6 @@ def sign_and_commit(
             file=sys.stderr,
         )
         sys.exit(1)
-
-
-def _in_chain(case_id: str, bodies: list[dict]) -> set[str]:
-    """The hashes of `bodies` that are lines of the box chain now."""
-    if not bodies:
-        return set()
-    wanted = {ledger.body_hash(b) for b in bodies}
-    found = set()
-    for _, _, o in ledger.read_lines(ledger.chain_path(case_id)):
-        if isinstance(o, dict):
-            h = ledger.body_hash(ledger.body_of(o))
-            if h in wanted:
-                found.add(h)
-    return found
-
-
-def _head(case_id: str):
-    return ledger.head_of(ledger.read_lines(ledger.chain_path(case_id)))
-
-
-def _find_now(case_dir: Path, d: Decision) -> dict:
-    lists, _ = _reload(case_dir)
-    return _find(lists, d.type, d.id) or d.item
-
-
-def _apply_committed(case_dir: Path, every, bodies, in_chain) -> Exception | None:
-    """After a failure: apply the decisions whose lines are in the chain, as
-    the commit would have, under the case lock; the error if the save fails."""
-    done = [
-        (d, b) for d, b in zip(every, bodies, strict=True)
-        if ledger.body_hash(b) in in_chain
-    ]  # fmt: skip
-    if not done:
-        return None
-    with ledger.case_lock(case_id_of(case_dir)):
-        lists, unreadable = _reload(case_dir)
-        if unreadable:
-            return OSError(f"{', '.join(unreadable)} couldn't be read")
-        for d, body in done:
-            item = _find(lists, d.type, d.id)
-            if item is None:
-                continue
-            lst = lists[d.type]
-            i = lst.index(item)
-            lst[i] = _spliced(item, d)
-            set_status(lst[i], d.decision, d.status_after, body["examiner"], body["at"],
-                       reason=d.reason, fresh_approver=d.fresh_approver)  # fmt: skip
-        return _save_twice(case_dir, lists, {d.type for d, _ in done})
 
 
 def _save_twice(case_dir: Path, lists, touched) -> Exception | None:
