@@ -1128,8 +1128,15 @@ def _case_init_data(
     return result
 
 
+# At a case's root, holding the case's folder name: wintools writes through the
+# share only when it names the case wintools was told is active.
+CASE_MARKER = ".vhir-share-case"
+
+
 def _set_case_wintools_permissions(case_dir: Path) -> str | None:
-    """Set group-based permissions for wintools access on a case directory.
+    """Set group-based permissions for wintools access on a case directory,
+    open `extractions/` and `audit/` to the owner's group (0775, by the
+    owner's own chmod) and write the case's share marker.
 
     Returns a warning when the group step can't be applied (a process that
     doesn't have the sift group yet), so the caller still repoints the share
@@ -1152,9 +1159,12 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
         real = os.path.realpath(path)
         return os.path.commonpath([real, root]) == root
 
-    def share_with_group(path: Path, mode: int, directory: bool = False) -> str | None:
-        """Give `path` to the group: only a regular file or folder (as asked)
-        inside the case, never through a link, and never waiting on a pipe."""
+    def share_with_group(
+        path: Path, mode: int, directory: bool = False, gid: int | None = None
+    ) -> str | None:
+        """Give `path` to the group (`gid`, the sift group by default; -1
+        keeps its group): only a regular file or folder (as asked) inside
+        the case, never through a link, and never waiting on a pipe."""
         kind = stat.S_ISDIR if directory else stat.S_ISREG
         refused = (
             f"Group permissions not applied: {path} is not a "
@@ -1168,7 +1178,7 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             try:
                 if not kind(os.fstat(fd).st_mode):  # replaced since the check
                     return refused
-                os.fchown(fd, -1, sift_gid)
+                os.fchown(fd, -1, sift_gid if gid is None else gid)
                 os.fchmod(fd, mode)
             finally:
                 os.close(fd)
@@ -1177,7 +1187,32 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             raise
         return None
 
+    def write_marker() -> str | None:
+        marker = case_dir / CASE_MARKER
+        refused = (
+            f"Share marker not written: {marker} is not a regular file inside the case."
+        )
+        if marker.is_symlink() or not inside(marker):
+            return refused
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(marker, flags, 0o644)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return refused
+                os.fchmod(fd, 0o644)
+                os.write(fd, case_dir.name.encode())
+            finally:
+                os.close(fd)
+        except OSError as e:
+            e.filename = str(marker)
+            raise
+        return None
+
     try:
+        warning = write_marker()
+        if warning:
+            return warning
         # Create extractions/wintools/ with setgid + group-writable
         wintools_dir = case_dir / "extractions" / "wintools"
         if not inside(wintools_dir):
@@ -1198,7 +1233,15 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
         if not audit_file.exists() and not audit_file.is_symlink():
             audit_file.parent.mkdir(parents=True, exist_ok=True)
             audit_file.touch()
-        return share_with_group(audit_file, 0o664)
+        warning = share_with_group(audit_file, 0o664)
+        if warning:
+            return warning
+        # what the share writes as the owner's group can go in them, old cases too
+        for folder in ("extractions", "audit"):
+            warning = share_with_group(case_dir / folder, 0o775, directory=True, gid=-1)
+            if warning:
+                return warning
+        return None
     except OSError as e:
         return (
             f"Group permissions not applied to {e.filename or case_dir}: "

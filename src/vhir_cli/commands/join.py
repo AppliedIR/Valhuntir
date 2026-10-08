@@ -623,6 +623,108 @@ def _active_case_dir() -> Path | None:
     return None
 
 
+SHARE_NAME = (
+    "vhir-cases"  # vhir's own section; SIFT's stock [cases] and [mnt] stay as shipped
+)
+SMB_CONF_PATH = "/etc/samba/smb.conf.d/vhir-cases.conf"
+NSSWITCH = "/etc/nsswitch.conf"
+_LOCAL_SOURCES = frozenset(
+    {"files", "compat", "systemd"}
+)  # every account they hold is listed
+
+
+def _nss_sources(database: str, path: str = NSSWITCH) -> list[str]:
+    """The sources nsswitch reads `database` from (glibc's local default
+    when the file or the line is missing)."""
+    try:
+        lines = Path(path).read_text().splitlines()
+    except FileNotFoundError:
+        return ["files"]
+    for line in lines:
+        key, _, rest = line.split("#", 1)[0].partition(":")
+        if key.strip() == database:
+            return [w for w in rest.split() if not w.startswith("[")] or ["files"]
+    return ["files"]
+
+
+def private_primary_group(username: str, nsswitch: str = NSSWITCH) -> str:
+    """The name of `username`'s primary group, which the share writes files
+    with: only when no other account can be in it. Raises RuntimeError when
+    another account can, or when not every account can be listed to check."""
+    import grp
+    import pwd
+
+    for database in ("passwd", "group"):
+        remote = [
+            x for x in _nss_sources(database, nsswitch) if x not in _LOCAL_SOURCES
+        ]
+        if remote:
+            raise RuntimeError(
+                f"Accounts also come from {', '.join(remote)} ({nsswitch}, {database}), "
+                "which can't all be listed, so join can't check that the share's group "
+                f"is {username}'s alone. Give {username} a local primary group of its own "
+                "and list only local sources, or set up the share by hand."
+            )
+    group = grp.getgrgid(pwd.getpwnam(username).pw_gid)
+    others = set(group.gr_mem) | {
+        p.pw_name for p in pwd.getpwall() if p.pw_gid == group.gr_gid
+    }
+    others.discard(username)
+    if others:
+        raise RuntimeError(
+            f"{username}'s primary group {group.gr_name!r} isn't {username}'s alone "
+            f"({', '.join(sorted(others))} can use it): case files the share writes "
+            f"would be writable by them. Give {username} a primary group of its own, "
+            "then join again."
+        )
+    return group.gr_name
+
+
+def _share_conf(doc: dict, target: str) -> str:
+    """The share's Samba section, under the name `samba.yaml` gives (a box
+    joined before vhir had its own share name keeps its old section)."""
+    name = doc.get("share_name") or "cases"
+    username = doc.get("force_user") or getpass.getuser()
+    if name != SHARE_NAME:
+        return f"""[{name}]
+    path = {target}
+    valid users = vhir-smb
+    read only = no
+    create mask = 0644
+    directory mask = 0755
+    force user = {username}
+    force group = sift
+    browsable = no
+    hosts allow = {doc.get("wintools_ip", "")}
+"""
+    return f"""[{name}]
+    path = {target}
+    valid users = vhir-smb
+    read only = no
+    create mask = 0664
+    directory mask = 0775
+    force user = {username}
+    force group = {doc.get("force_group") or username}
+    browsable = no
+    hosts allow = {doc.get("wintools_ip", "")}
+"""
+
+
+def share_needs_rejoin() -> bool:
+    """A box joined before vhir had its own share name: wintools has to join
+    again to reach the case through it."""
+    samba_yaml = Path.home() / ".vhir" / "samba.yaml"
+    try:
+        doc = yaml.safe_load(samba_yaml.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    return (
+        isinstance(doc, dict)
+        and bool(doc.get("share_name"))
+        and (doc["share_name"] != SHARE_NAME)
+    )
+
+
 def _setup_samba_share(join_code: str) -> str:
     """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP."""
     import subprocess
@@ -636,14 +738,19 @@ def _setup_samba_share(join_code: str) -> str:
             doc = yaml.safe_load(samba_yaml.read_text()) or {}
             if doc.get("share_name") and doc.get("wintools_ip"):
                 print(f"Samba share already configured for {doc['wintools_ip']}")
-                answer = input("Reconfigure? [y/N] ").strip().lower()
-                if answer not in ("y", "yes"):
+                if doc["share_name"] != SHARE_NAME:
+                    print(
+                        f"The share moves from [{doc['share_name']}] to [{SHARE_NAME}]."
+                    )
+                elif input("Reconfigure? [y/N] ").strip().lower() not in ("y", "yes"):
                     keep_ip = doc["wintools_ip"]
         except (yaml.YAMLError, OSError):
             pass
     if keep_ip:
         _set_smb_password(join_code)
         return keep_ip
+    username = getpass.getuser()
+    group = private_primary_group(username)  # before anything is installed or changed
 
     try:
         subprocess.run(
@@ -731,22 +838,18 @@ def _setup_samba_share(join_code: str) -> str:
     share_target = str(_active_case_dir() or placeholder)
     check_share_path(share_target)
 
-    # Write Samba config — force user ensures SMB file operations run as the
-    # local installer user, eliminating the need to re-login for sift group
-    # membership.  Authentication still uses vhir-smb (valid users).
-    username = getpass.getuser()
-    smb_conf = f"""[cases]
-    path = {share_target}
-    valid users = vhir-smb
-    read only = no
-    create mask = 0644
-    directory mask = 0755
-    force user = {username}
-    force group = sift
-    browsable = no
-    hosts allow = {wintools_ip}
-"""
-    smb_conf_path = "/etc/samba/smb.conf.d/vhir-cases.conf"
+    # Write Samba config — files are written as the installer and their own
+    # private group, so the installer can change what wintools wrote without
+    # a re-login. Authentication still uses vhir-smb (valid users).
+    share = {
+        "share_name": SHARE_NAME,
+        "smb_user": "vhir-smb",
+        "force_user": username,
+        "force_group": group,
+        "wintools_ip": wintools_ip,
+    }
+    smb_conf = _share_conf(share, share_target)
+    smb_conf_path = SMB_CONF_PATH
     try:
         subprocess.run(
             ["sudo", "mkdir", "-p", "/etc/samba/smb.conf.d"],
@@ -807,11 +910,10 @@ def _setup_samba_share(join_code: str) -> str:
         raise RuntimeError(f"Failed to restart smbd: {e}") from e
 
     # Create sudoers.d entry for passwordless repoint
-    username = getpass.getuser()
     sudoers_content = (
         f"{username} ALL=(root) NOPASSWD: /usr/bin/tee {smb_conf_path}\n"
         f"{username} ALL=(root) NOPASSWD: /usr/bin/smbcontrol smbd reload-config\n"
-        f"{username} ALL=(root) NOPASSWD: /usr/bin/smbcontrol smbd close-share cases\n"
+        f"{username} ALL=(root) NOPASSWD: /usr/bin/smbcontrol smbd close-share {SHARE_NAME}\n"
     )
     try:
         subprocess.run(
@@ -837,10 +939,7 @@ def _setup_samba_share(join_code: str) -> str:
     vhir_dir = Path.home() / ".vhir"
     vhir_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     samba_data = {
-        "share_name": "cases",
-        "smb_user": "vhir-smb",
-        "force_user": username,
-        "wintools_ip": wintools_ip,
+        **share,
         "active_share_target": share_target,
         "configured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
@@ -849,7 +948,9 @@ def _setup_samba_share(join_code: str) -> str:
     with os.fdopen(fd, "w") as f:
         yaml.dump(samba_data, f, default_flow_style=False)
 
-    print(f"Samba share configured: //{_get_sift_ip() or 'SIFT_IP'}/cases (per-case)")
+    print(
+        f"Samba share configured: //{_get_sift_ip() or 'SIFT_IP'}/{SHARE_NAME} (per-case)"
+    )
     return wintools_ip
 
 
@@ -1094,7 +1195,6 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
         return  # Samba not configured
 
     doc = yaml.safe_load(samba_yaml.read_text()) or {}
-    wintools_ip = doc.get("wintools_ip", "")
     current_target = doc.get("active_share_target", "")
 
     placeholder = Path.home() / ".vhir" / "share-inactive"
@@ -1106,19 +1206,8 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
 
     placeholder.mkdir(parents=True, exist_ok=True)
 
-    conf_path = "/etc/samba/smb.conf.d/vhir-cases.conf"
-    username = doc.get("force_user") or getpass.getuser()
-    smb_conf = f"""[cases]
-    path = {target}
-    valid users = vhir-smb
-    read only = no
-    create mask = 0644
-    directory mask = 0755
-    force user = {username}
-    force group = sift
-    browsable = no
-    hosts allow = {wintools_ip}
-"""
+    conf_path = SMB_CONF_PATH
+    smb_conf = _share_conf(doc, target)
     try:
         subprocess.run(
             ["sudo", "tee", conf_path],
@@ -1149,7 +1238,7 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
     # Force-close existing connections so clients pick up the new path.
     # Windows SMB redirector auto-reconnects using cached LSASS credentials.
     subprocess.run(
-        ["sudo", "smbcontrol", "smbd", "close-share", "cases"],
+        ["sudo", "smbcontrol", "smbd", "close-share", doc.get("share_name") or "cases"],
         capture_output=True,
         timeout=15,
     )

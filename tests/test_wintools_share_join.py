@@ -31,13 +31,16 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(join, "_push_smb_credentials", pushed.append)
     monkeypatch.setattr(join, "_get_sift_ip", lambda: None)
+    monkeypatch.setattr(
+        join, "private_primary_group", lambda user: "examiner", raising=False
+    )
     monkeypatch.setattr("builtins.input", lambda prompt="": answers.pop(0))
     return types.SimpleNamespace(home=tmp_path, ran=ran, pushed=pushed, answers=answers)
 
 
-def _configured(box):
+def _configured(box, share_name="vhir-cases"):
     (box.home / ".vhir" / "samba.yaml").write_text(
-        yaml.dump({"share_name": "cases", "wintools_ip": "10.0.0.20"})
+        yaml.dump({"share_name": share_name, "wintools_ip": "10.0.0.20"})
     )
 
 
@@ -120,4 +123,59 @@ def test_a_case_path_that_would_break_the_share_config_is_refused(box, name):
     with pytest.raises(ValueError, match="case path"):
         join._setup_samba_share("CODE-ONE")
     assert not [cmd for cmd, _ in box.ran if "tee" in cmd]  # no smb.conf write
+    assert not (box.home / ".vhir" / "samba.yaml").exists()
+
+
+# -- vhir's own share name
+
+
+def _sudoers(box):
+    (rules,) = [
+        i.decode()
+        for cmd, i in box.ran
+        if cmd[-2:] == ["tee", "/etc/sudoers.d/vhir-samba"]
+    ]
+    return rules
+
+
+def test_a_join_writes_vhirs_own_share_and_none_of_sifts(box):
+    import getpass
+
+    box.answers.append("10.0.0.20")
+    join._setup_samba_share("CODE-ONE")
+    conf = _share_conf(box)
+    assert conf.startswith("[vhir-cases]\n") and "[cases]" not in conf
+    for line in (
+        "valid users = vhir-smb",
+        "create mask = 0664",
+        "directory mask = 0775",
+        f"force user = {getpass.getuser()}",
+        "force group = examiner",
+        "hosts allow = 10.0.0.20",
+    ):
+        assert f"    {line}\n" in conf
+    assert "close-share vhir-cases\n" in _sudoers(box)
+    assert "close-share cases\n" not in _sudoers(box)
+    samba = yaml.safe_load((box.home / ".vhir" / "samba.yaml").read_text())
+    assert samba["share_name"] == "vhir-cases" and samba["force_group"] == "examiner"
+
+
+def test_a_join_on_a_box_joined_with_the_old_share_moves_it_without_asking(box, capsys):
+    _configured(box, "cases")
+    box.answers.append("10.0.0.30")  # the only question: the Windows address
+    assert join._setup_samba_share("CODE-TWO") == "10.0.0.30"
+    assert "moves from [cases] to [vhir-cases]" in capsys.readouterr().out
+    assert _share_conf(box).startswith("[vhir-cases]\n")
+    samba = yaml.safe_load((box.home / ".vhir" / "samba.yaml").read_text())
+    assert samba["share_name"] == "vhir-cases"
+
+
+def test_a_join_whose_group_isnt_the_installers_alone_changes_nothing(box, monkeypatch):
+    def shared(user):
+        raise RuntimeError(f"{user}'s primary group 'staff' isn't {user}'s alone")
+
+    monkeypatch.setattr(join, "private_primary_group", shared, raising=False)
+    with pytest.raises(RuntimeError, match="isn't .*alone"):
+        join._setup_samba_share("CODE-ONE")
+    assert box.ran == [] and box.answers == []
     assert not (box.home / ".vhir" / "samba.yaml").exists()

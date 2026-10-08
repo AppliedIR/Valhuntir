@@ -992,10 +992,25 @@ def cmd_update(args, identity: dict) -> None:
     if client == "claude-code":
         print("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)
+    _print_share_rejoin_notice()
     if not no_restart and restart_ok:
         from vhir_cli.gateway import RECONNECT_HINT
 
         print(f"  {RECONNECT_HINT}")
+
+
+def _print_share_rejoin_notice() -> None:
+    """A box joined before vhir had its own share name: say how wintools
+    moves to it. Update adds no Samba changes; join makes them."""
+    from vhir_cli.commands.join import SHARE_NAME, share_needs_rejoin
+
+    if share_needs_rejoin():
+        print(
+            f"\n  wintools: the case share is now //SIFT/{SHARE_NAME}. Until wintools joins"
+            " again it writes nothing to the case.\n"
+            "  Join again: on SIFT run 'vhir setup join-code', then on Windows run"
+            " setup-windows.ps1 with the new join code."
+        )
 
 
 def _git_head(path: Path) -> str:
