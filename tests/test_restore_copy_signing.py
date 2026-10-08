@@ -71,8 +71,8 @@ def _chain():
 
 
 def test_a_copy_restored_beside_the_original_can_t_sign(signed, capsys):
-    """CR's probe: back up, restore beside with --target, edit and sign in
-    the copy. The copy is refused; the original's chain and verify stand."""
+    """Back up, restore beside the original with --target, then edit and sign
+    in the copy. The copy is refused; the original's chain and verify stand."""
     path = _backup(signed)
     copy = signed.tmp / "cases" / "C-1-copy"
     capsys.readouterr()

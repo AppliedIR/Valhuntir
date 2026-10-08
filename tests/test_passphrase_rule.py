@@ -60,7 +60,7 @@ def test_the_recommendation_text():
 
 def test_the_name_rule_alone():
     """Long enough, not common, not a run: only the name and product words."""
-    error, warnings = check("Steve-VHIR-valhuntir-sift", "steve")
+    error, warnings = check("STEVE-VHIR-valhuntir-sift", "steve")
     assert error is None and warnings == [
         "Most of it is your name or product words (vhir, valhuntir, sift)."
     ]

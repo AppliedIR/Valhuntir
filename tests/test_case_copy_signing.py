@@ -58,8 +58,8 @@ def test_a_copy_beside_the_original_can_t_sign_and_the_original_still_verifies(
     monkeypatch,
     capsys,  # noqa: F811
 ):
-    """CR's probe: sign in the original, copy it (a restore beside it gives
-    the copy its own identity), edit and sign in the copy."""
+    """Sign in the original, copy it (a restore beside it gives the copy its
+    own identity), then edit and sign in the copy."""
     _with_uuid(case, UUID)
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")
     copy = _copy(case, tmp_path, OTHER)

@@ -762,7 +762,7 @@ def test_an_id_named_twice_is_signed_once(case):
     assert _signed() == [("F-steve-002", "approve")]
 
 
-# --- What a failure leaves (CR's five probes) -----------------------------------------
+# --- What a failure leaves: interrupted, failed and partial writes -----------------------
 
 
 class _FaultyOs:

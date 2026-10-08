@@ -12,7 +12,7 @@ def test_valid_names(name):
     assert valid_name(name)
 
 
-@pytest.mark.parametrize("name", ["", "Bad_Name", "-x", "x" * 21, "Steve", "a.b"])
+@pytest.mark.parametrize("name", ["", "Bad_Name", "-x", "x" * 21, "STEVE", "a.b"])
 def test_invalid_names(name):
     assert not valid_name(name)
 
@@ -21,7 +21,7 @@ def test_invalid_names(name):
     "raw, name",
     [
         ("Lab-Laptop.local", "lab-laptop"),
-        ("Steve.local", "steve"),
+        ("STEVE.local", "steve"),
         ("WKS_01", "wks-01"),
         ("--edge", "edge"),
         ("a" * 30, "a" * 20),

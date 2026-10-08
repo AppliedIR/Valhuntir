@@ -626,7 +626,7 @@ def test_a_reference_to_a_missing_chain_or_head(case, steve):
     "text",
     [
         "steve=SHA256:short",
-        "Steve=SHA256:" + "A" * 43,
+        "STEVE=SHA256:" + "A" * 43,
         "steve=SHA256:" + "A" * 43 + ":5-2",
     ],
 )
@@ -1082,7 +1082,7 @@ def test_a_parallel_chain_under_another_key_for_the_same_examiner_fails_unless_b
 
 
 @pytest.mark.parametrize(
-    "name", ["st\u0435ve", "Steve", "steve\u200b"], ids=["cyrillic", "upper", "zwsp"]
+    "name", ["st\u0435ve", "STEVE", "steve\u200b"], ids=["cyrillic", "upper", "zwsp"]
 )
 def test_a_line_whose_examiner_breaks_the_name_rule_is_malformed(case, steve, name):
     f1, forged = _finding(1), _finding(2)
