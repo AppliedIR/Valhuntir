@@ -1,8 +1,12 @@
 """Approval authentication: mandatory password for approve/reject.
 
-The password is read with getpass from /dev/tty, with no echo. That stops a
-command that only pipes input into vhir; it doesn't stop a program that
-controls a terminal (a pty) and types into it.
+The password is read from /dev/tty without echo. That stops a plain shell
+pipe from supplying it. It doesn't stop a program that runs vhir under a
+pseudo-terminal, or a process with administrative rights (limit 3). The
+Claude Code deny rules for `vhir approve`/`vhir reject` stop an assistant's
+shell tool from running them. They guard against accidents and aren't a
+security boundary. Credential files are readable by processes running as the
+examiner (limit 2).
 A password must be configured before approvals are allowed.
 
 Password hashes are stored in /var/lib/vhir/passwords/{examiner}.json
@@ -14,6 +18,7 @@ config.yaml location happens on first use.
 
 from __future__ import annotations
 
+import codecs
 import getpass as getpass_mod
 import hashlib
 import json
@@ -496,9 +501,12 @@ def getpass_prompt(prompt: str) -> str:
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            chars = []
+            chars = []  # code points: a multi-byte character is one entry
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             while True:
-                ch = os.read(fd, 1).decode("utf-8", errors="replace")
+                ch = decoder.decode(os.read(fd, 1))
+                if not ch:
+                    continue  # the middle of a multi-byte character
                 if ch in ("\r", "\n"):
                     break
                 elif ch in ("\x7f", "\x08"):  # backspace/delete
@@ -521,6 +529,15 @@ def getpass_prompt(prompt: str) -> str:
             sys.stderr.flush()
     finally:
         tty_in.close()
+
+
+def legacy_decoded(password: str) -> str:
+    """`password` as 0.6's reader read it: each byte decoded on its own, so
+    every byte of a non-ASCII character became U+FFFD. Only the upgrade's
+    one retry against a 0.6 verifier uses it."""
+    return "".join(
+        ch if ord(ch) < 128 else "\ufffd" * len(ch.encode("utf-8")) for ch in password
+    )
 
 
 def _load_config(config_path: Path) -> dict:

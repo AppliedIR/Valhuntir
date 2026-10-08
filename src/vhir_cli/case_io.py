@@ -383,6 +383,35 @@ def compute_content_hash(item: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+# The signed view of an item (what a ledger line's content_snapshot holds).
+# View 0 is the 0.6 set (hmac_text), for legacy lines. View 1 signs
+# timeline_event_id (the link a timeline cascade follows) and leaves out the
+# re-attestation stamp. An IOC's four derived fields, computed from every
+# citing finding, are left out of both. A change to these sets adds a view;
+# a view is never edited (a test pins view 1).
+REATTEST_KEYS = frozenset({"reattested_at", "reattested_by"})
+IOC_DERIVED_KEYS = frozenset(
+    {"source_findings", "sightings", "confidence", "mitre_techniques"}
+)
+VIEW_EXCLUDES = {
+    0: frozenset(HASH_EXCLUDE_KEYS),
+    1: frozenset(HASH_EXCLUDE_KEYS - {"timeline_event_id"}) | REATTEST_KEYS,
+}
+
+
+def signed_text(item: dict, item_type: str, view: int = 1) -> str:
+    """The canonical text a ledger line signs for `item` (`item_type`:
+    finding, timeline or ioc), in the given view."""
+    excluded = VIEW_EXCLUDES[view] | (
+        IOC_DERIVED_KEYS if item_type == "ioc" else frozenset()
+    )
+    return json.dumps(
+        {k: v for k, v in item.items() if k not in excluded},
+        sort_keys=True,
+        default=str,
+    )
+
+
 def hmac_text(item: dict) -> str:
     """Canonical text for HMAC signing.
 

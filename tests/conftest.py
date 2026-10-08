@@ -78,13 +78,15 @@ def _forbid_var_lib_vhir():
 
 @pytest.fixture(autouse=True)
 def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
-    from vhir_cli import approval_auth, verification
+    from vhir_cli import approval_auth, keys, ledger, verification
     from vhir_cli.commands import backup, update
 
     root = tmp_path_factory.mktemp("var_lib_vhir")
     for mod, name, sub in (
         (verification, "VERIFICATION_DIR", "verification"),
         (approval_auth, "_PASSWORDS_DIR", "passwords"),
+        (keys, "KEYS_DIR", "keys"),
+        (ledger, "LEDGER_DIR", "ledger"),
         (backup, "VERIFICATION_DIR", "verification"),  # imported by name
         (backup, "_PASSWORDS_DIR", "passwords"),
         (backup, "_SNAPSHOTS_DIR", "snapshots"),
