@@ -46,7 +46,7 @@ def box(tmp_path, monkeypatch):
     return make
 
 
-E2 = {
+VHIRS_OWN_SHARE = {
     "share_name": join.SHARE_NAME,
     "force_user": "examiner",
     "force_group": "examiner",
@@ -60,7 +60,7 @@ def _wintools_paths(case):
 
 
 def test_a_box_on_vhirs_own_share_gives_wintools_paths_its_group(box):
-    case, asked, given = box(E2)
+    case, asked, given = box(VHIRS_OWN_SHARE)
     warning = main._set_case_wintools_permissions(case) or ""
     assert "Group permissions not applied" not in warning, warning
     assert "sift" not in asked and "examiner" in asked
@@ -78,7 +78,7 @@ def test_a_migrated_box_moves_an_old_cases_wintools_paths_to_the_shares_group(
     (case / "extractions" / "wintools").mkdir(parents=True)
     (case / "audit").mkdir()
     (case / "audit" / "wintools-mcp.jsonl").write_text("")
-    case, asked, given = box(E2, case)
+    case, asked, given = box(VHIRS_OWN_SHARE, case)
     main._set_case_wintools_permissions(case)
     folder, audit = _wintools_paths(case)
     assert given[folder] == given[audit] == GIDS["examiner"]
@@ -92,8 +92,9 @@ def test_anchor_a_box_still_on_the_old_share_keeps_the_sift_group(box):
 
 
 def test_a_missing_share_group_says_to_re_join(box, monkeypatch):
-    case, _, _ = box({**E2, "force_group": "gone"})
+    case, _, _ = box({**VHIRS_OWN_SHARE, "force_group": "gone"})
     with pytest.raises(
-        RuntimeError, match="'gone', which the share writes as, not found"
+        RuntimeError,
+        match="'gone', which the share writes as, not found. Re-join with 'vhir setup join-code'",
     ):
         main._set_case_wintools_permissions(case)

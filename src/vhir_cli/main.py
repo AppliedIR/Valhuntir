@@ -1199,7 +1199,7 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
         if own_share:
             raise RuntimeError(
                 f"Group {group!r}, which the share writes as, not found. "
-                "Re-join with 'vhir join' to set the share up again."
+                "Re-join with 'vhir setup join-code' to set the share up again."
             ) from None
         raise RuntimeError(
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
