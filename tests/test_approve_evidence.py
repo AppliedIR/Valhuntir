@@ -302,8 +302,9 @@ def test_every_field_review_prints_before_the_prompt_is_escaped(
     _stage(case, [_finding(audit_ids=[f"sift-x{ESC}"])], [event], review=review)
     out = _until_prompt(monkeypatch, capsys, REVIEW)
     assert "\x1b]0;" not in out and "\x07" not in out and "\x1b[2J" not in out
-    assert "Evidence:       sift-x\\x1b]0;owned" in out
-    assert "\\x1b]0;owned\\x07\\x1b[2J" in out
+    # the review diff prints by vhir's display rule: every control as "?"
+    assert "Evidence:       sift-x?]0;owned??[2J" in out
+    assert "TODO: check ?]0;owned??[2J (priority: high?]0;owned??[2J)" in out
 
 
 def test_anchor_approve_by_id_prints_what_it_did_before(case, monkeypatch, capsys):

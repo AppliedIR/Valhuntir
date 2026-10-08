@@ -13,9 +13,13 @@ written are left as they are.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # C0 and C1 controls: escape sequences and line breaks
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Format (bidi overrides, zero-width), surrogate, and line or paragraph
+# separator characters: they reorder or break what the line shows
+_UNSAFE_CATEGORIES = frozenset({"Cf", "Cs", "Zl", "Zp"})
 
 # Fields `vhir approve` shows as indented blocks
 MULTI_LINE = frozenset({"observation", "interpretation", "description", "context"})
@@ -24,7 +28,12 @@ MULTI_LINE = frozenset({"observation", "interpretation", "description", "context
 def one_line(text) -> str:
     """Text for one terminal line, its control characters shown as "?", so it
     can't move the cursor or hide another line."""
-    return _CONTROL.sub("?", str(text))
+    text = _CONTROL.sub("?", str(text))
+    if text.isascii():
+        return text
+    return "".join(
+        "?" if unicodedata.category(ch) in _UNSAFE_CATEGORIES else ch for ch in text
+    )
 
 
 def lines(text, indent: str) -> str:

@@ -188,3 +188,14 @@ def test_a_tool_call_s_parameters_print_on_one_line(case, capsys, param):
     out = capsys.readouterr().out
     assert not [line for line in out.split("\n") if line.lstrip().startswith("[HOOK]")]
     assert f"record_finding({param}=x?    [HOOK]" in out
+
+
+def test_bidi_overrides_and_line_separators_show_as_question_marks():
+    from vhir_cli.display import one_line
+
+    # U+202E reverses what follows; U+2028 breaks the line in some terminals
+    assert (
+        one_line("evil\u202etxt.exe\u2028Status: APPROVED")
+        == "evil?txt.exe?Status: APPROVED"
+    )
+    assert one_line("café ✓") == "café ✓"  # other non-ASCII text is kept
