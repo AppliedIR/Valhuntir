@@ -2,8 +2,9 @@
 
 Close and export write the case's copies (`ledger/chains/<chain_id>.jsonl`,
 `ledger/legacy-<chain_id>.jsonl`, `ledger/keys.json`); a copy that can't be
-written stops the close. A bundle carries the chains, and an import adds
-them without overwriting. A new line on a box references the head of each
+written stops the close, and this box's chain always sits at its own id. A
+bundle carries the chains as data, and its keys and heads as anchors; an
+import adds no chain file. A new line on a box references the head of each
 other chain copy that verifies. A box ledger already under a case id stops a
 new case with that id. `vhir update` makes the signing folders and reports
 the examiner's signing key.
@@ -132,7 +133,9 @@ def test_after_a_reopen_the_stale_case_copy_and_the_longer_box_chain_verify(
 # --- Export and import ---------------------------------------------------------------------
 
 
-def test_a_bundle_carries_the_keys_heads_and_chains_and_an_import_adds_them(cases):
+def test_a_bundle_carries_the_keys_heads_and_chains_and_an_import_adds_none(
+    cases, capsys
+):
     d = _case(cases, findings=[_finding(1, "APPROVED")])
     sign_approved(d, "steve")
     bundle = json.loads(json.dumps(export_bundle(d)))
@@ -145,38 +148,151 @@ def test_a_bundle_carries_the_keys_heads_and_chains_and_an_import_adds_them(case
     other = _case(cases, "C-6")
     (other / "CASE.yaml").write_text("case_id: C-5\nstatus: open\n")
     result = import_bundle(other, bundle)
-    assert result["chains"]["added"] and not result["chains"]["kept_beside"]
-    assert (other / "ledger" / "chains" / f"{cid}.jsonl").exists()
+    assert not (other / "ledger").exists()  # decisions don't travel by merge
+    assert result["ledger"]["keys"] == block["keys"]
+    assert result["ledger"]["heads"] == block["heads"]
 
 
-def test_an_import_never_overwrites_a_different_copy_of_one_chain(cases):
+def test_merge_prints_the_bundle_s_keys_and_heads_as_anchors(cases, capsys, tmp_path):
+    from vhir_cli.commands.sync import cmd_merge
+
     d = _case(cases, findings=[_finding(1, "APPROVED")])
     sign_approved(d, "steve")
     bundle = export_bundle(d)
-    ((cid, text),) = bundle["ledger"]["chains"].items()
-    mine = d / "ledger" / "chains" / f"{cid}.jsonl"
-    mine.write_text("X" + text[1:])  # differs at its first byte: neither is a prefix
-    before = mine.read_bytes()
-    result = import_bundle(d, bundle)
-    assert mine.read_bytes() == before and len(result["chains"]["kept_beside"]) == 1
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(bundle))
+    other = _case(cases, "C-6")
+    capsys.readouterr()
+    cmd_merge(Namespace(case="C-6", file=str(path)), IDENT)
+    out = capsys.readouterr().out
+    assert "The bundle's signed history wasn't added" in out
+    assert bundle["ledger"]["keys"][0]["fingerprint"] in out
+    assert not (other / "ledger").exists()
 
 
-@pytest.mark.parametrize("cid", ["../evil", "notachainid0000", "ABCDEF0123456789"])
-def test_an_import_refuses_a_chain_named_outside_the_rule(cases, cid):
-    d = _case(cases)
-    result = import_bundle(d, {"findings": [], "ledger": {"chains": {cid: "{}\n"}}})
-    assert result["chains"]["refused"] and not (d / "ledger" / "chains").exists()
-
-
-def test_an_import_refuses_a_chain_whose_first_line_isn_t_that_chain(cases):
+def test_another_case_s_bundle_changes_no_verdict(cases):
     d = _case(cases, findings=[_finding(1, "APPROVED")])
     sign_approved(d, "steve")
-    ((cid, text),) = export_bundle(d)["ledger"]["chains"].items()
-    other = _case(cases, "C-6")
-    result = import_bundle(other, {"ledger": {"chains": {"0" * 16: text}}})
-    assert result["chains"]["refused"] == [
-        f"chain {'0' * 16}: its first line isn't that chain's seq 1"
-    ]
+    elsewhere = _case(cases, "C-6", findings=[_finding(2, "APPROVED")])
+    sign_approved(elsewhere, "steve")
+    import_bundle(d, {"findings": [], "ledger": export_bundle(elsewhere)["ledger"]})
+    assert verify_case(d).exit_code == 0
+
+
+def _fork_of_own_chain(d):
+    """A file at this box's chain id holding a different history: the box's
+    seq 1 and a forged seq 2."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    box = ledger.chain_path("C-5").read_text().splitlines()
+    first = json.loads(box[0])
+    key = Ed25519PrivateKey.generate()
+    item = _finding(9, "APPROVED")
+    (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
+                                      "decision": "approve", "status_after": "APPROVED",
+                                      "coupled_from": None,
+                                      "content_snapshot": signed_text(item, "finding")}],
+                             "steve", keys.b64(keys.public_raw(key)), "cli",
+                             "2026-10-08T11:00:00+00:00",
+                             head=(1, ledger.body_hash(ledger.body_of(first))))  # fmt: skip
+    cid = ledger.chain_id(ledger.body_of(first))
+    path = d / "ledger" / "chains" / f"{cid}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return cid, path, box[0] + "\n" + ledger.sign_body(body, key) + "\n"
+
+
+def test_close_puts_this_box_s_chain_at_its_id_and_moves_a_fork_beside(
+    cases, monkeypatch, capsys
+):
+    d = _case(cases, findings=[_finding(1, "APPROVED"), _finding(2, "APPROVED")])
+    sign_approved(d, "steve")
+    cid, path, fork = _fork_of_own_chain(d)
+    path.write_text(fork)
+    assert _close("C-5", monkeypatch) == 0
+    assert "it was moved beside it" in capsys.readouterr().out
+    real = ledger.chain_path("C-5").read_text()
+    assert path.read_text() == real
+    (beside,) = [p for p in path.parent.glob(f"{cid}.*.jsonl")]
+    assert beside.read_text() == fork  # moved, never deleted
+    chains = export_bundle(d)["ledger"]["chains"]
+    assert chains == {cid: real}  # the recipient gets the real chain
+
+
+def test_close_moves_aside_a_longer_copy_with_forged_lines(cases, monkeypatch, capsys):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    d = _case(cases, findings=[_finding(1, "APPROVED"), _finding(2, "APPROVED")])
+    sign_approved(d, "steve")
+    real = ledger.chain_path("C-5").read_text()
+    last = json.loads(real.splitlines()[-1])
+    key = Ed25519PrivateKey.generate()
+    item = _finding(3, "APPROVED")
+    (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
+                                      "decision": "approve", "status_after": "APPROVED",
+                                      "coupled_from": None,
+                                      "content_snapshot": signed_text(item, "finding")}],
+                             "steve", keys.b64(keys.public_raw(key)), "cli",
+                             "2026-10-08T11:00:00+00:00",
+                             head=(last["seq"], ledger.body_hash(ledger.body_of(last))))  # fmt: skip
+    cid = ledger.chain_id(ledger.body_of(json.loads(real.splitlines()[0])))
+    path = d / "ledger" / "chains" / f"{cid}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(real + ledger.sign_body(body, key) + "\n")
+    assert _close("C-5", monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert path.read_text() == real
+    forged_fp = keys.fingerprint(keys.public_raw(key))
+    assert f"seq {last['seq']} " in out and forged_fp not in out
+
+
+def test_a_key_or_head_from_a_failing_line_is_never_printed(cases, monkeypatch, capsys):
+    d = _case(cases, findings=[_finding(1, "APPROVED")])
+    sign_approved(d, "steve")
+    cid, path = _another_box_chain(d)
+    line = json.loads(path.read_text())
+    line["sig"] = keys.b64(b"\0" * 64)
+    path.write_text(json.dumps(line) + "\n")
+    bad_fp = keys.fingerprint(keys.unb64(line["public_key"]))
+    assert _close("C-5", monkeypatch) == 0
+    assert bad_fp not in capsys.readouterr().out
+    record = json.loads((d / "ledger" / "keys.json").read_text())
+    assert bad_fp not in json.dumps(record)
+    assert cid not in {h["chain_id"] for h in record["heads"]}
+
+
+def test_the_copies_wait_for_a_commit_holding_the_case_lock(cases, monkeypatch):
+    import threading
+
+    from vhir_cli import case_copies
+
+    d = _case(cases, findings=[_finding(1, "APPROVED")])
+    sign_approved(d, "steve")
+    monkeypatch.setattr(case_copies, "LOCK_SECONDS", 0.2)
+    with ledger.case_lock("C-5"):
+        with pytest.raises(case_copies.CopyFailed, match="try again"):
+            case_copies.write_case_copies("C-5", d)
+    assert not (d / "ledger").exists()
+    monkeypatch.setattr(case_copies, "LOCK_SECONDS", 5)
+    held, release, done = threading.Event(), threading.Event(), {}
+
+    def hold():
+        with ledger.case_lock("C-5"):
+            held.set()
+            release.wait(5)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(5)
+    w = threading.Thread(
+        target=lambda: done.update(r=case_copies.write_case_copies("C-5", d))
+    )
+    w.start()
+    w.join(0.3)
+    assert "r" not in done  # waiting for the lock
+    release.set()
+    t.join()
+    w.join(5)
+    assert done["r"]["chain_id"]
 
 
 # --- A new line references the heads of the other chain copies that verify ------------------

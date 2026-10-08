@@ -418,7 +418,7 @@ def forgot(examiner: str, config_path: Path) -> None:
 
 def merge_restored_keys(examiner: str, public_keys: list[str]) -> list[str]:
     """A restore's keys for `examiner`: each one the local keys file doesn't
-    hold is appended as retired ("restored", no private key); a box with no
+    hold is appended as retired ("restored from a backup", no private key); a box with no
     credential gets a file of only those. A wrapped private key is never
     installed and a live credential never replaced. Returns the fingerprints
     added."""
@@ -428,7 +428,7 @@ def merge_restored_keys(examiner: str, public_keys: list[str]) -> list[str]:
     added = []
     for pub in public_keys:
         try:
-            if keys.add_retired(data, pub, "restored"):
+            if keys.add_retired(data, pub, "restored from a backup"):
                 added.append(keys.fingerprint(keys.unb64(pub)))
         except (TypeError, ValueError):
             continue

@@ -178,7 +178,7 @@ def test_declining_the_ledger_is_reported_as_skipped(box, capsys):
     assert summary == ["Ledger: skipped"]
 
 
-def _signed_backup(box, tmp_path):
+def _signed_backup(box, tmp_path, before_backup=None):
     """A case whose finding steve approved with a signed line, backed up,
     then gone from this box with its chain: a rebuilt box."""
     case = tmp_path / "cases" / "hashes"
@@ -189,6 +189,8 @@ def _signed_backup(box, tmp_path):
     ]))  # fmt: skip
     sign_approved(case, "steve")
     signer = verify_case(case).keys[0]
+    if before_backup:
+        before_backup(case)
     path = B.create_backup_data(case, str(tmp_path / "backups"), "steve")["backup_path"]
     shutil.rmtree(case)
     ledger.chain_path("hashes").unlink()
@@ -203,12 +205,13 @@ def test_a_restore_adds_the_case_s_keys_as_retired_on_a_box_with_no_credential(
     assert f"KEY ADDED steve {signer['fingerprint']}" in capsys.readouterr().out
     data = keys.load("steve")
     assert [(k["status"], k["retired_reason"]) for k in data["keys"]] == [
-        ("retired", "restored")
+        ("retired", "restored from a backup")
     ]
     assert credentials.state("steve", tmp_path / "cfg") == "none"  # still to enrol
     result = verify_case(case)
-    assert result.exit_code == 0 and "registered here (retired: restored" in str(
-        result.keys
+    assert (
+        result.exit_code == 0
+        and "registered here (retired: restored from a backup" in str(result.keys)
     )
     replies = iter([PASSPHRASE, PASSPHRASE])
     monkeypatch.setattr(
@@ -227,4 +230,93 @@ def test_a_restore_never_replaces_a_live_credential(box, tmp_path):
     data = keys.load("steve")
     assert keys.active(data)["public_key"] == active
     assert keys.check_password(data, PASSPHRASE)
-    assert any(k.get("retired_reason") == "restored" for k in data["keys"])
+    assert any(
+        k.get("retired_reason") == "restored from a backup" for k in data["keys"]
+    )
+
+
+def _plant_chain(path: Path, case_id: str, key=None, bad_sig=False, examiner="alice"):
+    """A one-line chain of `case_id` signed by `key` (a fresh one by default)
+    at `path`. Returns the line's public key."""
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from vhir_cli.case_io import signed_text
+
+    key = key or Ed25519PrivateKey.generate()
+    pub = keys.b64(keys.public_raw(key))
+    item = {"id": "F-alice-009", "title": "t", "status": "APPROVED"}
+    (body,) = ledger.prepare(case_id, [{"item_id": item["id"], "type": "finding",
+                                        "decision": "approve", "status_after": "APPROVED",
+                                        "coupled_from": None,
+                                        "content_snapshot": signed_text(item, "finding")}],
+                             examiner, pub, "cli", "2026-10-08T10:00:00+00:00",
+                             head=(0, ledger.genesis_prev(case_id)))  # fmt: skip
+    body["genesis"] = {
+        "legacy_sha256": hashlib.sha256(b"").hexdigest(),
+        "legacy_bytes": 0,
+    }
+    line = json.loads(ledger.sign_body(body, key))
+    if bad_sig:
+        line["sig"] = keys.b64(b"\0" * 64)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(line) + "\n")
+    return pub
+
+
+def test_a_restore_refuses_another_case_s_chain(box, tmp_path, capsys):
+    path, signer, case = _signed_backup(box, tmp_path)
+    planted = Path(path) / "ledger" / "chains" / "0123456789abcdef.jsonl"
+    _plant_chain(planted, "another-case")
+    manifest = json.loads((Path(path) / "backup-manifest.json").read_text())
+    manifest["files"].append({"path": "ledger/chains/0123456789abcdef.jsonl",
+                              "sha256": B.sha256_file(planted), "size": 1})  # fmt: skip
+    (Path(path) / "backup-manifest.json").write_text(json.dumps(manifest))
+    assert box.restore(path) == 0
+    err = capsys.readouterr().err
+    assert "Ledger copy not restored: ledger/chains/0123456789abcdef.jsonl" in err
+    assert "is case 'another-case', not hashes" in err
+    assert not (case / "ledger" / "chains" / "0123456789abcdef.jsonl").exists()
+    assert verify_case(case).exit_code == 0
+
+
+def test_a_restore_adds_only_keys_from_verifying_lines(box, tmp_path, capsys):
+    """A chain copy whose line doesn't verify is in the case when it's backed
+    up: its key reaches neither keys.json nor this box."""
+    planted = {}
+
+    def plant(case):
+        planted["pub"] = _plant_chain(case / "ledger" / "chains" / "x.jsonl", "hashes",
+                                      bad_sig=True, examiner="steve")  # fmt: skip
+
+    path, signer, case = _signed_backup(box, tmp_path, plant)
+    bad = keys.fingerprint(keys.unb64(planted["pub"]))
+    assert bad not in (Path(path) / "ledger" / "keys.json").read_text()
+    assert box.restore(path) == 0
+    held = [keys.key_fingerprint(k) for k in keys.load("steve")["keys"]]
+    assert held == [signer["fingerprint"]]
+    assert bad not in capsys.readouterr().out
+
+
+def test_a_crafted_keys_json_adds_nothing(box, tmp_path, capsys):
+    """keys.json is a printout; restore reads the keys from the chains."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    path, signer, case = _signed_backup(box, tmp_path)
+    other = keys.b64(keys.public_raw(Ed25519PrivateKey.generate()))
+    kj = Path(path) / "ledger" / "keys.json"
+    kj.write_text(json.dumps({"keys": [
+        {"examiner": "steve", "public_key": other, "status": "active", "wrapped_private": "AAAA"},
+        {"examiner": "victim", "public_key": other},
+    ]}))  # fmt: skip
+    manifest = json.loads((Path(path) / "backup-manifest.json").read_text())
+    for f in manifest["files"]:
+        if f["path"] == "ledger/keys.json":
+            f["sha256"] = B.sha256_file(kj)
+    (Path(path) / "backup-manifest.json").write_text(json.dumps(manifest))
+    assert box.restore(path) == 0
+    assert [keys.key_fingerprint(k) for k in keys.load("steve")["keys"]] == [
+        signer["fingerprint"]
+    ]
+    assert keys.load("victim") is None

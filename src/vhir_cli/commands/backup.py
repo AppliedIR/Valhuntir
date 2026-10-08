@@ -1398,16 +1398,27 @@ def cmd_restore(args, identity: dict) -> None:
             and rel.startswith("opensearch-snapshot/")
         )
 
+    from vhir_cli import case_copies
+
+    refused: dict[str, str] = {}
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         src = backup_path / rel
         dst = target_dir / rel
         if src.exists() and not _is_control(rel):
+            if rel.startswith("ledger/chains/"):  # never another case's chain
+                why = case_copies.restorable_chain(src.read_bytes(), case_id)
+                if why:
+                    refused[rel] = why
+                    progress("Copying files", i, total)
+                    continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(src), str(dst))
         progress("Copying files", i, total)
     if total:
         print()
+    for rel, why in refused.items():
+        print(f"  Ledger copy not restored: {rel}: {why}", file=sys.stderr)
 
     # Restore verification ledger
     if restore_ledger:
@@ -1468,6 +1479,9 @@ def cmd_restore(args, identity: dict) -> None:
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         expected = entry["sha256"]
+        if rel in refused:  # reported above
+            progress("Verifying", i, total)
+            continue
         fpath = (backup_path if _is_control(rel) else target_dir) / rel
         if not fpath.exists():
             print(f"  MISSING: {rel}")
@@ -1594,17 +1608,19 @@ def cmd_restore(args, identity: dict) -> None:
 
 
 def _merge_keys(case_dir: Path) -> None:
-    """KEY ADDED for each signing key the restored case's keys.json names
-    that this box's keys file for its examiner doesn't hold."""
-    from vhir_cli import credentials, keys
+    """KEY ADDED for each signing key with a verifying line in the restored
+    case's chains that this box's keys file for its examiner doesn't hold.
+    Read from the chains themselves, never from keys.json."""
+    from vhir_cli import case_copies, credentials, keys
 
     try:
-        record = json.loads((case_dir / "ledger" / "keys.json").read_text())
-    except (OSError, ValueError):
+        record = case_copies.case_keys(case_dir)
+    except (OSError, ValueError) as e:
+        print(f"  Signing keys: not merged ({e})", file=sys.stderr)
         return
     by_examiner: dict[str, list[str]] = {}
-    for k in record.get("keys", []) if isinstance(record, dict) else []:
-        if isinstance(k, dict) and isinstance(k.get("public_key"), str):
+    for k in record["keys"]:
+        if isinstance(k.get("public_key"), str):
             by_examiner.setdefault(str(k.get("examiner")), []).append(k["public_key"])
     for examiner, pubs in sorted(by_examiner.items()):
         try:

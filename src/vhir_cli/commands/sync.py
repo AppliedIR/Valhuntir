@@ -99,12 +99,13 @@ def cmd_merge(args, identity: dict) -> None:
     print(
         f"  Timeline: {tr.get('added', 0)} added, {tr.get('updated', 0)} updated, {tr.get('skipped', 0)} skipped"
     )
-    ch = result.get("chains") or {}
-    for path in ch.get("added", []):
-        print(f"  Ledger copy added: {path}")
-    for path in ch.get("kept_beside", []):
+    anchors = result.get("ledger") or {}
+    if anchors.get("keys") or anchors.get("heads"):
+        from vhir_cli.case_copies import summary_lines
+
         print(
-            f"  A different ledger copy with the same id was kept beside the existing one: {path}"
+            "  The bundle's signed history wasn't added (decisions don't travel by "
+            "merge). Its keys and heads, to compare with the other box:"
         )
-    for why in ch.get("refused", []):
-        print(f"  Ledger copy refused: {why}", file=sys.stderr)
+        for line in summary_lines(str(bundle.get("case_id", "")), anchors):
+            print(f"  {line}")

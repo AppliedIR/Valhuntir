@@ -1432,9 +1432,9 @@ def _case_close(args, identity: dict) -> None:
         print(f"Error: {e}. The case was not closed.", file=sys.stderr)
         sys.exit(1)
     for what, path in copied["copies"]:
-        if what == "kept beside":
+        if what == "moved beside":
             print(
-                f"  A different copy was already there; this one was kept beside it: {path}"
+                f"  A different file was where this box's copy goes; it was moved beside it: {path}"
             )
     for line in case_copies.summary_lines(case_id, copied):
         print(line)
