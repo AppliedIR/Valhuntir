@@ -460,8 +460,12 @@ class TestWizardClient:
         monkeypatch.setattr("builtins.input", lambda _: "3")
         assert _wizard_client() == "librechat"
 
-    def test_choice_4_maps_to_other(self, monkeypatch):
+    def test_choice_4_maps_to_open_webui(self, monkeypatch):
         monkeypatch.setattr("builtins.input", lambda _: "4")
+        assert _wizard_client() == "open-webui"
+
+    def test_choice_5_maps_to_other(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "5")
         assert _wizard_client() == "other"
 
     def test_unrecognized_falls_back_to_other(self, monkeypatch):

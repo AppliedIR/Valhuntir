@@ -422,6 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
             "librechat",
             "other",
             "codex",
+            "open-webui",
         ],
         help="Target LLM client",
     )

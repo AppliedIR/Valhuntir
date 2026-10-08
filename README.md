@@ -20,7 +20,7 @@ Valhuntir turns a single incident response analyst into the manager of an agenti
 
 Valhuntir ensures accountability and enforces human review of findings through signed approvals (each examiner's own key, unlocked by their passphrase) and multiple layered controls.
 
-Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code and Codex (agents with a shell, set up with Valhuntir's controls), self-hosted LibreChat, and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
+Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code and Codex (agents with a shell, set up with Valhuntir's controls), self-hosted LibreChat and Open WebUI (MCP-only, with a locked configuration), and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
 
 > Looking for a simpler setup without the gateway or OpenSearch? See [Valhuntir Lite](#valhuntir-lite).
 
@@ -623,6 +623,7 @@ Always launch your LLM client from `~/vhir/` or a subdirectory. Forensic control
 | Claude Code | Linux, macOS, Windows | `~/vhir/.mcp.json` or `~/.claude.json` (SIFT) | `CLAUDE.md`, `settings.json`, sandbox, audit hooks |
 | Codex | Linux, macOS, Windows | `~/.codex/valhuntir.config.toml` (`codex -p valhuntir`) | Instructions in the profile, skills in `~/.agents/skills/`, Codex's sandbox |
 | LibreChat | Any (browser) | `librechat.yaml` (`mcpServers` section) | Valhuntir generates `librechat_mcp.yaml` reference to merge |
+| Open WebUI | Any (browser) | Admin Panel (steps printed) | Lock profile `openwebui-vhir.env` and `openwebui-system-prompt.md`; see sift-mcp `docs/open-webui-setup.md` |
 | Other | Any | `vhir-mcp-config.json` | Manual integration |
 
 Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Any MCP client that supports Streamable HTTP transport with Bearer token authentication will work — the gateway is not client-specific.

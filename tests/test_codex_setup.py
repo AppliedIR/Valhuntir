@@ -281,6 +281,28 @@ def test_update_rebuilds_the_backends_and_keeps_a_direct_wintools_entry(box):
     assert servers["wintools-mcp"]["url"].startswith("https://192.0.2.5:4624")
 
 
+def test_a_remnux_entry_added_later_is_kept_by_every_update(box):
+    """`--add-remnux` passes the entry as extra; a later update (servers None)
+    keeps its section, and a new extra of the same name replaces it."""
+    _setup()
+    remnux = {
+        "url": "http://192.0.2.9:3000/mcp",
+        "headers": {"Authorization": "Bearer r1"},
+    }
+    assert cs.deploy_codex_assets(extra={"remnux-mcp": remnux}) == "updated"
+    assert _profile(box)["mcp_servers"]["remnux-mcp"]["url"] == remnux["url"]
+    cs.deploy_codex_assets()
+    assert _profile(box)["mcp_servers"]["remnux-mcp"]["http_headers"] == {
+        "Authorization": "Bearer r1"
+    }
+    cs.deploy_codex_assets(
+        extra={"remnux-mcp": {**remnux, "url": "http://192.0.2.9:4000/mcp"}}
+    )
+    servers = _profile(box)["mcp_servers"]
+    assert servers["remnux-mcp"]["url"] == "http://192.0.2.9:4000/mcp"
+    assert box.profile.read_text().count("[mcp_servers.remnux-mcp]") == 1
+
+
 def test_update_with_the_gateway_down_keeps_the_profile_and_says_so(box, capsys):
     _setup()
     before = box.profile.read_bytes()

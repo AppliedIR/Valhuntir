@@ -497,14 +497,16 @@ def _wizard_client() -> str:
     print("  1. Claude Code      CLI agent (writes .mcp.json + CLAUDE.md)")
     print("  2. Codex            CLI agent (writes ~/.codex/valhuntir.config.toml)")
     print("  3. LibreChat        Web UI (writes librechat_mcp.yaml)")
-    print("  4. Other / manual   Raw JSON config for any MCP client")
+    print("  4. Open WebUI       Web UI (writes its lock profile and system prompt)")
+    print("  5. Other / manual   Raw JSON config for any MCP client")
 
     choice = _prompt("\nChoose", "1")
     return {
         "1": "claude-code",
         "2": "codex",
         "3": "librechat",
-        "4": "other",
+        "4": "open-webui",
+        "5": "other",
     }.get(choice, "other")
 
 
@@ -820,6 +822,9 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         if _codex_userns_restricted():
             print("")
             print(f"  NOTE: {CODEX_USERNS_NOTICE}")
+
+    elif client == "open-webui":
+        _write_openwebui(servers)
 
     elif client == "librechat":
         output = Path.cwd() / "librechat_mcp.yaml"
@@ -1720,7 +1725,7 @@ def _profile_sections(text: str) -> dict[str, str]:
     return {n: t.rstrip("\n") + "\n" for n, t in out.items()}
 
 
-def _codex_servers_from_box(profile: Path) -> tuple[dict, list[str]] | None:
+def _codex_servers_from_box(profile: Path) -> tuple[dict, dict[str, str]] | None:
     """The gateway's backends as this box serves them now, plus opensearch-mcp,
     and the profile's other server sections kept as they are. None if the
     gateway can't be reached."""
@@ -1750,7 +1755,7 @@ def _codex_servers_from_box(profile: Path) -> tuple[dict, list[str]] | None:
         old = {}
     gateway = f'url = "{url}/mcp/'
     # another section is kept, unless it names a gateway backend now gone
-    kept = [t for n, t in old.items() if n not in servers and gateway not in t]
+    kept = {n: t for n, t in old.items() if n not in servers and gateway not in t}
     return servers, kept
 
 
@@ -1855,7 +1860,9 @@ def _codex_userns_restricted() -> bool:
         return False
 
 
-def deploy_codex_assets(servers: dict | None = None, remote: bool = False) -> str:
+def deploy_codex_assets(
+    servers: dict | None = None, remote: bool = False, extra: dict | None = None
+) -> str:
     """Write Valhuntir's Codex profile, and deploy the skills to
     ~/.agents/skills/ and the skeptic's agent to ~/.codex/agents/.
 
@@ -1865,7 +1872,11 @@ def deploy_codex_assets(servers: dict | None = None, remote: bool = False) -> st
     status: created, updated, unchanged, written, kept or missing.
 
     remote (another machine): the skills, agent and instructions are fetched
-    from sift-mcp's main branch, with the remote overlay."""
+    from sift-mcp's main branch, with the remote overlay.
+
+    extra: more server entries ({name: {"url": ..., "headers": {...}}} or
+    {"command": ..., "args": [...]}), added to the profile or replacing the
+    same-named entry, e.g. a remnux-mcp added later."""
     path = codex_profile_path()
     if remote:
         instructions = _fetch_codex_assets()
@@ -1875,6 +1886,7 @@ def deploy_codex_assets(servers: dict | None = None, remote: bool = False) -> st
                 f"{path} not written. Check the network and re-run."
             )
             return "missing"
+        servers = {**servers, **(extra or {})}
         status = _write_codex_profile(
             path, _codex_profile_text(servers, instructions, [])
         )
@@ -1886,7 +1898,7 @@ def deploy_codex_assets(servers: dict | None = None, remote: bool = False) -> st
         agents / "finding-skeptic" / "codex.toml" if agents else None,
         Path.home() / ".codex" / "agents" / "finding-skeptic.toml",
     )
-    kept: list[str] = []
+    kept: dict[str, str] = {}
     if servers is None:
         found = _codex_servers_from_box(path)
         if found is None:
@@ -1903,7 +1915,9 @@ def deploy_codex_assets(servers: dict | None = None, remote: bool = False) -> st
             f"AGENTS.md, FORENSIC_DISCIPLINE.md, codex/OVERLAY.md); {path} not written."
         )
         return "missing"
-    text = _codex_profile_text(servers, instructions, kept)
+    servers = {**servers, **(extra or {})}
+    sections = [t for n, t in kept.items() if n not in servers]
+    text = _codex_profile_text(servers, instructions, sections)
     status = _write_codex_profile(path, text)
     _codex_config_conflicts()
     return status
@@ -2032,6 +2046,122 @@ def _uninstall_codex() -> None:
         else:
             p.unlink()
     print("  Removed.")
+
+
+OPENWEBUI_ENV = """\
+# Open WebUI settings for Valhuntir. Start Open WebUI with them, e.g.:
+#   docker run --env-file openwebui-vhir.env ... ghcr.io/open-webui/open-webui
+# They keep tool code off the Open WebUI server: no Python Tools or Functions,
+# no workspace tools for users, no direct connections, and a code interpreter
+# that runs in the browser (Pyodide) or not at all. Never point the code
+# interpreter at Jupyter or Open Terminal.
+ENABLE_PLUGINS=False
+USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False
+ENABLE_DIRECT_INTEGRATIONS=False
+ENABLE_CODE_INTERPRETER=False
+CODE_INTERPRETER_ENGINE=pyodide
+CODE_EXECUTION_ENGINE=pyodide
+"""
+
+
+def _initialize_instructions(url: str, token: str | None) -> str | None:
+    """The `instructions` an MCP endpoint returns at initialize, or None."""
+    import urllib.request
+
+    from vhir_cli.gateway import get_local_ssl_context
+
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "vhir-setup", "version": "1"},
+            },
+        }
+    ).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json, text/event-stream")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    kwargs: dict = {"timeout": 10}
+    if url.startswith("https"):
+        ctx = get_local_ssl_context()
+        if ctx is not None:
+            kwargs["context"] = ctx
+    try:
+        with urllib.request.urlopen(req, **kwargs) as resp:
+            raw = resp.read().decode()
+            stream = "event-stream" in resp.headers.get("Content-Type", "")
+    except Exception:
+        return None
+    payloads = (
+        [ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")]
+        if stream
+        else [raw]
+    )
+    for payload in payloads:
+        try:
+            msg = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 1:
+            result = msg.get("result")
+            instructions = (
+                result.get("instructions") if isinstance(result, dict) else None
+            )
+            return instructions if isinstance(instructions, str) else None
+    return None
+
+
+def _write_openwebui(servers: dict) -> None:
+    """Open WebUI: the lock-profile env file, the system prompt (Open WebUI
+    drops the instructions MCP servers send, so they go here), and the steps
+    to add each backend in its Admin Panel. The token is never printed."""
+    env = Path.cwd() / "openwebui-vhir.env"
+    if _write_user_file(env, OPENWEBUI_ENV, "it differs from vhir's lock profile") in (
+        "created",
+        "written",
+    ):
+        print(f"  Generated: {env}")
+    backends = {
+        n: e for n, e in servers.items() if e.get("url") and n not in _INTERNET_MCPS
+    }
+    sections, missing = [], []
+    for name, entry in backends.items():
+        auth = (entry.get("headers") or {}).get("Authorization", "")
+        token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else None
+        text = _initialize_instructions(entry["url"], token)
+        if text is None:
+            missing.append(name)
+        else:
+            sections.append(f"## {name}\n\n{text.strip()}\n")
+    prompt = _PROMPT_PREFIX.rstrip("\n") + "\n\n# Valhuntir backends\n\n"
+    prompt += "\n".join(sections)
+    path = Path.cwd() / "openwebui-system-prompt.md"
+    if _write_user_file(path, prompt, "it differs from what vhir generated") in (
+        "created",
+        "written",
+    ):
+        print(f"  Generated: {path}")
+    if missing:
+        print(
+            "  Note: these backends didn't answer, so their instructions aren't in "
+            f"the system prompt: {', '.join(missing)}. Re-run once they run."
+        )
+    print("")
+    print("  In Open WebUI, as an admin:")
+    print("    1. Start it with --env-file openwebui-vhir.env (the lock profile).")
+    print("    2. Admin Panel > Settings > External Tools: add each backend as")
+    print("       MCP (Streamable HTTP), auth Bearer, with the gateway's token:")
+    for name, entry in backends.items():
+        print(f"         {name:<22s}{entry['url']}")
+    print("    3. Paste openwebui-system-prompt.md into the model's system prompt.")
+    print("    4. Small local models: add only the backends you need, and use the")
+    print("       Function Name Filter List (see docs/open-webui-setup.md).")
 
 
 def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
