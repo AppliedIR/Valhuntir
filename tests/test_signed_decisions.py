@@ -510,3 +510,213 @@ def test_an_unsigned_save_carries_what_was_shown(case, monkeypatch):
     assert entry["rejection_reason"] == "noise"
     assert entry["content_hash_at_review"] == compute_content_hash(shown)
     assert set(entry["saved_unsigned"]) == {"at", "reason"}
+
+
+# --- What is displayed is what is signed ------------------------------------------------
+
+
+def test_a_staged_edit_is_shown_as_it_will_be_signed(case, monkeypatch, capsys):
+    (case / "pending-reviews.json").write_text(json.dumps({"case_id": "C-9", "items": [{
+        "id": "F-steve-002", "type": "finding", "action": "approve", "staged_by": "steve",
+        "modifications": {
+            "title": {"original": "Other", "modified": "REPLACED-TITLE"},
+            "context": {"original": None, "modified": "NEW-CONTEXT"},
+        },
+    }]}))  # fmt: skip
+    A._review_mode(case, IDENT, case / "cfg", show_signed=True)
+    out = capsys.readouterr().out
+    assert "- Other" in out and "+ REPLACED-TITLE" in out and "+ NEW-CONTEXT" in out
+    assert '"title": "REPLACED-TITLE"' in out  # --show-signed: the body signed
+    (line,) = [o for _, _, o in ledger.read_lines(ledger.chain_path("C-9")) if o]
+    snap = json.loads(line["content_snapshot"])
+    assert (snap["title"], snap["context"]) == ("REPLACED-TITLE", "NEW-CONTEXT")
+
+
+def test_a_staged_timestamp_edit_is_shown_before_it_is_signed(case, capsys):
+    (case / "pending-reviews.json").write_text(json.dumps({"case_id": "C-9", "items": [{
+        "id": "T-steve-001", "type": "timeline", "action": "approve", "staged_by": "steve",
+        "modifications": {"timestamp": {"original": "2026-10-01T00:00:00Z",
+                                        "modified": "2026-09-30T23:00:00Z"}},
+    }]}))  # fmt: skip
+    A._review_mode(case, IDENT, case / "cfg")
+    out = capsys.readouterr().out
+    assert "- 2026-10-01T00:00:00Z" in out and "+ 2026-09-30T23:00:00Z" in out
+
+
+# --- Review removes exactly the entries it signed ---------------------------------------
+
+
+def test_a_discarded_review_entry_stays_and_another_examiner_s_is_untouched(
+    case, monkeypatch, capsys
+):
+    alice = {
+        "id": "F-steve-001",
+        "type": "finding",
+        "action": "approve",
+        "staged_by": "alice",
+    }
+    mine = {
+        "id": "F-steve-002",
+        "type": "finding",
+        "action": "approve",
+        "staged_by": "steve",
+    }
+    (case / "pending-reviews.json").write_text(
+        json.dumps({"case_id": "C-9", "items": [alice, mine]})
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")  # include alice's
+
+    def change_both_then_type(prompt=""):
+        fs = json.loads((case / "findings.json").read_text())
+        for f in fs:
+            f["observation"] = "changed by someone else"
+        (case / "findings.json").write_text(json.dumps(fs))
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", change_both_then_type)
+    assert _run(lambda: A._review_mode(case, IDENT, case / "cfg")) == 1
+    assert _signed() == []
+    left = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert [e["staged_by"] for e in left] == ["alice", "steve"]
+    assert left[0] == alice  # another examiner's entry: byte for byte
+    assert "review_again" in left[1]
+
+
+# --- The commit writes only the decision onto the reloaded record ---------------------------
+
+
+def test_fields_written_during_the_prompt_survive_an_approve(case, monkeypatch):
+    def add_provenance_then_type(prompt=""):
+        fs = json.loads((case / "findings.json").read_text())
+        fs[1]["provenance"] = {"summary": "MCP"}
+        fs[1]["examiner_notes"] = [{"note": "from the portal"}]
+        (case / "findings.json").write_text(json.dumps(fs))
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", add_provenance_then_type)
+    A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", note="mine")
+    f = {x["id"]: x for x in json.loads((case / "findings.json").read_text())}[
+        "F-steve-002"
+    ]
+    assert f["status"] == "APPROVED" and f["provenance"] == {"summary": "MCP"}
+    assert [n.get("note") for n in f["examiner_notes"]] == ["from the portal", "mine"]
+    assert verify_case(case).exit_code == 0
+
+
+def test_an_ioc_s_sightings_added_during_the_prompt_survive_its_reject(
+    case, monkeypatch
+):
+    def add_sighting_then_type(prompt=""):
+        iocs = json.loads((case / "iocs.json").read_text())
+        iocs[0]["sightings"] = [{"host": "h1"}, {"host": "h2"}]
+        iocs[0]["source_findings"] = ["F-steve-001", "F-steve-002"]
+        (case / "iocs.json").write_text(json.dumps(iocs))
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", add_sighting_then_type)
+    A._approve_specific(case, ["IOC-steve-001"], IDENT, case / "cfg", decision="reject")
+    ioc = json.loads((case / "iocs.json").read_text())[0]
+    assert ioc["status"] == "REJECTED" and len(ioc["sightings"]) == 2
+    assert ioc["source_findings"] == ["F-steve-001", "F-steve-002"]
+
+
+# --- No loss on any exit path -------------------------------------------------------------------
+
+
+def _todo_session(case, monkeypatch):
+    """Interactive: approve F-steve-001, a TODO on F-steve-002, quit."""
+    replies = iter(["a", "t", "check the other host", "", "high", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    return lambda: A._interactive_review(case, IDENT, case / "cfg")
+
+
+def _todos(case):
+    p = case / "todos.json"
+    return json.loads(p.read_text()) if p.exists() else []
+
+
+def test_a_todo_is_created_when_a_decision_is_discarded(case, monkeypatch):
+    run = _todo_session(case, monkeypatch)
+
+    def change_then_type(prompt=""):
+        fs = json.loads((case / "findings.json").read_text())
+        fs[0]["title"] = "changed"
+        (case / "findings.json").write_text(json.dumps(fs))
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", change_then_type)
+    assert _run(run) == 1 and _signed() == []
+    assert [t["description"] for t in _todos(case)] == ["check the other host"]
+
+
+def test_a_todo_is_saved_with_the_decisions_when_nothing_can_be_signed(
+    case, monkeypatch
+):
+    run = _todo_session(case, monkeypatch)
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": "wrong")
+    assert _run(run) == 1 and _todos(case) == []
+    saved = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert [(e["id"], e["action"]) for e in saved] == [
+        ("F-steve-001", "approve"), ("F-steve-002", "todo")
+    ]  # fmt: skip
+    assert saved[1]["todo_description"] == "check the other host"
+    approval_auth._clear_failures("steve")
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": PASSPHRASE)
+    A._review_mode(
+        case, IDENT, case / "cfg"
+    )  # --review creates it and signs F-steve-001
+    assert [t["description"] for t in _todos(case)] == ["check the other host"]
+    assert _signed() == [("F-steve-001", "approve"), ("T-steve-001", "approve"),
+                         ("IOC-steve-001", "approve")]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "failure", ["keys file damaged", "a non-record entry", "no lock folder"]
+)
+def test_an_error_after_the_review_saves_the_decisions_and_never_tracebacks(
+    case, monkeypatch, capsys, failure
+):
+    def at_prompt(prompt=""):
+        if failure == "keys file damaged":
+            keys.keys_path("steve").write_text('{"schema": 3}')
+        elif failure == "a non-record entry":
+            fs = json.loads((case / "findings.json").read_text())
+            (case / "findings.json").write_text(json.dumps(fs + [None]))
+        else:
+            monkeypatch.setattr(ledger, "case_lock", _missing_lock_dir)
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", at_prompt)
+    code = _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+    err = capsys.readouterr().err
+    if (
+        failure == "a non-record entry"
+    ):  # ignored, never a crash: the decision is signed
+        assert code == 0 and _signed() == [("F-steve-002", "approve")]
+        return
+    assert code == 1 and _signed() == [] and "Traceback" not in err
+    (entry,) = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert entry["id"] == "F-steve-002" and "saved, unsigned" in err
+
+
+def _missing_lock_dir(case_id, *a, **k):
+    raise ledger.LockDirMissing(
+        "the case lock directory is missing; re-run the installer"
+    )
+
+
+def test_a_corrupt_pending_file_is_set_aside_not_overwritten(case, monkeypatch, capsys):
+    path = case / "pending-reviews.json"
+    path.write_text('{"items": [{"id": "F-steve-001", "staged_by": "bob"}, junk')
+    before = path.read_bytes()
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": "wrong")
+    _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+    (aside,) = case.glob("pending-reviews.json.corrupt-*")
+    assert aside.read_bytes() == before
+    assert [e["id"] for e in json.loads(path.read_text())["items"]] == ["F-steve-002"]
+    assert "set aside, unchanged" in capsys.readouterr().err
+
+
+def test_an_id_named_twice_is_signed_once(case):
+    A._approve_specific(case, ["F-steve-002", "F-steve-002"], IDENT, case / "cfg")
+    assert _signed() == [("F-steve-002", "approve")]

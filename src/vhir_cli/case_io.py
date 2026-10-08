@@ -504,6 +504,9 @@ def plan_cascades(
 
     Returns `{item, type, status_after, coupled_from}` per cascade."""
     out: list[dict] = []
+    # entries that aren't records are ignored, never a crash under the lock
+    findings = [f for f in findings if isinstance(f, dict)]
+    timeline = [t for t in timeline if isinstance(t, dict)]
     by_id = {f.get("id"): f for f in findings}
     events = {t.get("id"): t for t in timeline}
     for fid, after in decided.items():

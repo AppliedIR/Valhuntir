@@ -85,7 +85,7 @@ def case(tmp_path, monkeypatch):
     return d
 
 
-class _Prompt(Exception):
+class _Prompt(BaseException):  # not an error: the tail keeps work on any Exception
     pass
 
 
@@ -144,7 +144,11 @@ def test_review_shows_the_events_approved_with_it(case, monkeypatch, capsys):
     assert "2026-10-01T03:12:00Z" in out
 
 
-def test_review_shows_evidence_only_for_what_it_approves(case, monkeypatch, capsys):
+def test_a_review_reject_shows_its_signed_artifacts_but_no_approved_events(
+    case, monkeypatch, capsys
+):
+    """What is displayed is what is signed: a reject signs the finding's
+    artifacts too; only an approve lists the events approved with it."""
     reject = [
         {
             "id": "F-tester-001",
@@ -155,7 +159,8 @@ def test_review_shows_evidence_only_for_what_it_approves(case, monkeypatch, caps
     ]
     _stage(case, [_finding()], [EVENT], review=reject)
     out = _until_prompt(monkeypatch, capsys, REVIEW)
-    assert "approved with it" not in out and "Artifacts" not in out
+    assert "approved with it" not in out
+    _artifact_lines_present(out)
 
 
 def test_interactive_shows_every_item_s_evidence_before_the_prompt(

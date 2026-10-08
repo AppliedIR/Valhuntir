@@ -923,7 +923,9 @@ def test_a_file_corrupted_during_the_wait_saves_the_decisions_and_signs_nothing(
     )
     err = capsys.readouterr().err
     assert rc == 1 and signed == []
-    assert f"{name} couldn't be read as case data. Nothing was signed" in err
+    assert (
+        f"{name} couldn't be read as case data" in err and "Nothing was signed" in err
+    )
     assert (wait_case / name).read_text() == _CORRUPT  # never saved over
     saved = json.loads((wait_case / "pending-reviews.json").read_text())["items"]
     assert [(e["id"], e["action"]) for e in saved] == [("F-steve-001", "approve")]

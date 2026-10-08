@@ -83,7 +83,7 @@ def cascades(
 ) -> list[Decision]:
     """The cascades of `direct`, planned from the post-edit items."""
     edited = {d.id: d.item for d in direct}
-    findings = [edited.get(f.get("id"), f) for f in findings]
+    findings = [edited.get(f.get("id"), f) for f in findings if isinstance(f, dict)]
     decided = {
         d.id: d.status_after
         for d in direct
@@ -125,6 +125,31 @@ def _prompt_text(direct, planned, new_passphrase: bool) -> str:
 # --- Unsigned save ----------------------------------------------------------------------
 
 
+def read_delta(path: Path) -> dict | None:
+    """pending-reviews.json as an object; None when there is none. A file
+    that doesn't read as an object with a list of items is set aside as
+    `.corrupt-<UTC>`, unchanged, and reported; it is never overwritten."""
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("items", []), list):
+        return data
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    aside = path.with_name(f"{path.name}.corrupt-{stamp}")
+    os.replace(path, aside)
+    print(
+        f"WARNING: {path.name} couldn't be read; it was set aside, unchanged, as "
+        f"{aside.name}. Its staged entries are in that file.",
+        file=sys.stderr,
+    )
+    return {}
+
+
 def _write_delta(path: Path, delta: dict) -> None:
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     with os.fdopen(fd, "w") as f:
@@ -135,24 +160,31 @@ def _write_delta(path: Path, delta: dict) -> None:
 
 
 def save_unsigned(
-    case_dir: Path, examiner: str, direct: list[Decision], why: str
-) -> list[str]:
-    """Save the decisions to pending-reviews.json, unsigned and marked so,
-    merged under the case lock: an entry of this examiner's for the same id
-    is replaced, others are kept. Returns what couldn't be saved."""
+    case_dir: Path, examiner: str, direct: list[Decision], why: str, todos=()
+) -> tuple[list[str], list[str]]:
+    """Save the decisions and TODOs to pending-reviews.json, unsigned and
+    marked so, merged under the case lock: an entry of this examiner's for
+    the same id is replaced, others are kept. An entry from the file that
+    another examiner staged is left as it is. Returns (what couldn't be
+    saved, the entries left as another examiner staged them)."""
     now = datetime.now(timezone.utc).isoformat()
     path = case_dir / "pending-reviews.json"
     not_saved: list[str] = []
-    with ledger.case_lock(case_id_of(case_dir)):
-        try:
-            delta = json.loads(path.read_text())
-        except (OSError, ValueError):
-            delta = {}
-        if not isinstance(delta, dict):
-            delta = {}
+    left: list[str] = []
+    try:
+        lock = ledger.case_lock(case_id_of(case_dir))
+        lock.acquire()
+    except ledger.LockDirMissing:
+        lock = None  # nothing else can hold it either; save the work anyway
+    try:
+        delta = read_delta(path) or {}
         entries = [e for e in delta.get("items", []) if isinstance(e, dict)]
         for d in direct:
-            if d.delta_entry is not None:  # from the file: stamp it in place
+            if d.delta_entry is not None:  # from the file: stamp your own in place
+                if d.delta_entry.get("staged_by") != examiner:
+                    left.append(
+                        f"{d.id}: left as staged by {d.delta_entry.get('staged_by') or 'unknown'}"
+                    )
                 for e in entries:
                     if e == d.delta_entry and e.get("staged_by") == examiner:
                         e["saved_unsigned"] = {"at": now, "reason": why}
@@ -186,11 +218,49 @@ def save_unsigned(
                 if not (e.get("id") == d.id and e.get("staged_by") == examiner)
             ]
             entries.append(entry)
+        for t in todos:  # a TODO the examiner asked for, created by --review
+            related = (t.get("related_findings") or [""])[0]
+            entries.append({
+                "id": related, "type": item_type(related), "action": "todo",
+                "todo_description": t.get("description", ""),
+                "todo_priority": t.get("priority", "medium"),
+                "todo_assignee": t.get("assignee", ""),
+                "staged_by": examiner, "saved_unsigned": {"at": now, "reason": why},
+            })  # fmt: skip
         delta["items"] = entries
         delta.setdefault("case_id", case_id_of(case_dir))
         delta["modified_at"] = now
         _write_delta(path, delta)
-    return not_saved
+    finally:
+        if lock is not None:
+            lock.release()
+    return not_saved, left
+
+
+def _kept_unsigned(case_dir, examiner, direct, todos, why: str, lead: str, after: str):
+    """Every exit after the review that signs nothing: the session's
+    decisions and TODOs go to the unsigned save, with one message."""
+    try:
+        not_saved, left = save_unsigned(case_dir, examiner, direct, why, todos)
+    except Exception as e:  # noqa: BLE001 - say what was lost, never a traceback
+        print(
+            f"{lead}\nNothing was signed, and your decisions couldn't be saved either "
+            f"({type(e).__name__}: {one_line(str(e))}). Decide them again: "
+            f"{', '.join(one_line(d.id) for d in direct)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    n = len(direct) + len(todos)
+    print(
+        f"{lead}\nNothing was signed. Your {n} decision(s) and TODO(s) were saved, "
+        f"unsigned, to pending-reviews.json. Sign them with `vhir approve --review` {after}.",
+        file=sys.stderr,
+    )
+    for x in not_saved:
+        print(f"  not saved: {one_line(x)}", file=sys.stderr)
+    for x in left:
+        print(f"  {one_line(x)}", file=sys.stderr)
+    sys.exit(1)
 
 
 # --- Signing ------------------------------------------------------------------------------
@@ -241,106 +311,106 @@ def sign_and_commit(
     new_passphrase: bool = False,
     skipped=(),
     mode: str = "cli",
-    inside_lock: Callable[[dict[str, list[dict]]], None] | None = None,
+    inside_lock: Callable[[dict[str, list[dict]], list[Decision]], None] | None = None,
+    todos: list[dict] | tuple = (),
+    make_todos: Callable[[list[dict]], None] | None = None,
 ) -> None:
-    """Sign `direct` and `planned` (cascades) and apply them. Exits non-zero
-    with nothing signed when anything can't go ahead."""
+    """Sign `direct` and `planned` (cascades) and apply them. `todos`: the
+    TODOs the examiner asked for in this session, created by `make_todos`
+    once the commit has run, or saved with the decisions when it can't.
+    Every exit after the review keeps the examiner's work."""
     examiner = identity["examiner"]
     prompt = _prompt_text(direct, planned, new_passphrase)
+    todos = list(todos)
+
+    def keep(why: str, lead: str, after: str = "once the problem above is fixed"):
+        _kept_unsigned(case_dir, examiner, direct, todos, why, lead, after)
+
     try:
         private, public = credentials.unlock(examiner, prompt)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # the examiner chose to stop
         print("\nNothing was signed and nothing was saved.", file=sys.stderr)
         sys.exit(1)
-    except (keys.KeyUnwrapFailed, credentials.AttemptsExhausted) as e:
-        unwrap = isinstance(e, keys.KeyUnwrapFailed)
-        if unwrap:
-            print(keys.KeyUnwrapFailed.MESSAGE, file=sys.stderr)
-        not_saved = save_unsigned(
-            case_dir, examiner, direct, "KEY_UNWRAP_FAILED" if unwrap else "attempts"
+    except keys.KeyUnwrapFailed:
+        keep("KEY_UNWRAP_FAILED", keys.KeyUnwrapFailed.MESSAGE,
+             "after `vhir config --forgot-password`")  # fmt: skip
+    except credentials.AttemptsExhausted:
+        keep("attempts", "No attempts are left.", "after the lockout ends")
+    except Exception as e:  # noqa: BLE001 - a keys file damaged, no terminal, …
+        keep(
+            type(e).__name__,
+            f"The passphrase prompt couldn't go ahead: {one_line(str(e))}",
         )
-        after = (
-            "after `vhir config --forgot-password`"
-            if unwrap
-            else "after the lockout ends"
-        )
-        print(
-            f"Nothing was signed. Your {len(direct)} decisions were saved, unsigned, to "
-            f"pending-reviews.json. Sign them with `vhir approve --review` {after}.",
-            file=sys.stderr,
-        )
-        for x in not_saved:
-            print(f"  not saved: {one_line(x)}", file=sys.stderr)
-        sys.exit(1)
 
     case_id = case_id_of(case_dir)
     head, every, items, discarded = None, [], [], []
-    with ledger.case_lock(
-        case_id,
-        on_wait=lambda: print(
-            "Waiting for another writer to finish...", file=sys.stderr
-        ),
-    ) as lock:
-        lists, unreadable = _reload(case_dir)
-        if not unreadable:
-            every, discarded = _still_as_shown(lists, direct, planned, skipped)
-        if every:
-            at = datetime.now(timezone.utc).isoformat()
-            items = [_find(lists, d.type, d.id) for d in every]
-            decisions = [
-                {"item_id": d.id, "type": d.type, "decision": d.decision,
-                 "status_after": d.status_after, "coupled_from": d.coupled_from,
-                 "content_snapshot": signed_text(item, d.type)}
-                for d, item in zip(every, items, strict=True)
-            ]  # fmt: skip
-            bodies = ledger.prepare(
-                case_id, decisions, examiner, public, mode, at,
-                retired=credentials.retired_fingerprints(examiner),
-            )  # fmt: skip
-            lines = [ledger.sign_body(b, private) for b in bodies]
-            head = ledger.commit(lock, bodies, lines, public)
-            for d, item, body in zip(every, items, bodies, strict=True):
-                set_status(item, d.decision, d.status_after, body["examiner"], body["at"],
-                           reason=d.reason, fresh_approver=d.fresh_approver)  # fmt: skip
-            touched = {d.type for d in every}
-            for attempt in (1, 2):
-                try:
-                    if "finding" in touched:
-                        save_findings(case_dir, lists["finding"])
-                    if "timeline" in touched:
-                        save_timeline(case_dir, lists["timeline"])
-                    if "ioc" in touched:
-                        save_iocs(case_dir, lists["ioc"])
-                    break
-                except OSError as e:
-                    if attempt == 2:
-                        print(
-                            f"Signed decisions were recorded; case data was not saved ({e}); "
-                            f"re-run the same command for: {', '.join(d.id for d in every)}",
-                            file=sys.stderr,
-                        )
-                        sys.exit(1)
-        if inside_lock is not None and not unreadable:
-            inside_lock(lists)
+    unreadable: list[str] = []
+    committed, save_error = False, None
+    try:
+        with ledger.case_lock(
+            case_id,
+            on_wait=lambda: print(
+                "Waiting for another writer to finish...", file=sys.stderr
+            ),
+        ) as lock:
+            lists, unreadable = _reload(case_dir)
+            if not unreadable:
+                every, discarded = _still_as_shown(lists, direct, planned, skipped)
+            if every:
+                at = datetime.now(timezone.utc).isoformat()
+                items = [_find(lists, d.type, d.id) for d in every]
+                decisions = [
+                    {"item_id": d.id, "type": d.type, "decision": d.decision,
+                     "status_after": d.status_after, "coupled_from": d.coupled_from,
+                     "content_snapshot": signed_text(item, d.type)}
+                    for d, item in zip(every, items, strict=True)
+                ]  # fmt: skip
+                bodies = ledger.prepare(
+                    case_id, decisions, examiner, public, mode, at,
+                    retired=credentials.retired_fingerprints(examiner),
+                )  # fmt: skip
+                lines = [ledger.sign_body(b, private) for b in bodies]
+                head = ledger.commit(lock, bodies, lines, public)
+                committed = True
+                for d, item, body in zip(every, items, bodies, strict=True):
+                    set_status(item, d.decision, d.status_after, body["examiner"],
+                               body["at"], reason=d.reason,
+                               fresh_approver=d.fresh_approver)  # fmt: skip
+                save_error = _save_twice(case_dir, lists, {d.type for d in every})
+            if inside_lock is not None and not unreadable and save_error is None:
+                inside_lock(lists, every)  # `every`: exactly the decisions signed
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001 - never a traceback that loses the work
+        if not committed:
+            keep(type(e).__name__, f"The commit couldn't go ahead: {one_line(str(e))}")
+        save_error = save_error or e
 
     if unreadable:  # no per-item judgement is possible: keep every decision
-        not_saved = save_unsigned(case_dir, examiner, direct, "case file unreadable")
-        print(
+        keep(
+            "case file unreadable",
             f"\n{'!' * 60}\n{', '.join(unreadable)} couldn't be read as case data. "
-            "Nothing was signed, and the file was left as it is.\n"
-            f"Your {len(direct)} decision(s) were saved, unsigned, to pending-reviews.json. "
-            "Once the file is repaired, `vhir approve --review` signs those whose content "
-            f"still matches what you saw.\n{'!' * 60}",
-            file=sys.stderr,
+            f"The file was left as it is.\n{'!' * 60}",
+            "once the file is repaired; it signs those whose content still matches what you saw",
         )
-        for x in not_saved:
-            print(f"  not saved: {one_line(x)}", file=sys.stderr)
-        sys.exit(1)
+    if todos and make_todos is not None:
+        try:
+            make_todos(todos)
+        except Exception as e:  # noqa: BLE001
+            print(f"WARNING: the TODOs weren't created ({one_line(str(e))}).",
+                  file=sys.stderr)  # fmt: skip
     for line in discarded:
         print(line, file=sys.stderr)
     if every:
         _activity_log(case_dir, identity, every, items, mode)
         _report(case_id, every, head, examiner, public)
+    if save_error is not None:
+        print(
+            f"Signed decisions were recorded; case data was not saved ({save_error}); "
+            f"re-run the same command for: {', '.join(d.id for d in every)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if discarded:
         print(
             f"{len(discarded)} decision(s) were discarded, as listed above"
@@ -348,6 +418,45 @@ def sign_and_commit(
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _save_twice(case_dir: Path, lists, touched) -> Exception | None:
+    """Save the touched case files, retrying once; the error if both fail."""
+    error = None
+    for _ in (1, 2):
+        try:
+            if "finding" in touched:
+                save_findings(case_dir, lists["finding"])
+            if "timeline" in touched:
+                save_timeline(case_dir, lists["timeline"])
+            if "ioc" in touched:
+                save_iocs(case_dir, lists["ioc"])
+            return None
+        except OSError as e:
+            error = e
+    return error
+
+
+def _spliced(current: dict, d: Decision) -> dict:
+    """The reloaded record with only this decision on it: the signed view's
+    fields as the examiner left them (an edit included; they equal the
+    reloaded ones otherwise), the edit and note bookkeeping, and every other
+    field as it is now (provenance, an IOC's sightings, notes added since).
+    The status and approval fields are set from the signed body after."""
+    out = copy.deepcopy(current)
+    body = json.loads(signed_text(d.item, d.type))
+    for k in body:
+        if k in d.item:
+            out[k] = copy.deepcopy(d.item[k])
+    for k in ("examiner_modifications", "manually_reviewed"):
+        if k in d.item and k not in body:
+            out[k] = copy.deepcopy(d.item[k])
+    if "examiner_notes" not in body:
+        before = d.loaded.get("examiner_notes") or []
+        mine = [n for n in d.item.get("examiner_notes") or [] if n not in before]
+        if mine:
+            out["examiner_notes"] = list(out.get("examiner_notes") or []) + mine
+    return out
 
 
 def _still_as_shown(lists, direct, planned, skipped):
@@ -367,7 +476,7 @@ def _still_as_shown(lists, direct, planned, skipped):
         lst = lists[d.type]
         for i, x in enumerate(lst):
             if isinstance(x, dict) and x.get("id") == d.id:
-                lst[i] = d.item  # the edit, on the unchanged item
+                lst[i] = _spliced(x, d)
     shown = {(c.id, c.status_after, c.coupled_from): c for c in planned}
     again = cascades(kept, lists["finding"], lists["timeline"], lists["ioc"], skipped)
     now = {(c.id, c.status_after, c.coupled_from) for c in again}

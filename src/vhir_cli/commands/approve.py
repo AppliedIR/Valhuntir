@@ -177,6 +177,22 @@ def _no_items(decision: str) -> None:
     )
 
 
+def _show_as_signed(item: dict, loaded: dict, decision: str, show_signed: bool) -> None:
+    """After this command's edits: an item whose signed body changed is shown
+    again as it will be signed (each edit as - before / + after), and
+    --show-signed prints the body itself."""
+    kind = decide.item_type(item["id"])
+    if signed_text(item, kind) != signed_text(loaded, kind):
+        print("  As it will be signed:")
+        _render_terminal_diff(
+            item,
+            {"id": item["id"], "action": decision,
+             "modifications": _modifications(loaded, item)},
+        )  # fmt: skip
+    if show_signed:
+        _print_signed(item)
+
+
 def _print_signed(item: dict) -> None:
     """--show-signed: the full signed view of an item."""
     kind = decide.item_type(item["id"])
@@ -203,7 +219,7 @@ def _approve_specific(
     timeline = load_timeline(case_dir)
     iocs = load_iocs(case_dir)
     picked = []
-    for item_id in ids:
+    for item_id in dict.fromkeys(ids):  # an id named twice is decided once
         if decision == "approve":
             item = find_draft_item(item_id, findings, timeline)
             if item is None:
@@ -236,8 +252,6 @@ def _approve_specific(
     for item in picked:
         loaded = copy.deepcopy(item)
         _display_item(item)
-        if show_signed:
-            _print_signed(item)
         if decision == "approve":
             if edit:
                 _apply_edit(item, identity)
@@ -250,6 +264,7 @@ def _approve_specific(
             item["manually_reviewed"] = (
                 True  # a direct decision; no longer a cascade target
             )
+        _show_as_signed(item, loaded, decision, show_signed)
         direct.append(
             decide.Decision(
                 item, kind, decision, _STATUS_AFTER[decision], loaded=loaded,
@@ -330,6 +345,7 @@ def _interactive_review(
                     note_text = ""
                 if note_text:
                     _apply_note(item, note_text, identity)
+            _show_as_signed(item, loaded, "approve", False)
             direct.append(
                 decide.Decision(item, kind, "approve", "APPROVED", loaded=loaded,
                                 note=note_text, modifications=_modifications(loaded, item))
@@ -392,12 +408,9 @@ def _interactive_review(
         planned,
         new_passphrase=new_passphrase,
         skipped=skipped,
+        todos=todos_to_create,
+        make_todos=lambda todos: _create_todos(case_dir, todos, identity),
     )
-    if todos_to_create:
-        try:
-            _create_todos(case_dir, todos_to_create, identity)
-        except OSError as e:
-            print(f"  WARNING: Failed to create TODOs: {e}", file=sys.stderr)
 
 
 # An approval with no signed line of its own: under 0.6, or none that counts
@@ -777,6 +790,10 @@ def _linked_events(item: dict, timeline: list[dict]) -> list[dict]:
 
 def _evidence_lines(item: dict, timeline: list[dict]) -> list[str]:
     """A finding's artifacts, then the events approved with it."""
+    return _artifact_lines(item) + _linked_lines(item, timeline)
+
+
+def _artifact_lines(item: dict) -> list[str]:
     artifacts = item.get("artifacts")
     artifacts = artifacts if isinstance(artifacts, list) else []
     lines = []
@@ -793,6 +810,11 @@ def _evidence_lines(item: dict, timeline: list[dict]) -> list[str]:
         lines.append(f"       audit id:   {_safe(art.get('audit_id', ''))}")
         lines.append("       content:")
         lines.extend(_content_lines(art.get("content", "")))
+    return lines
+
+
+def _linked_lines(item: dict, timeline: list[dict]) -> list[str]:
+    lines = []
     linked = _linked_events(item, timeline)
     if linked:
         lines.append("  Timeline events approved with it:")
@@ -944,11 +966,27 @@ _DIM = "\033[2m"
 _RESET = "\033[0m"
 
 
+def _staged_body(item: dict, delta_entry: dict) -> dict:
+    """The item as the entry would have it signed: its edits applied."""
+    post = copy.deepcopy(item)
+    mods = delta_entry.get("modifications") or {}
+    for f, m in mods.items() if isinstance(mods, dict) else ():
+        if f in _DELTA_EDITABLE_FIELDS and isinstance(m, dict):
+            post[f] = m.get("modified")
+    return post
+
+
 def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
-    """Print a terminal diff for a single delta item."""
+    """Print a staged entry as it would be signed: the item with the entry's
+    edits applied, each edited field shown as - before / + after, then every
+    other field of the signed body, so nothing signed goes unshown."""
     item_id = _one_line(delta_entry.get("id", "?"))
     action = _one_line(delta_entry.get("action", "?")).upper()
-    modifications = delta_entry.get("modifications", {})
+    modifications = {
+        f: m
+        for f, m in (delta_entry.get("modifications") or {}).items()
+        if f in _DELTA_EDITABLE_FIELDS and isinstance(m, dict)
+    }
 
     # Color for action
     action_color = {
@@ -967,10 +1005,15 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     if item is None:
         print(f"  {_RED}Item not found in case data{_RESET}")
         return
+    item = _staged_body(item, delta_entry)
+    shown = {"id", "status", "challenged", "alternatives"}
 
     # Finding fields
     if "title" in item:
-        print(f"  Title:          {_one_line(item.get('title', ''))}")
+        if "title" in modifications:
+            _render_field("Title", item, modifications, "title")
+        else:
+            print(f"  Title:          {_one_line(item.get('title', ''))}")
         print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
         for line in _challenge_reasons(item.get("challenged")):
             print(f"    {line}")
@@ -981,10 +1024,13 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
             print(
                 f"  Evidence:       {_one_line(', '.join(map(str, item['audit_ids'])))}"
             )
-        if item.get("mitre_ids"):
-            _render_field("MITRE", item, modifications, "mitre_ids")
-        if item.get("iocs"):
-            _render_field("IOCs", item, modifications, "iocs")
+        for label, field in (("MITRE", "mitre_ids"), ("IOCs", "iocs"),
+                             ("Context", "context"),
+                             ("Justification", "confidence_justification")):  # fmt: skip
+            if item.get(field) or field in modifications:
+                _render_field(label, item, modifications, field)
+        shown |= {"title", "confidence", "observation", "interpretation", "audit_ids",
+                  "mitre_ids", "iocs", "context", "confidence_justification"}  # fmt: skip
         if "alternatives" in modifications:
             mod = modifications["alternatives"]
             for line in _alternative_lines(mod.get("original")):
@@ -996,10 +1042,25 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
                 print(f"  Alternative:    {_one_line(line)}")
     else:
         # Timeline event
-        print(f"  Timestamp:      {_one_line(item.get('timestamp', '?'))}")
+        _render_field("Timestamp", item, modifications, "timestamp")
         _render_field("Description", item, modifications, "description")
-        if item.get("source"):
-            print(f"  Source:         {_one_line(item.get('source', ''))}")
+        if item.get("source") or "source" in modifications:
+            _render_field("Source", item, modifications, "source")
+        shown |= {"timestamp", "description", "source"}
+    if item.get("tags") or "tags" in modifications:
+        _render_field("Tags", item, modifications, "tags")
+    shown.add("tags")
+    if "artifacts" in item:  # signed: shown whatever the action
+        for line in _artifact_lines(item):
+            print(line)
+        shown.add("artifacts")
+    # every other field of the signed body
+    body = json.loads(signed_text(item, decide.item_type(str(item.get("id", "")))))
+    for field in sorted(set(body) - shown):
+        value = body[field]
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        label = field.replace("_", " ").capitalize()
+        print(f"  {label}:{' ' * max(1, 15 - len(label))}{_one_line(text)}")
 
     # Note
     note = delta_entry.get("note")
@@ -1067,8 +1128,10 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
 
 
 def _same_entry(a: dict, b: dict) -> bool:
-    """Equal apart from `saved_unsigned`."""
-    strip = lambda e: {k: v for k, v in e.items() if k != "saved_unsigned"}  # noqa: E731
+    """Equal apart from the CLI's own stamps."""
+    strip = lambda e: {  # noqa: E731
+        k: v for k, v in e.items() if k not in ("saved_unsigned", "review_again")
+    }
     return strip(a) == strip(b)
 
 
@@ -1085,10 +1148,10 @@ def _merge_processing(case_dir: Path) -> None:
             old = json.loads(processing.read_text())
         except (OSError, ValueError):
             old = {}
-        try:
-            delta = json.loads(delta_path.read_text())
-        except (OSError, ValueError):
-            delta = {"case_id": case_id_of(case_dir), "items": []}
+        delta = decide.read_delta(delta_path) or {
+            "case_id": case_id_of(case_dir),
+            "items": [],
+        }
         have = {e.get("id") for e in delta.get("items", []) if isinstance(e, dict)}
         for e in old.get("items", []) if isinstance(old, dict) else []:
             if isinstance(e, dict) and e.get("id") not in have:
@@ -1123,16 +1186,13 @@ def _review_mode(
     examiner = identity["examiner"]
     delta_path = case_dir / "pending-reviews.json"
     _merge_processing(case_dir)
-    if not delta_path.exists():
+    with ledger.case_lock(case_id_of(case_dir)):  # a corrupt file is set aside
+        delta = decide.read_delta(delta_path)
+    if delta is None:
         print("No pending dashboard reviews.")
         if withdrawn_line:
             print(withdrawn_line)
         return
-    try:
-        delta = json.loads(delta_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"Error: Cannot read delta file: {e}", file=sys.stderr)
-        sys.exit(1)
     entries = [e for e in delta.get("items", []) if isinstance(e, dict)]
     if not entries:
         print("No pending dashboard reviews.")
@@ -1222,12 +1282,6 @@ def _review_mode(
             skipped.append((item_id, f"field '{conflict}' changed since review"))
             continue
         loaded = copy.deepcopy(item)
-        _render_terminal_diff(item, entry)
-        if action == "approve" and "title" in item:
-            for line in _evidence_lines(item, timeline):
-                print(line)
-        if show_signed:
-            _print_signed(item)
         for f, m in mods.items():
             if f in _DELTA_EDITABLE_FIELDS:
                 item[f] = m.get("modified")
@@ -1240,6 +1294,13 @@ def _review_mode(
         kind = decide.item_type(item_id)
         if kind == "ioc" and action in ("approve", "reject"):
             item["manually_reviewed"] = True
+        # shown as it will be signed: after its edits
+        _render_terminal_diff(item, entry)
+        if action == "approve" and "title" in item:
+            for line in _linked_lines(item, timeline):
+                print(line)
+        if show_signed:
+            _print_signed(item)
         if action == "edit":
             after = loaded.get("status", "DRAFT")
         else:
@@ -1258,25 +1319,38 @@ def _review_mode(
             print(f"    {_one_line(sid)}: {_one_line(why)}")
         print(f"  Re-review in browser.{_RESET}")
 
-    def finish(lists=None) -> None:
+    def finish(lists=None, signed=()) -> None:
         """Inside the commit's lock span: the TODOs, then remove exactly the
-        entries signed or turned into TODOs from the current file."""
+        entries signed or turned into TODOs from the current file. Your own
+        entries whose decision was discarded stay, marked to review again;
+        another examiner's entry is never touched unless it was signed."""
         if todo_entries:
             _create_todos(case_dir, [
                 {"description": e.get("todo_description", f"Follow up on {e.get('id', '')}"),
-                 "priority": e.get("todo_priority", "medium"), "assignee": "",
+                 "priority": e.get("todo_priority", "medium"),
+                 "assignee": e.get("todo_assignee", ""),
                  "related_findings": [e.get("id", "")]}
                 for e in todo_entries
             ], identity)  # fmt: skip
-        done = [d.delta_entry for d in direct] + todo_entries
-        try:
-            current = json.loads(delta_path.read_text())
-        except (OSError, ValueError):
-            return
-        keep = [
-            e for e in current.get("items", [])
-            if not (isinstance(e, dict) and any(_same_entry(e, x) for x in done))
+        signed_ids = {id(d) for d in signed}
+        done = [d.delta_entry for d in direct if id(d) in signed_ids] + todo_entries
+        again = [
+            d.delta_entry for d in direct
+            if id(d) not in signed_ids and d.delta_entry.get("staged_by") == examiner
         ]  # fmt: skip
+        current = decide.read_delta(delta_path)
+        if current is None:
+            return
+        keep = []
+        for e in current.get("items", []):
+            if isinstance(e, dict) and any(_same_entry(e, x) for x in done):
+                continue
+            if isinstance(e, dict) and any(_same_entry(e, x) for x in again):
+                e["review_again"] = {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "reason": "the item changed after you saw it; nothing was signed",
+                }
+            keep.append(e)
         current["items"] = keep
         decide._write_delta(delta_path, current)
 

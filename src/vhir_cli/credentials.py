@@ -19,6 +19,8 @@ without a retired record.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,36 +53,56 @@ def _is_stub(data: object) -> bool:
     return isinstance(data, dict) and data.get("schema") == 3 and "moved_to" in data
 
 
-def _legacy_entry(examiner: str, config_path: Path) -> dict | None:
-    """The 0.6 credential (`hash`/`salt`) for the examiner, or None."""
+def _passwords_entry(examiner: str) -> tuple[bool, dict | None]:
+    """(whether `passwords/{x}.json` exists, its 0.6 `hash`/`salt` entry or None)."""
     try:
         data = json.loads(_stub_path(examiner).read_text())
+    except FileNotFoundError:
+        return False, None
     except (OSError, ValueError):
-        data = None
-    if (
+        return True, None
+    legacy = (
         isinstance(data, dict)
         and "hash" in data
         and "salt" in data
         and not _is_stub(data)
-    ):
-        return data
-    if data is None:  # the old config.yaml location, read only as a 0.6 source
-        section = approval_auth._load_config(config_path)
-        section = section.get("passwords", section.get("pins", {}))
-        entry = section.get(examiner) if isinstance(section, dict) else None
-        if isinstance(entry, dict) and "hash" in entry and "salt" in entry:
-            return entry
+    )
+    return True, data if legacy else None
+
+
+def _config_entry(examiner: str, config_path: Path) -> dict | None:
+    """A 0.6 entry in the old config.yaml location, read only as a 0.6 source."""
+    section = approval_auth._load_config(config_path)
+    section = section.get("passwords", section.get("pins", {}))
+    entry = section.get(examiner) if isinstance(section, dict) else None
+    if isinstance(entry, dict) and "hash" in entry and "salt" in entry:
+        return entry
     return None
+
+
+def _legacy_entry(examiner: str, config_path: Path) -> dict | None:
+    """The 0.6 credential (`hash`/`salt`) for the examiner, or None."""
+    exists, entry = _passwords_entry(examiner)
+    if entry is not None or exists:
+        return entry
+    return _config_entry(examiner, config_path)
 
 
 def state(examiner: str, config_path: Path) -> str:
     """ "legacy", "schema3" or "none"; a keys file that doesn't load raises
-    KeysFileInvalid."""
+    KeysFileInvalid. A 0.6 entry in `passwords/` is legacy whatever `keys/`
+    holds (a keys file beside it is never adopted). A valid `keys/` file
+    outranks a 0.6 entry left in config.yaml, which is then ignored."""
     if not valid_name(examiner):
         raise CredentialError(f"Invalid examiner name: {examiner!r}")
-    if _legacy_entry(examiner, config_path) is not None:
+    exists, entry = _passwords_entry(examiner)
+    if entry is not None:
         return "legacy"
-    return "schema3" if keys.load(examiner) is not None else "none"
+    if keys.load(examiner) is not None:
+        return "schema3"
+    if not exists and _config_entry(examiner, config_path) is not None:
+        return "legacy"
+    return "none"
 
 
 def _write_stub(examiner: str) -> None:
@@ -141,7 +163,7 @@ def _ledger_keys(examiner: str) -> list[str]:
         return found
     for path in chains:
         for _, _, line in ledger.read_lines(path):
-            if line and line.get("examiner") == examiner:
+            if isinstance(line, dict) and line.get("examiner") == examiner:
                 pub = line.get("public_key")
                 if isinstance(pub, str) and pub not in found:
                     found.append(pub)
@@ -156,8 +178,9 @@ def _ledgers_signed_by(examiner: str, public_key: str) -> list[tuple[str, int, t
         mine = [
             p["seq"]
             for _, _, p in lines
-            if p and p.get("examiner") == examiner and p.get("public_key") == public_key
-        ]
+            if isinstance(p, dict) and isinstance(p.get("seq"), int)
+            and p.get("examiner") == examiner and p.get("public_key") == public_key
+        ]  # fmt: skip
         if mine:
             out.append((path.stem, max(mine), ledger.head_of(lines)))
     return out
@@ -194,21 +217,43 @@ def enrol(examiner: str, config_path: Path, *, by_name: bool = False) -> None:
     _print_new_key(data)
 
 
-def _set_aside(examiner: str) -> list[str]:
-    """Move a keys file found beside a 0.6 credential aside, byte-identical,
-    and return its public keys (to record as retired)."""
-    path = keys.keys_path(examiner)
-    if not path.exists():
-        return []
+def _found_keys(examiner: str) -> list[str]:
+    """The public keys a keys file that won't be adopted holds (read, not moved)."""
     try:
-        found = json.loads(path.read_text())
-        pubs = [k["public_key"] for k in found.get("keys", []) if isinstance(k, dict)]
-    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        found = json.loads(keys.keys_path(examiner).read_text())
+        pubs = [
+            k.get("public_key") for k in found.get("keys", []) if isinstance(k, dict)
+        ]
+    except (OSError, ValueError, TypeError, AttributeError):
         pubs = []
-    target = path.with_name(f"{path.name}.untrusted-{_now()}")
-    path.rename(target)
-    print(f"A signing-key file found beside your 0.6 password was set aside: {target}")
-    return [p for p in pubs if isinstance(p, str)]
+    return [p for p in dict.fromkeys(pubs) if isinstance(p, str)]
+
+
+def _replace_credential(examiner: str, data: dict, retired: list[str], reason: str,
+                        what: str, move: bool = False) -> None:  # fmt: skip
+    """Write `data` as the credential in one step: the keys it replaces are
+    recorded as retired, the file it replaces is kept byte-identical as
+    `.untrusted-<UTC>` (a hard link, made first), then the new file replaces
+    it atomically and the 0.6 entry becomes a stub. An interruption before
+    the replace leaves everything as it was. `move`: a file that doesn't load
+    (no credential) is moved aside instead, since it is never overwritten."""
+    new_fp = keys.key_fingerprint(keys.active(data))
+    for pub in retired:
+        if pub != keys.active(data)["public_key"]:
+            keys.add_retired(data, pub, reason, superseded_by=new_fp)
+    path = keys.keys_path(examiner)
+    if path.exists():
+        target = path.with_name(f"{path.name}.untrusted-{_now()}")
+        if move:
+            path.rename(target)
+        else:
+            try:
+                os.link(path, target)
+            except OSError:
+                shutil.copy2(path, target)
+        print(f"{what} was set aside: {target}")
+    keys.save(examiner, data)
+    _write_stub(examiner)
 
 
 def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
@@ -231,7 +276,6 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         approval_auth._record_failure(examiner)  # nothing is moved
         raise CredentialError("Incorrect password.")
     approval_auth._clear_failures(examiner)
-    retired = _set_aside(examiner)
     new_pw = typed
     changed = False
     if len(typed) < passphrase.MIN_LENGTH:
@@ -250,11 +294,8 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
             "You can change it later with `vhir config --reset-password`."
         )
     data = keys.new_credential(examiner, new_pw)
-    new_fp = keys.key_fingerprint(keys.active(data))
-    for pub in retired:
-        keys.add_retired(data, pub, "set aside at upgrade", superseded_by=new_fp)
-    keys.save(examiner, data)
-    _write_stub(examiner)
+    _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
+                        "A signing-key file found beside your 0.6 password")  # fmt: skip
     print(f"Signing key made for {examiner} (Valhuntir 0.7).")
     _print_new_key(data)
     return changed
@@ -277,13 +318,9 @@ def reset(examiner: str, config_path: Path) -> None:
             )
         approval_auth._clear_failures(examiner)
         pw = _new_passphrase(examiner)
-        retired = _set_aside(examiner)
         data = keys.new_credential(examiner, pw)
-        new_fp = keys.key_fingerprint(keys.active(data))
-        for pub in retired:
-            keys.add_retired(data, pub, "set aside at upgrade", superseded_by=new_fp)
-        keys.save(examiner, data)
-        _write_stub(examiner)
+        _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
+                            "A signing-key file found beside your 0.6 password")  # fmt: skip
         print(f"Passphrase changed and signing key made for {examiner}.")
         _print_new_key(data)
         return
@@ -326,11 +363,24 @@ def forgot(examiner: str, config_path: Path) -> None:
     """A new key under a new passphrase; the old key is retired (public key
     kept). Prints both fingerprints and, for each local case it signed in,
     the bounded pin and head to record."""
-    current = state(examiner, config_path)
+    try:
+        current = state(examiner, config_path)
+    except keys.KeysFileInvalid:
+        current = "invalid"
     if current == "none":
         enrol(examiner, config_path)
         return
     _confirm_new_key()
+    if current == "invalid":  # set aside as K5, then a new key
+        pw = _new_passphrase(examiner)
+        data = keys.new_credential(examiner, pw)
+        retired = _found_keys(examiner) + _ledger_keys(examiner)
+        _replace_credential(examiner, data, list(dict.fromkeys(retired)),
+                            "set aside: the keys file was invalid",
+                            "The keys file that couldn't be read", move=True)  # fmt: skip
+        print(f"New signing key made for {examiner}.")
+        _print_new_key(data)
+        return
     if current == "legacy":
         legacy = _legacy_entry(examiner, config_path)
 
@@ -338,13 +388,9 @@ def forgot(examiner: str, config_path: Path) -> None:
             return approval_auth.verify_password(config_path, examiner, pw) is not None
 
         pw = _new_passphrase(examiner, current_checks=[same_as_0_6] if legacy else [])
-        retired = _set_aside(examiner)
         data = keys.new_credential(examiner, pw)
-        new_fp = keys.key_fingerprint(keys.active(data))
-        for pub in retired:
-            keys.add_retired(data, pub, "set aside at upgrade", superseded_by=new_fp)
-        keys.save(examiner, data)
-        _write_stub(examiner)
+        _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
+                            "A signing-key file found beside your 0.6 password")  # fmt: skip
         print(f"New signing key made for {examiner}.")
         _print_new_key(data)
         return

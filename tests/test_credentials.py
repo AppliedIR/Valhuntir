@@ -289,3 +289,74 @@ def test_the_final_prompt_stops_when_the_attempts_are_used(config, monkeypatch):
     _typed(monkeypatch, "a1", "a2", "a3", PW)
     with pytest.raises(credentials.AttemptsExhausted):
         credentials.unlock("steve", "Password: ")
+
+
+# --- Fix round: order, precedence and recovery ----------------------------------------------
+
+
+def test_an_upgrade_interrupted_at_the_new_passphrase_changes_nothing(
+    config, monkeypatch
+):
+    _legacy("abc12")
+    planted = keys.new_credential("steve", "abc12")
+    keys.save("steve", planted)
+    before = _sha(keys.keys_path("steve"))
+
+    def stop(prompt=""):
+        if prompt.startswith("New passphrase"):
+            raise KeyboardInterrupt
+        return "abc12"
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", stop)
+    with pytest.raises(KeyboardInterrupt):
+        credentials.upgrade("steve", config)
+    assert _sha(keys.keys_path("steve")) == before
+    assert list(keys.KEYS_DIR.glob("steve.json.untrusted-*")) == []
+    assert credentials.state("steve", config) == "legacy"
+    _typed(monkeypatch, "abc12", PW, PW)  # retried: the planted key is still retired
+    credentials.upgrade("steve", config)
+    retired = [
+        k["public_key"] for k in keys.load("steve")["keys"] if k["status"] == "retired"
+    ]
+    assert retired == [keys.active(planted)["public_key"]]
+
+
+def test_a_0_6_entry_left_in_config_yaml_never_demotes_a_signing_key(
+    config, monkeypatch
+):
+    import yaml
+
+    _typed(monkeypatch, PW, PW)
+    credentials.enrol("steve", config)
+    (approval_auth._PASSWORDS_DIR / "steve.json").unlink(missing_ok=True)  # no stub
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        yaml.dump({"passwords": {"steve": {"hash": "00" * 32, "salt": "11" * 32}}})
+    )
+    assert credentials.state("steve", config) == "schema3"
+    assert credentials.preflight("steve", config) is False
+    _typed(monkeypatch, PW)
+    credentials.unlock("steve", "Password: ")
+    assert approval_auth._recent_failure_count("steve") == 0
+
+
+def test_forgot_recovers_from_an_invalid_keys_file(config, monkeypatch, capsys):
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    keys.keys_path("steve").write_text('{"schema": 3}')
+    with pytest.raises(credentials.CredentialError, match="--forgot-password"):
+        credentials.preflight("steve", config)
+    monkeypatch.setattr(credentials, "_confirm_new_key", lambda: None)
+    _typed(monkeypatch, NEW, NEW)
+    credentials.forgot("steve", config)
+    assert keys.check_password(keys.load("steve"), NEW)
+    (aside,) = keys.KEYS_DIR.glob("steve.json.untrusted-*")
+    assert aside.read_text() == '{"schema": 3}'
+    assert credentials.preflight("steve", config) is False
+
+
+def test_the_key_scans_skip_a_malformed_ledger_line(config, monkeypatch):
+    ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    ledger.chain_path("C1").write_text('[1, 2]\n{"examiner": "steve", "seq": "x"}\n')
+    _typed(monkeypatch, PW, PW)
+    credentials.enrol("steve", config)  # no crash
+    assert keys.check_password(keys.load("steve"), PW)
