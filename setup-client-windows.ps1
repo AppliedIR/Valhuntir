@@ -600,7 +600,7 @@ $assets = @(
     @{ Name = "CLAUDE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/CLAUDE.md"; Dest = (Join-Path $deployDir "CLAUDE.md") },
     @{ Name = "AGENTS.md"; Url = "$githubRaw/sift-mcp/main/AGENTS.md"; Dest = (Join-Path $deployDir "AGENTS.md") },
     @{ Name = "FORENSIC_DISCIPLINE.md"; Url = "$githubRaw/sift-mcp/main/claude-code/full/FORENSIC_DISCIPLINE.md"; Dest = (Join-Path $deployDir "FORENSIC_DISCIPLINE.md") },
-    @{ Name = "finding-skeptic agent"; Url = "$githubRaw/sift-mcp/main/agents/finding-skeptic/claude.md"; Dest = (Join-Path $agentsDir "finding-skeptic.md") },
+    @{ Name = "finding-skeptic.md"; Url = "$githubRaw/sift-mcp/main/agents/finding-skeptic/claude.md"; Dest = (Join-Path $agentsDir "finding-skeptic.md") },
     @{ Name = "forensic-audit.sh"; Url = "$githubRaw/sift-mcp/main/claude-code/shared/hooks/forensic-audit.sh"; Dest = $hookPath }
 )
 

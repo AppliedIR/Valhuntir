@@ -13,9 +13,14 @@ ROOT = Path(__file__).parent.parent
 
 
 def linux_assets(text: str) -> dict[str, str]:
-    """curl -fsSL "…/sift-mcp/main/<path>" -o "<dest>": dest's file name -> path."""
+    """curl -fsSL "…/sift-mcp/main/<path>" -o "<dest>": dest's file name -> path.
+    The skills, fetched as skills/MANIFEST lists them, aren't fixed files."""
     pairs = re.findall(r'sift-mcp/main/([^"\s]+)"\s+-o\s+"([^"]+)"', text)
-    return {dest.rsplit("/", 1)[-1]: path for path, dest in pairs}
+    return {
+        dest.rsplit("/", 1)[-1]: path
+        for path, dest in pairs
+        if not path.startswith("skills/")
+    }
 
 
 def windows_assets(text: str) -> dict[str, str]:
