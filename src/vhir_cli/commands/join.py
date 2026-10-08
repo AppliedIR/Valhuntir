@@ -45,20 +45,14 @@ def cmd_join(args, identity: dict) -> None:
             file=sys.stderr,
         )
 
-    join_body = {
-        "code": code,
-        "machine_type": "wintools" if wintools_url else "examiner",
-        "hostname": socket.gethostname(),
-        "wintools_url": wintools_url,
-        "wintools_token": wintools_token,
-    }
+    join_body = _join_body(code, wintools_url, wintools_token, args)
 
     # POST to /api/v1/setup/join
     try:
         import requests
     except ImportError:
         # Fall back to urllib if requests is not available
-        _join_urllib(sift_url, code, wintools_url, wintools_token, verify, args)
+        _join_urllib(sift_url, join_body, verify, args)
         return
 
     try:
@@ -107,12 +101,41 @@ def cmd_join(args, identity: dict) -> None:
         print(f"Join failed: {error_msg}", file=sys.stderr)
         sys.exit(1)
 
-    data = resp.json()
+    _joined(resp.json(), args)
+
+
+def _join_body(code, wintools_url, wintools_token, args) -> dict:
+    body = {
+        "code": code,
+        "machine_type": "wintools" if wintools_url else "examiner",
+        "hostname": socket.gethostname(),
+        "wintools_url": wintools_url,
+        "wintools_token": wintools_token,
+    }
+    if isinstance(getattr(args, "name", None), str):
+        body["name"] = args.name
+    return body
+
+
+def _joined(data: dict, args) -> None:
+    """Save the token and say what the join did: the name joined as, and the
+    command that enrols that name for approvals."""
     if data.get("gateway_token"):
         _write_config(data["gateway_url"], data["gateway_token"])
 
     print(f"Joined gateway at {data['gateway_url']}")
     print(f"Backends available: {', '.join(data.get('backends', []))}")
+    name = data.get("examiner")
+    if data.get("gateway_token") and name:
+        if data.get("bound"):
+            print(f"Joined as {name}; your earlier token for {name} no longer works.")
+        else:
+            print(f"Joined as {name}.")
+        print(
+            "To approve in the Examiner Portal, the examiner named enrols once, at the "
+            "SIFT terminal (if not already enrolled):"
+        )
+        print(f"  {data.get('enrol_command') or f'vhir enrol --name {name}'}")
 
     if data.get("wintools_registered"):
         print("Windows wintools-mcp registered with gateway")
@@ -125,6 +148,13 @@ def cmd_join(args, identity: dict) -> None:
     if not getattr(args, "skip_setup", False):
         print()
         print("Run 'vhir setup client --remote' to configure your LLM client.")
+
+
+def _code_body(args) -> dict:
+    body = {"expires_hours": getattr(args, "expires", None) or 2}
+    if isinstance(getattr(args, "name", None), str):
+        body["name"] = args.name
+    return body
 
 
 def cmd_setup_join_code(args, identity: dict) -> None:
@@ -155,7 +185,6 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         _post_join_code_setup(data, static_ip)
         return
 
-    expires = getattr(args, "expires", None) or 2
     ca = _find_ca_cert()
     verify = ca if ca else False
     if not verify and gateway_url.startswith("https"):
@@ -168,7 +197,7 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         resp = requests.post(
             f"{gateway_url}/api/v1/setup/join-code",
             headers={"Authorization": f"Bearer {token}"},
-            json={"expires_hours": expires},
+            json=_code_body(args),
             verify=verify,
             timeout=10,
         )
@@ -178,27 +207,23 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         sys.exit(1)
 
     if resp.status_code != 200:
-        print(f"Failed to generate join code: {resp.text}", file=sys.stderr)
+        try:
+            why = resp.json().get("error", resp.text)
+        except ValueError:
+            why = resp.text
+        print(f"Failed to generate join code: {why}", file=sys.stderr)
         sys.exit(1)
 
     data = resp.json()
     _post_join_code_setup(data, static_ip)
 
 
-def _join_urllib(sift_url, code, wintools_url, wintools_token, verify, args):
+def _join_urllib(sift_url, join_body, verify, args):
     """Fallback join implementation using urllib (no requests dependency)."""
     import ssl
     import urllib.request
 
-    payload = json.dumps(
-        {
-            "code": code,
-            "machine_type": "wintools" if wintools_url else "examiner",
-            "hostname": socket.gethostname(),
-            "wintools_url": wintools_url,
-            "wintools_token": wintools_token,
-        }
-    ).encode("utf-8")
+    payload = json.dumps(join_body).encode("utf-8")
 
     ctx = ssl.create_default_context()
     if not verify:
@@ -228,21 +253,7 @@ def _join_urllib(sift_url, code, wintools_url, wintools_token, verify, args):
         print(f"Connection failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if data.get("gateway_token"):
-        _write_config(data["gateway_url"], data["gateway_token"])
-    print(f"Joined gateway at {data['gateway_url']}")
-    print(f"Backends available: {', '.join(data.get('backends', []))}")
-
-    if data.get("wintools_registered"):
-        print("Windows wintools-mcp registered with gateway")
-        if data.get("restart_required"):
-            print(
-                "Note: gateway restart may be needed to activate the wintools backend"
-            )
-
-    if not getattr(args, "skip_setup", False):
-        print()
-        print("Run 'vhir setup client --remote' to configure your LLM client.")
+    _joined(data, args)
 
 
 def _join_code_urllib(gateway_url, token, args) -> dict:
@@ -250,8 +261,7 @@ def _join_code_urllib(gateway_url, token, args) -> dict:
     import ssl
     import urllib.request
 
-    expires = getattr(args, "expires", None) or 2
-    payload = json.dumps({"expires_hours": expires}).encode("utf-8")
+    payload = json.dumps(_code_body(args)).encode("utf-8")
 
     ca = _find_ca_cert()
     ctx = ssl.create_default_context()
@@ -840,6 +850,11 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     gw_port = urlparse(gw_url).port or 4508
 
     print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
+    if data.get("name"):
+        print(
+            f"This code joins as {data['name']} only, and ends {data['name']}'s earlier "
+            "gateway tokens. Their credential, signing key and ledger lines are unchanged."
+        )
     print("\nOn Windows, run:")
     print(
         f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host} -GatewayPort {gw_port}"

@@ -397,6 +397,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_join.add_argument(
         "--skip-setup", action="store_true", help="Skip client config generation"
     )
+    p_join.add_argument(
+        "--name",
+        help="Examiner name to join as (default: this machine's host name, "
+        "normalised); lower-case letters, digits and hyphens, at most 20",
+    )
 
     # setup
     p_setup = sub.add_parser("setup", help="Configure LLM client and test connectivity")
@@ -465,6 +470,11 @@ def build_parser() -> argparse.ArgumentParser:
         "join-code", help="Generate a join code for remote machines"
     )
     p_join_code.add_argument("--expires", type=int, help="Expiry in hours (default: 2)")
+    p_join_code.add_argument(
+        "--name",
+        help="Bind the code to this examiner name: the join gets that name and "
+        "ends its earlier gateway tokens (for re-joining under one's own name)",
+    )
 
     # export
     p_export = sub.add_parser("export", help="Export findings + timeline as JSON")
