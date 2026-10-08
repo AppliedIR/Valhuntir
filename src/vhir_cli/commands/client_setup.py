@@ -3014,9 +3014,10 @@ def _cmd_add_remnux(args) -> None:
     if "codex" in clients:  # Codex's profile carries it too
         from vhir_cli.commands.codex_controls import add_to_codex_profile
 
-        add_to_codex_profile("remnux-mcp", remnux_entry)
+        status = add_to_codex_profile("remnux-mcp", remnux_entry)
         if client is None:
-            print("\n  Restart Codex to pick up the new endpoint.")
+            if status in ("created", "updated", "written"):
+                print("\n  Restart Codex to pick up the new endpoint.")
             return
 
     # Find config file for the detected client type

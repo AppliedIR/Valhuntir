@@ -324,5 +324,10 @@ def add_to_codex_profile(name: str, entry: dict) -> str:
 
     extra = {name: {k: v for k, v in entry.items() if k != "type"}}
     status = deploy_codex_assets(extra=extra)
-    print(f"  Added {name} to Codex's profile ({status})")
+    if status in ("created", "updated", "written"):
+        print(f"  Added {name} to Codex's profile.")
+    elif status == "unchanged":
+        print(f"  Codex's profile already holds {name}.")
+    else:  # kept or missing: the profile wasn't written (see above)
+        print(f"  {name} was NOT added to Codex's profile ({status}); see above.")
     return status

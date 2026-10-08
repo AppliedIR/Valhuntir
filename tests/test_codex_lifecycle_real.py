@@ -70,3 +70,15 @@ def test_uninstall_removes_codexs_files_and_its_managed_requirements(
     assert not box.profile.exists() and not skills.exists()
     assert not cc.REQUIREMENTS.exists() and not cc.HOOKS_DIR.exists()
     assert ["sudo", "rm", "-f", str(cc.REQUIREMENTS)] in box.sudo
+
+
+def test_add_remnux_with_the_gateway_down_says_it_wasnt_added(box, monkeypatch, capsys):  # noqa: F811
+    _setup()
+    box.gateway["up"] = False  # the profile is kept as it is
+    monkeypatch.setattr(cs, "_test_remnux_connection", lambda *a: None)
+    capsys.readouterr()
+    cs._cmd_add_remnux(_args(add_remnux="10.0.0.30:3000", remnux_token="tok"))
+    out = capsys.readouterr().out
+    assert "remnux-mcp was NOT added to Codex's profile (kept)" in out
+    assert "Added remnux-mcp" not in out and "Restart Codex" not in out
+    assert "remnux-mcp" not in _profile(box)["mcp_servers"]
