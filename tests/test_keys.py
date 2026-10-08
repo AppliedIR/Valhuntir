@@ -159,3 +159,12 @@ def test_a_retired_record_is_added_once(cred):
     assert keys.add_retired(cred, other, "found in ledger, not confirmed")
     assert not keys.add_retired(cred, other, "found in ledger, not confirmed")
     assert [k["status"] for k in cred["keys"]] == ["active", "retired"]
+
+
+def test_every_wrap_uses_a_fresh_nonce(cred):
+    """AES-GCM under one key must never reuse a nonce: wrapping the same key
+    under the same KEK twice gives two different nonces."""
+    private = keys.open_key(cred, "steve", PW)
+    kek = keys.derive_kek(PW, cred["salt_ledger"])
+    blobs = [keys.unb64(keys.wrap(private, kek, "steve")[1]) for _ in range(3)]
+    assert len({b[:12] for b in blobs}) == 3
