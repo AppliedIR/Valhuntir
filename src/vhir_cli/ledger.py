@@ -97,9 +97,16 @@ CHAIN_UNREADABLE = (
 )
 
 
-def first_signed_text(case_id: str) -> str:
+def first_signed_text(case_id: str, where: str | None = None) -> str:
     """The refusal for a folder with no identity whose case already signed
-    elsewhere (cases upgraded from 0.6.4 had none until their first signing)."""
+    elsewhere (cases upgraded from 0.6.4 had none until their first signing).
+    `where`: the folder this box recorded for the chain's identity."""
+    if where:
+        return (
+            f"This case's signed record belongs to {where}, which signed first. "
+            f"Continue there, or move this folder aside and move {where} to this "
+            "location."
+        )
     return (
         f"This folder is a copy of case {case_id}: the folder that signed first holds "
         "this case's signed record; continue there."

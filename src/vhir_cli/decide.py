@@ -313,11 +313,15 @@ def copy_problem(case_dir: Path) -> str:
     """Why this case folder can't sign (it's a copy of a case whose chain on
     this box began in another folder), or "". Read-only: checked before any
     item is shown; the commit checks again under the lock."""
-    from vhir_cli.case_identity import copy_of
+    from vhir_cli.case_identity import copy_of, recorded_folder
 
-    return ledger.copy_problem(
-        case_id_of(case_dir), load_case_meta(case_dir).get("case_uuid")
-    ) or copy_of(case_dir)
+    case_id = case_id_of(case_dir)
+    own = load_case_meta(case_dir).get("case_uuid")
+    problem = ledger.copy_problem(case_id, own)
+    if problem and not own:  # an upgraded case: name the folder that signed first
+        bound = ledger.bound_uuid(ledger.read_lines(ledger.chain_path(case_id)))
+        problem = ledger.first_signed_text(case_id, recorded_folder(bound))
+    return problem or copy_of(case_dir)
 
 
 def _find(lists: dict[str, list[dict]], kind: str, item_id: str) -> dict | None:

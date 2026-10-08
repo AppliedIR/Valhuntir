@@ -133,9 +133,21 @@ def test_a_chain_begun_before_folders_were_bound_is_not_checked(
     case,
     tmp_path,  # noqa: F811
 ):
-    A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")  # no case_uuid
-    (first,) = [o for _, _, o in ledger.read_lines(ledger.chain_path("C-9"))]
-    assert "case_uuid" not in first
+    # a first line written before lines recorded the folder (signing now
+    # gives a case its identity first, so it's written here directly)
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from vhir_cli import keys
+
+    priv = Ed25519PrivateKey.generate()
+    pub = keys.b64(keys.public_raw(priv))
+    first = [{"item_id": "F-steve-002", "type": "finding", "decision": "approve",
+              "status_after": "APPROVED", "content_snapshot": "{}"}]  # fmt: skip
+    with ledger.case_lock("C-9") as lock:
+        bodies = ledger.prepare("C-9", first, "steve", pub, "cli", "t")
+        ledger.commit(lock, bodies, [ledger.sign_body(b, priv) for b in bodies], pub)
+    (line,) = [o for _, _, o in ledger.read_lines(ledger.chain_path("C-9"))]
+    assert "case_uuid" not in line
     _with_uuid(case, UUID)
     assert (
         _run(lambda: A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg"))

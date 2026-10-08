@@ -212,7 +212,8 @@ def test_a_copy_of_an_upgraded_case_and_its_original_can_t_both_sign(
     capsys.readouterr()
     assert _sign(other, ["F-tester-002"]) == 1
     err = capsys.readouterr().err.strip().splitlines()[-1]
-    assert err == ledger.first_signed_text("C-1")
+    assert err == ledger.first_signed_text("C-1", str(signer.resolve()))
+    assert err.startswith(f"This case's signed record belongs to {signer.resolve()}")
     assert _chain() == before and "case_uuid" not in _meta(other)
 
 

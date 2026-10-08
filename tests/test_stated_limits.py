@@ -59,7 +59,10 @@ VERBATIM = [
     "that place, and the original is then refused by name.",
     "move the copy back and run `vhir case new-identity` on the copy, never on the "
     "original. Decisions the copy signed show as UNSIGNED_STATUS in the original; "
-    "approve those ids again in the original.",
+    "approve those ids again in the original. A case upgraded from 0.6.4 gets its "
+    "identity when it first signs: another folder holding it is then refused with "
+    "the path of the folder that signed first; continue there, or move the refused "
+    "folder aside and move that folder to its location.",
     # collaboration: a bundle's chains are data
     "An import never replaces a local APPROVED or REJECTED item, and adds no chain file",
     # the accepted residuals, verbatim
