@@ -303,6 +303,18 @@ class Result:
 # --- Reading ------------------------------------------------------------------
 
 
+def _copy_label(case_dir: Path) -> str:
+    """ "case copy", with when close or export made it (a copy older than the
+    box chain is a stale prefix of it after a reopen)."""
+    try:
+        at = json.loads((case_dir / "ledger" / "keys.json").read_text()).get(
+            "copied_at"
+        )
+    except (OSError, ValueError, AttributeError):
+        at = None
+    return f"case copy (copied {at})" if isinstance(at, str) else "case copy"
+
+
 def _case_id(case_dir: Path) -> tuple[str, str]:
     from vhir_cli.case_io import load_case_meta
 
@@ -744,7 +756,7 @@ def verify_case(
     else:
         copies = [("box", ledger.chain_path(case_id))]
         copies += [
-            ("case copy", p)
+            (_copy_label(case_dir), p)
             for p in sorted((case_dir / "ledger" / "chains").glob("*.jsonl"))
         ]
     grouped = _group_copies(copies, case_id, result)
@@ -947,6 +959,64 @@ def verify_case(
     _keys(result, chains, registry)
     _anchor(result, chains, heads, pins, every_line, pinned)
     return result
+
+
+def chain_references(case_dir: Path, case_id: str) -> tuple[list[dict], list[str]]:
+    """The heads a new line on this box should reference: each chain copy in
+    `case_dir/ledger/chains/` (other than this box's own chain) that verifies
+    end to end (genesis, links, case id, every signature) and whose head this
+    box's chain hasn't referenced yet. Returns (refs for `prior_chains`, a
+    line for each copy that doesn't verify and so isn't referenced)."""
+    box = ledger.read_lines(ledger.chain_path(case_id))
+    first = box[0][2] if box else None
+    own = ledger.chain_id(ledger.body_of(first)) if isinstance(first, dict) else None
+    referenced = {
+        (r.get("chain_id"), r.get("head_seq"), r.get("head_hash"))
+        for _, _, o in box
+        if isinstance(o, dict)
+        for r in o.get("prior_chains") or ()
+        if isinstance(r, dict)
+    }
+    groups: dict[str, list[tuple[Path, list]]] = {}
+    notes: list[str] = []
+    for path in sorted((Path(case_dir) / "ledger" / "chains").glob("*.jsonl")):
+        lines = ledger.read_lines(path)
+        head = lines[0][2] if lines else None
+        if not (isinstance(head, dict) and head.get("seq") == 1):
+            notes.append(
+                f"chain copy {path.name} doesn't start a chain; not referenced"
+            )
+            continue
+        groups.setdefault(ledger.chain_id(ledger.body_of(head)), []).append(
+            (path, lines)
+        )
+    refs = []
+    for cid, copies in sorted(groups.items()):
+        if cid == own:
+            continue
+        copies.sort(key=lambda c: len(c[1]), reverse=True)
+        longest = copies[0][1]
+        texts = [t for _, t, _ in longest]
+        if any([t for _, t, _ in ls] != texts[: len(ls)] for _, ls in copies[1:]):
+            notes.append(f"chain {cid}: its copies differ; not referenced")
+            continue
+        probe = Result(case_id, "")
+        chain = _check_chain(cid, longest, [p.name for p, _ in copies], case_id, probe)
+        if (
+            probe.failures
+            or not chain.lines
+            or not all(ln.sig_ok for ln in chain.lines)
+        ):
+            notes.append(
+                f"chain copy {copies[0][0].name} doesn't verify end to end; not referenced"
+            )
+            continue
+        last = chain.lines[-1]
+        ref = {"chain_id": cid, "head_seq": last.seq,
+               "head_hash": ledger.body_hash(ledger.body_of(last.obj))}  # fmt: skip
+        if (cid, ref["head_seq"], ref["head_hash"]) not in referenced:
+            refs.append(ref)
+    return refs, notes
 
 
 def _record_sha(item: dict, kind: str, view: int) -> str:

@@ -343,6 +343,20 @@ def replace_key(
     return fresh
 
 
+def public_only() -> dict:
+    """A keys file with no credential: only retired public keys (a restore
+    onto a box where the examiner hasn't enrolled). Enrolment treats it as
+    no credential and keeps its records."""
+    return {
+        "schema": SCHEMA,
+        "kdf": {"alg": KDF_ALG, "iterations": ITERATIONS},
+        "auth_hash": "",
+        "salt_auth": "",
+        "salt_ledger": "",
+        "keys": [],
+    }
+
+
 def add_retired(
     data: dict, public_b64: str, reason: str, superseded_by: str | None = None
 ) -> bool:

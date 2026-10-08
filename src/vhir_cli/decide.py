@@ -348,8 +348,11 @@ def sign_and_commit(
             f"The passphrase prompt couldn't go ahead: {one_line(str(e))}",
         )
 
+    from vhir_cli.ledger_verify import chain_references
+
     case_id = case_id_of(case_dir)
     head, every, items, discarded = None, [], [], []
+    refs, ref_notes = [], []
     unreadable: list[str] = []
     committed, save_error = False, None
     try:
@@ -371,9 +374,11 @@ def sign_and_commit(
                      "content_snapshot": signed_text(item, d.type)}
                     for d, item in zip(every, items, strict=True)
                 ]  # fmt: skip
+                refs, ref_notes = chain_references(case_dir, case_id)
                 bodies = ledger.prepare(
                     case_id, decisions, examiner, public, mode, at,
                     retired=credentials.retired_fingerprints(examiner),
+                    prior_chains=refs or None,
                 )  # fmt: skip
                 lines = [ledger.sign_body(b, private) for b in bodies]
                 head = ledger.commit(lock, bodies, lines, public)  # all or nothing
@@ -435,6 +440,13 @@ def sign_and_commit(
     if every:
         _activity_log(case_dir, identity, every, items, mode)
         _report(case_id, every, head, examiner, public)
+        for r in refs:
+            print(
+                f"  This approval references chain {r['chain_id']} "
+                f"(head seq {r['head_seq']} sha256:{r['head_hash']})"
+            )
+        for note in ref_notes:
+            print(f"  WARNING: {note}", file=sys.stderr)
     if todo_error is not None:
         try:
             save_unsigned(case_dir, examiner, [], "TODO not written", todos)

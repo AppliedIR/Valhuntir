@@ -1,13 +1,13 @@
-"""Restore never replaces a different password hash already on this box.
+"""A backup carries no credential, and a restore never installs one.
 
-The examiner may have changed their password since the backup: installing
-the backup's hash over it broke HMAC verification of the live ledger (and
-did so even when the examiner declined to restore the ledger). A box with
-no hash for the examiner still gets the backup's. Declining the ledger at
-the prompt is reported as "Ledger: skipped".
+0.6 copied the examiners' password files into the backup and installed them
+on restore. A signing key's private half now stays on its box: the backup
+carries the case's signed history and the public keys that check it
+(`case_dir/ledger/`), and a restore adds each of those keys to the box as a
+retired key ("KEY ADDED"), never replacing a live credential. A 0.6
+backup's password file is never installed; the restore says to enrol.
 
-Every sudo call is intercepted, and the ledger and password directories
-are redirected to tmp_path: nothing here writes /var/lib/vhir.
+Every sudo call is intercepted, and /var/lib/vhir is redirected to tmp_path.
 """
 
 from __future__ import annotations
@@ -22,9 +22,13 @@ import pytest
 
 import vhir_cli.commands.backup as B
 import vhir_cli.verification as V
+from vhir_cli import credentials, keys, ledger
+from vhir_cli.ledger_verify import verify_case
 
-OLD = "aa" * 16  # the salt in the backup
-NEW = "bb" * 16  # the salt after a password change since the backup
+from .signing import PASSPHRASE, enrol, sign_approved
+
+OLD = "aa" * 16  # the salt in a 0.6 backup
+NEW = "bb" * 16  # the salt on this box
 
 
 @pytest.fixture
@@ -39,8 +43,6 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "_SNAPSHOTS_DIR", sysdir / "snapshots")
     monkeypatch.setattr(V, "VERIFICATION_DIR", ver_dir)
     monkeypatch.setattr(B, "_is_opensearch_available", lambda: False)
-    verified = []
-    monkeypatch.setattr(B, "_verify_restored_password", verified.append)
 
     def sudo(argv, *a, **k):
         argv = [str(x) for x in argv]
@@ -84,7 +86,7 @@ def box(tmp_path, monkeypatch):
         ]
         shutil.rmtree(case)
         (ver_dir / "hashes.jsonl").unlink(missing_ok=True)
-        return path
+        return Path(path)
 
     def restore(path, answers=None, skip_ledger=False):
         if answers is None:
@@ -118,66 +120,49 @@ def box(tmp_path, monkeypatch):
         restore=restore,
         pw_dir=pw_dir,
         ver_dir=ver_dir,
-        verified=verified,
     )
 
 
-def _warned(out, name="steve"):
-    return f"({name})" in out and "not installed" in out
+def test_a_backup_carries_no_credential_file(box):
+    enrol("steve")
+    path = box.backup()
+    assert not (path / "passwords").exists() and not (path / "keys").exists()
+    manifest = json.loads((path / "backup-manifest.json").read_text())
+    assert manifest["includes_password_hashes"] is False
 
 
-def test_a_different_hash_is_kept_and_warned(box, capsys):
+def test_a_restore_never_touches_this_box_s_password_file(box, capsys):
     path = box.backup()
     box.pwfile("steve", NEW)
     assert box.restore(path, ["y"]) == 0
-    out = capsys.readouterr()
-    assert box.salt("steve") == NEW and _warned(out.err), out
+    assert box.salt("steve") == NEW
 
 
-def test_declining_the_ledger_keeps_the_live_hash_and_0_6_file(box, capsys):
+def test_a_0_6_backup_s_password_file_is_never_installed(box, capsys):
     path = box.backup()
-    box.pwfile("steve", NEW)
-    entry = {
-        "finding_id": "F-steve-001",
-        "approved_by": "steve",
-        "hmac": "00",
-        "content_snapshot": "F-steve-001 First finding",
-    }
+    (box.pw_dir / "steve.json").unlink()
+    (path / "passwords").mkdir()
+    (path / "passwords" / "steve.json").write_text(
+        json.dumps({"salt": OLD, "hash": "h"})
+    )
+    manifest = json.loads((path / "backup-manifest.json").read_text())
+    manifest["password_examiners"] = ["steve"]
+    (path / "backup-manifest.json").write_text(json.dumps(manifest))
+    assert box.restore(path) == 0
+    assert box.salt("steve") is None
+    assert (
+        "isn't restored. Enrol with `vhir config --setup-password`"
+        in capsys.readouterr().out
+    )
+
+
+def test_declining_the_ledger_keeps_the_live_0_6_file(box, capsys):
+    path = box.backup()
     live = box.ver_dir / "hashes.jsonl"
-    live.write_text(json.dumps(entry) + "\n")
+    live.write_text(json.dumps({"finding_id": "F-steve-001", "hmac": "00"}) + "\n")
     before = live.read_bytes()
     assert box.restore(path, ["n"]) == 0
-    assert box.salt("steve") == NEW and live.read_bytes() == before
-
-
-def test_no_ledger_in_the_backup_still_keeps_the_hash(box, capsys):
-    path = box.backup(ledger=False)
-    box.pwfile("steve", NEW)
-    assert box.restore(path) == 0
-    assert box.salt("steve") == NEW and _warned(capsys.readouterr().err)
-
-
-@pytest.mark.parametrize("answer", ["n", "y"], ids=["declined", "accepted"])
-def test_anchor_a_fresh_box_gets_the_backup_hash(box, capsys, answer):
-    path = box.backup()
-    (box.pw_dir / "steve.json").unlink()
-    assert box.restore(path, [answer]) == 0
-    assert box.salt("steve") == OLD and box.verified == ["steve"]
-
-
-def test_anchor_skip_ledger_installs_no_hash(box):
-    path = box.backup()
-    (box.pw_dir / "steve.json").unlink()
-    box.restore(path, skip_ledger=True)
-    assert box.salt("steve") is None
-
-
-def test_anchor_an_identical_hash_is_restored_as_today(box, capsys):
-    path = box.backup()
-    assert box.restore(path, ["y"]) == 0
-    out = capsys.readouterr()
-    assert "Password hashes... restored (steve)" in out.out and not _warned(out.err)
-    assert box.salt("steve") == OLD
+    assert live.read_bytes() == before
 
 
 def test_declining_the_ledger_is_reported_as_skipped(box, capsys):
@@ -193,55 +178,53 @@ def test_declining_the_ledger_is_reported_as_skipped(box, capsys):
     assert summary == ["Ledger: skipped"]
 
 
-def test_each_examiner_is_decided_separately(box, capsys):
-    path = box.backup(examiners=("alice", "steve"))
-    box.pwfile("steve", NEW)
-    (box.pw_dir / "alice.json").unlink()
-    assert box.restore(path, ["y"]) == 0
-    err = capsys.readouterr().err
-    assert box.salt("steve") == NEW and box.salt("alice") == OLD
-    assert _warned(err, "steve") and not _warned(err, "alice")
+def _signed_backup(box, tmp_path):
+    """A case whose finding steve approved with a signed line, backed up,
+    then gone from this box with its chain: a rebuilt box."""
+    case = tmp_path / "cases" / "hashes"
+    case.mkdir(parents=True)
+    (case / "CASE.yaml").write_text("case_id: hashes\nstatus: open\nname: r\n")
+    (case / "findings.json").write_text(json.dumps([
+        {"id": "F-steve-001", "title": "t", "status": "APPROVED", "created_by": "steve"}
+    ]))  # fmt: skip
+    sign_approved(case, "steve")
+    signer = verify_case(case).keys[0]
+    path = B.create_backup_data(case, str(tmp_path / "backups"), "steve")["backup_path"]
+    shutil.rmtree(case)
+    ledger.chain_path("hashes").unlink()
+    return path, signer, case
 
 
-def test_an_unreadable_hash_is_kept_and_warned(box, capsys):
-    path = box.backup()
-    box.pwfile("steve", NEW)
-    (box.pw_dir / "steve.json").chmod(0)
-    try:
-        if (box.pw_dir / "steve.json").stat().st_mode & 0o777 == 0:
-            try:
-                (box.pw_dir / "steve.json").read_bytes()
-                pytest.skip("running as root: a mode-000 file is still readable")
-            except PermissionError:
-                pass
-        assert box.restore(path, ["y"]) == 0
-    finally:
-        (box.pw_dir / "steve.json").chmod(0o600)
-    assert box.salt("steve") == NEW and _warned(capsys.readouterr().err)
-
-
-def test_an_unsearchable_store_is_reported_as_unchecked(box, capsys):
-    """The restoring user can't search the password directory: whether a
-    hash exists is unknown, so nothing is installed and the message says so
-    (not "existing, different")."""
-    path = box.backup()
-    (box.pw_dir / "steve.json").unlink()
-    box.pw_dir.chmod(0)
-    try:
-        try:
-            (box.pw_dir / "steve.json").exists()
-            searchable = True
-        except PermissionError:
-            searchable = False
-        if searchable:
-            pytest.skip("this Python or user can still search a mode-000 directory")
-        assert box.restore(path, ["y"]) == 0
-    finally:
-        box.pw_dir.chmod(0o755)
-    err = capsys.readouterr().err
-    assert box.salt("steve") is None
-    assert (
-        "(steve)... couldn't check for an existing hash" in err
-        and "not installed" in err
+def test_a_restore_adds_the_case_s_keys_as_retired_on_a_box_with_no_credential(
+    box, tmp_path, capsys, monkeypatch
+):
+    path, signer, case = _signed_backup(box, tmp_path)
+    assert box.restore(path) == 0
+    assert f"KEY ADDED steve {signer['fingerprint']}" in capsys.readouterr().out
+    data = keys.load("steve")
+    assert [(k["status"], k["retired_reason"]) for k in data["keys"]] == [
+        ("retired", "restored")
+    ]
+    assert credentials.state("steve", tmp_path / "cfg") == "none"  # still to enrol
+    result = verify_case(case)
+    assert result.exit_code == 0 and "registered here (retired: restored" in str(
+        result.keys
     )
-    assert "existing, different" not in err
+    replies = iter([PASSPHRASE, PASSPHRASE])
+    monkeypatch.setattr(
+        "vhir_cli.approval_auth.getpass_prompt", lambda p="": next(replies)
+    )
+    credentials.enrol("steve", tmp_path / "cfg")  # enrolment keeps the restored record
+    statuses = sorted(k["status"] for k in keys.load("steve")["keys"])
+    assert statuses == ["active", "retired"]
+
+
+def test_a_restore_never_replaces_a_live_credential(box, tmp_path):
+    path, signer, _ = _signed_backup(box, tmp_path)
+    keys.save("steve", keys.new_credential("steve", PASSPHRASE))
+    active = keys.active(keys.load("steve"))["public_key"]
+    assert box.restore(path) == 0
+    data = keys.load("steve")
+    assert keys.active(data)["public_key"] == active
+    assert keys.check_password(data, PASSPHRASE)
+    assert any(k.get("retired_reason") == "restored" for k in data["keys"])

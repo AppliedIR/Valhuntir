@@ -16,7 +16,6 @@ without that file or the password.
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 VERIFICATION_DIR = Path("/var/lib/vhir/verification")
@@ -45,11 +44,3 @@ def read_ledger(case_id: str) -> list[dict]:
             except json.JSONDecodeError:
                 continue
     return entries
-
-
-def copy_ledger_to_case(case_id: str, case_dir: Path) -> None:
-    """Copy ledger to case dir for case close."""
-    _validate_case_id(case_id)
-    src = VERIFICATION_DIR / f"{case_id}.jsonl"
-    if src.exists():
-        shutil.copy2(src, case_dir / "verification.jsonl")

@@ -20,12 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.case_io import (
-    _EXAMINER_RE,
     CaseError,
     _validate_case_id,
     get_case_dir,
     load_case_meta,
 )
+from vhir_cli.identity import valid_name
 from vhir_cli.verification import VERIFICATION_DIR
 
 _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
@@ -172,24 +172,21 @@ def _create_backup(args, identity: dict) -> None:
             f"  OpenSearch: {snap.get('index_count', 0)} indices, "
             f"{snap.get('total_docs', 0):,} docs"
         )
-    if result.get("password_examiners"):
-        print(f"  Password hashes: {', '.join(result['password_examiners'])}")
     _print_skipped(result["skipped"])
 
-    # Password warning
+    # The case's signing keys and heads, and what the backup doesn't carry
+    from vhir_cli.case_copies import summary_lines
+
+    summary = result.get("ledger_summary") or {}
+    lines = summary_lines(summary.get("case_id", ""), summary)
+    if lines:
+        print()
+        for line in lines:
+            print(line)
     print()
-    print("=" * 64)
-    print("IMPORTANT: This backup contains HMAC-signed findings.")
-    print()
-    print("To verify or restore these findings in the future, you MUST")
-    print("know the examiner password used when findings were approved.")
-    print()
-    print("The backup does NOT contain the plaintext password.")
-    if result.get("password_examiners"):
-        print("It does contain the examiners' password files, which are enough")
-        print("to sign ledger entries: store it as carefully as the password.")
-    print("It is YOUR responsibility to remember or securely store it.")
-    print("=" * 64)
+    print("The backup carries no password or signing-key file. On a rebuilt box,")
+    print("enrol with `vhir config --setup-password`; the signed approvals keep")
+    print("verifying through the public keys they carry.")
 
 
 # ---------------------------------------------------------------------------
@@ -243,9 +240,15 @@ def _create_backup_data(
     Raises:
         OSError: If backup directory cannot be created or files cannot be copied.
     """
+    from vhir_cli import case_copies
+
     meta = load_case_meta(case_dir)
     case_id = meta.get("case_id", case_dir.name)
     dest = Path(destination)
+    # The case's copies of its signed history (this box's chain, its 0.6
+    # copy and the signing keys) are written into the case first, so the
+    # backup carries them; CopyFailed stops the backup
+    copied = case_copies.write_case_copies(case_id, case_dir)
 
     # Build under an ".incomplete" name; only a finished backup takes the
     # case-date name, so a failed or interrupted one can't pass for a backup.
@@ -326,40 +329,18 @@ def _create_backup_data(
     else:
         ledger_note = "Note: no verification ledger found for this case"
 
-    # Copy password hash files for all examiners with findings
-    password_examiners: list[str] = []
-    try:
-        findings_file = case_dir / "findings.json"
-        if findings_file.exists():
-            findings = json.loads(findings_file.read_text())
-            if isinstance(findings, list):
-                # Only well-formed examiner names: "./steve" or "../x" would
-                # alias a control path or read outside the password store.
-                examiners_in_case = {
-                    f.get("created_by")
-                    for f in findings
-                    if isinstance(f.get("created_by"), str)
-                    and _EXAMINER_RE.match(f["created_by"])
-                }
-                pw_dir = backup_dir / "passwords"
-                for ex in sorted(examiners_in_case):
-                    pw_file = _PASSWORDS_DIR / f"{ex}.json"
-                    if pw_file.is_file():
-                        pw_dir.mkdir(exist_ok=True)
-                        shutil.copy2(str(pw_file), str(pw_dir / f"{ex}.json"))
-                        password_examiners.append(ex)
-    except (json.JSONDecodeError, OSError):
-        pass  # best-effort
+    # No credential file is ever backed up: a key's private half stays on its
+    # box, and the case's signed lines carry the public keys that check them
 
     # Copy files
     total_files = len(files_to_copy)
     # A case file at a control path this backup just wrote (e.g. a copy left
     # in the case dir by an older restore) must not replace the live copy.
-    written = {f"passwords/{ex}.json" for ex in password_examiners}
+    written: set[str] = set()
     if ledger_included:
         written.add(f"verification/{case_id}.jsonl")
     for i, (rel_path, abs_path, _size) in enumerate(files_to_copy, 1):
-        if rel_path in written:
+        if rel_path in written or _is_credential_copy(rel_path):
             continue
         dst = backup_dir / rel_path
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -407,8 +388,7 @@ def _create_backup_data(
         "includes_evidence": include_evidence,
         "includes_extractions": include_extractions,
         "includes_verification_ledger": ledger_included,
-        "includes_password_hashes": bool(password_examiners),
-        "password_examiners": password_examiners,
+        "includes_password_hashes": False,
         "includes_opensearch": bool(
             opensearch_snapshot_info and not opensearch_snapshot_info.get("error")
         ),
@@ -450,11 +430,27 @@ def _create_backup_data(
             opensearch_snapshot_info and not opensearch_snapshot_info.get("error")
         ),
         "opensearch_snapshot": opensearch_snapshot_info,
-        "password_examiners": password_examiners,
         "ledger_note": ledger_note,
+        "ledger_summary": {
+            "case_id": case_id,
+            "keys": copied["keys"],
+            "heads": copied["heads"],
+        },
         "symlinks": scan["symlinks"],
         "skipped": skipped,
     }
+
+
+def _is_credential_copy(rel_path: str) -> bool:
+    """A 0.6 password file an older restore left in the case directory: a
+    credential, never backed up (an examiner's other files there are)."""
+    parts = Path(rel_path).parts
+    return (
+        len(parts) == 2
+        and parts[0] == "passwords"
+        and parts[1].endswith(".json")
+        and valid_name(parts[1][: -len(".json")])
+    )
 
 
 def _reason(err: OSError) -> str:
@@ -1194,8 +1190,6 @@ def cmd_restore(args, identity: dict) -> None:
         print("  Ledger:       yes")
     else:
         print("  Ledger:       not included")
-    if manifest.get("password_examiners"):
-        print(f"  Passwords:    {', '.join(manifest['password_examiners'])}")
     print()
 
     # Where to restore: the examiner says so, defaulting to where it came from
@@ -1455,81 +1449,17 @@ def cmd_restore(args, identity: dict) -> None:
                 print(f"  Verification ledger... FAILED: {e}", file=sys.stderr)
                 restore_ledger = False
 
-    # Restore password hashes
-    pw_restored: list[str] = []
-    if not skip_ledger:
-        pw_dir = backup_path / "passwords"
-        if pw_dir.is_dir():
-            for pw_file in pw_dir.glob("*.json"):
-                examiner_name = pw_file.stem
-                if examiner_name not in pw_names:
-                    continue  # only the hashes the backup declared
-                # Never replace a different (or unreadable) hash on this box:
-                # the examiner may have changed their password since the backup.
-                current = _PASSWORDS_DIR / pw_file.name
-                why = ""
-                try:
-                    if (
-                        current.exists()
-                        and current.read_bytes() != pw_file.read_bytes()
-                    ):
-                        why = "kept the existing, different hash"
-                except OSError as e:
-                    why = f"couldn't check for an existing hash ({e})"
-                if why:
-                    print(
-                        f"  Password hash ({examiner_name})... {why}; "
-                        f"the backup's copy was not installed ({pw_file})",
-                        file=sys.stderr,
-                    )
-                    continue
-                try:
-                    result = subprocess.run(
-                        [
-                            "sudo",
-                            "cp",
-                            str(pw_file),
-                            str(_PASSWORDS_DIR / pw_file.name),
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    if result.returncode == 0:
-                        # Fix ownership — sudo cp creates root-owned files
-                        import getpass
+    # A 0.6 backup's password files are never installed: enrol instead
+    if pw_names or (backup_path / "passwords").is_dir():
+        print(
+            "  This backup holds a 0.6 password file; it isn't restored. "
+            "Enrol with `vhir config --setup-password`."
+        )
 
-                        user = getpass.getuser()
-                        subprocess.run(
-                            [
-                                "sudo",
-                                "chown",
-                                f"{user}:{user}",
-                                str(_PASSWORDS_DIR / pw_file.name),
-                            ],
-                            capture_output=True,
-                            timeout=10,
-                        )
-                        pw_restored.append(examiner_name)
-                    else:
-                        print(
-                            f"  Password hash ({examiner_name})... FAILED (sudo)\n"
-                            f"  Manual: sudo cp {pw_file} "
-                            f"{_PASSWORDS_DIR / pw_file.name}",
-                            file=sys.stderr,
-                        )
-                except Exception as e:
-                    print(
-                        f"  Password hash ({examiner_name})... FAILED: {e}",
-                        file=sys.stderr,
-                    )
-            if pw_restored:
-                print(f"  Password hashes... restored ({', '.join(pw_restored)})")
-
-    # Password verification (TTY only)
-    current_examiner = identity.get("examiner", "")
-    if pw_restored and current_examiner in pw_restored and sys.stdin.isatty():
-        _verify_restored_password(current_examiner)
+    # The case's signing keys: each one this box doesn't hold is added as a
+    # retired key (no private key), so approvals verify here; a live
+    # credential is never replaced
+    _merge_keys(target_dir)
 
     # Verify restored files
     ok_count = 0
@@ -1663,40 +1593,27 @@ def cmd_restore(args, identity: dict) -> None:
     print("=" * 64)
 
 
-def _verify_restored_password(examiner: str) -> None:
-    """Prompt for password and verify against restored hash."""
-    import getpass
+def _merge_keys(case_dir: Path) -> None:
+    """KEY ADDED for each signing key the restored case's keys.json names
+    that this box's keys file for its examiner doesn't hold."""
+    from vhir_cli import credentials, keys
 
     try:
-        from vhir_cli.approval_auth import verify_password
-
-        config_path = Path.home() / ".vhir" / "config.yaml"
-        print(f"\nVerification ledger restored for examiner '{examiner}'.")
-        while True:
-            pw = getpass.getpass(
-                "Enter the examiner password used when findings were approved: "
-            )
-            if verify_password(config_path, examiner, pw):
-                print("Password correct. HMAC verification will work.")
-                return
-            print(
-                "\nPassword does not match. HMAC verification will fail "
-                f"for {examiner}'s findings."
-            )
-            print("  r -- Re-enter password (try again)")
-            print("  s -- Skip -- proceed without working HMAC verification")
-            choice = input("Choice [r/s]: ").strip().lower()
-            if choice != "r":
-                print(
-                    f"\nWARNING: Findings by '{examiner}' will not pass "
-                    "HMAC verification. Run 'vhir config --setup-password' "
-                    "to set a new password if the original is lost."
-                )
-                return
-    except ImportError:
-        pass  # approval_auth not available — skip verification
-    except Exception as e:
-        print(f"  Password verification... FAILED: {e}", file=sys.stderr)
+        record = json.loads((case_dir / "ledger" / "keys.json").read_text())
+    except (OSError, ValueError):
+        return
+    by_examiner: dict[str, list[str]] = {}
+    for k in record.get("keys", []) if isinstance(record, dict) else []:
+        if isinstance(k, dict) and isinstance(k.get("public_key"), str):
+            by_examiner.setdefault(str(k.get("examiner")), []).append(k["public_key"])
+    for examiner, pubs in sorted(by_examiner.items()):
+        try:
+            added = credentials.merge_restored_keys(examiner, list(dict.fromkeys(pubs)))
+        except (OSError, ValueError, keys.KeysFileInvalid) as e:
+            print(f"  Keys for {examiner}: not merged ({e})", file=sys.stderr)
+            continue
+        for fp in added:
+            print(f"  KEY ADDED {examiner} {fp}")
 
 
 def _snapshot_uuid(snap_info: dict) -> str | None:

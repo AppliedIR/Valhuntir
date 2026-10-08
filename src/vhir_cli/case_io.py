@@ -806,12 +806,17 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
             if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
         ]
 
+    from vhir_cli import case_copies
+
+    # the case's copies first (CopyFailed is an OSError), then carried along
+    case_copies.write_case_copies(case_id_of(case_dir), case_dir)
     return {
         "case_id": meta.get("case_id", ""),
         "examiner": get_examiner(case_dir),
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "findings": findings,
         "timeline": timeline,
+        "ledger": case_copies.bundle_block(case_id_of(case_dir), case_dir),
     }
 
 
@@ -832,6 +837,8 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
 
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
+
+    from vhir_cli import case_copies
 
     # One case-lock span around both merges and their saves, as every writer
     # of the case files: a decision committed meanwhile can't be overwritten.
@@ -857,6 +864,7 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                         "Fix or restore it, then merge again."
                     ),
                 }
+        chains = case_copies.add_bundle_copies(case_dir, bundle.get("ledger"))
         if "findings" in bundle:
             findings_result = _merge_items(
                 case_dir, "findings.json", bundle["findings"], "id"
@@ -870,6 +878,7 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         "status": "merged",
         "findings": findings_result,
         "timeline": timeline_result,
+        "chains": chains,
     }
 
 

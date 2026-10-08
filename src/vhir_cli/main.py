@@ -993,6 +993,20 @@ def _case_init_data(
 
     if case_dir.exists():
         raise ValueError(f"Case directory already exists: {case_dir}")
+    # A box ledger already under this id belongs to another case: a new case
+    # would chain onto (or freeze) that history
+    from vhir_cli import ledger as _ledger
+    from vhir_cli import verification as _verification
+
+    for held in (
+        _ledger.chain_path(case_id),
+        _verification.VERIFICATION_DIR / f"{case_id}.jsonl",
+    ):
+        if held.exists():
+            raise ValueError(
+                f"This box already holds a ledger for case id {case_id} ({held}). Choose "
+                "another case id, or restore the case it belongs to."
+            )
 
     # Create flat directory structure
     case_dir.mkdir(parents=True)
@@ -1408,8 +1422,25 @@ def _case_close(args, identity: dict) -> None:
     with open(meta_file) as f:
         meta = yaml.safe_load(f) or {}
 
-    if meta.get("status") == "closed":
-        print(f"Case {case_id} is already closed.")
+    from vhir_cli import case_copies
+
+    # The case's copies of its signed history first: a case is marked closed
+    # only once it can be verified on another box
+    try:
+        copied = case_copies.write_case_copies(case_id, case_dir)
+    except case_copies.CopyFailed as e:
+        print(f"Error: {e}. The case was not closed.", file=sys.stderr)
+        sys.exit(1)
+    for what, path in copied["copies"]:
+        if what == "kept beside":
+            print(
+                f"  A different copy was already there; this one was kept beside it: {path}"
+            )
+    for line in case_copies.summary_lines(case_id, copied):
+        print(line)
+
+    if meta.get("status") == "closed":  # a retry of the copy
+        print(f"Case {case_id} is already closed; its ledger copies are up to date.")
         return
 
     meta["status"] = "closed"
@@ -1434,14 +1465,6 @@ def _case_close(args, identity: dict) -> None:
             notify_wintools_case_deactivated()
         except Exception as e:
             print(f"Warning: failed to clear wintools share: {e}", file=sys.stderr)
-
-    # Copy verification ledger into case directory
-    try:
-        from vhir_cli.verification import copy_ledger_to_case
-
-        copy_ledger_to_case(case_id, case_dir)
-    except (ImportError, OSError):
-        pass  # Non-fatal — ledger may not exist
 
     # Clear active case pointer if this was the active case
     active_file = Path.home() / ".vhir" / "active_case"

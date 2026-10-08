@@ -154,9 +154,11 @@ def _ensure_bwrap_profile() -> None:
 
 
 def _ensure_password_dir() -> None:
-    """Ensure /var/lib/vhir/passwords/ exists, migrating from pins/ if needed."""
+    """Ensure /var/lib/vhir/passwords/ exists, migrating from pins/ if needed,
+    and the signing folders keys/ and ledger/ (the case lock lives there)."""
     passwords_dir = Path("/var/lib/vhir/passwords")
     pins_dir = Path("/var/lib/vhir/pins")
+    _ensure_signing_dirs()
 
     if passwords_dir.is_dir():
         return
@@ -204,6 +206,79 @@ def _ensure_password_dir() -> None:
             f"sudo chmod 700 {passwords_dir}",
             file=sys.stderr,
         )
+
+
+SIGNING_DIRS = (Path("/var/lib/vhir/keys"), Path("/var/lib/vhir/ledger"))
+
+
+def _ensure_signing_dirs() -> None:
+    """/var/lib/vhir/keys/ and /var/lib/vhir/ledger/ (the case lock lives
+    there), owned by this user, 0700."""
+    import getpass
+
+    user = getpass.getuser()
+    for folder in SIGNING_DIRS:
+        if folder.is_dir():
+            continue
+        print(f"  Creating {folder}... ", end="", flush=True)
+        result = subprocess.run(
+            ["sudo", "sh", "-c",
+             f"mkdir -p {folder} && chown {user}:{user} {folder} && chmod 700 {folder}"],
+            capture_output=True, text=True, timeout=10,
+        )  # fmt: skip
+        if result.returncode == 0:
+            print("done")
+        else:
+            print("failed")
+            print(
+                f"  Run manually: sudo mkdir -p {folder} && sudo chown $USER:$USER {folder} "
+                f"&& sudo chmod 700 {folder}",
+                file=sys.stderr,
+            )
+
+
+def _offer_signing_key(identity: dict) -> None:
+    """After an update: the examiner's signing credential, as the installer
+    reports it. A 0.6 password is offered the upgrade; none is told how to
+    set one up; a signing key's fingerprint is printed."""
+    from vhir_cli import credentials, keys
+
+    examiner = identity.get("examiner", "")
+    config_path = Path.home() / ".vhir" / "config.yaml"
+    try:
+        current = credentials.state(examiner, config_path)
+    except (credentials.CredentialError, keys.KeysFileInvalid) as e:
+        print(
+            f"  Signing key: can't be read ({e}); run `vhir config --forgot-password`."
+        )
+        return
+    if current == "schema3":
+        fp = keys.key_fingerprint(keys.active(keys.load(examiner)))
+        print(f"  Signing key for {examiner}: {fp}")
+        return
+    if current == "none":
+        print(
+            f"  No signing passphrase for {examiner}: set one with `vhir config --setup-password`."
+        )
+        return
+    print(f"  {examiner} has a 0.6 password: approvals now need a signing key.")
+    answer = ""
+    if sys.stdin.isatty():
+        try:
+            answer = (
+                input("  Upgrade it now (vhir config --upgrade-key)? [Y/n] ")
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            answer = "n"
+    if not sys.stdin.isatty() or answer in ("n", "no"):
+        print("  Run `vhir config --upgrade-key` when you're ready.")
+        return
+    try:
+        credentials.upgrade(examiner, config_path)
+    except credentials.CredentialError as e:
+        print(f"  {e} Run `vhir config --upgrade-key` to try again.", file=sys.stderr)
 
 
 def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
@@ -911,7 +986,12 @@ def cmd_update(args, identity: dict) -> None:
 
     # Step 7: Restart gateway
     if no_restart:
-        print("  Gateway restart skipped (--no-restart)")
+        print(
+            "  Gateway restart skipped (--no-restart): portal approvals and portal saves "
+            "must wait for the gateway restart. Until then, a commit through the old "
+            "gateway applies every staged entry as the committer's decision, and a save "
+            "through it can be refused or can remove other examiners' staged entries."
+        )
     else:
         print("  Restarting gateway... ", end="", flush=True)
         result = subprocess.run(
@@ -951,6 +1031,7 @@ def cmd_update(args, identity: dict) -> None:
     print(f"\n  Updated to {', '.join(parts)}")
     if client == "claude-code":
         print("  Restart your LLM client to pick up new rules.")
+    _offer_signing_key(identity)
     if not no_restart and restart_ok:
         from vhir_cli.gateway import RECONNECT_HINT
 

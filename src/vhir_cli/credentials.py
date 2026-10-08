@@ -98,8 +98,9 @@ def state(examiner: str, config_path: Path) -> str:
     exists, entry = _passwords_entry(examiner)
     if entry is not None:
         return "legacy"
-    if keys.load(examiner) is not None:
-        return "schema3"
+    data = keys.load(examiner)
+    if data is not None and keys.active(data) is not None:
+        return "schema3"  # a file of only retired (restored) keys is no credential
     if not exists and _config_entry(examiner, config_path) is not None:
         return "legacy"
     return "none"
@@ -209,6 +210,9 @@ def enrol(examiner: str, config_path: Path, *, by_name: bool = False) -> None:
         )
     pw = _new_passphrase(examiner)
     data = keys.new_credential(examiner, pw)
+    for k in (keys.load(examiner) or {"keys": []})["keys"]:  # restored records kept
+        keys.add_retired(data, k["public_key"], k.get("retired_reason") or "restored",
+                         k.get("superseded_by"))  # fmt: skip
     for pub in _ledger_keys(examiner):
         if pub != keys.active(data)["public_key"]:
             keys.add_retired(data, pub, "found in ledger, not confirmed")
@@ -410,6 +414,27 @@ def forgot(examiner: str, config_path: Path) -> None:
             print(
                 f"    Current head: {ledger.format_head(case_id, head)}; record the head after your next approval."
             )
+
+
+def merge_restored_keys(examiner: str, public_keys: list[str]) -> list[str]:
+    """A restore's keys for `examiner`: each one the local keys file doesn't
+    hold is appended as retired ("restored", no private key); a box with no
+    credential gets a file of only those. A wrapped private key is never
+    installed and a live credential never replaced. Returns the fingerprints
+    added."""
+    if not valid_name(examiner):
+        return []
+    data = keys.load(examiner) or keys.public_only()
+    added = []
+    for pub in public_keys:
+        try:
+            if keys.add_retired(data, pub, "restored"):
+                added.append(keys.fingerprint(keys.unb64(pub)))
+        except (TypeError, ValueError):
+            continue
+    if added:
+        keys.save(examiner, data)
+    return added
 
 
 # --- Signing commands ---------------------------------------------------------------------

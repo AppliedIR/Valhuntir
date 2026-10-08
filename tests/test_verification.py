@@ -2,8 +2,8 @@
 
 0.7 never writes, re-signs or checks the HMAC of a 0.6 line (approvals are
 signed ledger lines, and 0.6 lines are judged by `verify_case` against the
-history signing froze). What remains is reading the file and copying it into
-the case at close.
+history signing froze). What remains is reading the file; close copies
+it into the case with the chain (`case_copies`).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 import pytest
 
 from vhir_cli import verification
-from vhir_cli.verification import copy_ledger_to_case, read_ledger
+from vhir_cli.verification import read_ledger
 
 ENTRY = {
     "finding_id": "F-001",
@@ -38,15 +38,6 @@ def test_read_ledger():
     assert len(entries) == 1
     assert entries[0]["finding_id"] == "F-001"
     assert entries[0]["content_snapshot"] == "Test finding"
-
-
-def test_copy_ledger_to_case(tmp_path):
-    """Ledger file is copied to case directory."""
-    case_dir = tmp_path / "case"
-    case_dir.mkdir()
-    copy_ledger_to_case("INC-2026-001", case_dir)
-    assert (case_dir / "verification.jsonl").exists()
-    assert "F-001" in (case_dir / "verification.jsonl").read_text()
 
 
 def test_case_id_validation():
