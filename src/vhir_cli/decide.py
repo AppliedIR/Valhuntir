@@ -274,6 +274,19 @@ def _kept_unsigned(case_dir, examiner, direct, todos, why: str, lead: str, after
 INTERRUPTED = "Interrupted; nothing was signed"
 
 
+def mint_identity(case_dir: Path) -> None:
+    """Give a case with no identity (one upgraded from 0.6.4) its identity
+    before its first signed line, as activation does, so the line binds this
+    folder. Under the case lock. A refusal (a CASE.yaml whose identity was
+    lost) is CaseCopy, with nothing signed."""
+    from vhir_cli.case_identity import ensure_identity
+
+    try:
+        ensure_identity(case_dir, naming_version=1)
+    except ValueError as e:
+        raise ledger.CaseCopy(str(e)) from None
+
+
 def record_folder(case_dir: Path) -> None:
     """Record this folder as its case identity's folder on this box, as
     activation does (`record_case_path`); the first folder to sign is taken as
@@ -407,6 +420,7 @@ def sign_and_commit(
                     for d, item in zip(every, items, strict=True)
                 ]  # fmt: skip
                 refs, ref_notes = chain_references(case_dir, case_id)
+                mint_identity(case_dir)  # so the chain's first line binds this folder
                 bodies = ledger.prepare(
                     case_id, decisions, examiner, public, mode, at,
                     retired=credentials.retired_fingerprints(examiner),

@@ -164,3 +164,68 @@ def test_activation_still_refuses_a_copy_of_a_recorded_case(fresh):
     with pytest.raises(ValueError, match="so both would write into the same indices"):
         record_case_path(copy)
     assert verify_case(case).exit_code == 0
+
+
+# --- Cases upgraded from 0.6.4: no identity until their first signing ----------
+
+
+@pytest.fixture
+def upgraded(box, monkeypatch, tmp_path):
+    """A case as 0.6.4 left it: no case_uuid, no record of its folder."""
+    monkeypatch.setattr(approval_auth, "_LOCKOUT_FILE", tmp_path / "lockout")
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": PASSPHRASE)
+    enrol("tester")
+    (box.case / "findings.json").write_text(json.dumps([
+        {"id": f"F-tester-00{n}", "title": "t", "observation": "o", "interpretation": "i",
+         "confidence": "LOW", "status": "DRAFT"} for n in (1, 2, 3)
+    ]))  # fmt: skip
+    assert "case_uuid" not in _meta(box.case)
+    return box
+
+
+def test_the_first_signing_gives_an_upgraded_case_its_identity_and_binds_it(upgraded):
+    case = upgraded.case
+    assert _sign(case, ["F-tester-001"]) == 0
+    uuid = _meta(case)["case_uuid"]
+    (first,) = [o for _, _, o in ledger.read_lines(ledger.chain_path("C-1"))]
+    assert first["case_uuid"] == uuid
+    assert verify_case(case).exit_code == 0
+
+
+@pytest.mark.parametrize("first", ["original", "copy"])
+def test_a_copy_of_an_upgraded_case_and_its_original_can_t_both_sign(
+    upgraded, capsys, first
+):
+    """A cp -r copy made before either signed has no identity either: the
+    folder that signs first holds the case's signed record, and the other is
+    refused by name."""
+    case = upgraded.case
+    copy = _copy(case)
+    signer, other = (case, copy) if first == "original" else (copy, case)
+    assert _sign(signer, ["F-tester-001"]) == 0
+    before = _chain()
+    capsys.readouterr()
+    assert _sign(other, ["F-tester-002"]) == 1
+    err = capsys.readouterr().err.strip().splitlines()[-1]
+    assert err == ledger.first_signed_text("C-1")
+    assert _chain() == before and "case_uuid" not in _meta(other)
+
+
+def test_a_case_whose_identity_was_lost_is_refused_with_nothing_signed(
+    upgraded, capsys
+):
+    """Its host logs record an identity CASE.yaml no longer has: the mint
+    refuses (restore it), under the lock, and the decision is kept unsigned."""
+    from vhir_cli.case_identity import ensure_identity
+
+    case = upgraded.case
+    ensure_identity(case)  # activation minted it
+    meta = (case / "CASE.yaml").read_text().splitlines()
+    (case / "CASE.yaml").write_text(
+        "\n".join(x for x in meta if not x.startswith("case_uuid")) + "\n"
+    )
+    assert _sign(case, ["F-tester-001"]) == 1
+    err = capsys.readouterr().err
+    assert "case_uuid" in err and _chain() == b""
+    pending = json.loads((case / "pending-reviews.json").read_text())
+    assert [e["id"] for e in pending["items"]] == ["F-tester-001"]

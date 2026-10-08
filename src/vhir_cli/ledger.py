@@ -97,6 +97,15 @@ CHAIN_UNREADABLE = (
 )
 
 
+def first_signed_text(case_id: str) -> str:
+    """The refusal for a folder with no identity whose case already signed
+    elsewhere (cases upgraded from 0.6.4 had none until their first signing)."""
+    return (
+        f"This folder is a copy of case {case_id}: the folder that signed first holds "
+        "this case's signed record; continue there."
+    )
+
+
 def copy_problem(case_id: str, case_uuid: str | None) -> str:
     """`copy_text` when this box's chain for `case_id` binds a case folder
     other than the one whose identity is `case_uuid`; CHAIN_UNREADABLE when
@@ -105,7 +114,9 @@ def copy_problem(case_id: str, case_uuid: str | None) -> str:
         bound = bound_uuid(read_lines(chain_path(case_id)))
     except (OSError, ValueError):  # unreadable, not UTF-8, a bad case id
         return CHAIN_UNREADABLE
-    return copy_text(case_id) if bound is not None and bound != case_uuid else ""
+    if bound is None or bound == case_uuid:
+        return ""
+    return first_signed_text(case_id) if not case_uuid else copy_text(case_id)
 
 
 class BadSignature(LedgerError):
