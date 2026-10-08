@@ -189,6 +189,15 @@ def _run_connectivity_test() -> None:
     elif bwrap and socat:
         print("    socat: OK")
 
+    # --- Codex's managed layer (a box set up for Codex) ---
+    from vhir_cli.commands.codex_controls import state_lines
+
+    codex = state_lines()
+    if codex:
+        print("\n  Codex controls:")
+        for line in codex:
+            print(line)
+
     # Resolve gateway URL
     from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 

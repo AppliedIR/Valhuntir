@@ -134,3 +134,47 @@ def test_a_restricted_userns_kernel_gets_the_notice(box, capsys):
     cc.USERNS.write_text("0\n")
     cc.deploy_codex_controls(consent=False)
     assert "can't start" not in capsys.readouterr().out
+
+
+def test_an_older_manifest_names_its_one_client():
+    assert cc.manifest_clients({"client": "claude-code"}) == ["claude-code"]
+    assert cc.manifest_clients({"clients": ["claude-code", "codex"]}) == [
+        "claude-code",
+        "codex",
+    ]
+    assert cc.manifest_clients({}) == []
+
+
+def test_the_state_lines_say_codex_controls_off_after_the_opt_out(box):
+    assert cc.state_lines(["claude-code"]) == []  # not set up for Codex: nothing
+    cc.deploy_codex_controls(consent=True)
+    assert "in effect" in cc.state_lines(["codex"])[0]
+    cc.REQUIREMENTS.rename(cc.REQUIREMENTS.with_name("requirements.toml.off"))
+    (line, again) = cc.state_lines(["codex"])
+    assert line.startswith("    CODEX CONTROLS OFF") and "--client=codex" in again
+
+
+def test_setup_test_reports_codex_controls_off(box, monkeypatch, capsys):
+    import json
+
+    from vhir_cli.commands import setup
+
+    (box.home / ".vhir").mkdir(parents=True)
+    (box.home / ".vhir" / "manifest.json").write_text(
+        json.dumps({"clients": ["codex"]})
+    )
+    monkeypatch.setattr(
+        "vhir_cli.gateway.get_local_gateway_url", lambda: "http://127.0.0.1:9"
+    )
+    monkeypatch.setattr("vhir_cli.gateway.get_local_ssl_context", lambda: None)
+
+    def refused(*a, **k):
+        raise OSError("connection refused")  # no gateway: fail at once
+
+    monkeypatch.setattr("urllib.request.urlopen", refused)
+    try:
+        setup._run_connectivity_test()
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "Codex controls:" in out and "CODEX CONTROLS OFF" in out

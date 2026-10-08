@@ -44,6 +44,48 @@ USERNS_NOTICE = (
 OFF = "CODEX CONTROLS OFF"
 
 
+def manifest_clients(manifest: dict) -> list[str]:
+    """The clients a box was set up for: `clients`, or an older manifest's
+    single `client` as a one-element list."""
+    clients = manifest.get("clients")
+    if isinstance(clients, list):
+        return [str(c) for c in clients]
+    client = manifest.get("client")
+    return [str(client)] if client else []
+
+
+def installed_clients() -> list[str]:
+    import json
+
+    try:
+        return manifest_clients(
+            json.loads((Path.home() / ".vhir" / "manifest.json").read_text())
+        )
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def state_lines(clients=None) -> list[str]:
+    """What `vhir setup test` and the controls blocks say about Codex; nothing
+    on a box not set up for Codex."""
+    state = codex_controls_state(installed_clients() if clients is None else clients)
+    lines = {
+        "on": [f"    Managed requirements: in effect ({REQUIREMENTS})"],
+        "off": [
+            f"    {OFF}: {REQUIREMENTS} isn't there (the documented opt-out): Codex's "
+            "sandbox limits, case-data guard and audit don't apply",
+            "    To turn them back on: vhir setup client --client=codex",
+        ],
+        "admin-file": [
+            f"    NOT in effect: {REQUIREMENTS} is an administrator's own file; "
+            "re-run vhir setup client --client=codex for the block to merge into it",
+        ],
+    }.get(state, [])
+    if lines and userns_restricted():
+        lines.append(USERNS_NOTICE[2:].replace("NOTE: ", "    "))
+    return lines
+
+
 def ours(text: str) -> bool:
     """Whether a requirements file is Valhuntir's (its marker line leads)."""
     return MARKER in text.splitlines()[:3]
