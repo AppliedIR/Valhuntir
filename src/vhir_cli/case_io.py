@@ -829,6 +829,16 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
+    # Host identity is this case's own: another case's machine ids and keys
+    # never come in with its findings and timeline items.
+    bundle = {
+        **bundle,
+        **{
+            k: _without_host_fields(bundle[k])
+            for k in ("findings", "timeline")
+            if k in bundle
+        },
+    }
 
     from vhir_cli import ledger
 
@@ -899,6 +909,29 @@ def _bundle_anchors(block: object) -> dict:
             out[name] = [
                 x for x in items if isinstance(x, dict) and all(f in x for f in fields)
             ]
+    return out
+
+
+_HOST_FIELDS = ("host_id", "vhir.host_key", "vhir.unit", "vhir.prev_ids")
+
+
+def _without_host_fields(items):
+    """Incoming items without another case's host identity: `host_id` and
+    the `vhir.*` host fields, flat or under `vhir`. Anything not a list of
+    dicts is left for the merge to judge."""
+    if not isinstance(items, list):
+        return items
+    out = []
+    for item in items:
+        if isinstance(item, dict):
+            item = {k: v for k, v in item.items() if k not in _HOST_FIELDS}
+            if isinstance(item.get("vhir"), dict):
+                vhir = {k: v for k, v in item["vhir"].items()
+                        if f"vhir.{k}" not in _HOST_FIELDS}  # fmt: skip
+                item["vhir"] = vhir
+                if not vhir:
+                    del item["vhir"]
+        out.append(item)
     return out
 
 
