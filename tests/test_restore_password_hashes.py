@@ -282,12 +282,13 @@ def test_a_restore_refuses_another_case_s_chain(box, tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
-    "rel,why",
-    [("./ledger/chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes"),
-     ("ledger/x/../chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes"),
-     ("../escaped.jsonl", "leads outside the case directory")],
+    "rel,why,code",
+    [("./ledger/chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes", 0),
+     # a `..` component refuses the whole restore, before anything is written
+     ("ledger/x/../chains/0123456789abcdef.jsonl", "lists a file outside the case folder", 1),
+     ("../escaped.jsonl", "lists a file outside the case folder", 1)],
 )  # fmt: skip
-def test_a_restore_path_is_judged_where_it_lands(box, tmp_path, capsys, rel, why):
+def test_a_restore_path_is_judged_where_it_lands(box, tmp_path, capsys, rel, why, code):
     path, signer, case = _signed_backup(box, tmp_path)
     src = Path(path) / rel
     src.parent.mkdir(parents=True, exist_ok=True)
@@ -295,7 +296,7 @@ def test_a_restore_path_is_judged_where_it_lands(box, tmp_path, capsys, rel, why
     manifest = json.loads((Path(path) / "backup-manifest.json").read_text())
     manifest["files"].append({"path": rel, "sha256": B.sha256_file(src), "size": 1})
     (Path(path) / "backup-manifest.json").write_text(json.dumps(manifest))
-    assert box.restore(path) == 0
+    assert box.restore(path) == code
     assert why in capsys.readouterr().err
     assert not (case / "ledger" / "chains" / "0123456789abcdef.jsonl").exists()
     assert not (case.parent / "escaped.jsonl").exists()
