@@ -189,16 +189,6 @@ def cmd_setup_client(args, identity: dict) -> None:
 CLAUDE_CODE = "claude-code"
 
 
-def _sandbox_off(settings_path: Path) -> bool:
-    """Whether the deployed settings let Bash run without the sandbox: turned
-    off (a user's own value, kept), or allowed when it can't start."""
-    try:
-        sandbox = json.loads(settings_path.read_text()).get("sandbox") or {}
-    except (OSError, ValueError, AttributeError):
-        return False
-    return sandbox.get("enabled") is False or sandbox.get("failIfUnavailable") is False
-
-
 def _allow_unsandboxed(args) -> bool:
     """Whether --allow-unsandboxed is confirmed: only by the phrase typed on
     a terminal. -y never gives it (the sandbox then stays required); with no
@@ -865,14 +855,15 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         settings = _deploy_claude_code_assets(Path.cwd())
         print(f"  Examiner:  {examiner}")
         print("")
-        if settings and settings[1] != "kept":
+        if settings:
             from vhir_cli.controls import print_block
 
-            print(f"  Forensic controls deployed{' globally' if sift else ''}.")
-            print("  Start Claude Code from the case folder (cd <case>; claude).")
-            print_block(CLAUDE_CODE, settings[0])
-        elif settings:
-            print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
+            if settings[1] != "kept":
+                print(f"  Forensic controls deployed{' globally' if sift else ''}.")
+                print("  Start Claude Code from the case folder (cd <case>; claude).")
+            else:
+                print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
+            print_block(CLAUDE_CODE, settings[0])  # what the file holds now
 
     elif client == "codex":
         deploy_codex_assets(servers)

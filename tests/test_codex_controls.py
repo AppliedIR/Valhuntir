@@ -247,3 +247,48 @@ def test_the_route_sidecar_is_installed_beside_the_hooks_when_shipped(box):
         c[-1].rsplit("/", 1)[-1]: c[c.index("-m") + 1] for c in box.ran if "-d" not in c
     }
     assert modes["mcp-routes.tsv"] == "0644" and modes["mcp-route.py"] == "0755"
+
+
+HOOK_ROWS = ("Audit", "Case-data guard", "Start-up check")
+
+
+def _block(capsys):
+    from vhir_cli.controls import print_block
+
+    capsys.readouterr()
+    print_block("codex")
+    return capsys.readouterr().out
+
+
+def test_with_codex_controls_off_no_row_they_carry_claims_protection(box, capsys):
+    out = _block(capsys)  # nothing installed: the opt-out, or a declined install
+    assert (
+        f"Managed requirements: CODEX CONTROLS OFF: {cc.REQUIREMENTS} isn't installed"
+        in out
+    )
+    for row in HOOK_ROWS:
+        assert (
+            f"    {row}: NOT in effect: {cc.REQUIREMENTS}, which runs it, isn't installed"
+            in out
+        )
+
+
+def test_an_admins_file_runs_only_the_hooks_it_names_and_that_are_installed(
+    box, capsys
+):
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text("allowed_sandbox_modes = []\n")
+    out = _block(capsys)
+    assert "Managed requirements: NOT ours" in out
+    assert all(f"    {r}: NOT in effect: the administrator's" in out for r in HOOK_ROWS)
+    cc.deploy_codex_controls(consent=False)  # prints the block; installs nothing
+    block = _pasted_block(capsys.readouterr().out)
+    cc.REQUIREMENTS.write_text(cc.REQUIREMENTS.read_text() + block)  # merged
+    out = _block(capsys)
+    assert "    Case-data guard: NOT in effect: " in out and "isn't installed" in out
+    cc.deploy_codex_controls(consent=True)  # now the hooks too
+    out = _block(capsys)
+    assert (
+        "    Case-data guard: the listed ways" in out
+    )  # the template runs only the guard
+    assert "    Audit: NOT in effect: the administrator's" in out

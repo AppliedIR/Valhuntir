@@ -611,7 +611,10 @@ def _redeploy_clients(manifest: dict) -> list[str]:
 
         print("  Redeploying forensic controls...")
         settings = _deploy_claude_code_assets()
-        print_block("claude-code", settings[0] if isinstance(settings, tuple) else None)
+        path = settings[0] if isinstance(settings, tuple) else None
+        if isinstance(settings, tuple) and settings[1] == "kept":
+            print(f"  Forensic controls NOT applied to {path}; see above.")
+        print_block("claude-code", path)  # what the file holds now
     if "codex" in clients:
         from vhir_cli.commands.client_setup import deploy_codex_assets
         from vhir_cli.commands.codex_controls import (

@@ -453,7 +453,9 @@ def test_setup_claims_global_controls_only_when_applied(
     cs._generate_config("claude-code", {}, "steve")
     out = capsys.readouterr().out
     assert ("Forensic controls deployed globally." in out) is claims
-    assert ("Controls (as deployed now):" in out) is claims
+    assert ("Forensic controls NOT applied" in out) is not claims
+    # the block reads the file itself: here there is none, so no row claims it
+    assert f"Deny rules: NOT in effect: {box.settings} can't be read" in out
 
 
 def test_a_null_mcpservers_map_is_registered_into_not_a_crash(claude_json, capsys):

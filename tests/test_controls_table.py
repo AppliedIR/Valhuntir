@@ -42,14 +42,54 @@ def test_mcp_only_clients_get_the_server_side_rows_only():
     assert "can't be checked" in text
 
 
+FULL = {
+    "permissions": {"deny": ["Edit(**/findings.json)"]},
+    "sandbox": {"enabled": True, "failIfUnavailable": True},
+    "hooks": {
+        event: [{"hooks": [{"type": "command", "command": f"~/.vhir/hooks/{script}"}]}]
+        for event, script in (("PreToolUse", "case-data-guard.sh"),
+                              ("PostToolUse", "forensic-audit.sh"),
+                              ("SessionStart", "case-dir-check.sh"))
+    },
+}  # fmt: skip
+
+
 def test_a_sandbox_the_user_kept_off_reads_sandbox_off(tmp_path):
     s = tmp_path / "settings.json"
-    s.write_text(json.dumps({"sandbox": {"enabled": False}}))
-    assert cs._sandbox_off(s)
-    s.write_text(json.dumps({"sandbox": {"enabled": True, "failIfUnavailable": True}}))
-    assert not cs._sandbox_off(s)
+    s.write_text(json.dumps({**FULL, "sandbox": {"enabled": False}}))
+    assert controls.installed_overrides("claude-code", s)["Sandbox"].startswith(
+        "SANDBOX OFF"
+    )
+    s.write_text(
+        json.dumps({**FULL, "sandbox": {"enabled": True, "failIfUnavailable": False}})
+    )
+    assert controls.installed_overrides("claude-code", s) == {
+        "Sandbox": controls.SANDBOX_OFF
+    }
+    s.write_text(json.dumps(FULL))
+    assert controls.installed_overrides("claude-code", s) == {}
     text = "\n".join(controls.block_lines("claude-code", sandbox_off=True))
     assert "Sandbox: SANDBOX OFF" in text
+
+
+def test_claude_codes_block_reads_each_row_from_the_settings_file(tmp_path):
+    s = tmp_path / "settings.json"
+    s.write_text(json.dumps({"permissions": {"deny": []}, "hooks": {}}))  # a user's own
+    over = controls.installed_overrides("claude-code", s)
+    assert set(over) == {
+        "Deny rules",
+        "Sandbox",
+        "Audit",
+        "Case-data guard",
+        "Start-up check",
+    }
+    assert over["Audit"] == f"NOT in effect: {s} doesn't run forensic-audit.sh"
+    assert all(
+        v.startswith("NOT in effect")
+        for v in controls.installed_overrides(
+            "claude-code", s.parent / "gone.json"
+        ).values()
+    )
 
 
 def test_codex_requirements_moved_away_read_codex_controls_off():
@@ -78,3 +118,22 @@ def test_setup_prints_the_mcp_only_block(client, tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Controls (as deployed now):" in out and "run_command:" in out
     assert "MCP-only: the server-side controls only" in out
+
+
+def test_setup_shows_a_declined_change_as_the_file_holds_it(
+    tmp_path, monkeypatch, capsys
+):
+    mine = tmp_path / "settings.json"
+    mine.write_text(
+        json.dumps({"permissions": {"deny": []}})
+    )  # the user kept their own
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cs, "_is_sift", lambda: False)
+    monkeypatch.setattr(
+        cs, "_deploy_claude_code_assets", lambda *a, **k: (mine, "kept")
+    )
+    cs._generate_config("claude-code", {}, "steve")
+    out = capsys.readouterr().out
+    assert f"Forensic controls NOT applied to {mine}" in out
+    assert f"Sandbox: SANDBOX OFF: {mine} doesn't turn it on" in out
+    assert f"Deny rules: NOT in effect: {mine}" in out
