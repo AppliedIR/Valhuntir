@@ -170,6 +170,7 @@ def test_update_says_wintools_must_join_again_only_on_an_old_share(
     out = capsys.readouterr().out
     assert ("//SIFT/vhir-cases" in out and "vhir setup join-code" in out) is said
     assert bool(out) is said
+    assert ("Re-join before updating wintools on Windows" in out) is said
 
 
 # -- the marker moves with the share

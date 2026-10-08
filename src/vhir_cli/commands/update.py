@@ -1010,7 +1010,10 @@ def _print_share_rejoin_notice() -> None:
             " shares it as [cases], which also covers SIFT's own [cases] share.\n"
             "  Join wintools again to move to the new share: on SIFT run"
             " 'vhir setup join-code', then on Windows run setup-windows.ps1 with the new"
-            " join code. The active case stays shared through the move."
+            " join code. The active case stays shared through the move.\n"
+            "  Re-join before updating wintools on Windows: an updated wintools writes"
+            " nothing to the case until SIFT re-joins (or until the case is activated"
+            " again here, 'vhir case activate <case>')."
         )
 
 
