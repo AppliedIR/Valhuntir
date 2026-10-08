@@ -380,6 +380,10 @@ def test_a_short_0_6_password_is_replaced_inline_and_the_decision_signed(
     monkeypatch.setattr(approval_auth, "getpass_prompt",
                         lambda p="": prompts.append(p) or next(answers))  # fmt: skip
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", note="kept")
+    # the 0.6 password and the new passphrase twice, before the item; then the final prompt
+    assert prompts[:3] == ["0.6 password for steve: ", "New passphrase: ",
+                           "Confirm new passphrase: "]  # fmt: skip
+    assert len(prompts) == 4
     assert prompts[-1].startswith("Your new passphrase to sign 1 decisions")
     assert _signed() == [("F-steve-002", "approve")]
     assert verify_case(case).exit_code == 0
@@ -387,3 +391,122 @@ def test_a_short_0_6_password_is_replaced_inline_and_the_decision_signed(
     assert "kept" in [
         n.get("note") for n in stored["F-steve-002"].get("examiner_notes", [])
     ]
+
+
+# --- A cascaded IOC never aborts the audit trail ---------------------------------------
+
+
+def test_a_cascaded_ioc_without_a_content_hash_writes_every_line_and_log_entry(case):
+    """The IOC record forensic-mcp writes carries no content_hash; reading it
+    raised KeyError and aborted the audit trail before anything was written."""
+    assert "content_hash" not in json.loads((case / "iocs.json").read_text())[0]
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    assert [i for i, _ in _signed()] == ["F-steve-001", "T-steve-001", "IOC-steve-001"]
+    log = [json.loads(x) for x in (case / "approvals.jsonl").read_text().splitlines()]
+    assert [(e["item_id"], e["action"]) for e in log] == [
+        ("F-steve-001", "APPROVED"), ("T-steve-001", "APPROVED"),
+        ("IOC-steve-001", "APPROVED"),
+    ]  # fmt: skip
+    assert log[2]["coupled_from"] == "F-steve-001"
+
+
+# --- The checks that can fail run before any item is shown -------------------------------------
+
+
+def _break(case, problem):
+    if problem == "no credential":
+        keys.keys_path("steve").unlink()
+    elif problem == "lockout":
+        for _ in range(approval_auth._MAX_PASSWORD_ATTEMPTS):
+            approval_auth._record_failure("steve")
+    else:
+        keys.keys_path("steve").write_text('{"schema": 3}')
+
+
+def _path(case, path, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda prompt="": "a")
+    if path == "ids":
+        return lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")
+    if path == "interactive":
+        return lambda: A._interactive_review(case, IDENT, case / "cfg")
+    if path == "review":
+        (case / "pending-reviews.json").write_text(json.dumps({"case_id": "C-9", "items": [
+            {"id": "F-steve-002", "type": "finding", "action": "approve", "staged_by": "steve"}
+        ]}))  # fmt: skip
+        return lambda: A._review_mode(case, IDENT, case / "cfg")
+    if path == "reattest":
+        approve_under_0_6(case, {"F-steve-002"}, "steve", NOW)
+        return lambda: A.cmd_approve(
+            Namespace(
+                case=None, ids=["F-steve-002"], review=False, reattest=True, all=False
+            ),
+            IDENT,
+        )
+    return lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg",
+                                       decision="reject")  # fmt: skip
+
+
+@pytest.mark.parametrize("problem", ["no credential", "lockout", "invalid keys file"])
+@pytest.mark.parametrize("path", ["ids", "interactive", "review", "reattest", "reject"])
+def test_every_path_refuses_before_the_first_item_is_shown(
+    case, monkeypatch, capsys, path, problem
+):
+    run = _path(case, path, monkeypatch)
+    _break(case, problem)
+    asked = []
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": asked.append(p))
+    assert _run(run) == 1
+    out = capsys.readouterr().out
+    assert "Other" not in out and "F-steve-002]" not in out  # nothing displayed
+    assert asked == [] and _signed() == []
+
+
+def test_with_nothing_to_decide_nothing_is_checked_or_prompted(
+    case, monkeypatch, capsys
+):
+    keys.keys_path("steve").unlink()  # no credential either
+    asked = []
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": asked.append(p))
+    A._approve_specific(case, ["F-nobody-001"], IDENT, case / "cfg")
+    out = capsys.readouterr()
+    assert "No items to approve." in out.out and "--upgrade-key" in out.out
+    assert asked == [] and "No passphrase" not in out.err
+
+
+def test_ctrl_c_at_the_final_prompt_signs_and_saves_nothing(case, monkeypatch, capsys):
+    def interrupt(prompt=""):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", interrupt)
+    assert (
+        _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+        == 1
+    )
+    assert "Nothing was signed and nothing was saved." in capsys.readouterr().err
+    assert _signed() == [] and not (case / "pending-reviews.json").exists()
+    assert _status(case, "findings.json", "F-steve-002") == "DRAFT"
+
+
+def test_a_cascaded_ioc_is_shown_with_its_signed_fields_before_the_prompt(case, capsys):
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    out = capsys.readouterr().out
+    shown = out[out.index("decided with them") : out.index("To be signed")]
+    for line in ("[IOC-steve-001]  10.0.0.7", "Value: 10.0.0.7", "Type: ipv4",
+                 "Category: network", "Tags:",
+                 "Sources, sightings, confidence, MITRE: derived, not signed",
+                 "cascade from F-steve-001: approve"):  # fmt: skip
+        assert line in shown, line
+
+
+def test_an_unsigned_save_carries_what_was_shown(case, monkeypatch):
+    from vhir_cli.case_io import compute_content_hash
+
+    shown = json.loads((case / "findings.json").read_text())[1]
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": "wrong")
+    _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg",
+                                     decision="reject", reason="noise"))  # fmt: skip
+    (entry,) = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert entry["type"] == "finding" and entry["action"] == "reject"
+    assert entry["rejection_reason"] == "noise"
+    assert entry["content_hash_at_review"] == compute_content_hash(shown)
+    assert set(entry["saved_unsigned"]) == {"at", "reason"}
