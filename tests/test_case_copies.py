@@ -546,3 +546,29 @@ def test_a_decision_signed_while_a_backup_copies_the_files_fails_it(
     monkeypatch.setattr(B.shutil, "copy2", real)
     out = B.create_backup_data(case, str(tmp_path / "backups"), "steve")
     assert Path(out["backup_path"]).name.startswith("C-B-")
+
+
+@pytest.mark.parametrize("signed", [True, False])
+def test_a_backup_never_says_a_signed_case_has_no_ledger(tmp_path, signed):
+    """The 0.6 approval records file is named as such; a case whose history is
+    signed gets no note about it."""
+    import vhir_cli.commands.backup as B
+
+    case = tmp_path / "cases" / "C-N"
+    case.mkdir(parents=True)
+    (case / "CASE.yaml").write_text("case_id: C-N\nstatus: open\nname: r\n")
+    status = "APPROVED" if signed else "DRAFT"
+    (case / "findings.json").write_text(json.dumps([
+        {"id": "F-steve-001", "title": "t", "status": status, "created_by": "steve"}
+    ]))  # fmt: skip
+    if signed:
+        sign_approved(case, "steve")
+    note = B.create_backup_data(case, str(tmp_path / "backups"), "steve")["ledger_note"]
+    assert "verification ledger" not in note
+    if signed:
+        assert note == ""
+    else:
+        assert (
+            note
+            == "Note: this case has no 0.6 approval records and no signed decisions yet"
+        )

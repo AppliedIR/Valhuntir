@@ -503,10 +503,40 @@ def test_a_timeline_cascade_is_valid_only_through_the_signed_link(case, steve):
     v = verify_case(case).verdict("T-steve-001")
     assert v.status == "VALID"
     assert v.label == "cascade from F-steve-001; F-steve-001 is now APPROVED"
-    # the source's status as it stands now is printed beside the cascade
+    # a source that fails: its verdict is printed beside the cascade, and
+    # reports flag the cascade as they flag the source
     _save(
         case,
         findings=[dict(f, status="REJECTED", approved_by="steve", approved_at=AT)],
+        timeline=[dict(t, status="APPROVED", approved_by="steve", approved_at=AT)],
+    )  # a status written without a decision
+    v = verify_case(case).verdict("T-steve-001")
+    assert v.label == "cascade from F-steve-001; F-steve-001 is now UNSIGNED_STATUS"
+    _save(
+        case,
+        findings=[dict(f, status="APPROVED", approved_by="steve", approved_at=AT,
+                       observation="changed after approval")],
+        timeline=[dict(t, status="APPROVED", approved_by="steve", approved_at=AT)],
+    )  # fmt: skip
+    v = verify_case(case).verdict("T-steve-001")
+    assert (
+        v.label == "cascade from F-steve-001; F-steve-001 is now ALTERED_AFTER_APPROVAL"
+    )
+    view = approved_view(case)
+    assert view["timeline"] == []
+    assert {"id": "T-steve-001",
+            "status": "cascade from F-steve-001, which is ALTERED_AFTER_APPROVAL"} in (
+        view["not_verified"]
+    )  # fmt: skip
+    # a source rejected by a signed decision: its status
+    approved = _load(case, "findings")[0]
+    approved["observation"] = "seen"
+    _sign(case, steve, [(approved, "finding", "reject", "REJECTED", None)], at=AT2)
+    _save(
+        case,
+        findings=[
+            dict(approved, status="REJECTED", rejected_by="steve", rejected_at=AT2)
+        ],
         timeline=[dict(t, status="APPROVED", approved_by="steve", approved_at=AT)],
     )
     v = verify_case(case).verdict("T-steve-001")

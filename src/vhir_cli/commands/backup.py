@@ -143,7 +143,7 @@ def _create_backup(args, identity: dict) -> None:
     for link_path, target, size in result.get("symlinks", []):
         print(f"Following symlink: {link_path} -> {target} ({human_size(size)})")
 
-    # Verification ledger note
+    # The 0.6 approval records note
     if result.get("includes_verification_ledger"):
         pass  # included silently
     elif result.get("ledger_note"):
@@ -336,9 +336,14 @@ def _create_backup_data(
             shutil.copy2(str(ledger_path), str(vdir / f"{case_id}.jsonl"))
             ledger_included = True
         except OSError:
-            ledger_note = "Warning: could not copy verification ledger"
+            ledger_note = "Warning: could not copy the case's 0.6 approval records"
     else:
-        ledger_note = "Note: no verification ledger found for this case"
+        # a case signed from the start has none; its signed history is in ledger/
+        ledger_note = (
+            ""
+            if copied.get("chain_id")
+            else "Note: this case has no 0.6 approval records and no signed decisions yet"
+        )
 
     # No credential file is ever backed up: a key's private half stays on its
     # box, and the case's signed lines carry the public keys that check them
@@ -1292,7 +1297,9 @@ def cmd_restore(args, identity: dict) -> None:
             if resp in ("n", "no"):
                 restore_opensearch = False
         if restore_ledger:
-            resp = input("Restore verification ledger? [Y/n] ").strip().lower()
+            resp = (
+                input("Restore the case's 0.6 approval records? [Y/n] ").strip().lower()
+            )
             if resp in ("n", "no"):
                 restore_ledger = False
                 ledger_declined = True
@@ -1427,7 +1434,7 @@ def cmd_restore(args, identity: dict) -> None:
         ledger_target = VERIFICATION_DIR / f"{case_id}.jsonl"
         if ledger_target.exists():
             print(
-                f"Error: Verification ledger already exists: {ledger_target}\n"
+                f"Error: 0.6 approval records already exist: {ledger_target}\n"
                 f"Remove it first or use --skip-ledger.",
                 file=sys.stderr,
             )
@@ -1529,17 +1536,17 @@ def cmd_restore(args, identity: dict) -> None:
                         capture_output=True,
                         timeout=10,
                     )
-                    print("  Verification ledger... restored (sudo)")
+                    print("  0.6 approval records... restored (sudo)")
                 else:
                     print(
-                        f"  Verification ledger... FAILED (sudo)\n"
+                        f"  0.6 approval records... FAILED (sudo)\n"
                         f"  Manual: sudo cp {ledger_src} "
                         f"{VERIFICATION_DIR / f'{case_id}.jsonl'}",
                         file=sys.stderr,
                     )
                     restore_ledger = False
             except Exception as e:
-                print(f"  Verification ledger... FAILED: {e}", file=sys.stderr)
+                print(f"  0.6 approval records... FAILED: {e}", file=sys.stderr)
                 restore_ledger = False
 
     # A 0.6 backup's password files are never installed: enrol instead

@@ -293,6 +293,7 @@ class ItemVerdict:
     view: int = 1
     examiner: str = ""  # who signed the latest line, when it is VALID
     fingerprint: str = ""  # that line's key
+    source: str = ""  # for a cascade line: the finding it was decided through
 
 
 @dataclass
@@ -938,6 +939,7 @@ def verify_case(
                 f"ITEM_MISSING (0.6 line, informational): {lid} isn't in the case"
             )
 
+    cascade_sources: dict[str, str] = {}
     for item_id, (kind, item) in sorted(items.items()):
         status = item.get("status", "DRAFT")
         if item_id in latest_of:
@@ -948,10 +950,8 @@ def verify_case(
             line, _ = latest_line(item_id)
             v.view = line.obj.get("view", 1) if line else 1
             source = line.obj.get("coupled_from") if line else None
-            if v.status == "VALID" and source:  # the source as it stands now
-                held = items.get(str(source))
-                now = held[1].get("status", "DRAFT") if held else "not in the case"
-                v.label = f"{v.label}; {source} is now {now}"
+            if v.status == "VALID" and source:  # labelled once every verdict is in
+                cascade_sources[item_id] = str(source)
         elif item_id in legacy_by_item and status == "APPROVED":
             v = _legacy_verdict(item_id, kind, item, legacy_by_item[item_id])
             v.view = 0
@@ -969,6 +969,18 @@ def verify_case(
         # the verdict is about this exact record: its type and its content
         v.content_sha256 = _record_sha(item, kind, v.view)
         result.items.append(v)
+
+    # A cascade's source as it stands now: its verdict when that fails,
+    # otherwise its status
+    verdicts = {v.item_id: v for v in result.items}
+    for item_id, source in cascade_sources.items():
+        held, judged = items.get(source), verdicts.get(source)
+        if judged is not None and judged.status not in ("VALID", "APPROVED_UNDER_0_6"):
+            now = judged.status
+        else:
+            now = held[1].get("status", "DRAFT") if held else "not in the case"
+        verdicts[item_id].label = f"{verdicts[item_id].label}; {source} is now {now}"
+        verdicts[item_id].source = source
 
     # The frozen 0.6 history matters only while an approved item rests on it:
     # once every APPROVED item has its own signed line, its problems are a note.
@@ -1572,6 +1584,19 @@ def approved_view(case_dir: Path) -> dict:
             and v.item_type == kinds[key]  # this record's own verdict:
             and v.content_sha256 == _record_sha(item, kinds[key], v.view)
         )
+        source = v.source if v is not None else ""
+        failed_source = (
+            bool(source)
+            and by_id.get(source) is not None
+            and by_id[source].status not in ("VALID", "APPROVED_UNDER_0_6")
+        )
+        if failed_source and own and v.status == "VALID":
+            # flagged as its source is: it was decided through that finding
+            view["not_verified"].append(
+                {"id": item.get("id"),
+                 "status": f"cascade from {source}, which is {by_id[source].status}"}
+            )  # fmt: skip
+            continue
         if (
             own
             and v.status in ("VALID", "APPROVED_UNDER_0_6")
