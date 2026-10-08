@@ -961,3 +961,81 @@ def test_a_torn_write_whose_save_also_fails_lists_the_todos_to_enter_again(
     err = capsys.readouterr().err
     assert code == 1 and "couldn't be saved (pending-reviews.json is read-only)" in err
     assert "Enter this TODO again: check the other host (F-steve-002)" in err
+
+
+# --- What approve prints, and a save that fails after the commit ------------------
+
+
+def test_the_approve_output_s_head_line_is_the_chain_s_head_and_anchors_verify(
+    case, capsys
+):
+    from vhir_cli.ledger_verify import Head, Pin
+
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    out = capsys.readouterr().out
+    seq, digest = ledger.current_head("C-9")
+    fp = keys.key_fingerprint(keys.active(keys.load("steve")))
+    assert f"Ledger head C-9: seq {seq} sha256:{digest} | steve {fp}" in out
+    assert f"--expect-head {seq}:{digest} --expect-key steve={fp}" in out
+    result = verify_case(
+        case,
+        expect_heads=[Head(seq, digest)],
+        expect_keys=[Pin("steve", fp, None, 1, None)],
+    )
+    assert result.exit_code == 0 and result.anchored
+
+
+def test_a_save_that_fails_after_the_commit_says_so_and_re_running_recovers(
+    case, monkeypatch, capsys
+):
+    """The lines are in the chain; the case file isn't written. The command
+    says what was signed and to re-run it; re-running applies it."""
+    from vhir_cli import decide
+
+    real = decide.save_findings
+
+    def full(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(decide, "save_findings", full)
+    assert (
+        _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+        == 1
+    )
+    err = capsys.readouterr().err
+    assert (
+        "Signed decisions were recorded; case data was not saved ([Errno 28] No space "
+        "left on device); re-run the same command for: F-steve-002" in err
+    )
+    assert _signed() == [("F-steve-002", "approve")]
+    assert _status(case, "findings.json", "F-steve-002") == "DRAFT"
+    result = verify_case(case)
+    assert result.exit_code == 2  # the file and its line disagree until the re-run
+    monkeypatch.setattr(decide, "save_findings", real)
+    assert (
+        _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+        == 0
+    )
+    assert _status(case, "findings.json", "F-steve-002") == "APPROVED"
+    assert verify_case(case).exit_code == 0
+
+
+def test_a_save_that_fails_once_is_retried(case, monkeypatch, capsys):
+    from vhir_cli import decide
+
+    real, calls = decide.save_findings, []
+
+    def once(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError(5, "I/O error")
+        return real(*a, **k)
+
+    monkeypatch.setattr(decide, "save_findings", once)
+    assert (
+        _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+        == 0
+    )
+    assert "case data was not saved" not in capsys.readouterr().err
+    assert _status(case, "findings.json", "F-steve-002") == "APPROVED"
+    assert verify_case(case).exit_code == 0
