@@ -58,7 +58,8 @@ VERBATIM = [
     "for a case is taken as the original; a copy made by hand that signs first takes "
     "that place, and the original is then refused by name.",
     "move the copy back and run `vhir case new-identity` on the copy, never on the "
-    "original.",
+    "original. Decisions the copy signed show as UNSIGNED_STATUS in the original; "
+    "approve those ids again in the original.",
     # collaboration: a bundle's chains are data
     "An import never replaces a local APPROVED or REJECTED item, and adds no chain file",
     # the accepted residuals, verbatim

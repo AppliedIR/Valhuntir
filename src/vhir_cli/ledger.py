@@ -119,6 +119,10 @@ def copy_problem(case_id: str, case_uuid: str | None) -> str:
     return first_signed_text(case_id) if not case_uuid else copy_text(case_id)
 
 
+class CaseRecordUnwritable(LedgerError):
+    """This box's record of case folders couldn't be written (CASE_RECORD_UNWRITABLE)."""
+
+
 class BadSignature(LedgerError):
     """A line's signature doesn't verify under the examiner's active key (BAD_SIGNATURE)."""
 
@@ -432,7 +436,11 @@ def case_lock(case_id: str, timeout: float | None = None, on_wait=None) -> CaseL
 
 
 def commit(
-    lock: CaseLock, bodies: list[dict], lines: list[str], active_public_key: str
+    lock: CaseLock,
+    bodies: list[dict],
+    lines: list[str],
+    active_public_key: str,
+    before_write=None,
 ) -> tuple:
     """Append `lines` (the signed `bodies`) to the case's chain and return the
     new head. The caller holds `lock`; this never takes it.
@@ -442,6 +450,8 @@ def commit(
     - LedgerMoved: the chain's head isn't the one the bodies follow;
     - BadSignature: a line isn't its body, isn't signed by `active_public_key`,
       or its signature doesn't verify.
+    `before_write`: called once every check has passed, just before the
+    append; whatever it raises stops the commit with nothing written.
     """
     if not isinstance(lock, CaseLock) or not lock.held:
         raise LockNotHeld("the case lock must be held to write the ledger")
@@ -487,6 +497,8 @@ def commit(
             or not signature_valid(line)
         ):
             raise BadSignature(f"the signature on {body.get('item_id')} doesn't verify")
+    if before_write is not None:
+        before_write()
     LEDGER_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     # All or nothing: whatever stops the write (an error, Ctrl-C) cuts the
     # file back to its size before it, so no part of this write is left

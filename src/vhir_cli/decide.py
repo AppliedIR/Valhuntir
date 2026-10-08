@@ -302,6 +302,11 @@ def record_folder(case_dir: Path) -> None:
         record_case_path(case_dir)
     except ValueError as e:  # a copy recorded in between
         raise ledger.CaseCopy(str(e)) from None
+    except OSError as e:
+        raise ledger.CaseRecordUnwritable(
+            f"This box's record of case folders couldn't be written ({e}); "
+            "nothing was signed."
+        ) from None
 
 
 def copy_problem(case_dir: Path) -> str:
@@ -428,8 +433,10 @@ def sign_and_commit(
                     case_uuid=load_case_meta(case_dir).get("case_uuid"),
                 )  # fmt: skip
                 lines = [ledger.sign_body(b, private) for b in bodies]
-                record_folder(case_dir)  # under the case lock, just before the commit
-                head = ledger.commit(lock, bodies, lines, public)  # all or nothing
+                head = ledger.commit(  # all or nothing
+                    lock, bodies, lines, public,
+                    before_write=lambda: record_folder(case_dir),  # once they verify
+                )  # fmt: skip
                 committed = True
                 for d, item, body in zip(every, items, bodies, strict=True):
                     set_status(item, d.decision, d.status_after, body["examiner"],

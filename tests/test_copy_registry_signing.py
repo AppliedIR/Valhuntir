@@ -99,6 +99,11 @@ def test_a_copy_that_signed_first_refuses_the_original_with_the_way_back(fresh, 
     copy.rename(aside)
     assert _sign(case, ["F-tester-002"]) == 0  # the stale record gives way
     assert _recorded() == {uuid: str(case.resolve())}
+    # what the copy signed shows as UNSIGNED_STATUS here; approve it again
+    result = verify_case(case)
+    assert result.verdict("F-tester-001").status == "UNSIGNED_STATUS"
+    assert _sign(case, ["F-tester-001"]) == 0
+    assert verify_case(case).exit_code == 0
     aside.rename(copy)
     new_identity(copy)
     assert _meta(copy)["case_uuid"] != uuid and _meta(case)["case_uuid"] == uuid
@@ -229,3 +234,41 @@ def test_a_case_whose_identity_was_lost_is_refused_with_nothing_signed(
     assert "case_uuid" in err and _chain() == b""
     pending = json.loads((case / "pending-reviews.json").read_text())
     assert [e["id"] for e in pending["items"]] == ["F-tester-001"]
+
+
+def test_the_folder_is_recorded_only_once_the_signatures_verify(fresh):
+    """A commit whose lines don't verify records nothing either."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from vhir_cli import keys
+
+    case = fresh.case
+    priv, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    pub = keys.b64(keys.public_raw(priv))
+    decision = [{"item_id": "F-tester-001", "type": "finding", "decision": "approve",
+                 "status_after": "APPROVED", "content_snapshot": "{}"}]  # fmt: skip
+    called = []
+    with ledger.case_lock("C-1") as lock:
+        bodies = ledger.prepare("C-1", decision, "tester", pub, "cli", "t",
+                                case_uuid=_meta(case)["case_uuid"])  # fmt: skip
+        lines = [ledger.sign_body(b, other) for b in bodies]  # the wrong key
+        with pytest.raises(ledger.BadSignature):
+            ledger.commit(
+                lock, bodies, lines, pub, before_write=lambda: called.append(1)
+            )
+    assert called == [] and not _paths_file().exists() and _chain() == b""
+
+
+def test_a_record_that_can_t_be_written_is_named_and_nothing_is_signed(
+    fresh, monkeypatch, capsys
+):
+    import vhir_cli.case_identity as ci
+
+    def full(case_dir):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ci, "record_case_path", full)
+    assert _sign(fresh.case, ["F-tester-001"]) == 1
+    err = capsys.readouterr().err
+    assert "This box's record of case folders couldn't be written" in err
+    assert "Traceback" not in err and _chain() == b""

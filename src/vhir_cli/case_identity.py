@@ -141,7 +141,9 @@ def copy_text(here: str, recorded: str, identity: str) -> str:
         f"{identity}. Sign in {recorded}. If {here} is the original (the copy "
         f"signed or was activated first): move {recorded} aside, sign in or "
         f"activate {here}, then move the copy back and run `vhir case "
-        "new-identity` on the copy, never on the original."
+        "new-identity` on the copy, never on the original. Decisions the copy "
+        "signed show as UNSIGNED_STATUS in the original; approve those ids again "
+        "in the original."
     )
 
 
