@@ -959,7 +959,15 @@ def cmd_update(args, identity: dict) -> None:
     if "claude-code" in clients or "codex" in clients:
         _ensure_bwrap_profile()
 
-    # Step 6: Update manifest
+    # Step 6: Update manifest, as Step 5 left it: its deploys record their own
+    # keys there (the Codex profile's hash), which the copy read at the start
+    # doesn't hold
+    try:
+        reread = json.loads(manifest_path.read_text())
+        if isinstance(reread, dict):
+            manifest = reread
+    except (OSError, ValueError):
+        pass  # the copy read at the start
     manifest["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     manifest["pre_update_git"] = pre_update_git
     git_hashes = {}
