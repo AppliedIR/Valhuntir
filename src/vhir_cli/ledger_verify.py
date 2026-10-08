@@ -56,8 +56,6 @@ _FAIL_ITEM = {
     "REVOKED",
     "UNSIGNED_STATUS",
     "APPROVED_NO_LINE",
-    "LEGACY_AFTER_GENESIS",
-    "PREFIX_ALTERED",
     "KEY_NOT_PINNED",
     "RETIRED_KEY_USE",
     "WRONG_CASE",
@@ -88,8 +86,15 @@ RECOVERY = {
         "`vhir reject IOC-...`"
     ),
     "APPROVED_NO_LINE": "Optionally `vhir approve --reattest <id>`, or decide again",
-    "LEGACY_AFTER_GENESIS": "`vhir approve --reattest <id>`",
-    "PREFIX_ALTERED": "`vhir approve --reattest <id>`",
+    "LEGACY_PREFIX_MISSING": (
+        "Present a copy of the 0.6 file as it was when signing began (the case's "
+        "ledger/legacy-<chain>.jsonl, the box's 0.6 file, or a backup); otherwise "
+        "re-attest each 0.6 approval with `vhir approve --reattest <id>`"
+    ),
+    "CONFLICTING_PREFIXES": (
+        "Two signed 0.6 histories disagree on an item's latest approval: compare them, "
+        "and re-attest or decide the item again"
+    ),
     "TAMPERED": (
         "The line stays in the chain, so deciding the item again doesn't clear it. "
         "Restore the original line from a copy taken before the change, and move the "
@@ -537,98 +542,112 @@ def _check_chain(
 
 def _legacy(
     case_id: str, case_dir: Path, chains: dict[str, Chain], result: Result
-) -> tuple[list[tuple[dict, bool]], bool]:
-    """The 0.6 lines that judge each item, with whether each was written
-    before signing began; and whether a frozen prefix was altered.
+) -> tuple[dict[str, list[dict]], set[str]]:
+    """The 0.6 approvals that count, by item, in order; and the items that
+    have only 0.6 lines that don't count.
 
-    With no signed chain yet, every 0.6 line from every source is before
-    signing (informational). Once a chain has its genesis:
-    - A prefix a genesis froze (its length and hash matching) is
-      authenticated: the box 0.6 file and a chain's own legacy copy are held
-      to that chain's genesis, any other copy to whichever genesis it matches.
-      For every item such a prefix covers, only the prefix's lines decide, in
-      its own order; no other source can reorder, supersede or add to them.
-    - For an item no prefix covers, other lines count: a line past a matching
-      or own cut was written after signing began; the box 0.6 file of a box
-      that holds no chain for the case, matching no genesis, is bound by none,
-      so its lines (pre-signing work on that box) are before signing."""
+    Which files are present is never evidence: every source is read the same
+    way, and only a signed genesis vouches for 0.6 lines.
+    - With no signed chain, every 0.6 line counts, informationally (it was
+      written before signing could begin, which proves nothing).
+    - With a genesis, a 0.6 line counts only inside a prefix a genesis froze
+      (its length and hash matching), in that prefix's own order. A genesis
+      that froze bytes no presented source matches fails the case
+      (LEGACY_PREFIX_MISSING). Prefixes that disagree on an item's latest
+      approval fail the case (CONFLICTING_PREFIXES)."""
     from vhir_cli import verification
 
-    geneses = [g for g in (_genesis(c) for c in chains.values()) if g is not None]
-    box_chain = next((c for c in chains.values() if "box" in c.sources), None)
-    sources: list[tuple[str, Path, dict | None]] = [
-        (
-            "box legacy",
-            verification.VERIFICATION_DIR / f"{case_id}.jsonl",
-            _genesis(box_chain),
-        )
+    paths = [
+        ("box 0.6 file", verification.VERIFICATION_DIR / f"{case_id}.jsonl"),
+        *(
+            (f"0.6 copy {p.name}", p)
+            for p in sorted((case_dir / "ledger").glob("legacy-*.jsonl"))
+        ),
+        ("0.6 close copy", case_dir / "verification.jsonl"),
     ]
-    for cid, chain in chains.items():
-        sources.append(
-            (
-                f"legacy copy {cid}",
-                case_dir / "ledger" / f"legacy-{cid}.jsonl",
-                _genesis(chain),
-            )
-        )
-    sources.append(("0.6 close copy", case_dir / "verification.jsonl", None))
-    authentic: dict[bytes, dict] = {}  # lines inside a matching frozen prefix, in order
-    other: dict[bytes, tuple[dict, bool]] = {}  # line → (record, before signing)
-    altered = False
-    for label, path, own in sources:
+    sources: list[bytes] = []
+    for label, path in paths:
         try:
-            data = path.read_bytes()
+            sources.append(path.read_bytes())
         except OSError:
             continue
         result.sources.append(f"{label}: {path}")
-        matched, unbound = False, not geneses
-        if not geneses:
-            cut = len(data)  # no signed line yet: all 0.6 lines are before signing
-        else:
-            matching = [
-                int(g["legacy_bytes"])
-                for g in ([own] if own is not None else geneses)
-                if hashlib.sha256(data[: int(g["legacy_bytes"])]).hexdigest()
-                == g["legacy_sha256"]
-            ]
-            matched = bool(matching)
-            # an altered prefix still marks where signing began (PREFIX_ALTERED);
-            # a copy matching no genesis has no line from before signing
-            cut = max(
-                matching, default=int(own["legacy_bytes"]) if own is not None else 0
-            )
-            if own is not None and not matching:
-                altered = True
-                result.notices.append(
-                    f"PREFIX_ALTERED: {path}'s first {own['legacy_bytes']} bytes don't match "
-                    "this case's signed genesis; its 0.6 lines fail"
-                )
-            unbound = label == "box legacy" and own is None and not matching
-        pos = 0
-        for raw in data.splitlines(keepends=True):
-            pos += len(raw)
+
+    def records(data: bytes) -> list[tuple[bytes, dict]]:
+        out = []
+        for raw in data.splitlines():
             text = raw.strip()
-            if not text:
-                continue
-            before = unbound or pos <= cut  # the whole line inside the cut
             try:
-                obj = json.loads(text)
+                obj = json.loads(text) if text else None
             except json.JSONDecodeError:
                 continue
-            if not (isinstance(obj, dict) and obj.get("finding_id")):
+            if isinstance(obj, dict) and obj.get("finding_id"):
+                out.append((text, obj))
+        return out
+
+    counted: dict[str, list[dict]] = {}
+    seen: dict[str, list[bytes]] = {}
+    if not chains:
+        for data in sources:
+            for text, obj in records(data):
+                item_id = str(obj["finding_id"])
+                if text not in seen.setdefault(item_id, []):
+                    seen[item_id].append(text)
+                    counted.setdefault(item_id, []).append(obj)
+        return counted, set()
+
+    prefixes: dict[tuple[str, int], tuple[str, bytes]] = {}  # one per frozen prefix
+    for cid, chain in chains.items():
+        g = _genesis(chain)
+        if g is None or int(g["legacy_bytes"]) == 0:
+            continue
+        key = (str(g["legacy_sha256"]), int(g["legacy_bytes"]))
+        if key in prefixes:
+            continue
+        match = next(
+            (
+                data[: key[1]]
+                for data in sources
+                if len(data) >= key[1]
+                and hashlib.sha256(data[: key[1]]).hexdigest() == key[0]
+            ),
+            None,
+        )
+        if match is None:
+            result.failures.append(
+                (
+                    "LEGACY_PREFIX_MISSING",
+                    f"chain {cid}'s genesis froze {key[1]} bytes of 0.6 history "
+                    f"(sha256 {key[0]}); no source presented holds them",
+                )
+            )
+            continue
+        prefixes[key] = (cid, match)
+    latest: dict[str, tuple[str, bytes]] = {}  # item → (chain, its last line)
+    for cid, data in prefixes.values():
+        mine: dict[str, list[tuple[bytes, dict]]] = {}
+        for text, obj in records(data):
+            mine.setdefault(str(obj["finding_id"]), []).append((text, obj))
+        for item_id, lines in mine.items():
+            if item_id in latest:
+                if latest[item_id][1] != lines[-1][0]:
+                    result.failures.append(
+                        (
+                            "CONFLICTING_PREFIXES",
+                            f"{item_id}: the 0.6 history chain {latest[item_id][0]} froze and "
+                            f"the one chain {cid} froze disagree on its latest approval",
+                        )
+                    )
                 continue
-            if matched and pos <= cut:
-                authentic.setdefault(text, obj)
-            elif text not in other or (before and not other[text][1]):
-                other[text] = (obj, before)
-    covered = {str(obj["finding_id"]) for obj in authentic.values()}
-    out = [(obj, True) for obj in authentic.values()]
-    out += [
-        (obj, before)
-        for text, (obj, before) in other.items()
-        if text not in authentic and str(obj["finding_id"]) not in covered
-    ]
-    return out, altered
+            latest[item_id] = (cid, lines[-1][0])
+            counted[item_id] = [obj for _, obj in lines]
+    uncounted = {
+        str(obj["finding_id"])
+        for data in sources
+        for _, obj in records(data)
+        if str(obj["finding_id"]) not in counted
+    }
+    return counted, uncounted
 
 
 def _genesis(chain: Chain | None) -> dict | None:
@@ -727,7 +746,7 @@ def verify_case(
     for cid, (lines, labels) in grouped.items():
         chains[cid] = _check_chain(cid, lines, labels, case_id, result)
     result.chains = list(chains.values())
-    legacy, prefix_altered = _legacy(case_id, case_dir, chains, result)
+    legacy_by_item, uncounted = _legacy(case_id, case_dir, chains, result)
     order = _Order(chains)
 
     every_line = [ln for c in chains.values() for ln in c.lines]
@@ -853,9 +872,6 @@ def verify_case(
         )  # fmt: skip
 
     # Items.
-    legacy_by_item: dict[str, list[tuple[dict, bool]]] = {}
-    for obj, before in legacy:
-        legacy_by_item.setdefault(str(obj["finding_id"]), []).append((obj, before))
     for lid in legacy_by_item:
         if lid not in items:
             result.notices.append(
@@ -872,16 +888,16 @@ def verify_case(
             line, _ = latest_line(item_id)
             v.view = line.obj.get("view", 1) if line else 1
         elif item_id in legacy_by_item and status == "APPROVED":
-            v = _legacy_verdict(
-                item_id, kind, item, legacy_by_item[item_id], prefix_altered
-            )
+            v = _legacy_verdict(item_id, kind, item, legacy_by_item[item_id])
             v.view = 0
         elif status == "APPROVED":
             v = ItemVerdict(
                 item_id,
                 kind,
                 "APPROVED_NO_LINE",
-                "no approval record exists for this item",
+                "its only 0.6 lines aren't in the 0.6 history signing froze, so they don't count"
+                if item_id in uncounted
+                else "no approval record exists for this item",
             )
         else:
             continue
@@ -892,12 +908,12 @@ def verify_case(
     if (
         any(i[1].get("status") == "APPROVED" for i in items.values())
         and not chains
-        and not legacy
+        and not legacy_by_item
     ):
         result.failures.append(
             ("LEDGER_MISSING", "APPROVED items, and no ledger in any source")
         )
-    if not chains and legacy and not ledger_paths:
+    if not chains and legacy_by_item and not ledger_paths:
         result.notices.append(
             "No signed chain on this box for this case; if it ever had signed approvals, "
             "verify with --expect-head."
@@ -1015,7 +1031,7 @@ def _v3_verdict(
                     "the re-attestation stamp differs from the signed line",
                     [printed],
                 )
-            legacy = [obj for obj, _ in legacy_by_item.get(item_id, [])]
+            legacy = legacy_by_item.get(item_id, [])
             if legacy:
                 last = legacy[-1]
                 if (item.get("approved_by"), item.get("approved_at")) != (
@@ -1105,23 +1121,8 @@ def _cascade_unsupported(
     return ""
 
 
-def _legacy_verdict(item_id, kind, item, lines, prefix_altered) -> ItemVerdict:
-    frozen = [obj for obj, before in lines if before]
-    if not frozen:
-        return ItemVerdict(
-            item_id,
-            kind,
-            "LEGACY_AFTER_GENESIS",
-            "its only 0.6 lines were written after signing began",
-        )
-    if prefix_altered:
-        return ItemVerdict(
-            item_id,
-            kind,
-            "PREFIX_ALTERED",
-            "the 0.6 ledger was changed after signing began",
-        )
-    last = frozen[-1]
+def _legacy_verdict(item_id, kind, item, lines) -> ItemVerdict:
+    last = lines[-1]
     try:
         snap = json.loads(last.get("content_snapshot", ""))
     except json.JSONDecodeError:

@@ -414,7 +414,9 @@ def test_a_0_6_item_changed_since_is_altered(case):
     assert _status(verify_case(case), "F-steve-001") == "ALTERED_AFTER_APPROVAL"
 
 
-def test_after_genesis_a_new_0_6_line_and_a_changed_prefix_fail(case, steve):
+def test_after_genesis_a_0_6_line_outside_the_prefix_doesn_t_count_and_a_changed_prefix_fails(
+    case, steve
+):
     old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
     path = _legacy([_legacy_line(old)])
     fresh = _finding(2)
@@ -425,13 +427,13 @@ def test_after_genesis_a_new_0_6_line_and_a_changed_prefix_fail(case, steve):
     path.write_text(path.read_text() + _legacy_line(late) + "\n")
     result = verify_case(case)
     assert _status(result, "F-steve-001") == "APPROVED_UNDER_0_6"
-    assert _status(result, "F-steve-003") == "LEGACY_AFTER_GENESIS"
+    assert _status(result, "F-steve-003") == "APPROVED_NO_LINE"  # doesn't count
     assert _status(result, "F-steve-002") == "VALID"
     path.write_text(path.read_text().replace('"hmac": "00"', '"hmac": "01"', 1))
     altered = verify_case(case)
-    assert _status(altered, "F-steve-001") == "PREFIX_ALTERED"
-    assert _status(altered, "F-steve-002") == "VALID"
-    assert any("PREFIX_ALTERED" in n for n in altered.notices)
+    assert any(c == "LEGACY_PREFIX_MISSING" for c, _ in altered.failures)
+    assert _status(altered, "F-steve-001") == "APPROVED_NO_LINE"
+    assert _status(altered, "F-steve-002") == "VALID" and altered.exit_code == 2
 
 
 def test_a_0_6_line_for_a_missing_item_is_informational(case):
@@ -921,8 +923,7 @@ def test_a_0_6_line_added_to_the_close_copy_after_signing_began_fails(case, stev
     (case / "verification.jsonl").write_text(_legacy_line(forged) + "\n")
     result = verify_case(case)
     assert (
-        _status(result, "F-steve-003") == "LEGACY_AFTER_GENESIS"
-        and result.exit_code == 2
+        _status(result, "F-steve-003") == "APPROVED_NO_LINE" and result.exit_code == 2
     )
     assert "F-steve-003" not in [f["id"] for f in approved_view(case)["findings"]]
 
@@ -1210,14 +1211,161 @@ def test_only_the_frozen_prefix_decides_a_covered_item_s_0_6_approvals(
     assert "F-steve-001" not in [f["id"] for f in approved_view(case)["findings"]]
 
 
-def test_a_second_box_s_pre_signing_0_6_item_outside_the_prefix_is_informational(
+def test_on_a_signed_case_a_0_6_item_outside_the_prefix_is_approved_no_line(
     case, steve
 ):
+    """Pre-signing work on a second box can't be told from a forged line, so
+    on a signed case it needs re-attesting."""
     old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
     there = _finding(5, status="APPROVED", approved_by="steve", approved_at=AT)
     box = _moved(case, steve, [_legacy_line(old)], [old, there])
     box.write_text(_legacy_line(there) + "\n")  # approved under 0.6 on the new box
     result = verify_case(case)
-    assert _status(result, "F-steve-005") == "APPROVED_UNDER_0_6"
     assert _status(result, "F-steve-001") == "APPROVED_UNDER_0_6"
+    assert _status(result, "F-steve-005") == "APPROVED_NO_LINE"
+    assert "don't count" in result.verdict("F-steve-005").label
+    assert result.exit_code == 2
+
+
+# --- 0.6 history counts only inside a signed prefix -------------------------------
+
+
+def _signed_over(case, steve, lines, findings):
+    """A case whose 0.6 file held `lines` when signing began. Returns the box
+    0.6 file and the forged F3 (APPROVED in findings.json, no 0.6 line yet)."""
+    box = _legacy(lines)
+    fresh = _finding(9)
+    forged = _finding(3, status="APPROVED", approved_by="steve", approved_at=AT,
+                      title="FORGED")  # fmt: skip
+    _save(case, findings=findings + [fresh])
+    _approve(case, steve, fresh)  # genesis freezes the 0.6 file
+    _save(case, findings=_load(case, "findings") + [forged])
+    return box, forged
+
+
+def _old_new():
+    old = _finding(
+        1, status="APPROVED", approved_by="steve", approved_at=AT, observation="OLD"
+    )
+    new = dict(old, observation="NEW", approved_at=AT2)
+    return (
+        old,
+        new,
+        _legacy_line(old, approved_at=AT),
+        _legacy_line(new, approved_at=AT2),
+    )
+
+
+def _roll_back(case, old):
+    findings = _load(case, "findings")
+    findings[0] = dict(findings[0], observation="OLD", approved_at=AT)
+    _save(case, findings=findings)
+
+
+def _shown(case) -> list[str]:
+    return [f["id"] for f in approved_view(case)["findings"]]
+
+
+@pytest.mark.parametrize("how", ["moved-to-chains", "ledger-flag", "prepended-newline"])
+def test_hiding_the_signed_0_6_prefix_never_lets_a_forged_or_rolled_back_line_count(
+    case, steve, how
+):
+    old, new, l_old, l_new = _old_new()
+    box, forged = _signed_over(case, steve, [l_old, l_new], [new])
+    paths = None
+    if how == "moved-to-chains":  # on the box that signed it
+        cid = verify_case(case).chains[0].chain_id
+        ledger.chain_path("C1").rename(_copy_dir(case) / f"{cid}.jsonl")
+    elif how == "ledger-flag":
+        paths = [ledger.chain_path("C1")]
+    box.write_text(
+        ("\n" if how != "ledger-flag" else "") + l_new + "\n" + l_old + "\n"
+        + _legacy_line(forged) + "\n"
+    )  # fmt: skip
+    _roll_back(case, old)
+    result = verify_case(case, ledger_paths=paths)
+    assert _status(result, "F-steve-003") == "APPROVED_NO_LINE"
+    assert _status(result, "F-steve-001") in (
+        "APPROVED_NO_LINE",
+        "ALTERED_AFTER_APPROVAL",
+    )
+    assert result.exit_code == 2
+    assert not {"F-steve-001", "F-steve-003"} & set(_shown(case))
+
+
+def test_a_genesis_whose_frozen_prefix_no_source_holds_fails_the_case(case, steve):
+    old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
+    box, _ = _signed_over(case, steve, [_legacy_line(old)], [old])
+    box.write_bytes(b"\n" + box.read_bytes())  # one byte prepended
+    result = verify_case(case)
+    assert (
+        any(c == "LEGACY_PREFIX_MISSING" for c, _ in result.failures)
+        and result.exit_code == 2
+    )
+    assert _status(result, "F-steve-001") == "APPROVED_NO_LINE"
+    assert _shown(case) == []
+
+
+def _second_chain(case, steve, frozen: bytes):
+    """A second chain (another box, same key) whose genesis froze `frozen`,
+    with its 0.6 copy in the case."""
+    fresh = _finding(8)
+    body = ledger.prepare("C1", [{"item_id": fresh["id"], "type": "finding", "decision": "approve",
+                                  "status_after": "APPROVED", "coupled_from": None,
+                                  "content_snapshot": signed_text(fresh, "finding")}],
+                          "steve", steve.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
+    body[0]["genesis"] = {
+        "legacy_sha256": hashlib.sha256(frozen).hexdigest(),
+        "legacy_bytes": len(frozen),
+    }
+    cid = ledger.chain_id(body[0])
+    (_copy_dir(case) / f"{cid}.jsonl").write_text(
+        ledger.sign_body(body[0], steve.key) + "\n"
+    )
+    (case / "ledger" / f"legacy-{cid}.jsonl").write_bytes(frozen)
+    _save(case, findings=_load(case, "findings")
+          + [dict(fresh, status="APPROVED", approved_by="steve", approved_at=AT)])  # fmt: skip
+
+
+@pytest.mark.parametrize("box_first", ["old-new", "new"])
+def test_two_signed_prefixes_order_an_item_each_by_its_own_history(
+    case, steve, box_first
+):
+    """[OLD, NEW] on one box and [NEW] on the other, read in either order:
+    NEW is the latest approval, never OLD."""
+    old, new, l_old, l_new = _old_new()
+    both = {"old-new": [l_old, l_new], "new": [l_new]}
+    other = "new" if box_first == "old-new" else "old-new"
+    _signed_over(case, steve, both[box_first], [new])
+    _second_chain(case, steve, "".join(x + "\n" for x in both[other]).encode())
+    _roll_back(case, old)
+    result = verify_case(case)
+    assert _status(result, "F-steve-001") == "ALTERED_AFTER_APPROVAL"
+    assert "F-steve-001" not in _shown(case)
+
+
+def test_two_signed_prefixes_that_disagree_on_an_item_fail_the_case(case, steve):
+    old, new, l_old, l_new = _old_new()
+    _signed_over(case, steve, [l_old, l_new], [new])
+    _second_chain(case, steve, (l_old + "\n").encode())  # [OLD] on the other box
+    result = verify_case(case)
+    assert (
+        any(c == "CONFLICTING_PREFIXES" for c, _ in result.failures)
+        and result.exit_code == 2
+    )
+    assert _shown(case) == []
+
+
+def test_anchor_an_unsigned_case_s_0_6_approvals_from_any_source_stay_informational(
+    case,
+):
+    a = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
+    b = _finding(2, status="APPROVED", approved_by="steve", approved_at=AT)
+    _save(case, findings=[a, b])
+    _legacy([_legacy_line(a)])
+    (case / "verification.jsonl").write_text(_legacy_line(b) + "\n")
+    result = verify_case(case)
+    assert [_status(result, i) for i in ("F-steve-001", "F-steve-002")] == [
+        "APPROVED_UNDER_0_6", "APPROVED_UNDER_0_6"
+    ]  # fmt: skip
     assert result.exit_code == 0
