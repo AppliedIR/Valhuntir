@@ -360,7 +360,8 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
         if not path.exists():
             continue
         try:
-            data = json.loads(path.read_text())
+            text = path.read_text()
+            data = json.loads(text) if text.strip() else []  # as signing reads it
             if not isinstance(data, list):
                 raise ValueError("not a list")
         except (OSError, ValueError) as e:

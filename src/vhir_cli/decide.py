@@ -336,7 +336,9 @@ def _find(lists: dict[str, list[dict]], kind: str, item_id: str) -> dict | None:
 
 def _reload(case_dir: Path) -> tuple[dict[str, list[dict]], list[str]]:
     """The case files as they are now, and the names of any that exist but
-    don't read as a list (a commit never goes ahead on, or saves over, them)."""
+    don't read as a list (a commit never goes ahead on, or saves over, them).
+    A 0-byte or blank file reads as [] (verify still names an approved item
+    it no longer holds, through the chain)."""
     lists: dict[str, list[dict]] = {}
     bad: list[str] = []
     for kind, name in (
@@ -346,7 +348,8 @@ def _reload(case_dir: Path) -> tuple[dict[str, list[dict]], list[str]]:
     ):
         path = case_dir / name
         try:
-            data = json.loads(path.read_text()) if path.exists() else []
+            text = path.read_text() if path.exists() else ""
+            data = json.loads(text) if text.strip() else []
         except (OSError, ValueError):
             data = None
         if not isinstance(data, list):
