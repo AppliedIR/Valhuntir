@@ -595,6 +595,36 @@ def _check_opensearch_version(source: Path) -> None:
         print()
 
 
+def _redeploy_clients(manifest: dict) -> list[str]:
+    """Step 5: redeploy each client's local controls; returns the clients."""
+    from vhir_cli.commands.codex_controls import manifest_clients
+
+    clients = manifest_clients(manifest)
+    if "claude-desktop" in clients:
+        from vhir_cli.commands.client_setup import DESKTOP_DROPPED
+
+        print(f"  {DESKTOP_DROPPED}")
+    if "claude-code" in clients:
+        from vhir_cli.commands.client_setup import _deploy_claude_code_assets
+
+        print("  Redeploying forensic controls...")
+        _deploy_claude_code_assets()
+    if "codex" in clients:
+        from vhir_cli.commands.client_setup import deploy_codex_assets
+        from vhir_cli.commands.codex_controls import deploy_codex_controls
+
+        print("  Redeploying Codex's profile, skills and managed requirements...")
+        deploy_codex_assets()
+        deploy_codex_controls()
+    for other in [
+        c for c in clients if c not in ("claude-code", "codex", "claude-desktop")
+    ]:
+        print(f"  Client: {other} (no local controls to redeploy)")
+    if not clients:
+        print("  No client type in manifest. Run 'vhir setup client' to configure.")
+    return clients
+
+
 def cmd_update(args, identity: dict) -> None:
     """Pull latest code and redeploy Valhuntir installation."""
     check_only = getattr(args, "check", False)
@@ -907,19 +937,10 @@ def cmd_update(args, identity: dict) -> None:
 
     client_setup._LAUNCHERS_UPDATED.clear()  # what this update rewrites
     client_setup._LAUNCHERS_NOTED.clear()
-    client = manifest.get("client")
-    if client == "claude-code":
-        from vhir_cli.commands.client_setup import _deploy_claude_code_assets
-
-        print("  Redeploying forensic controls...")
-        _deploy_claude_code_assets()
-    elif client:
-        print(f"  Client: {client} (no local controls to redeploy)")
-    else:
-        print("  No client type in manifest. Run 'vhir setup client' to configure.")
+    clients = _redeploy_clients(manifest)
 
     # Step 5.5: Fix sandbox if bwrap profile missing (Ubuntu 23.10+)
-    if client == "claude-code":
+    if "claude-code" in clients or "codex" in clients:
         _ensure_bwrap_profile()
 
     # Step 6: Update manifest
@@ -989,7 +1010,7 @@ def cmd_update(args, identity: dict) -> None:
     hashes = manifest.get("git", {})
     parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
-    if client == "claude-code":
+    if "claude-code" in clients or "codex" in clients:
         print("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)
     _print_share_rejoin_notice()

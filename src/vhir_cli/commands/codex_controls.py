@@ -222,3 +222,67 @@ def deploy_codex_controls(consent: bool | None = None) -> str:
             print(f"    {shlex.join(cmd)}")
         print(f"    sudo tee {REQUIREMENTS} >/dev/null <<'EOF'\n{text}EOF")
         return "printed"
+
+
+def remove_codex_controls(consent: bool | None = None) -> str:
+    """Remove the managed requirements and hooks: only a file that carries the
+    marker. Returns "removed", "printed", "admin-file" or "absent"."""
+    try:
+        text = REQUIREMENTS.read_text()
+    except FileNotFoundError:
+        return "absent"
+    except OSError:
+        return "admin-file"
+    if not ours(text):
+        print(f"  {REQUIREMENTS} is an administrator's own file; it stays.")
+        return "admin-file"
+    cmds = [
+        ["sudo", "rm", "-f", str(REQUIREMENTS)],
+        ["sudo", "rm", "-rf", str(HOOKS_DIR)],
+    ]
+    if consent is None and sys.stdin.isatty():
+        consent = (
+            input(f"  Remove {REQUIREMENTS} and {HOOKS_DIR}/ (needs sudo)? [y/N] ")
+            .strip()
+            .lower()
+            == "y"
+        )
+    if consent:
+        try:
+            if all(subprocess.run(c, timeout=120).returncode == 0 for c in cmds):
+                print(f"  Removed {REQUIREMENTS} and {HOOKS_DIR}/")
+                return "removed"
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"  Removing them failed: {e}")
+    print("  To remove Codex's managed requirements, run:")
+    for c in cmds:
+        print(f"    {shlex.join(c)}")
+    return "printed"
+
+
+def uninstall_codex_step(ask) -> None:
+    """`vhir setup client --uninstall` on SIFT: Codex's profile, skills and
+    agent, and the managed requirements, after one question (`ask`)."""
+    if "codex" not in installed_clients() and codex_controls_state() != "on":
+        return
+    print("  [Codex] Profile, skills, agent, and managed requirements (/etc/codex)")
+    print("      ~/.codex/config.toml and an administrator's own file stay.")
+    if ask("      Remove?"):
+        from vhir_cli.commands.client_setup import _uninstall_codex
+
+        _uninstall_codex()
+        remove_codex_controls(consent=True)
+    else:
+        print("      Skipped.")
+    print()
+
+
+def add_to_codex_profile(name: str, entry: dict) -> str:
+    """Add one MCP server to Codex's profile (`--add-remnux`): the profile is
+    rebuilt from the box with the entry merged in."""
+    from vhir_cli.commands.client_setup import deploy_codex_assets
+
+    extra = {name: {k: v for k, v in entry.items() if k != "type"}}
+    status = deploy_codex_assets(extra=extra)
+    print(f"  Added {name} to Codex's profile ({status})")
+    return status

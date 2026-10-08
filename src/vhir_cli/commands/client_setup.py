@@ -2596,6 +2596,10 @@ def _uninstall_sift() -> None:
             print("      Skipped.")
     print()
 
+    from vhir_cli.commands.codex_controls import uninstall_codex_step
+
+    uninstall_codex_step(_prompt_yn_strict)
+
     # [4] Discipline docs
     claude_md = Path.home() / ".claude" / "CLAUDE.md"
     rules_dir = Path.home() / ".claude" / "rules"
@@ -2964,15 +2968,11 @@ def _probe_health(base_url: str) -> bool:
 def _cmd_add_remnux(args) -> None:
     """Add or update only the remnux-mcp entry in existing client config."""
     # Detect client type from manifest
-    manifest_path = Path.home() / ".vhir" / "manifest.json"
-    client = None
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text())
-            client = manifest.get("client")
-        except (json.JSONDecodeError, OSError):
-            pass
-    if not client:
+    from vhir_cli.commands.codex_controls import installed_clients
+
+    clients = installed_clients()
+    client = next((c for c in reversed(clients) if c != "codex"), None)
+    if not clients:
         print(
             "Cannot detect client type — run 'vhir setup client' first.",
             file=sys.stderr,
@@ -2999,6 +2999,14 @@ def _cmd_add_remnux(args) -> None:
     if remnux_token:
         remnux_entry["headers"] = {"Authorization": f"Bearer {remnux_token}"}
         _test_remnux_connection(remnux_url, remnux_token)
+
+    if "codex" in clients:  # Codex's profile carries it too
+        from vhir_cli.commands.codex_controls import add_to_codex_profile
+
+        add_to_codex_profile("remnux-mcp", remnux_entry)
+        if client is None:
+            print("\n  Restart Codex to pick up the new endpoint.")
+            return
 
     # Find config file for the detected client type
     sift = _is_sift()
