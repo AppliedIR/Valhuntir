@@ -604,22 +604,35 @@ def _redeploy_clients(manifest: dict) -> list[str]:
         from vhir_cli.commands.client_setup import DESKTOP_DROPPED
 
         print(f"  {DESKTOP_DROPPED}")
+    from vhir_cli.controls import MCP, print_block
+
     if "claude-code" in clients:
         from vhir_cli.commands.client_setup import _deploy_claude_code_assets
 
         print("  Redeploying forensic controls...")
-        _deploy_claude_code_assets()
+        settings = _deploy_claude_code_assets()
+        print_block("claude-code", settings[0] if isinstance(settings, tuple) else None)
     if "codex" in clients:
         from vhir_cli.commands.client_setup import deploy_codex_assets
-        from vhir_cli.commands.codex_controls import deploy_codex_controls
+        from vhir_cli.commands.codex_controls import (
+            codex_controls_state,
+            deploy_codex_controls,
+            state_lines,
+        )
 
         print("  Redeploying Codex's profile, skills and managed requirements...")
         deploy_codex_assets()
-        deploy_codex_controls()
+        if codex_controls_state(clients) == "off":  # the opt-out: said, not undone
+            for line in state_lines(clients):
+                print(line)
+        else:
+            deploy_codex_controls()
+        print_block("codex")
     for other in [
         c for c in clients if c not in ("claude-code", "codex", "claude-desktop")
     ]:
         print(f"  Client: {other} (no local controls to redeploy)")
+        print_block(MCP)
     if not clients:
         print("  No client type in manifest. Run 'vhir setup client' to configure.")
     return clients

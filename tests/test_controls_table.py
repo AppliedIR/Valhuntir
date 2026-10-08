@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from vhir_cli import controls
 from vhir_cli.commands import client_setup as cs
 
@@ -67,3 +69,12 @@ def test_the_codex_guard_row_claims_no_relative_path_rule_and_names_apply_patch(
 def test_the_audit_row_lists_a_deny_rules_refusal_as_not_recorded():
     (audit,) = [r for r in controls.ROWS if r[0] == "Audit"]
     assert "a deny rule's refusal" in audit[3] and "refused ones" not in audit[2]
+
+
+@pytest.mark.parametrize("client", ["librechat", "other"])
+def test_setup_prints_the_mcp_only_block(client, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    cs._generate_config(client, {}, "steve")
+    out = capsys.readouterr().out
+    assert "Controls (as deployed now):" in out and "run_command:" in out
+    assert "MCP-only: the server-side controls only" in out

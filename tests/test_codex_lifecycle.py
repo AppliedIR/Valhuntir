@@ -42,12 +42,31 @@ def calls(monkeypatch):
     return got
 
 
-def test_update_redeploys_every_client_set_up(calls):
+def test_update_redeploys_every_client_set_up(box, calls):  # noqa: F811
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text(cc.MARKER + "\n")  # ours, as installed
     assert update._redeploy_clients({"clients": ["claude-code", "codex"]}) == [
         "claude-code",
         "codex",
     ]
     assert calls == ["claude-code", "codex-assets", "codex-controls"]
+
+
+def test_update_prints_each_clients_controls_block(box, calls, capsys):  # noqa: F811
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text(cc.MARKER + "\n")
+    update._redeploy_clients({"clients": ["claude-code", "codex", "open-webui"]})
+    out = capsys.readouterr().out
+    assert out.count("Controls (as deployed now):") == 3
+    assert "Sandbox: Bash" in out and "Managed requirements: Codex's shell" in out
+    assert "MCP-only: the server-side controls only" in out
+
+
+def test_after_the_opt_out_update_says_so_and_offers_nothing(box, calls, capsys):  # noqa: F811
+    update._redeploy_clients({"clients": ["codex"]})  # no requirements file: moved away
+    out = capsys.readouterr().out
+    assert "codex-controls" not in calls and box.ran == []
+    assert "CODEX CONTROLS OFF" in out and "vhir setup client --client=codex" in out
 
 
 def test_an_older_manifest_with_one_client_still_redeploys_it(calls):

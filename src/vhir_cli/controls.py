@@ -113,6 +113,22 @@ def block_lines(
     return lines
 
 
+def print_block(client: str, settings_path=None) -> None:
+    """Print `client`'s controls block as deployed now: Claude Code's sandbox
+    state from `settings_path`, Codex's requirements from /etc/codex."""
+    sandbox_off, codex_state = False, ""
+    if client == CLAUDE and settings_path is not None:
+        from vhir_cli.commands.client_setup import _sandbox_off
+
+        sandbox_off = _sandbox_off(settings_path)
+    if client == CODEX:
+        from vhir_cli.commands.codex_controls import codex_controls_state
+
+        codex_state = codex_controls_state([CODEX])
+    for line in block_lines(client, sandbox_off, codex_state):
+        print(line)
+
+
 def markdown() -> str:
     """The docs table: one row per control and client set."""
     names = {CLAUDE: "Claude Code", CODEX: "Codex", MCP: "MCP-only clients"}

@@ -866,12 +866,11 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         print(f"  Examiner:  {examiner}")
         print("")
         if settings and settings[1] != "kept":
-            from vhir_cli.controls import block_lines
+            from vhir_cli.controls import print_block
 
             print(f"  Forensic controls deployed{' globally' if sift else ''}.")
             print("  Start Claude Code from the case folder (cd <case>; claude).")
-            for line in block_lines(CLAUDE_CODE, sandbox_off=_sandbox_off(settings[0])):
-                print(line)
+            print_block(CLAUDE_CODE, settings[0])
         elif settings:
             print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
 
@@ -887,12 +886,14 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
 
     elif client == "open-webui":
         _write_openwebui(servers)
+        _print_mcp_block()
 
     elif client == "librechat":
         output = Path.cwd() / "librechat_mcp.yaml"
         _write_librechat_yaml(output, servers)
         print(f"  Generated: {output}")
         print(_LIBRECHAT_POST_INSTALL)
+        _print_mcp_block()
 
     else:
         # Manual / other — just dump JSON
@@ -901,6 +902,14 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         print(f"  Generated: {output}")
         print("")
         print(f"  NOTE: {OTHER_CLIENT_NOTICE}")
+        _print_mcp_block()
+
+
+def _print_mcp_block() -> None:
+    from vhir_cli.controls import MCP, print_block
+
+    print("")
+    print_block(MCP)
 
 
 def _find_claude_code_assets() -> Path | None:
