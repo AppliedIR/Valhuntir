@@ -101,9 +101,65 @@ def test_an_administrators_own_file_is_never_changed(box, capsys):
     before = cc.REQUIREMENTS.read_bytes()
     assert cc.deploy_codex_controls(consent=True) == "admin-file"
     out = capsys.readouterr().out
-    assert cc.REQUIREMENTS.read_bytes() == before and box.ran == []
-    assert "Codex controls NOT in effect" in out and "# managed-by: valhuntir" in out
+    assert cc.REQUIREMENTS.read_bytes() == before
+    assert all(str(cc.REQUIREMENTS) not in c for c in box.ran)  # only the hooks
+    assert "Codex controls NOT in effect" in out and "[[hooks.PreToolUse]]" in out
     assert cc.codex_controls_state(["codex"]) == "admin-file"
+
+
+def _pasted_block(out: str) -> str:
+    return out.split("merge this block into it:\n", 1)[1].split("  The hooks", 1)[0]
+
+
+def test_the_block_for_an_admins_file_keeps_it_theirs_once_merged(box, capsys):
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text('allowed_sandbox_modes = ["read-only"]\n')
+    cc.deploy_codex_controls(consent=False)
+    block = _pasted_block(capsys.readouterr().out)
+    assert "managed-by" not in block and "case-data-guard.sh" in block
+    for merged in (
+        block + cc.REQUIREMENTS.read_text(),
+        cc.REQUIREMENTS.read_text() + block,
+    ):
+        cc.REQUIREMENTS.write_text(merged)  # pasted at the top, or at the end
+        assert cc.codex_controls_state(["codex"]) == "admin-file"
+        assert cc.remove_codex_controls(consent=True) == "admin-file"
+        assert cc.REQUIREMENTS.read_text() == merged
+
+
+def test_the_hooks_an_admins_block_names_are_installed_with_consent(box, capsys):
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text("allowed_sandbox_modes = []\n")
+    cc.deploy_codex_controls(consent=True)
+    block = _pasted_block(capsys.readouterr().out)
+    named = {
+        p.rsplit("/", 1)[1].split()[0]
+        for p in block.split('"')
+        if str(cc.HOOKS_DIR) in p
+    }
+    assert named and named <= {p.name for p in cc.HOOKS_DIR.iterdir()}
+
+
+def test_without_consent_the_hooks_for_an_admins_block_are_printed(box, capsys):
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text("allowed_sandbox_modes = []\n")
+    cc.deploy_codex_controls(consent=False)
+    out = capsys.readouterr().out
+    assert box.ran == [] and not cc.HOOKS_DIR.exists()
+    assert "aren't installed. To install them, run:" in out
+    assert f"{cc.HOOKS_DIR}/case-data-guard.sh" in out
+
+
+def test_setup_says_codex_controls_off_before_offering_them_again(box, capsys):
+    import json
+
+    (box.home / ".vhir").mkdir(parents=True)
+    (box.home / ".vhir" / "manifest.json").write_text(
+        json.dumps({"clients": ["codex"]})
+    )
+    cc.deploy_codex_controls(consent=False)
+    out = capsys.readouterr().out
+    assert out.index("CODEX CONTROLS OFF") < out.index("NOT installed")
 
 
 def test_ours_unchanged_is_left_and_a_product_change_updates_it(box):

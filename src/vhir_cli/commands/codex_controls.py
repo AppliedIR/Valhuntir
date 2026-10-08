@@ -151,6 +151,52 @@ def _same(text: str, hooks) -> bool:
     try:
         if REQUIREMENTS.read_text() != text:
             return False
+    except OSError:
+        return False
+    return _same_hooks(hooks)
+
+
+def _run(cmds) -> bool:
+    """Run each command in turn; False at the first that fails."""
+    for cmd in cmds:
+        try:
+            r = subprocess.run(cmd, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"  {shlex.join(cmd)} failed: {e}")
+            return False
+        if r.returncode != 0:
+            return False
+    return True
+
+
+def _admin_file(text: str, hooks, consent: bool | None) -> str:
+    """An administrator's own requirements file: never changed. The block to
+    merge carries no marker (the file stays theirs), and the hooks it names
+    are installed with consent, or their commands printed."""
+    print(
+        f"  {REQUIREMENTS} is an administrator's own file; Valhuntir doesn't change it."
+    )
+    print("  Codex controls NOT in effect. To have them, merge this block into it:\n")
+    print("\n".join(ln for ln in text.splitlines() if ln != MARKER) + "\n")
+    cmds = _commands(Path("<unused>"), hooks)[:-1]
+    if consent is None and sys.stdin.isatty():
+        consent = (
+            input(f"  Install the hooks it names in {HOOKS_DIR}/ (needs sudo)? [y/N] ")
+            .strip()
+            .lower()
+            == "y"
+        )
+    if consent and (_same_hooks(hooks) or _run(cmds)):
+        print(f"  The hooks the block names are installed in {HOOKS_DIR}/")
+    else:
+        print("  The hooks the block names aren't installed. To install them, run:")
+        for cmd in cmds:
+            print(f"    {shlex.join(cmd)}")
+    return "admin-file"
+
+
+def _same_hooks(hooks) -> bool:
+    try:
         return all((HOOKS_DIR / n).read_bytes() == s.read_bytes() for n, s in hooks)
     except OSError:
         return False
@@ -179,16 +225,12 @@ def deploy_codex_controls(consent: bool | None = None) -> str:
         print(f"  Codex controls NOT in effect: {REQUIREMENTS} can't be read ({e}).")
         return "admin-file"
     if current is not None and not ours(current):
-        print(
-            f"  {REQUIREMENTS} is an administrator's own file; Valhuntir doesn't change it."
-        )
-        print(
-            "  Codex controls NOT in effect. To have them, merge this block into it:\n"
-        )
-        print(text)
-        return "admin-file"
+        return _admin_file(text, hooks, consent)
     if current is not None and _same(text, hooks):
         return "unchanged"
+    if current is None and codex_controls_state(installed_clients()) == "off":
+        print(f"  {OFF}: {REQUIREMENTS} isn't there (the documented opt-out).")
+        print("  Installing it again turns them back on.")
     with tempfile.TemporaryDirectory(prefix="vhir-codex-") as tmp:
         staged = Path(tmp) / "requirements.toml"
         staged.write_text(text)
@@ -208,23 +250,13 @@ def deploy_codex_controls(consent: bool | None = None) -> str:
                 "off later, see sift-mcp/docs/codex.md#opt-out."
             )
             consent = input("  Install it (needs sudo)? [y/N] ").strip().lower() == "y"
-        if consent:
-            for cmd in cmds:
-                try:
-                    r = subprocess.run(cmd, timeout=120)
-                except (OSError, subprocess.TimeoutExpired) as e:
-                    r = None
-                    print(f"  {shlex.join(cmd)} failed: {e}")
-                if r is None or r.returncode != 0:
-                    consent = False
-                    break
-            else:
-                print(f"  Codex controls installed: {REQUIREMENTS}, {HOOKS_DIR}/")
-                print(
-                    "  Codex sessions already running (and the Codex app-server, if "
-                    "it runs) keep the old rules until they're restarted."
-                )
-                return "installed" if current is None else "updated"
+        if consent and _run(cmds):
+            print(f"  Codex controls installed: {REQUIREMENTS}, {HOOKS_DIR}/")
+            print(
+                "  Codex sessions already running (and the Codex app-server, if "
+                "it runs) keep the old rules until they're restarted."
+            )
+            return "installed" if current is None else "updated"
         print("  Codex controls NOT installed. To install them, run:")
         for cmd in _commands(Path("<this file>"), hooks)[:-1]:
             print(f"    {shlex.join(cmd)}")
