@@ -780,6 +780,39 @@ graph LR
 
 No gateway, no sandbox, no deny rules. Claude runs forensic tools directly via Bash. Forensic discipline is suggested and reinforced via prompt hooks and reference documents, but Claude Code can choose to ignore them. See the [sift-mcp README](https://github.com/AppliedIR/sift-mcp#valhuntir-lite) for optional add-on install flags (`--opencti`, `--remnux`, `--mslearn`, `--zeltser`).
 
+## What changes for AI clients in this release
+
+After `vhir update` (or `vhir setup client`) redeploys the client controls:
+
+- **Claude Code refuses to start without its sandbox.** On a host where
+  bubblewrap can't run, Claude Code now stops with a message instead of running
+  Bash unconfined. `vhir setup client --allow-unsandboxed` (with a typed
+  phrase) deploys the old behaviour, and the controls block then says
+  SANDBOX OFF.
+- **The AI's shell can't read the signing and approval store**
+  (`/var/lib/vhir`). `vhir backup`, `vhir case close` and `vhir export` run
+  from inside the AI's sandbox now stop with a message instead of leaving the
+  signed history out; run them in your own terminal.
+- **The `Write(...)` deny rules are gone** (the `Edit(...)` rules already
+  cover writing tools); a redeploy takes vhir's old ones off, and your own
+  rules stay.
+- **Failed and refused commands are audited too.** A failed command, a call
+  the permission mode refused and a refusal by the case-data guard each leave
+  a line in the case's audit file. Deny-rule refusals still leave none.
+- **Codex is supported on the SIFT workstation.** Setting it up installs
+  Codex's managed requirements (`/etc/codex/requirements.toml`, with your
+  consent), which apply to **every Codex session on the machine**: its
+  sandbox stays on, its shell can't read the store or the gateway's tokens,
+  and its commands are audited into the active case (marked `outside_case`
+  when the session runs elsewhere). A `~/.codex/config.toml` that asks for
+  `danger-full-access` then stops Codex from starting: setup names the line.
+  To turn the requirements off, see sift-mcp `docs/codex.md#opt-out`.
+- **Setup prints what each control protects and what it doesn't** (the same
+  table is in `docs/security.md`). In short: `run_command` still runs as you,
+  with sudo, outside every sandbox, so client-side controls prevent accidents
+  and record what happened; an approved finding's signature catches a later
+  change.
+
 ## Upgrading from Lite to Valhuntir
 
 Both modes share the same Python venv, triage databases, and RAG index.
