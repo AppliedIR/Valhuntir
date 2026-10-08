@@ -9,6 +9,7 @@ with them the output says `anchored`. A failure anywhere exits 2.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -541,7 +542,7 @@ def test_a_stale_prefix_copy_is_the_same_chain(case, steve):
     f1, f2 = _finding(1), _finding(2)
     _save(case, findings=[f1, f2])
     _approve(case, steve, f1)
-    cid = ledger.chain_id(json.loads(_chain_lines()[0]))
+    cid = ledger.chain_id(ledger.body_of(json.loads(_chain_lines()[0])))
     (_copy_dir(case) / f"{cid}.jsonl").write_text(ledger.chain_path("C1").read_text())
     head = _approve(case, steve, f2)  # the box chain grows past the copy
     result = verify_case(
@@ -554,7 +555,7 @@ def test_copies_that_differ_are_chain_copy_diverged(case, steve):
     f1, f2 = _finding(1), _finding(2)
     _save(case, findings=[f1, f2])
     _approve(case, steve, f1)
-    cid = ledger.chain_id(json.loads(_chain_lines()[0]))
+    cid = ledger.chain_id(ledger.body_of(json.loads(_chain_lines()[0])))
     copy = _copy_dir(case) / f"{cid}.jsonl"
     copy.write_text(ledger.chain_path("C1").read_text())
     _approve(case, steve, f2)
@@ -798,3 +799,109 @@ def test_a_pin_s_range_bounds_the_seqs_it_covers(case, steve):
     assert _status(result, "F-steve-001") == "VALID"
     assert _status(result, "F-steve-002") == "KEY_NOT_PINNED" and result.exit_code == 2
     assert verify_case(case, expect_keys=[steve.pin(first=1)]).exit_code == 0
+
+
+# --- Rules on non-latest lines and across chains (V2, W4.3, W6, X10) --------------------------
+
+
+def _edit_again(case, ex, item_id, at=AT2):
+    item = next(f for f in _load(case, "findings") if f["id"] == item_id)
+    _sign(case, ex, [(item, "finding", "edit", "APPROVED", None)], at=at)
+    findings = _load(case, "findings")
+    for f in findings:
+        if f["id"] == item_id:
+            f["approved_at"] = at
+    _save(case, findings=findings)
+
+
+def test_an_unpinned_key_on_an_earlier_line_is_case_level(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    other = Examiner("steve")
+    _approve(case, other, f)  # signed with a key steve's pins don't list
+    _edit_again(case, steve, f["id"])  # decided again with the pinned key
+    result = verify_case(case, expect_keys=[steve.pin()])
+    assert _status(result, "F-steve-001") == "VALID"
+    assert any(c == "KEY_NOT_PINNED" and "seq 1" in m for c, m in result.failures)
+    assert result.exit_code == 2
+
+
+def test_a_retired_key_on_an_earlier_line_of_another_item_is_case_level(case, steve):
+    f1, f2, f3 = _finding(1), _finding(2), _finding(3)
+    _save(case, findings=[f1, f2, f3])
+    _approve(case, steve, f1)
+    new = Examiner("steve")
+    _, (body,) = _sign(
+        case, new, [(f2, "finding", "approve", "APPROVED", None)], retired=[steve.fp]
+    )
+    _approve(case, steve, f3)  # the retired key signs
+    findings = _load(case, "findings")
+    findings[1].update(status="APPROVED", approved_by="steve", approved_at=AT)
+    _save(case, findings=findings)
+    _edit_again(case, new, "F-steve-003")  # F3 decided again with the new key
+    result = verify_case(case, expect_keys=[steve.pin(), new.pin()])
+    assert _status(result, "F-steve-003") == "VALID"
+    assert (
+        any(c == "RETIRED_KEY_USE" for c, _ in result.failures)
+        and result.exit_code == 2
+    )
+
+
+def test_a_signed_line_for_a_missing_item_fails(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    _save(case, findings=[])
+    result = verify_case(case)
+    assert (
+        any(c == "ITEM_MISSING" for c, _ in result.failures) and result.exit_code == 2
+    )
+
+
+def test_a_0_6_line_on_an_item_with_signed_lines_is_ignored(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    path = _legacy([])
+    path.write_text(_legacy_line(dict(f, title="0.6 text")) + "\n")  # after genesis
+    assert _status(verify_case(case), "F-steve-001") == "VALID"
+
+
+def test_two_chains_deciding_one_item_differently_without_a_reference_fork(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    box = _chain_lines()
+    other = Examiner("steve")
+    # A second box's chain for the same case: its own genesis, rejecting F1.
+    approved = _load(case, "findings")[0]
+    body = ledger.prepare("C1", [{"item_id": f["id"], "type": "finding", "decision": "reject",
+                                  "status_after": "REJECTED", "coupled_from": None,
+                                  "content_snapshot": signed_text(approved, "finding")}],
+                          "steve", other.pub, "cli", AT2, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
+    body[0]["seq"], body[0]["prev"] = 1, ledger.genesis_prev("C1")
+    body[0]["genesis"] = {
+        "legacy_sha256": hashlib.sha256(b"").hexdigest(),
+        "legacy_bytes": 0,
+    }
+    line = ledger.sign_body(body[0], other.key)
+    cid = ledger.chain_id(body[0])
+    (_copy_dir(case) / f"{cid}.jsonl").write_text(line + "\n")
+    result = verify_case(case, expect_keys=[steve.pin(), other.pin()])
+    assert len(result.chains) == 2 and box
+    assert _status(result, "F-steve-001") == "CHAIN_FORK" and result.exit_code == 2
+
+
+def test_a_reference_to_a_head_the_named_chain_doesn_t_hold(case, steve):
+    f1, f2 = _finding(1), _finding(2)
+    _save(case, findings=[f1, f2])
+    _approve(case, steve, f1)
+    cid = ledger.chain_id(ledger.body_of(json.loads(_chain_lines()[0])))
+    copy = _copy_dir(case) / f"{cid}.jsonl"
+    copy.write_text(ledger.chain_path("C1").read_text())
+    ref = [{"chain_id": cid, "head_seq": 7, "head_hash": "ab" * 32}]
+    _sign(case, steve, [(f2, "finding", "approve", "APPROVED", None)], prior=ref)
+    result = verify_case(case)
+    assert any(
+        c == "HEAD_MISMATCH" and "references chain" in m for c, m in result.failures
+    )
