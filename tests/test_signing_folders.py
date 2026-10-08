@@ -29,6 +29,9 @@ def folders(tmp_path, monkeypatch):
 
     def run(argv, **kw):
         calls.append(argv)
+        if argv[1:3] == ["-I", "-c"] and argv[3] == cs._ENSURE_SCRIPT:
+            cs.ensure_signing_dirs()  # what the fresh process runs, with new modules
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
         if argv[:1] == ["sudo"]:
             if run.fail:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr="no")
@@ -125,6 +128,8 @@ def test_a_sudo_failure_prints_the_command_and_never_raises(
         import subprocess
 
         def boom(argv, **kw):
+            if argv[:1] != ["sudo"]:  # the fresh process runs the step
+                return folders.run(argv, **kw)
             raise subprocess.TimeoutExpired(argv, 300)
 
         monkeypatch.setattr(subprocess, "run", boom)
@@ -315,3 +320,44 @@ def test_signing_names_a_root_owned_file_in_a_folder(monkeypatch):
     problem = credentials.signing_folders_problem()
     assert problem == credentials.not_writable_text(lock)
     assert "run `vhir update`, which gives it back" in problem
+
+
+def test_inside_an_older_update_the_folders_are_made_in_a_fresh_process(
+    folders, monkeypatch
+):
+    """The 0.6.4 updater has its own vhir_cli.identity loaded, with no
+    valid_name: this code's credentials module can't be imported there. The
+    folder step runs in a new Python process, which imports only this code."""
+    import vhir_cli
+
+    old_identity = types.ModuleType("vhir_cli.identity")  # 0.6.4's: no valid_name
+    monkeypatch.setitem(sys.modules, "vhir_cli.identity", old_identity)
+    monkeypatch.setattr(vhir_cli, "identity", old_identity, raising=False)
+    monkeypatch.delitem(sys.modules, "vhir_cli.credentials", raising=False)
+    with pytest.raises(ImportError):  # what the in-process step hit
+        import vhir_cli.credentials  # noqa: F401
+    monkeypatch.delitem(sys.modules, "vhir_cli.credentials", raising=False)
+    _older_update(monkeypatch)
+    import subprocess
+
+    spawned = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, **kw: spawned.append((argv, kw))
+    )
+    cs._isolate_gateway_launchers()
+    ((argv, kw),) = spawned
+    assert argv == [sys.executable, "-I", "-c", cs._ENSURE_SCRIPT]
+    assert "capture_output" not in kw  # its output and sudo's prompt use the terminal
+
+
+def test_a_fresh_process_that_can_t_start_never_raises(folders, monkeypatch, capsys):
+    import subprocess
+
+    _older_update(monkeypatch)
+
+    def boom(argv, **kw):
+        raise OSError("no python")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert cs._isolate_gateway_launchers() == []
+    assert "The signing folders weren't made (no python)" in capsys.readouterr().out

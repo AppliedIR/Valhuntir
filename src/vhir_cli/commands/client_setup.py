@@ -992,6 +992,28 @@ def ensure_signing_dirs() -> None:
         )
 
 
+# Run in a process of its own (see _ensure_signing_dirs_fresh)
+_ENSURE_SCRIPT = (
+    "from vhir_cli.commands.client_setup import ensure_signing_dirs; "
+    "ensure_signing_dirs()"
+)
+
+
+def _ensure_signing_dirs_fresh() -> None:
+    """ensure_signing_dirs in a fresh Python process. An older vhir's update
+    has its own modules loaded (vhir_cli.identity among them), so this code's
+    imports can't run in it; a new process imports only this code. Its output
+    and sudo's prompt use this terminal. Never raises."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            [sys.executable, "-I", "-c", _ENSURE_SCRIPT], timeout=900, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  The signing folders weren't made ({e}); run `vhir update` again.")
+
+
 def _under_an_older_update() -> bool:
     """True inside `vhir update` of a vhir from before the signing folders.
     That update pulls this code, then imports this module and calls
@@ -1016,10 +1038,7 @@ def _isolate_gateway_launchers() -> list[Path]:
     import subprocess
 
     if _under_an_older_update():
-        try:
-            ensure_signing_dirs()
-        except Exception as e:  # noqa: BLE001 - never raises (above)
-            print(f"  The signing folders weren't made ({e}); run `vhir update` again.")
+        _ensure_signing_dirs_fresh()
 
     forms = (  # (file, the generated line); the paths vary per install
         (
