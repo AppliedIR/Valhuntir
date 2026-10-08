@@ -469,33 +469,65 @@ FINISH_UPDATE = (
 
 
 def signing_folders_problem() -> str:
-    """Why this user can't sign here, or "": FINISH_UPDATE when a signing
-    folder (keys/, ledger/) is missing (a vhir updated from 0.6 by one
-    `vhir update` of the old code can lack them), or, when one exists but
-    this user can't write it, which folder and whose it is (`vhir update`
-    gives it back)."""
+    """Why this user can't sign here, or "":
+    - FINISH_UPDATE when a signing folder (keys/, ledger/) is missing (a vhir
+      updated from 0.6 by one `vhir update` of the old code can lack them);
+    - when a folder, or a file in it, is root's or this user's but can't be
+      used, which one, and that `vhir update` gives it back;
+    - when it belongs to another account, the installer's refusal: one
+      examiner OS user per machine."""
     for folder in (keys.KEYS_DIR, ledger.LEDGER_DIR):
         if not folder.is_dir():
             return FINISH_UPDATE
     for folder in (keys.KEYS_DIR, ledger.LEDGER_DIR):
-        if not os.access(folder, os.W_OK | os.X_OK):
+        try:
+            uid = folder.stat().st_uid
+        except OSError:
+            return FINISH_UPDATE
+        if uid not in (0, os.getuid()):
+            return other_owner_text(folder)
+        if uid == 0 or not os.access(folder, os.W_OK | os.X_OK):
             return not_writable_text(folder)
+        try:
+            roots = [
+                e.path
+                for e in os.scandir(folder)
+                if e.stat(follow_symlinks=False).st_uid == 0
+            ]
+        except OSError:
+            roots = []
+        if roots:
+            return not_writable_text(Path(sorted(roots)[0]))
     return ""
 
 
-def not_writable_text(folder: Path) -> str:
-    import getpass
+def _owner(path: Path) -> str:
     import pwd
 
     try:
-        uid = folder.stat().st_uid
-        owner = pwd.getpwuid(uid).pw_name
+        return pwd.getpwuid(path.stat().st_uid).pw_name
     except (OSError, KeyError):
-        owner = "another account"
+        return "another account"
+
+
+def not_writable_text(path: Path) -> str:
+    import getpass
+
     user = getpass.getuser()
     return (
-        f"{folder} exists but {user} can't write to it (it belongs to {owner}); "
+        f"{path} exists but {user} can't use it (it belongs to {_owner(path)}); "
         f"run `vhir update`, which gives it back to {user}"
+    )
+
+
+def other_owner_text(folder: Path) -> str:
+    """The installer's refusal (setup-sift.sh), for a folder another account owns."""
+    import getpass
+
+    owner, user = _owner(folder), getpass.getuser()
+    return (
+        f"{folder}/ belongs to {owner}, not {user}: the ledger is theirs. One "
+        f"examiner OS user per machine is supported; sign as {owner}."
     )
 
 

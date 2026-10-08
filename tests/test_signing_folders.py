@@ -77,7 +77,10 @@ def test_an_older_update_makes_the_folders_through_the_launcher_step(
     sudo = _sudo(folders.calls)
     assert [c[:3] for c in sudo] == [["sudo", "sh", "-c"]] * 2
     for cmd, folder in zip(sudo, folders.dirs, strict=True):
-        assert f"mkdir -p {folder} && chown " in cmd[3] and "chmod 700" in cmd[3]
+        assert (
+            f"mkdir -p {folder} && find {folder} -xdev -uid 0 -exec chown -h " in cmd[3]
+        )
+        assert cmd[3].endswith(f"chmod 700 {folder}")
     assert all(f.is_dir() for f in folders.dirs)
     assert capsys.readouterr().out.count("... done") == 2
 
@@ -98,7 +101,8 @@ def test_an_update_gives_back_a_folder_this_user_can_t_write(
     finally:
         keys_dir.chmod(0o700)
     (cmd,) = _sudo(folders.calls)
-    assert f"mkdir -p {keys_dir} && chown " in cmd[3] and "chmod 700" in cmd[3]
+    assert f"find {keys_dir} -xdev -uid 0 -exec chown -h " in cmd[3]
+    assert cmd[3].endswith(f"chmod 700 {keys_dir}")
     assert f"Giving back {keys_dir}... done" in capsys.readouterr().out
 
 
@@ -127,7 +131,7 @@ def test_a_sudo_failure_prints_the_command_and_never_raises(
     assert cs._isolate_gateway_launchers() == []  # the update carries on
     err = capsys.readouterr().err
     for f in folders.dirs:
-        assert f"Run manually: sudo mkdir -p {f} && sudo chown $USER:$USER {f}" in err
+        assert f"Run manually: sudo mkdir -p {f} && sudo find {f} -xdev -uid 0 " in err
 
 
 def test_this_vhir_s_update_makes_them_with_the_same_step(folders):
@@ -215,3 +219,95 @@ def test_any_other_permission_error_is_not_dressed_as_an_update(monkeypatch, cap
     monkeypatch.setattr(sys, "argv", ["vhir", "approve"])
     with pytest.raises(PermissionError):
         M.main()
+
+
+# --- Whose folder it is ---------------------------------------------------------
+
+
+def _root_owned(monkeypatch, *paths):
+    """Paths that stat as root's (tests can't make a root-owned file)."""
+    import os
+    import pathlib
+
+    real_stat, real_scandir = pathlib.Path.stat, os.scandir
+    wanted = {str(p) for p in paths}
+
+    def as_root(result):
+        values = list(result)
+        values[4] = 0  # st_uid
+        return os.stat_result(values)
+
+    def stat(self, *a, **k):
+        result = real_stat(self, *a, **k)
+        return as_root(result) if str(self) in wanted else result
+
+    class Entry:
+        def __init__(self, entry):
+            self._e, self.path, self.name = entry, entry.path, entry.name
+
+        def stat(self, **k):
+            result = self._e.stat(**k)
+            return as_root(result) if self.path in wanted else result
+
+    def scandir(path):
+        return [Entry(e) for e in real_scandir(path)]
+
+    monkeypatch.setattr(pathlib.Path, "stat", stat)
+    monkeypatch.setattr(os, "scandir", scandir)
+
+
+def test_a_root_owned_folder_or_root_owned_files_in_it_are_given_back(
+    folders, capsys, monkeypatch
+):
+    keys_dir, ledger_dir = folders.dirs
+    keys_dir.mkdir(parents=True)
+    ledger_dir.mkdir()
+    (ledger_dir / "C1.lock").write_text("")
+    _root_owned(monkeypatch, keys_dir, ledger_dir / "C1.lock")
+    assert cs._signing_dir_state(keys_dir) == "give back"
+    assert cs._signing_dir_state(ledger_dir) == "give back"  # a file inside is root's
+    from vhir_cli.commands import update
+
+    update._ensure_signing_dirs()
+    assert len(_sudo(folders.calls)) == 2
+    assert capsys.readouterr().out.count("Giving back") == 2
+
+
+def test_another_account_s_folder_is_never_taken(folders, capsys, monkeypatch):
+    """The installer's rule: one examiner OS user per machine."""
+    import os
+
+    keys_dir, ledger_dir = folders.dirs
+    keys_dir.mkdir(parents=True)
+    ledger_dir.mkdir()
+    real = os.getuid()
+    monkeypatch.setattr(
+        os, "getuid", lambda: real + 1
+    )  # the folders are someone else's
+    assert cs._signing_dir_state(keys_dir) == "other"
+    from vhir_cli.commands import update
+
+    update._ensure_signing_dirs()
+    assert _sudo(folders.calls) == []
+    err = capsys.readouterr().err
+    assert credentials.other_owner_text(keys_dir) in err
+    assert "the ledger is theirs. One examiner OS user per machine is supported" in err
+
+
+def test_signing_names_another_account_s_folder_with_the_installer_s_words(monkeypatch):
+    import os
+
+    real = os.getuid()
+    monkeypatch.setattr(os, "getuid", lambda: real + 1)
+    problem = credentials.signing_folders_problem()
+    assert problem == credentials.other_owner_text(keys.KEYS_DIR)
+    assert "sign as " in problem and "vhir update" not in problem
+
+
+def test_signing_names_a_root_owned_file_in_a_folder(monkeypatch):
+    lock = ledger.LEDGER_DIR / "C1.lock"
+    lock.write_text("")
+    _root_owned(monkeypatch, lock)
+    problem = credentials.signing_folders_problem()
+    assert problem == credentials.not_writable_text(lock)
+    assert "run `vhir update`, which gives it back" in problem

@@ -138,6 +138,10 @@ RECOVERY = {
         "the latest line only: decide again"
     ),
     "CASCADE_UNSUPPORTED": "Decide the item directly (for an IOC, `vhir reject IOC-...`)",
+    "CHAIN_UNREADABLE": (
+        "The chain file can't be read, or isn't UTF-8: it was changed or damaged "
+        "outside Valhuntir. Restore it from a copy, as CHAIN_BROKEN"
+    ),
     "CHAIN_BROKEN": (
         "Restore the chain, or the missing or altered lines, from a copy (a restore from "
         "a shorter copy is held to KEY_NOT_PINNED's cut-back conditions). If no copy has "
@@ -186,6 +190,7 @@ RECOVERY = {
     "CASE_FILE_UNREADABLE": "Restore the case file from a backup",
 }
 _RESTORE_ROWS = {
+    "CHAIN_UNREADABLE",
     "TAMPERED",
     "TAMPERED_LINE",
     "CHAIN_BROKEN",
@@ -419,7 +424,13 @@ def _group_copies(
     one chain (the longest); copies that differ are CHAIN_COPY_DIVERGED."""
     by_id: dict[str, list[tuple[str, list]]] = {}
     for label, path in copies:
-        cid, lines = _read_copy(path, label)
+        try:
+            cid, lines = _read_copy(path, label)
+        except (OSError, ValueError) as e:  # unreadable, or not UTF-8
+            result.failures.append(
+                ("CHAIN_UNREADABLE", f"{label} {path} can't be read ({e})")
+            )
+            continue
         if not lines:
             continue
         result.sources.append(f"{label}: {path} ({len(lines)} lines)")
@@ -1014,7 +1025,11 @@ def chain_references(case_dir: Path, case_id: str) -> tuple[list[dict], list[str
     groups: dict[str, list[tuple[Path, list]]] = {}
     notes: list[str] = []
     for path in sorted((Path(case_dir) / "ledger" / "chains").glob("*.jsonl")):
-        lines = ledger.read_lines(path)
+        try:
+            lines = ledger.read_lines(path)
+        except (OSError, ValueError) as e:
+            notes.append(f"chain copy {path.name} can't be read ({e}); not referenced")
+            continue
         head = lines[0][2] if lines else None
         if not (isinstance(head, dict) and head.get("seq") == 1):
             notes.append(

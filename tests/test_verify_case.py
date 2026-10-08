@@ -20,6 +20,7 @@ from vhir_cli import keys, ledger, verification
 from vhir_cli.case_io import signed_text
 from vhir_cli.ledger_verify import (
     NOT_ANCHORED,
+    RECOVERY,
     Head,
     Pin,
     approved_view,
@@ -1476,3 +1477,25 @@ def test_conflicting_prefixes_become_a_note_once_the_item_is_reattested(case, st
     result = verify_case(case)
     assert result.failures == [] and result.exit_code == 0
     assert any(n.startswith("CONFLICTING_PREFIXES (a note") for n in result.notices)
+
+
+@pytest.mark.parametrize("how", ["not UTF-8", "unreadable"])
+def test_an_unreadable_chain_is_a_named_failure_not_a_traceback(case, steve, how):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    path = ledger.chain_path("C1")
+    if how == "not UTF-8":
+        path.write_bytes(path.read_bytes() + b"\xff\xfe\n")
+    else:
+        path.chmod(0o000)
+    try:
+        result = verify_case(case)
+    finally:
+        path.chmod(0o600)
+    assert result.exit_code == 2
+    assert any(c == "CHAIN_UNREADABLE" for c, _ in result.failures), result.failures
+    text = render(result)
+    assert "Recovery: " + RECOVERY["CHAIN_UNREADABLE"] in text and text.endswith(
+        "Exit 2"
+    )

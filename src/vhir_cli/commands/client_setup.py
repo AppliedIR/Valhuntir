@@ -920,37 +920,58 @@ def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
 SIGNING_DIRS = (Path("/var/lib/vhir/keys"), Path("/var/lib/vhir/ledger"))
 
 
-def _signing_dir_fine(folder: Path) -> bool:
-    """The folder exists, is this user's, and this user can write it."""
+def _signing_dir_state(folder: Path) -> str:
+    """ "fine": this user's, writable, nothing inside root's; "missing";
+    "give back": root's, or this user's with a bad mode or root's files inside;
+    "other": another account's (never touched: one examiner OS user per box)."""
     try:
-        return (
-            folder.is_dir()
-            and folder.stat().st_uid == os.getuid()
-            and os.access(folder, os.W_OK | os.X_OK)
-        )
+        if not folder.is_dir():
+            return "missing"
+        uid = folder.stat().st_uid
     except OSError:
-        return False
+        return "missing"
+    if uid not in (0, os.getuid()):
+        return "other"
+    if uid == 0 or not os.access(folder, os.W_OK | os.X_OK):
+        return "give back"
+    try:
+        if any(e.stat(follow_symlinks=False).st_uid == 0 for e in os.scandir(folder)):
+            return "give back"
+    except OSError:
+        return "give back"
+    return "fine"
 
 
 def ensure_signing_dirs() -> None:
-    """Make the signing folders this box lacks, and give back one that exists
-    but isn't this user's or can't be written: owned by this user, 0700
-    (/var/lib/vhir is root's: sudo). Never raises: a failure prints the
-    command to run instead."""
+    """Make the signing folders this box lacks, and give back one that is
+    root's (with what root left inside) or this user's but unusable: owned by
+    this user, 0700 (/var/lib/vhir is root's: sudo). A folder another account
+    owns is left alone, with the installer's refusal. Never raises: a failure
+    prints the command to run instead."""
     import getpass
     import subprocess
 
+    from vhir_cli import credentials
+
     user = getpass.getuser()
     for folder in SIGNING_DIRS:
-        if _signing_dir_fine(folder):
+        state = _signing_dir_state(folder)
+        if state == "fine":
             continue
-        what = "Giving back" if folder.is_dir() else "Creating"
+        if state == "other":
+            print(f"  {credentials.other_owner_text(folder)}", file=sys.stderr)
+            continue
+        what = "Giving back" if state == "give back" else "Creating"
         print(f"  {what} {folder}... ", end="", flush=True)
+        # only root's entries change hands: never another account's
+        script = (
+            f"mkdir -p {folder} && find {folder} -xdev -uid 0 -exec chown -h "
+            f"{user}:{user} {{}} + && chmod 700 {folder}"
+        )
         try:
             ok = (
                 subprocess.run(
-                    ["sudo", "sh", "-c",
-                     f"mkdir -p {folder} && chown {user}:{user} {folder} && chmod 700 {folder}"],
+                    ["sudo", "sh", "-c", script],
                     capture_output=True, text=True, timeout=300,  # sudo may ask a password
                 ).returncode
                 == 0
@@ -962,8 +983,8 @@ def ensure_signing_dirs() -> None:
             continue
         print("failed")
         print(
-            f"  Run manually: sudo mkdir -p {folder} && sudo chown $USER:$USER {folder} "
-            f"&& sudo chmod 700 {folder}",
+            f"  Run manually: sudo mkdir -p {folder} && sudo find {folder} -xdev -uid 0 "
+            f"-exec chown -h $USER:$USER {{}} + && sudo chmod 700 {folder}",
             file=sys.stderr,
         )
 
