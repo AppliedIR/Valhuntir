@@ -92,128 +92,81 @@ def rows_for(client: str):
     return [r for r in ROWS if client in r[1]]
 
 
+SANDBOX_OFF = "SANDBOX OFF: Bash runs unconfined when the sandbox can't start"
+
+
 def block_lines(
-    client: str,
-    sandbox_off: bool = False,
-    codex_state: str = "",
-    overrides: dict | None = None,
+    client: str, sandbox_off: bool = False, not_applied: str = ""
 ) -> list[str]:
     """The controls block for `client` (claude-code, codex, or anything else
-    as MCP-only). `overrides` replaces a row's "protects" text with what is
-    installed instead (see installed_overrides); `sandbox_off` and
-    `codex_state` are its two commonest cases."""
+    as MCP-only). `not_applied` says why the client's own controls aren't
+    in effect as shipped: the block then claims none of them, only the
+    server-side rows."""
     kind = client if client in (CLAUDE, CODEX) else MCP
-    over = dict(overrides or {})
-    if sandbox_off:
-        over.setdefault("Sandbox", SANDBOX_OFF)
-    if kind == CODEX and codex_state in ("off", "admin-file"):
-        over = {**_codex_overrides(codex_state, ""), **over}
     lines = ["  Controls (as deployed now):"]
-    for name, _, protects, gaps in rows_for(kind):
-        lines.append(f"    {name}: {over.get(name, protects)}.")
+    for name, clients, protects, gaps in rows_for(kind):
+        if not_applied and clients != ALL:
+            continue
+        if name == "Sandbox" and sandbox_off:
+            protects = SANDBOX_OFF
+        lines.append(f"    {name}: {protects}.")
         lines.append(f"      Doesn't cover: {gaps}.")
+    if not_applied:
+        lines.append(f"    NOT in effect: {not_applied}.")
     return lines
 
 
-SANDBOX_OFF = "SANDBOX OFF: Bash runs unconfined when the sandbox can't start"
-# A row that is a hook: the hook's file name (in Claude Code's settings, or
-# run by Codex's requirements)
-HOOKED = {
-    "Audit": "forensic-audit.sh",
-    "Case-data guard": "case-data-guard.sh",
-    "Start-up check": "case-dir-check.sh",
-}
-_HOOK_EVENT = {"Audit": "PostToolUse", "Case-data guard": "PreToolUse",
-               "Start-up check": "SessionStart"}  # fmt: skip
-
-
-def _claude_overrides(settings_path) -> dict:
-    """What Claude Code's settings file holds now, row by row."""
-    import json
+def _codex_not_applied() -> str:
+    """Why Codex's controls aren't in effect as shipped, or "" when they are:
+    our requirements file, exactly as setup writes it, with its hooks."""
     from pathlib import Path
 
-    path = Path(settings_path)
-    try:
-        settings = json.loads(path.read_text())
-        if not isinstance(settings, dict):
-            raise ValueError
-    except (OSError, ValueError):
-        missing = f"NOT in effect: {path} can't be read"
-        return {n: missing for n in ("Deny rules", "Sandbox", *HOOKED)}
-    over = {}
-    deny = (settings.get("permissions") or {}).get("deny") or []
-    if not any("findings.json" in str(r) for r in deny):
-        over["Deny rules"] = f"NOT in effect: {path} has none of Valhuntir's deny rules"
-    sandbox = settings.get("sandbox") or {}
-    if sandbox.get("enabled") is not True:
-        over["Sandbox"] = f"SANDBOX OFF: {path} doesn't turn it on"
-    elif sandbox.get("failIfUnavailable") is False:
-        over["Sandbox"] = SANDBOX_OFF
-    hooks = settings.get("hooks") or {}
-    for name, script in HOOKED.items():
-        commands = [h.get("command", "") for m in hooks.get(_HOOK_EVENT[name]) or []
-                    if isinstance(m, dict) for h in m.get("hooks") or [] if isinstance(h, dict)]  # fmt: skip
-        if not any(script in str(c) for c in commands):
-            over[name] = f"NOT in effect: {path} doesn't run {script}"
-    return over
+    from vhir_cli.commands import codex_controls as cc
 
-
-def _codex_overrides(state: str, text: str) -> dict:
-    """What Codex's managed layer holds now: our file (nothing to say), none
-    (every control it carries is off), or an administrator's own file (only
-    the hooks it names that are installed run)."""
-    from vhir_cli.commands.codex_controls import HOOKS_DIR, REQUIREMENTS
-
+    state = cc.codex_controls_state([CODEX])
+    setup = "run vhir setup client --client=codex"
     if state == "off":
-        off = f"NOT in effect: {REQUIREMENTS}, which runs it, isn't installed"
-        return {
-            "Managed requirements": f"CODEX CONTROLS OFF: {REQUIREMENTS} isn't installed",
-            **{n: off for n in HOOKED},
-        }
-    if state != "admin-file":
-        return {}
-    over = {
-        "Managed requirements": "NOT ours: an administrator's own requirements file; "
-        "what it requires is theirs, and Valhuntir doesn't check it"
-    }
-    for name, script in HOOKED.items():
-        hook = HOOKS_DIR / script
-        if str(hook) not in text:
-            over[name] = (
-                f"NOT in effect: the administrator's {REQUIREMENTS} doesn't run it"
-            )
-        elif not hook.is_file():
-            over[name] = f"NOT in effect: {hook}, which the file runs, isn't installed"
-    return over
+        return f"CODEX CONTROLS OFF: {cc.REQUIREMENTS} isn't installed; {setup} to turn them on"
+    if state == "admin-file":
+        return (
+            f"{cc.REQUIREMENTS} is an administrator's own file; Valhuntir doesn't "
+            "check what it requires (merge the block setup prints to have its controls)"
+        )
+    found = cc._sources()
+    if found is None or not cc._same(cc.render(found[0], Path.home()), found[1]):
+        return (
+            f"Valhuntir's controls aren't fully applied in {cc.REQUIREMENTS} "
+            f"(declined or edited); {setup} to apply them"
+        )
+    return ""
 
 
-def installed_overrides(client: str, settings_path=None) -> dict:
-    """Each row's state as installed now, read from the files themselves
-    (Claude Code's settings; Codex's requirements and hooks), never from
-    what setup meant to install."""
+def applied(client: str, settings_path=None) -> tuple[bool, str]:
+    """(sandbox off, why not applied) for `client` as installed now, read
+    from the files themselves, never from what setup meant to install. The
+    controls are on only when the file holds every control as shipped."""
     if client == CLAUDE:
         from pathlib import Path
 
-        return _claude_overrides(
-            settings_path or Path.home() / ".claude" / "settings.json"
-        )
-    if client == CODEX:
-        from vhir_cli.commands.codex_controls import REQUIREMENTS, codex_controls_state
+        from vhir_cli.commands.client_setup import settings_applied
 
-        state = codex_controls_state([CODEX])
-        try:
-            text = REQUIREMENTS.read_text() if state == "admin-file" else ""
-        except OSError:
-            text = ""
-        return _codex_overrides(state, text)
-    return {}
+        path = Path(settings_path or Path.home() / ".claude" / "settings.json")
+        on, sandbox_off = settings_applied(path)
+        if not on:
+            return False, (
+                f"Valhuntir's controls aren't fully applied in {path} (declined or "
+                "edited); run vhir setup client to apply them"
+            )
+        return sandbox_off, ""
+    if client == CODEX:
+        return False, _codex_not_applied()
+    return False, ""
 
 
 def print_block(client: str, settings_path=None) -> None:
     """Print `client`'s controls block as installed now."""
-    for line in block_lines(
-        client, overrides=installed_overrides(client, settings_path)
-    ):
+    sandbox_off, why = applied(client, settings_path)
+    for line in block_lines(client, sandbox_off, why):
         print(line)
 
 

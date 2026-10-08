@@ -7,7 +7,6 @@ administrator's own file). The client setup calls are recording stand-ins."""
 
 from __future__ import annotations
 
-import json
 import types
 
 import pytest
@@ -17,6 +16,8 @@ from vhir_cli.commands import codex_controls as cc
 from vhir_cli.commands import update
 
 from .test_codex_controls import box  # noqa: F401 (a fixture)
+
+DEPLOY = cc.deploy_codex_controls  # the real one: the `calls` fixture replaces it
 
 
 @pytest.fixture
@@ -53,22 +54,12 @@ def test_update_redeploys_every_client_set_up(box, calls):  # noqa: F811
     assert calls == ["claude-code", "codex-assets", "codex-controls"]
 
 
-def test_update_prints_each_clients_controls_block(box, calls, monkeypatch, capsys):  # noqa: F811
-    from .test_controls_table import FULL
-
-    box.etc.mkdir()
-    cc.REQUIREMENTS.write_text(cc.MARKER + "\n")
-    box.home.mkdir(parents=True, exist_ok=True)
-    (box.home / "settings.json").write_text(json.dumps(FULL))  # as deployed
-    monkeypatch.setattr(
-        cs,
-        "_deploy_claude_code_assets",
-        lambda *a, **k: (box.home / "settings.json", "written"),
-    )
+def test_update_prints_each_clients_controls_block(box, calls, capsys):  # noqa: F811
+    DEPLOY(consent=True)  # our file and hooks, as written
     update._redeploy_clients({"clients": ["claude-code", "codex", "open-webui"]})
     out = capsys.readouterr().out
     assert out.count("Controls (as deployed now):") == 3
-    assert "Sandbox: Bash" in out and "Managed requirements: Codex's shell" in out
+    assert "Managed requirements: Codex's shell" in out  # Codex's, fully applied
     assert "MCP-only: the server-side controls only" in out
 
 
@@ -78,8 +69,7 @@ def test_after_the_opt_out_update_says_so_and_offers_nothing(box, calls, capsys)
     assert "codex-controls" not in calls and box.ran == []
     assert "CODEX CONTROLS OFF" in out and "vhir setup client --client=codex" in out
     assert (
-        f"Managed requirements: CODEX CONTROLS OFF: {cc.REQUIREMENTS} isn't installed"
-        in out
+        f"NOT in effect: CODEX CONTROLS OFF: {cc.REQUIREMENTS} isn't installed" in out
     )
 
 
@@ -186,8 +176,6 @@ def test_update_shows_a_declined_change_as_the_file_holds_it(
     update._redeploy_clients({"clients": ["claude-code"]})
     out = capsys.readouterr().out
     assert f"Forensic controls NOT applied to {mine}" in out
-    assert (
-        "Sandbox: Bash: it can't write the controls" in out
-    )  # what the file does hold
-    for row in ("Deny rules", "Audit", "Case-data guard", "Start-up check"):
-        assert f"    {row}: NOT in effect: {mine}" in out, row
+    assert f"NOT in effect: Valhuntir's controls aren't fully applied in {mine}" in out
+    rows = ("Deny rules", "Sandbox", "Audit", "Case-data guard", "Start-up check")
+    assert not [r for r in rows if f"    {r}:" in out]

@@ -1419,6 +1419,36 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
     return existing
 
 
+def settings_applied(target: Path) -> tuple[bool, bool]:
+    """(every control as shipped, sandbox off by choice) for the Claude Code
+    settings file `target`: merging the product's settings into it would
+    change nothing. A sandbox turned off with the typed phrase
+    (failIfUnavailable false) is a choice, not a gap: it reads SANDBOX OFF."""
+    assets = _find_claude_code_assets()
+    sources = (
+        [assets / d / "settings.json" for d in ("full", "shared", ".")]
+        if assets
+        else []
+    )
+    source = next((p for p in sources if p.is_file()), None)
+    try:
+        current = json.loads(target.read_text())
+    except (OSError, ValueError):
+        return False, False
+    if source is None or not isinstance(current, dict):
+        return False, False
+    hooks_dir = None
+    if target == Path.home() / ".claude" / "settings.json":
+        hooks_dir = Path.home() / ".vhir" / "hooks"  # global: the hooks run from there
+    merged = _merged_settings(target, source, hooks_dir)
+    off = isinstance(current.get("sandbox"), dict) and (
+        current["sandbox"].get("failIfUnavailable") is False
+    )
+    if merged is not None and off:
+        merged.setdefault("sandbox", {})["failIfUnavailable"] = False
+    return merged == current, off
+
+
 def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -> str:
     """Merge the product's hooks, permissions and sandbox into target, only
     with the user's consent (see _write_user_file). Returns its status."""

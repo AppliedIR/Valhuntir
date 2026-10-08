@@ -249,7 +249,7 @@ def test_the_route_sidecar_is_installed_beside_the_hooks_when_shipped(box):
     assert modes["mcp-routes.tsv"] == "0644" and modes["mcp-route.py"] == "0755"
 
 
-HOOK_ROWS = ("Audit", "Case-data guard", "Start-up check")
+CODEX_ROWS = ("Managed requirements", "Audit", "Case-data guard", "Start-up check")
 
 
 def _block(capsys):
@@ -260,35 +260,42 @@ def _block(capsys):
     return capsys.readouterr().out
 
 
+def _claims(out):
+    return [r for r in CODEX_ROWS if f"    {r}:" in out]
+
+
 def test_with_codex_controls_off_no_row_they_carry_claims_protection(box, capsys):
     out = _block(capsys)  # nothing installed: the opt-out, or a declined install
     assert (
-        f"Managed requirements: CODEX CONTROLS OFF: {cc.REQUIREMENTS} isn't installed"
-        in out
+        f"NOT in effect: CODEX CONTROLS OFF: {cc.REQUIREMENTS} isn't installed; "
+        "run vhir setup client --client=codex to turn them on." in out
     )
-    for row in HOOK_ROWS:
-        assert (
-            f"    {row}: NOT in effect: {cc.REQUIREMENTS}, which runs it, isn't installed"
-            in out
-        )
+    assert _claims(out) == []
 
 
-def test_an_admins_file_runs_only_the_hooks_it_names_and_that_are_installed(
-    box, capsys
-):
+def test_an_admins_file_is_never_claimed_even_naming_our_hooks(box, capsys):
     box.etc.mkdir()
-    cc.REQUIREMENTS.write_text("allowed_sandbox_modes = []\n")
+    cc.deploy_codex_controls(consent=True)  # our hooks are installed
+    hook = cc.HOOKS_DIR / "case-data-guard.sh"
+    for text in (
+        "allowed_sandbox_modes = []\n",
+        f"# we used to run {hook} here\nallowed_sandbox_modes = []\n",  # a comment
+        "allowed_sandbox_modes = []\n"
+        + cc.render(TEMPLATE, box.home).replace(cc.MARKER, ""),
+    ):
+        cc.REQUIREMENTS.write_text(text)
+        out = _block(capsys)
+        assert "is an administrator's own file; Valhuntir doesn't check" in out
+        assert _claims(out) == [], text
+
+
+def test_our_file_edited_or_its_hooks_missing_is_not_fully_applied(box, capsys):
+    cc.deploy_codex_controls(consent=True)
+    assert _claims(_block(capsys)) == list(CODEX_ROWS)  # as written: the full block
+    cc.REQUIREMENTS.write_text(cc.REQUIREMENTS.read_text() + "# edited\n")
     out = _block(capsys)
-    assert "Managed requirements: NOT ours" in out
-    assert all(f"    {r}: NOT in effect: the administrator's" in out for r in HOOK_ROWS)
-    cc.deploy_codex_controls(consent=False)  # prints the block; installs nothing
-    block = _pasted_block(capsys.readouterr().out)
-    cc.REQUIREMENTS.write_text(cc.REQUIREMENTS.read_text() + block)  # merged
-    out = _block(capsys)
-    assert "    Case-data guard: NOT in effect: " in out and "isn't installed" in out
-    cc.deploy_codex_controls(consent=True)  # now the hooks too
-    out = _block(capsys)
-    assert (
-        "    Case-data guard: the listed ways" in out
-    )  # the template runs only the guard
-    assert "    Audit: NOT in effect: the administrator's" in out
+    assert f"aren't fully applied in {cc.REQUIREMENTS} (declined or edited)" in out
+    assert _claims(out) == []
+    cc.deploy_codex_controls(consent=True)
+    (cc.HOOKS_DIR / "forensic-audit.sh").write_text("#!/bin/bash\n")  # not ours now
+    assert _claims(_block(capsys)) == []
