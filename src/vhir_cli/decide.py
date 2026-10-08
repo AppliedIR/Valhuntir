@@ -318,8 +318,12 @@ def copy_problem(case_dir: Path) -> str:
     case_id = case_id_of(case_dir)
     own = load_case_meta(case_dir).get("case_uuid")
     problem = ledger.copy_problem(case_id, own)
-    if problem and not own:  # an upgraded case: name the folder that signed first
-        bound = ledger.bound_uuid(ledger.read_lines(ledger.chain_path(case_id)))
+    if problem and not own and problem != ledger.CHAIN_UNREADABLE:
+        # an upgraded case: name the folder that signed first
+        try:
+            bound = ledger.bound_uuid(ledger.read_lines(ledger.chain_path(case_id)))
+        except (OSError, ValueError):
+            return ledger.CHAIN_UNREADABLE
         problem = ledger.first_signed_text(case_id, recorded_folder(bound))
     return problem or copy_of(case_dir)
 
