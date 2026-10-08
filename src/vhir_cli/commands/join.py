@@ -831,7 +831,8 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     if data.get("name"):
         from urllib.parse import urlparse
 
-        port = urlparse(_get_local_gateway_url()).port or 4508
+        gw = urlparse(_get_local_gateway_url())  # its scheme too: http or https
+        port = gw.port or 4508
         name = data["name"]
         print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
         print(
@@ -839,7 +840,9 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
             "Their credential, signing key and ledger lines are unchanged."
         )
         print(f"\nOn {name}'s machine, run:")
-        print(f"  vhir join --sift {sift_host}:{port} --code {join_code}")
+        print(
+            f"  vhir join --sift {gw.scheme or 'https'}://{sift_host}:{port} --code {join_code}"
+        )
         return
 
     wintools_ip = None
