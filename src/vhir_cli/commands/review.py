@@ -4,7 +4,7 @@ Supports multiple view modes:
   vhir review                        — case summary
   vhir review --findings             — finding summary table
   vhir review --findings --detail    — full findings with all fields
-  vhir review --findings --verify    — cross-check against approvals.jsonl
+  vhir review --findings --verify    — verify every signed decision (no password)
   vhir review --iocs                 — IOCs grouped by approval status
   vhir review --timeline             — timeline summary
   vhir review --timeline --detail    — full timeline with evidence refs
@@ -24,7 +24,6 @@ from vhir_cli.case_io import (
     _at_or_before,
     display_instant,
     get_case_dir,
-    hmac_text,
     load_audit_index,
     load_case_meta,
     load_findings,
@@ -32,7 +31,6 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
     load_withdrawals,
-    verify_approval_integrity,
 )
 from vhir_cli.display import display_safe, one_line
 from vhir_cli.display import lines as indent_lines
@@ -46,7 +44,9 @@ def cmd_review(args, identity: dict) -> None:
 
     if getattr(args, "verify", False):
         mine_only = getattr(args, "mine", False)
-        _show_findings_verify(case_dir, identity=identity, mine_only=mine_only)
+        _show_findings_verify(
+            case_dir, identity=identity, mine_only=mine_only, args=args
+        )
     elif getattr(args, "todos", False):
         _show_todos(case_dir, open_only=getattr(args, "open", False))
     elif getattr(args, "withdrawn", False):
@@ -298,185 +298,44 @@ def _show_findings_verify(
     case_dir: Path,
     identity: dict | None = None,
     mine_only: bool = False,
+    args=None,
 ) -> None:
-    """Cross-check findings against approvals.jsonl and verification ledger."""
-    results = verify_approval_integrity(case_dir)
-    if not results:
-        print("No findings recorded.")
-        # No findings but ledger entries (findings.json removed, emptied or
-        # corrupt; or only timeline events approved): still check the ledger.
-        from vhir_cli.verification import read_ledger
-
-        if read_ledger(load_case_meta(case_dir).get("case_id", case_dir.name)):
-            _show_ledger_reconciliation(case_dir)
-            _show_hmac_verification(case_dir, identity=identity, mine_only=mine_only)
-        return
-
-    # --- Content hash verification (existing) ---
-    print("Content Hash Verification")
-    print(f"{'ID':<20} {'Status':<12} {'Verification':<22} Title")
-    print("-" * 80)
-    for f in results:
-        fid = f.get("id", "?")
-        status = f.get("status", "?")
-        verification = f.get("verification", "?")
-
-        if verification == "confirmed":
-            vdisplay = "confirmed"
-        elif verification == "tampered":
-            vdisplay = "TAMPERED"
-        elif verification == "no approval record":
-            vdisplay = "NO APPROVAL RECORD"
-        else:
-            vdisplay = "draft"
-
-        title = f.get("title", "Untitled")
-        print(
-            f"{one_line(fid):<20} {one_line(status):<12} {vdisplay:<22} {one_line(title)}"
-        )
-
-    # Summary
-    confirmed = sum(1 for f in results if f["verification"] == "confirmed")
-    tampered = sum(1 for f in results if f["verification"] == "tampered")
-    unverified = sum(1 for f in results if f["verification"] == "no approval record")
-    draft = sum(1 for f in results if f["verification"] == "draft")
-    parts = [f"{confirmed} confirmed"]
-    if tampered:
-        parts.append(f"{tampered} TAMPERED")
-    parts.extend([f"{unverified} unverified", f"{draft} draft"])
-    print(f"\n{', '.join(parts)}")
-    if tampered:
-        print("ALERT: Content was modified after approval. Investigate immediately.")
-    if unverified:
-        print("WARNING: Some findings have status changes without approval records.")
-
-    # --- Ledger reconciliation (no password needed) ---
-    _show_ledger_reconciliation(case_dir)
-
-    # --- HMAC verification (requires password) ---
-    _show_hmac_verification(case_dir, identity=identity, mine_only=mine_only)
-
-
-def _show_ledger_reconciliation(case_dir: Path) -> None:
-    """Show reconciliation between approved items and verification ledger."""
-    try:
-        from vhir_cli.verification import read_ledger
-    except ImportError:
-        return
-
-    meta = load_case_meta(case_dir)
-    case_id = meta.get("case_id", case_dir.name)
-
-    ledger = read_ledger(case_id)
-    if not ledger:
-        print(f"\nVerification Ledger: no entries for case {case_id}")
-        return
-
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    approved_findings = [f for f in findings if f.get("status") == "APPROVED"]
-    approved_timeline = [t for t in timeline if t.get("status") == "APPROVED"]
-    iocs = [i for i in load_iocs(case_dir) if isinstance(i, dict)]
-    approved_iocs = [i for i in iocs if i.get("status") == "APPROVED"]
-    all_approved = approved_findings + approved_timeline + approved_iocs
-
-    items_by_id = {i["id"]: i for i in all_approved}
-    ledger_by_id = {e["finding_id"]: e for e in ledger}
-    all_ids = sorted(set(items_by_id) | set(ledger_by_id))
-
-    print(f"\nVerification Ledger Reconciliation ({len(ledger)} entries)")
-    print(f"{'ID':<20} {'Reconciliation':<25}")
-    print("-" * 50)
-
-    alerts = 0
-    for item_id in all_ids:
-        item = items_by_id.get(item_id)
-        entry = ledger_by_id.get(item_id)
-        if item and not entry:
-            print(f"{one_line(item_id):<20} APPROVED_NO_VERIFICATION")
-            alerts += 1
-        elif entry and not item:
-            print(f"{one_line(item_id):<20} VERIFICATION_NO_FINDING")
-            alerts += 1
-        elif item and entry:
-            desc = hmac_text(item)
-            snap = entry.get("content_snapshot", "")
-            if desc != snap:
-                print(f"{one_line(item_id):<20} DESCRIPTION_MISMATCH")
-                alerts += 1
-            else:
-                print(f"{one_line(item_id):<20} VERIFIED")
-
-    if alerts:
-        print(
-            f"\n{alerts} alert(s) found. Run 'vhir review --findings --verify' with password for full HMAC check."
-        )
-
-
-def _show_hmac_verification(
-    case_dir: Path,
-    identity: dict | None = None,
-    mine_only: bool = False,
-) -> None:
-    """Perform full HMAC verification with password prompt."""
-    try:
-        from vhir_cli.approval_auth import (
-            get_analyst_salt,
-            getpass_prompt,
-            verify_password,
-        )
-        from vhir_cli.verification import read_ledger, verify_items
-    except ImportError:
-        return
-
-    meta = load_case_meta(case_dir)
-    case_id = meta.get("case_id", case_dir.name)
-    config_path = Path.home() / ".vhir" / "config.yaml"
-
-    ledger = read_ledger(case_id)
-    if not ledger:
-        return
-
-    # Group entries by examiner
-    examiners = sorted(
-        set(e.get("approved_by", "") for e in ledger if e.get("approved_by"))
+    """Verify every signed decision of the case (ledger.verify_case). No
+    password, terminal or credential file is needed. Exit 0 or 2; a malformed
+    pin or head exits 5. `--mine` only filters what's shown."""
+    from vhir_cli.ledger_verify import (
+        UsageError,
+        parse_head,
+        parse_pin,
+        render,
+        verify_case,
     )
-    if not examiners:
-        return
 
+    try:
+        pins = [parse_pin(p) for p in getattr(args, "expect_key", None) or []]
+        heads = [parse_head(h) for h in getattr(args, "expect_head", None) or []]
+    except UsageError as e:
+        print(f"vhir review: error: {e}", file=sys.stderr)
+        sys.exit(5)
+    ledgers = [Path(p) for p in getattr(args, "ledger", None) or []] or None
+    result = verify_case(case_dir, ledgers, heads, pins)
     if mine_only and identity:
-        examiners = [e for e in examiners if e == identity.get("examiner")]
-
-    print("\nHMAC Verification (password required)")
-    print(f"Examiners with ledger entries: {one_line(', '.join(examiners))}")
-
-    for examiner in examiners:
-        try:
-            print(f"\n  Verifying entries for examiner '{one_line(examiner)}':")
-            password = getpass_prompt(f"  Enter password for '{examiner}': ")
-            salt = get_analyst_salt(config_path, examiner)
-            if not verify_password(config_path, examiner, password):
-                # A typo isn't tampering: verifying would fail every entry.
-                print(
-                    f"  Wrong password for '{examiner}'; their entries were not verified."
-                )
-                continue
-            results = verify_items(case_id, password, salt, examiner)
-
-            confirmed = sum(1 for r in results if r["verified"])
-            failed = sum(1 for r in results if not r["verified"])
-
-            for r in results:
-                status = "CONFIRMED" if r["verified"] else "TAMPERED"
-                print(f"    {one_line(r['finding_id']):<20} {status}")
-
-            print(f"  {confirmed} confirmed, {failed} failed")
-            if failed:
-                print(
-                    "  ALERT: HMAC mismatch detected. Findings may have been tampered with."
-                )
-        except (ValueError, RuntimeError) as e:
-            print(f"  Skipped: {e}")
+        me = identity.get("examiner")
+        mine = {
+            str(i.get("id"))
+            for i in load_findings(case_dir)
+            + load_timeline(case_dir)
+            + load_iocs(case_dir)
+            if isinstance(i, dict)
+            and me in (i.get("approved_by"), i.get("rejected_by"))
+        }
+        code = result.exit_code
+        result.items = [v for v in result.items if v.item_id in mine]
+        print(render(result).rsplit("\n", 1)[0])
+        print(f"Exit {code} (the whole case; --mine only filters what's shown)")
+        sys.exit(code)
+    print(render(result))
+    sys.exit(result.exit_code)
 
 
 def _show_iocs(case_dir: Path) -> None:

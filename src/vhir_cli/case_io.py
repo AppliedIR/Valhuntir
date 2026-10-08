@@ -412,6 +412,68 @@ def signed_text(item: dict, item_type: str, view: int = 1) -> str:
     )
 
 
+# --- IOC values, as forensic-mcp's _process_iocs extracts them ---
+# A copy of forensic-mcp (case/manager.py: _refang_ioc, _normalize_ioc, the
+# IPv4 test in _detect_ioc_type, and _process_iocs' flatten, refang and port
+# strip); forensic-mcp doesn't depend on vhir-cli. A parity test runs both.
+
+
+def _refang_ioc(value: str) -> str:
+    v = value.replace("[.]", ".").replace("hxxp", "http")
+    return re.sub(r"\[(\W)\]", r"\1", v)
+
+
+def normalize_ioc(value: str) -> str:
+    """An IOC value as forensic-mcp compares them."""
+    v = value.strip()
+    if re.match(r"^[a-fA-F0-9]{32,64}$", v):
+        return v.lower()
+    if "." in v and not v.replace(".", "").isdigit():
+        return v.lower().rstrip(".")
+    if "\\" in v:
+        return v.lower()
+    return v
+
+
+def _is_ipv4(value: str) -> bool:
+    stripped = re.sub(r"[:/]\d{1,5}$", "", value.strip())
+    if not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", stripped):
+        return False
+    return all(0 <= int(o) <= 255 for o in stripped.split("."))
+
+
+def ioc_values(iocs_field) -> set[str]:
+    """The normalised IOC values a finding's `iocs` field names, as
+    forensic-mcp extracts them (its first 100 entries)."""
+    raw_iocs = iocs_field or []
+    if isinstance(raw_iocs, dict):
+        raw_iocs = [
+            v
+            for vals in raw_iocs.values()
+            for v in (vals if isinstance(vals, list) else [vals])
+        ]
+    if not isinstance(raw_iocs, list):
+        return set()
+    values = set()
+    for raw in raw_iocs[:100]:
+        if isinstance(raw, dict) and "value" in raw:
+            value = _refang_ioc(str(raw["value"]).strip())
+            ipv4 = (
+                raw.get("type", "") == "ipv4-addr"
+                if raw.get("type")
+                else _is_ipv4(value)
+            )
+        else:
+            value = _refang_ioc(str(raw).strip())
+            ipv4 = _is_ipv4(value)
+        if not value:
+            continue
+        if ipv4 and re.search(r":\d{1,5}$", value):
+            value = re.sub(r":\d{1,5}$", "", value)
+        values.add(normalize_ioc(value))
+    return values
+
+
 def hmac_text(item: dict) -> str:
     """Canonical text for HMAC signing.
 

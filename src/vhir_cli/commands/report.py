@@ -32,6 +32,7 @@ from vhir_cli.case_io import (
 )
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.display import one_line
+from vhir_cli.ledger_verify import approved_view, verification_block, verification_json
 
 
 def cmd_report(args, identity: dict) -> None:
@@ -93,7 +94,8 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
     output = report(case_dir, args, safe=True)
     if output is None:
         return
-    print(output)
+    block = verification_block(approved_view(case_dir))
+    print(output + "\n\n" + "\n".join(_d(x, True) for x in block))
     save = getattr(args, "save", None)
     if save:
         with (
@@ -101,7 +103,8 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
             contextlib.redirect_stderr(io.StringIO()),
         ):
             stored = report(case_dir, args, safe=False)
-        _save_output(case_dir, save, stored if stored is not None else output)
+        stored = stored if stored is not None else output
+        _save_output(case_dir, save, stored + "\n\n" + "\n".join(block))
 
 
 def _save_output(case_dir: Path, save_path: str | None, content: str) -> None:
@@ -201,8 +204,9 @@ def _report_full(case_dir: Path, args) -> None:
     timeline = load_timeline(case_dir)
     todos = load_todos(case_dir)
 
-    approved_findings = [f for f in findings if f.get("status") == "APPROVED"]
-    approved_timeline = [t for t in timeline if t.get("status") == "APPROVED"]
+    view = approved_view(case_dir)  # only verified approvals count as approved
+    approved_findings = view["findings"]
+    approved_timeline = view["timeline"]
 
     report = {
         "report_type": "full",
@@ -225,7 +229,9 @@ def _report_full(case_dir: Path, args) -> None:
         },
         "approved_findings": approved_findings,
         "approved_timeline": approved_timeline,
+        "approved_iocs": view["iocs"],
         "iocs": _extract_all_iocs(approved_findings),
+        "verification": verification_json(view),
     }
 
     output = json.dumps(report, indent=2, default=str)
@@ -242,7 +248,8 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
-    iocs = _extract_all_iocs([f for f in findings if f.get("status") == "APPROVED"])
+    view = approved_view(case_dir)
+    iocs = _extract_all_iocs(view["findings"])
     total_iocs = sum(len(v) for v in iocs.values())
 
     lines = []
@@ -264,6 +271,11 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
     lines.append(f"  Total: {len(timeline)}")
     for status, count in sorted(t_counts.items()):
         lines.append(f"  {_d(status, safe)}: {count}")
+    lines.append("")
+    lines.append(
+        f"Approved (verified): {len(view['findings'])} findings, "
+        f"{len(view['timeline'])} timeline events; not verified: {len(view['not_verified'])}"
+    )
     lines.append("")
     lines.append(f"IOCs (from approved findings): {total_iocs}")
     for ioc_type, values in iocs.items():
@@ -320,8 +332,7 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
 
 def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
     """IOC report from approved findings."""
-    findings = load_findings(case_dir)
-    approved = [f for f in findings if f.get("status") == "APPROVED"]
+    approved = approved_view(case_dir)["findings"]
 
     if not approved:
         print("No approved findings with IOCs.")
@@ -358,6 +369,8 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
     findings = load_findings(case_dir)
 
     by_id = {f["id"]: f for f in findings if "id" in f}
+    view = approved_view(case_dir)
+    unverified = {n["id"]: n["status"] for n in view["not_verified"]}
     found = []
     missing = []
     for fid in requested_ids:
@@ -379,6 +392,10 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         lines.append(f"  [{_d(f['id'], safe)}] {_d(f.get('title', 'Untitled'), safe)}")
         lines.append(f"{'=' * 60}")
         lines.append(f"  Status:       {_d(f.get('status', '?'), safe)}")
+        if f["id"] in unverified:
+            lines.append(f"  Verification: NOT VERIFIED ({unverified[f['id']]})")
+        elif f["id"] in view["labels"]:
+            lines.append(f"  Verification: {_d(view['labels'][f['id']], safe)}")
         lines.append(f"  Confidence:   {_d(f.get('confidence', '?'), safe)}")
         if f.get("confidence_justification"):
             lines.append(f"  Justification: {_d(f['confidence_justification'], safe)}")

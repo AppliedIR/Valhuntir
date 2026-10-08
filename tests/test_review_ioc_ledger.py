@@ -1,7 +1,9 @@
-"""Approved IOCs in the verification ledger reconcile like findings.
+"""Approved IOCs in the 0.6 verification ledger are verified like findings.
 
-The real approve writes the ledger (VERIFICATION_DIR redirected to
-tmp_path), then the real --verify reads it.
+The real approve writes the 0.6 ledger (VERIFICATION_DIR redirected to
+tmp_path), then the real --verify reads it. Those lines carry no signature
+0.7 can check: an unchanged item is "approved under 0.6 (before signing)"
+(informational, exit 0), and a changed one fails.
 """
 
 from __future__ import annotations
@@ -95,12 +97,13 @@ def _edit_iocs(case: Path, fn) -> None:
     path.write_text(json.dumps(fn(json.loads(path.read_text()))))
 
 
-def _verify(case: Path, ident: dict, capsys) -> str:
+def _verify(case: Path, ident: dict, capsys) -> tuple[str, int]:
     from vhir_cli.commands.review import _show_findings_verify
 
     capsys.readouterr()
-    _show_findings_verify(case, identity=ident)
-    return capsys.readouterr().out
+    with pytest.raises(SystemExit) as e:
+        _show_findings_verify(case, identity=ident)
+    return capsys.readouterr().out, e.value.code
 
 
 def test_setup_approved_the_ioc_and_signed_it(ioc_case):
@@ -114,18 +117,20 @@ def test_setup_approved_the_ioc_and_signed_it(ioc_case):
     assert sorted(ids) == ["F-tester-001", "IOC-tester-001"], ids
 
 
-def test_an_approved_ioc_raises_no_alert(ioc_case, capsys):
-    out = _verify(*ioc_case, capsys)
-    assert re.search(r"IOC-tester-001\s+VERIFIED", out), out
-    assert "alert(s) found" not in out, out
+def test_an_approved_ioc_is_approved_under_0_6(ioc_case, capsys):
+    out, code = _verify(*ioc_case, capsys)
+    assert re.search(r"IOC-tester-001\s+approved under 0.6 \(before signing\)", out), (
+        out
+    )
+    assert code == 0, out
 
 
-def test_a_deleted_ioc_still_alerts(ioc_case, capsys):
+def test_a_deleted_ioc_s_0_6_line_is_informational(ioc_case, capsys):
     case, ident = ioc_case
     _edit_iocs(case, lambda xs: [x for x in xs if x["id"] != "IOC-tester-001"])
-    out = _verify(case, ident, capsys)
-    assert re.search(r"IOC-tester-001\s+VERIFICATION_NO_FINDING", out), out
-    assert "1 alert(s) found" in out, out
+    out, code = _verify(case, ident, capsys)
+    assert "ITEM_MISSING (0.6 line, informational): IOC-tester-001" in out, out
+    assert code == 0, out
 
 
 def test_an_ioc_changed_after_approval_is_flagged(ioc_case, capsys):
@@ -138,12 +143,13 @@ def test_an_ioc_changed_after_approval_is_flagged(ioc_case, capsys):
         return xs
 
     _edit_iocs(case, tamper)
-    out = _verify(case, ident, capsys)
-    assert re.search(r"IOC-tester-001\s+DESCRIPTION_MISMATCH", out), out
-    assert "1 alert(s) found" in out, out
+    out, code = _verify(case, ident, capsys)
+    assert re.search(r"IOC-tester-001\s+ALTERED_AFTER_APPROVAL", out), out
+    assert code == 2, out
 
 
-def test_an_ioc_no_longer_approved_still_alerts(ioc_case, capsys):
+def test_an_ioc_no_longer_approved_leaves_only_its_0_6_line(ioc_case, capsys):
+    """A 0.6-only approval demoted by a file write: limit 9, exit 0."""
     case, ident = ioc_case
 
     def unapprove(xs):
@@ -153,11 +159,12 @@ def test_an_ioc_no_longer_approved_still_alerts(ioc_case, capsys):
         return xs
 
     _edit_iocs(case, unapprove)
-    out = _verify(case, ident, capsys)
-    assert re.search(r"IOC-tester-001\s+VERIFICATION_NO_FINDING", out), out
+    out, code = _verify(case, ident, capsys)
+    assert "IOC-tester-001" not in out.split("Items:")[1], out
+    assert code == 0, out
 
 
-def test_an_ioc_marked_approved_without_signing_alerts(ioc_case, capsys):
+def test_an_ioc_marked_approved_without_signing_fails(ioc_case, capsys):
     case, ident = ioc_case
 
     def forge(xs):
@@ -167,16 +174,17 @@ def test_an_ioc_marked_approved_without_signing_alerts(ioc_case, capsys):
         return xs
 
     _edit_iocs(case, forge)
-    out = _verify(case, ident, capsys)
-    assert re.search(r"IOC-tester-002\s+APPROVED_NO_VERIFICATION", out), out
+    out, code = _verify(case, ident, capsys)
+    assert re.search(r"IOC-tester-002\s+APPROVED_NO_LINE", out), out
+    assert code == 2, out
 
 
-def test_a_draft_ioc_is_not_reconciled(ioc_case, capsys):
-    out = _verify(*ioc_case, capsys)
+def test_a_draft_ioc_is_not_listed(ioc_case, capsys):
+    out, _ = _verify(*ioc_case, capsys)
     assert "IOC-tester-002" not in out, out
 
 
-def test_a_changed_ioc_signature_fails_hmac(ioc_case, capsys):
+def test_a_changed_0_6_snapshot_is_altered(ioc_case, capsys):
     import vhir_cli.verification as ver
 
     case, ident = ioc_case
@@ -188,14 +196,15 @@ def test_a_changed_ioc_signature_fails_hmac(ioc_case, capsys):
                 "203.0.113.7", "192.0.2.66"
             )
     path.write_text("".join(json.dumps(e) + "\n" for e in entries))
-    out = _verify(case, ident, capsys)
-    assert re.search(r"IOC-tester-001\s+TAMPERED", out), out
-    assert re.search(r"F-tester-001\s+CONFIRMED", out), out
+    out, code = _verify(case, ident, capsys)
+    assert re.search(r"IOC-tester-001\s+ALTERED_AFTER_APPROVAL", out), out
+    assert re.search(r"F-tester-001\s+approved under 0.6", out), out
+    assert code == 2
 
 
 def test_an_entry_that_is_not_an_ioc_record_does_not_break_verify(ioc_case, capsys):
     case, ident = ioc_case
     _edit_iocs(case, lambda xs: xs + ["not a record", 7])
-    out = _verify(case, ident, capsys)
-    assert re.search(r"IOC-tester-001\s+VERIFIED", out), out
-    assert "alert(s) found" not in out, out
+    out, code = _verify(case, ident, capsys)
+    assert re.search(r"IOC-tester-001\s+approved under 0.6", out), out
+    assert code == 0, out

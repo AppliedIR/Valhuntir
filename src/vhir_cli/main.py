@@ -42,8 +42,33 @@ from vhir_cli.commands.update import cmd_update
 from vhir_cli.identity import get_examiner_identity, warn_if_unconfigured
 
 
+def _command(argv: list[str]) -> str:
+    """The subcommand named on the command line, skipping root options."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--case":
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            return a
+    return ""
+
+
+class _Parser(argparse.ArgumentParser):
+    """`vhir review` reports a usage error with exit 5, so that it can't read
+    as a verification failure (exit 2); other commands keep argparse's 2."""
+
+    def error(self, message: str):
+        if _command(sys.argv[1:]) == "review":
+            self.print_usage(sys.stderr)
+            self.exit(5, f"{self.prog}: error: {message}\n")
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="vhir",
         description="Valhuntir — forensic investigation CLI",
     )
@@ -230,12 +255,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument(
         "--verify",
         action="store_true",
-        help="Cross-check findings against approval records",
+        help="Verify every signed decision (with --findings); no password needed",
     )
     p_review.add_argument(
         "--mine",
         action="store_true",
-        help="Filter HMAC verification to current examiner only",
+        help="With --verify, show only your items (the exit code covers the case)",
+    )
+    p_review.add_argument(
+        "--expect-key",
+        action="append",
+        metavar="NAME=SHA256:<fingerprint>[:FROM-TO]",
+        help="With --verify, a key you recorded off this machine (repeatable)",
+    )
+    p_review.add_argument(
+        "--expect-head",
+        action="append",
+        metavar="[CHAIN@]SEQ:HASH",
+        help="With --verify, a ledger head you recorded off this machine (repeatable)",
+    )
+    p_review.add_argument(
+        "--ledger",
+        action="append",
+        metavar="PATH",
+        help="With --verify, read this chain copy instead of the box's and the case's",
     )
     p_review.add_argument(
         "--iocs",

@@ -16,6 +16,7 @@ from argparse import Namespace
 import pytest
 import yaml
 
+from tests.signing import sign_approved
 from vhir_cli.case_io import save_findings, save_timeline
 from vhir_cli.commands.report import cmd_report
 from vhir_cli.commands.review import cmd_review
@@ -56,6 +57,7 @@ def case(tmp_path, monkeypatch):
         [{"id": "T-tester-001", "status": "DRAFT", "timestamp": "2023-01-29T08:00:00Z",
           "description": TITLE}],
     )  # fmt: skip
+    sign_approved(case_dir)  # only verified approvals are reported as approved
     return case_dir
 
 
@@ -127,6 +129,7 @@ def _only_finding(case_dir, **fields):
     finding = {"id": "F-tester-001", "status": "APPROVED", "title": "t", "confidence": "HIGH",
                "observation": "", "interpretation": "x", "audit_ids": []}  # fmt: skip
     save_findings(case_dir, [{**finding, **fields}])
+    sign_approved(case_dir)
 
 
 def test_iocs_are_read_from_the_stored_text(case, capsys):
