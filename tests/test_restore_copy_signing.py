@@ -25,7 +25,14 @@ from vhir_cli.commands import approve as A
 from vhir_cli.ledger_verify import verify_case
 
 from .signing import PASSPHRASE, enrol
-from .test_backup_case_identity import _backup, _identity, _meta, _restore, box
+from .test_backup_case_identity import (
+    _backup,
+    _identity,
+    _meta,
+    _restore,
+    box,
+    pytestmark,  # the same packages are needed
+)
 
 IDENT = {"examiner": "tester", "os_user": "tester", "analyst": "tester"}
 
