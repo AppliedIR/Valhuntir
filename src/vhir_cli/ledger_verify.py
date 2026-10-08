@@ -281,6 +281,8 @@ class ItemVerdict:
     detail: list[str] = field(default_factory=list)
     content_sha256: str = ""  # of the record judged, in the view judged
     view: int = 1
+    examiner: str = ""  # who signed the latest line, when it is VALID
+    fingerprint: str = ""  # that line's key
 
 
 @dataclass
@@ -1180,7 +1182,8 @@ def _v3_verdict(
         if why:
             return ItemVerdict(item_id, kind, "CASCADE_UNSUPPORTED", why, [printed])
         label = f"cascade from {o['coupled_from']}"
-    return ItemVerdict(item_id, kind, "VALID", label)
+    return ItemVerdict(item_id, kind, "VALID", label, examiner=str(o.get("examiner")),
+                       fingerprint=ln.fp)  # fmt: skip
 
 
 def _cascade_unsupported(

@@ -819,12 +819,28 @@ def _setup_samba_share(join_code: str) -> str:
 
 
 def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
-    """Samba setup, firewall, and display — called after join code generation."""
+    """Samba setup, firewall, and display — called after join code generation.
+    A code bound to an examiner name joins only that examiner (never a
+    wintools host), so it prints the `vhir join` line and sets up nothing."""
     join_code = data["code"]
     try:
         sift_host = static_ip or _get_sift_ip() or _detect_ip()
     except OSError:
         sift_host = static_ip or _get_sift_ip() or "SIFT_IP"
+
+    if data.get("name"):
+        from urllib.parse import urlparse
+
+        port = urlparse(_get_local_gateway_url()).port or 4508
+        name = data["name"]
+        print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
+        print(
+            f"This code joins as {name} only, and ends {name}'s earlier gateway tokens. "
+            "Their credential, signing key and ledger lines are unchanged."
+        )
+        print(f"\nOn {name}'s machine, run:")
+        print(f"  vhir join --sift {sift_host}:{port} --code {join_code}")
+        return
 
     wintools_ip = None
     try:
@@ -850,11 +866,6 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     gw_port = urlparse(gw_url).port or 4508
 
     print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
-    if data.get("name"):
-        print(
-            f"This code joins as {data['name']} only, and ends {data['name']}'s earlier "
-            "gateway tokens. Their credential, signing key and ledger lines are unchanged."
-        )
     print("\nOn Windows, run:")
     print(
         f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host} -GatewayPort {gw_port}"

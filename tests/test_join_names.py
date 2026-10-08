@@ -71,31 +71,35 @@ def test_a_refused_name_prints_the_gateway_s_reason(monkeypatch, capsys):
 
 
 def _mint(monkeypatch, data, **args):
+    """Run `vhir setup join-code`; returns (the body posted, the Samba and
+    firewall setup calls made)."""
     mod = _requests(200, data)
+    setup: list = []
     for name, value in (("_ensure_static_ip", lambda: "10.0.0.5"),
                         ("_ensure_remote_binding", lambda: None),
                         ("_get_local_gateway_url", lambda: "http://127.0.0.1:4508"),
                         ("_get_local_gateway_token", lambda: "vhir_gw_test"),
-                        ("_setup_samba_share", lambda code: None)):  # fmt: skip
+                        ("_setup_samba_share", lambda code: setup.append(code)),
+                        ("_setup_firewall", lambda ip: setup.append(ip))):  # fmt: skip
         monkeypatch.setattr(J, name, value)
     with patch.dict(sys.modules, {"requests": mod}):
         J.cmd_setup_join_code(Namespace(expires=2, **args), {})
-    return mod.post.call_args.kwargs["json"]
+    return mod.post.call_args.kwargs["json"], setup
 
 
 def test_a_join_code_can_be_bound_to_a_name(monkeypatch, capsys):
-    body = _mint(monkeypatch, {"code": "ABCD-EFGH", "expires_hours": 2, "name": "lab2"},
+    body, setup = _mint(monkeypatch, {"code": "ABCD-EFGH", "expires_hours": 2, "name": "lab2"},
                  name="lab2")  # fmt: skip
     assert body == {"expires_hours": 2, "name": "lab2"}
-    assert "This code joins as lab2 only, and ends lab2's earlier gateway tokens" in (
-        capsys.readouterr().out
-    )
+    out = capsys.readouterr().out
+    assert "This code joins as lab2 only, and ends lab2's earlier gateway tokens" in out
+    assert "  vhir join --sift 10.0.0.5:4508 --code ABCD-EFGH" in out
+    assert "setup-windows.ps1" not in out and setup == []  # never a wintools join
 
 
 def test_an_unbound_code_sends_no_name(monkeypatch, capsys):
-    assert _mint(monkeypatch, {"code": "X", "expires_hours": 2}, name=None) == {
-        "expires_hours": 2
-    }
+    body, setup = _mint(monkeypatch, {"code": "X", "expires_hours": 2}, name=None)
+    assert body == {"expires_hours": 2} and setup == ["X"]
 
 
 def test_the_parser_takes_name_on_both():
