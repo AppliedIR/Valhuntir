@@ -15,8 +15,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +33,16 @@ OVERLAY = "## Codex\n\nStart with codex -p valhuntir.\n"
 SKILL = "---\nname: vhir-welcome\ndescription: w\n---\n\nwelcome\n"
 CODEX_AGENT = 'name = "finding-skeptic"\n'
 BACKENDS = ["forensic-mcp", "case-mcp", "sift-mcp"]
+REQUIREMENTS = (
+    "# managed-by: valhuntir\n"
+    'allowed_sandbox_modes = ["read-only", "workspace-write"]\n'
+    'deny_read = ["/var/lib/vhir", "{home}/.vhir/gateway.yaml"]\n'
+    "[[hooks.PreToolUse]]\n"
+    'matcher = "^Bash$"\n'
+    "[[hooks.PreToolUse.hooks]]\n"
+    'type = "command"\n'
+    'command = "{hooks}/case-data-guard.sh --client codex"\n'
+)
 
 
 def _git(repo, *args):
@@ -62,6 +74,16 @@ def box(tmp_path, monkeypatch):
     (repo / "skills" / "vhir-welcome" / "SKILL.md").write_text(SKILL)
     (repo / "agents" / "finding-skeptic").mkdir(parents=True)
     (repo / "agents" / "finding-skeptic" / "codex.toml").write_text(CODEX_AGENT)
+    # Codex's managed layer: the requirements template and the hooks it installs
+    (repo / "codex" / "requirements.toml").write_text(REQUIREMENTS)
+    for hook in (
+        "shared/hooks/case-data-guard.sh",
+        "shared/hooks/forensic-audit.sh",
+        "shared/hooks/codex-stdin-capture.sh",
+        "full/hooks/case-dir-check.sh",
+    ):
+        (repo / "claude-code" / hook).parent.mkdir(parents=True, exist_ok=True)
+        (repo / "claude-code" / hook).write_text(f"#!/bin/bash\n# {hook}\n")  # fmt: skip
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "v1")
@@ -81,7 +103,31 @@ def box(tmp_path, monkeypatch):
             [{"name": n, "started": True} for n in BACKENDS] if gateway["up"] else None
         ),
     )
-    monkeypatch.setattr(cs, "_USERNS_SYSCTL", tmp_path / "no-such-sysctl")
+    # /etc/codex is a stand-in folder, and sudo a recording stand-in that does
+    # what install and rm would: nothing outside tmp_path is touched
+    from vhir_cli.commands import codex_controls as cc
+
+    etc = tmp_path / "etc-codex"
+    monkeypatch.setattr(cc, "REQUIREMENTS", etc / "requirements.toml")
+    monkeypatch.setattr(cc, "HOOKS_DIR", etc / "vhir-hooks")
+    monkeypatch.setattr(cc, "USERNS", tmp_path / "no-such-sysctl")
+    sudo = []
+
+    def fake_run(cmd, timeout=None):
+        sudo.append(cmd)
+        if cmd[1] == "install" and "-d" in cmd:
+            cc.HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+        elif cmd[1] == "install":
+            shutil.copy(cmd[-2], cmd[-1])
+        elif cmd[1] == "rm":
+            target = Path(cmd[-1])
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
     # this suite's venv may hold opensearch-mcp; the profile rows don't depend on it
     monkeypatch.setattr("importlib.util.find_spec", lambda name: None)
     return types.SimpleNamespace(
@@ -91,6 +137,8 @@ def box(tmp_path, monkeypatch):
         gateway=gateway,
         profile=home / ".codex" / "valhuntir.config.toml",
         config=home / ".codex" / "config.toml",
+        etc=etc,
+        sudo=sudo,
     )
 
 
@@ -213,12 +261,15 @@ def test_the_client_is_recorded_once_in_setup_order(box):
     assert manifest["client"] == "codex" and manifest["version"] == "0.6.4"
 
 
-def test_a_restricted_userns_box_gets_the_sandbox_notice(box, tmp_path, capsys):
-    sysctl = tmp_path / "userns"
-    sysctl.write_text("1\n")
-    cs._USERNS_SYSCTL = sysctl  # restored by the fixture's monkeypatch
-    _setup()
-    assert cs.CODEX_USERNS_NOTICE in capsys.readouterr().out
+def test_setup_with_y_installs_codexs_managed_requirements_and_says_so(box, capsys):
+    from vhir_cli.commands import codex_controls as cc
+
+    _setup()  # -y
+    out = capsys.readouterr().out
+    assert cc.ours(cc.REQUIREMENTS.read_text())
+    assert f"{box.home}/.vhir/gateway.yaml" in cc.REQUIREMENTS.read_text()
+    assert all(c[:2] == ["sudo", "install"] for c in box.sudo)
+    assert "Managed requirements: Codex's shell" in out  # the block reads it as on
 
 
 # --- C.2: protecting the profile ------------------------------------------------

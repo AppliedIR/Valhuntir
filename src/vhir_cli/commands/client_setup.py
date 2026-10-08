@@ -864,16 +864,24 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             else:
                 print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
             print_block(CLAUDE_CODE, settings[0])  # what the file holds now
+            if not sift:  # no case on this machine: nothing to audit into
+                print(
+                    "    Shell:       commands on this machine aren't in the case "
+                    "audit; these settings are user-switchable"
+                )
 
     elif client == "codex":
+        from vhir_cli.commands.codex_controls import deploy_codex_controls
+        from vhir_cli.controls import print_block
+
         deploy_codex_assets(servers)
+        # -y installs the managed requirements (sudo may ask); otherwise asked
+        deploy_codex_controls(consent=True if _APPLIED is not None else None)
         print(f"  Examiner:  {examiner}")
         print("")
         print("  Start Codex in a case folder with Valhuntir's profile:")
         print("    cd <case folder> && codex -p valhuntir")
-        if _codex_userns_restricted():
-            print("")
-            print(f"  NOTE: {CODEX_USERNS_NOTICE}")
+        print_block("codex")  # what is installed now
 
     elif client == "open-webui":
         _write_openwebui(servers)
@@ -1705,12 +1713,6 @@ CODEX_OFF_SIFT = (
     "Codex is set up on the SIFT box itself. On another machine, run "
     "`vhir setup client --remote --client=codex`, or the client setup script."
 )
-_USERNS_SYSCTL = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-CODEX_USERNS_NOTICE = (
-    "On this system Codex's sandbox can't start, so every shell command Codex "
-    "runs will fail. An administrator can allow it with an AppArmor profile for "
-    "bwrap: see the Codex section of the docs."
-)
 
 
 def codex_profile_path() -> Path:
@@ -1959,13 +1961,6 @@ def _codex_config_conflicts() -> None:
                 "Valhuntir's managed Codex settings refuse: Codex stops with an "
                 "error until it is changed. vhir doesn't edit that file."
             )
-
-
-def _codex_userns_restricted() -> bool:
-    try:
-        return _USERNS_SYSCTL.read_text().strip() == "1"
-    except OSError:
-        return False
 
 
 def deploy_codex_assets(

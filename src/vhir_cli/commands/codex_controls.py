@@ -302,15 +302,15 @@ def remove_codex_controls(consent: bool | None = None) -> str:
 
 def uninstall_codex_step(ask) -> None:
     """`vhir setup client --uninstall` on SIFT: Codex's profile, skills and
-    agent, and the managed requirements, after one question (`ask`)."""
-    if "codex" not in installed_clients() and codex_controls_state() != "on":
-        return
-    print("  [Codex] Profile, skills, agent, and managed requirements (/etc/codex)")
-    print("      ~/.codex/config.toml and an administrator's own file stay.")
-    if ask("      Remove?"):
-        from vhir_cli.commands.client_setup import _uninstall_codex
+    agent (listed, with their own question), then the managed requirements,
+    when they are ours, after one question (`ask`)."""
+    from vhir_cli.commands.client_setup import _uninstall_codex
 
-        _uninstall_codex()
+    _uninstall_codex()  # ~/.codex/config.toml and the user's own skills stay
+    if codex_controls_state() != "on":
+        return
+    print(f"  [Codex] Managed requirements ({REQUIREMENTS}, {HOOKS_DIR}/)")
+    if ask("      Remove?"):
         remove_codex_controls(consent=True)
     else:
         print("      Skipped.")

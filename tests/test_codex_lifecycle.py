@@ -110,15 +110,19 @@ def test_uninstall_removes_codex_and_its_managed_requirements(box, calls, monkey
     assert ["sudo", "rm", "-rf", str(cc.HOOKS_DIR)] in removed
 
 
-def test_uninstall_declined_removes_nothing(box, calls):  # noqa: F811
+def test_uninstall_declined_keeps_the_managed_requirements(box, calls):  # noqa: F811
     import json
 
     (box.home / ".vhir").mkdir(parents=True)
     (box.home / ".vhir" / "manifest.json").write_text(
         json.dumps({"clients": ["codex"]})
     )
-    cc.uninstall_codex_step(lambda q: False)
-    assert "codex-uninstall" not in calls
+    box.etc.mkdir()
+    cc.REQUIREMENTS.write_text(cc.MARKER + "\n")  # ours, as installed
+    asked = []
+    cc.uninstall_codex_step(lambda q: asked.append(q) or False)
+    assert len(asked) == 1  # the requirements' one question (the files ask their own)
+    assert cc.REQUIREMENTS.exists()
 
 
 def test_an_administrators_requirements_file_is_never_removed(box):  # noqa: F811
