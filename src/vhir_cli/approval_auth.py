@@ -54,7 +54,7 @@ _EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
 def _validate_examiner_name(analyst: str) -> None:
     """Reject examiner names that don't match canonical slug format."""
-    if not _EXAMINER_RE.match(analyst):
+    if not _EXAMINER_RE.fullmatch(analyst):
         raise ValueError(f"Invalid examiner name: {analyst!r}")
 
 
@@ -272,10 +272,34 @@ def verify_password(
         salt = bytes.fromhex(entry["salt"])
     except (KeyError, ValueError):
         return False
-    computed = hashlib.pbkdf2_hmac(
-        "sha256", password.encode(), salt, PBKDF2_ITERATIONS
-    ).hex()
-    return secrets.compare_digest(computed, stored_hash)
+
+    def matches(text: str) -> bool:
+        computed = hashlib.pbkdf2_hmac(
+            "sha256", text.encode(), salt, PBKDF2_ITERATIONS
+        ).hex()
+        return secrets.compare_digest(computed, stored_hash)
+
+    if matches(password):
+        return True
+    # 0.6 read each byte on its own, so a non-ASCII password was stored as
+    # that reading. Accept it, and mark the entry for the upgrade at the
+    # next signed decision.
+    legacy = legacy_decoded(password)
+    if legacy == password or not matches(legacy):
+        return False
+    _mark_legacy_decoding(passwords_dir, analyst)
+    return True
+
+
+def _mark_legacy_decoding(passwords_dir: Path, analyst: str) -> None:
+    """Record on a 0.6 entry that it was stored with the byte-wise reading."""
+    entry = _load_password_entry(passwords_dir, analyst)
+    if entry is None or entry.get("legacy_decoding"):
+        return
+    try:
+        _save_password_entry(passwords_dir, analyst, {**entry, "legacy_decoding": True})
+    except OSError:
+        pass  # the password was accepted; the mark is a hint for the upgrade
 
 
 def setup_password(

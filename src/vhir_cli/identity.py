@@ -126,7 +126,7 @@ _LEADING = re.compile(r"^[^a-z0-9]+")
 
 def valid_name(name: str) -> bool:
     """True when `name` meets the examiner name rule."""
-    return isinstance(name, str) and NAME_RE.match(name) is not None
+    return isinstance(name, str) and NAME_RE.fullmatch(name) is not None
 
 
 def join_name(raw: str) -> str:

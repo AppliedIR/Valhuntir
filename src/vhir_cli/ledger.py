@@ -71,10 +71,11 @@ class BadSignature(LedgerError):
 def validate_case_id(case_id: str) -> None:
     if (
         not case_id
+        or case_id in (".", "..")
         or ".." in case_id
         or "/" in case_id
         or "\\" in case_id
-        or "\0" in case_id
+        or any(ord(c) < 32 or ord(c) == 127 for c in case_id)
     ):
         raise ValueError(f"Invalid case ID: {case_id!r}")
 
@@ -166,7 +167,10 @@ def head_of(lines: list[tuple[int, str, dict | None]]) -> tuple[int, str] | None
         return None
     last = lines[-1][2]
     if last is None or not isinstance(last.get("seq"), int):
-        raise LedgerError("the chain's last line doesn't parse")
+        raise LedgerError(
+            "the ledger's last line is incomplete or doesn't parse; nothing was written. "
+            "Restore it from a copy."
+        )
     return last["seq"], body_hash(body_of(last))
 
 
@@ -383,6 +387,20 @@ def commit(
     if any(b.get("case_id") != case_id for b in bodies):
         raise LockNotHeld("the bodies are for another case than the lock")
     path = chain_path(case_id)
+    try:
+        existing = path.read_bytes()
+    except FileNotFoundError:
+        existing = b""
+    lead = ""  # never glue a line onto one that lacks its newline
+    if existing and not existing.endswith(b"\n"):
+        try:
+            json.loads(existing.rsplit(b"\n", 1)[-1])
+        except ValueError:
+            raise LedgerError(
+                f"the ledger's last line is incomplete ({path}); nothing was written. "
+                "Restore it from a copy."
+            ) from None
+        lead = "\n"
     head = head_of(read_lines(path))
     seq, prev = (head[0], head[1]) if head else (0, genesis_prev(case_id))
     if bodies[0].get("seq") != seq + 1 or bodies[0].get("prev") != prev:
@@ -407,6 +425,7 @@ def commit(
             raise BadSignature(f"the signature on {body.get('item_id')} doesn't verify")
     LEDGER_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     with open(path, "a", encoding="ascii") as f:
+        f.write(lead)
         for text in lines:
             f.write(text + "\n")
         f.flush()

@@ -162,7 +162,7 @@ def _validate(data: object) -> dict:
                 "retired",
             ):
                 raise ValueError
-    except (KeyError, TypeError, ValueError) as e:
+    except (AttributeError, KeyError, TypeError, ValueError) as e:
         raise KeysFileInvalid("malformed keys file") from e
     if sum(1 for k in keys if k["status"] == "active") > 1:
         raise KeysFileInvalid("more than one active key")
@@ -173,9 +173,11 @@ def load(examiner: str, keys_dir: Path | None = None) -> dict | None:
     """The examiner's keys file, None when there is none, or KeysFileInvalid."""
     path = keys_path(examiner, keys_dir)
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError as e:
+        raise KeysFileInvalid("malformed keys file") from e
     try:
         return _validate(json.loads(text))
     except json.JSONDecodeError as e:
@@ -189,17 +191,15 @@ def save(examiner: str, data: dict, keys_dir: Path | None = None) -> None:
     path = keys_path(examiner, keys_dir)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        on_disk = json.loads(path.read_text())
-        kept = {fingerprint(unb64(k["public_key"])) for k in data["keys"]}
-        dropped = [
-            k
-            for k in on_disk.get("keys", [])
-            if fingerprint(unb64(k["public_key"])) not in kept
-        ]
-    except FileNotFoundError:
-        dropped = []
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        dropped = []  # an unreadable file is replaced only through a set-aside (upgrade)
+        on_disk = load(examiner, keys_dir)  # a file that doesn't load refuses the save
+    except KeysFileInvalid as e:
+        raise KeysFileInvalid(
+            f"{path} doesn't load ({e}); it isn't overwritten (set it aside first)"
+        ) from e
+    kept = {key_fingerprint(k) for k in data["keys"]}
+    dropped = [
+        k for k in (on_disk or {}).get("keys", []) if key_fingerprint(k) not in kept
+    ]
     if dropped:
         raise ValueError("a keys file write may not drop a key")
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -270,7 +270,9 @@ def check_password(data: dict, password: str) -> bool:
 
 
 def open_key(data: dict, examiner: str, password: str) -> Ed25519PrivateKey:
-    """The active private key, unwrapped with `password` (checked first)."""
+    """The active private key, unwrapped with a KEK derived from `password`.
+    The verifier isn't consulted: a wrong password, or a replaced or swapped
+    key, raises KeyUnwrapFailed."""
     entry = active(data)
     if entry is None or not entry.get("wrapped_private"):
         raise KeyUnwrapFailed(KeyUnwrapFailed.MESSAGE)

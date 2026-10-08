@@ -35,7 +35,7 @@ def _validate_case_id(case_id: str) -> None:
 
 def _validate_examiner(examiner: str) -> None:
     """Validate examiner slug: lowercase alphanumeric + hyphens, max 20 chars."""
-    if not examiner or not _EXAMINER_RE.match(examiner):
+    if not examiner or not _EXAMINER_RE.fullmatch(examiner):
         raise CaseError(f"Invalid examiner slug: {examiner!r}")
 
 

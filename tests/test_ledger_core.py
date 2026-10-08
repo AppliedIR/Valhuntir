@@ -232,3 +232,50 @@ def test_a_line_whose_signature_was_altered_writes_nothing(steve):
     with ledger.case_lock("C1") as lock, pytest.raises(ledger.BadSignature):
         ledger.commit(lock, bodies, [json.dumps(line)], _pub(steve))
     assert not ledger.chain_path("C1").exists()
+
+
+def test_a_last_line_without_its_newline_gets_one_before_the_append(steve):
+    _commit(steve, [_decision()])
+    path = ledger.chain_path("C1")
+    path.write_bytes(path.read_bytes().rstrip(b"\n"))
+    _commit(steve, [_decision("F-steve-002")])
+    lines = ledger.read_lines(path)
+    assert [p["seq"] for _, _, p in lines] == [1, 2]
+
+
+def test_a_torn_last_line_refuses_the_write(steve):
+    """Torn after the bodies were prepared (a portal plan): commit refuses."""
+    _commit(steve, [_decision()])
+    bodies = ledger.prepare(
+        "C1", [_decision("F-steve-002")], "steve", _pub(steve), "cli", AT
+    )
+    lines = [ledger.sign_body(b, steve) for b in bodies]
+    path = ledger.chain_path("C1")
+    path.write_bytes(path.read_bytes() + b'{"v":3,"seq":2,"pre')
+    before = path.read_bytes()
+    with ledger.case_lock("C1") as lock:
+        with pytest.raises(ledger.LedgerError, match="last line is incomplete"):
+            ledger.commit(lock, bodies, lines, _pub(steve))
+    with pytest.raises(ledger.LedgerError, match="last line is incomplete"):
+        _commit(steve, [_decision("F-steve-003")])  # and prepare refuses too
+    assert path.read_bytes() == before
+
+
+def test_bodies_that_don_t_follow_one_another_write_nothing(steve):
+    bodies = ledger.prepare(
+        "C1", [_decision(), _decision("F-steve-002")], "steve", _pub(steve), "cli", AT
+    )
+    bodies[1] = dict(bodies[1], prev="00" * 32)
+    lines = [ledger.sign_body(b, steve) for b in bodies]
+    with (
+        ledger.case_lock("C1") as lock,
+        pytest.raises(ValueError, match="don't follow"),
+    ):
+        ledger.commit(lock, bodies, lines, _pub(steve))
+    assert not ledger.chain_path("C1").exists()
+
+
+@pytest.mark.parametrize("case_id", [".", "..", "C\n1", "C\x7f"])
+def test_dot_names_and_control_characters_aren_t_case_ids(case_id):
+    with pytest.raises(ValueError):
+        ledger.chain_path(case_id)

@@ -168,3 +168,19 @@ def test_every_wrap_uses_a_fresh_nonce(cred):
     kek = keys.derive_kek(PW, cred["salt_ledger"])
     blobs = [keys.unb64(keys.wrap(private, kek, "steve")[1]) for _ in range(3)]
     assert len({b[:12] for b in blobs}) == 3
+
+
+@pytest.mark.parametrize(
+    "on_disk",
+    [b'{"schema": 3, "kdf"', b"\xff\xfe not utf-8", b'{"schema": 3, "keys": ["x"]}'],
+    ids=["truncated", "not utf-8", "keys not entries"],
+)
+def test_a_keys_file_that_doesn_t_load_is_never_overwritten(cred, on_disk):
+    keys.KEYS_DIR.mkdir(parents=True)
+    path = keys.KEYS_DIR / "steve.json"
+    path.write_bytes(on_disk)
+    with pytest.raises(keys.KeysFileInvalid):
+        keys.load("steve")
+    with pytest.raises(keys.KeysFileInvalid, match="isn't overwritten"):
+        keys.save("steve", cred)
+    assert path.read_bytes() == on_disk

@@ -56,3 +56,12 @@ def test_anchor_a_long_unrelated_phrase_gets_no_warning():
 
 def test_the_recommendation_text():
     assert RECOMMENDATION.startswith("At least 8 characters; 15 or more recommended")
+
+
+def test_the_name_rule_alone():
+    """Long enough, not common, not a run: only the name and product words."""
+    error, warnings = check("Steve-VHIR-valhuntir-sift", "steve")
+    assert error is None and warnings == [
+        "Most of it is your name or product words (vhir, valhuntir, sift)."
+    ]
+    assert check("steve sift and a long unrelated phrase", "steve") == (None, [])
