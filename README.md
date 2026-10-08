@@ -813,7 +813,7 @@ MITRE ATT&CK is a registered trademark of The MITRE Corporation. SIFT Workstatio
 
 ## Acknowledgments
 
-Architecture and direction by Steve Anson. Implementation by Claude Code (Anthropic).
+Architecture and direction by Steve Anson. Implementation by Claude Code (Anthropic). Code review by Codex (OpenAI). Design inspiration drawn from Lenny Zeltser's [REMnux MCP](https://github.com/REMnux/remnux-mcp-server).
 
 ## Clear Disclosure
 
