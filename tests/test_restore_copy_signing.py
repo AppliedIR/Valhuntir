@@ -121,9 +121,10 @@ def test_a_cp_r_copy_sharing_the_identity_can_t_sign(signed, capsys):
     capsys.readouterr()
     assert _sign(copy, ["F-tester-002"]) == 1
     err = capsys.readouterr().err.strip().splitlines()[-1]
-    assert err == (
-        f"{copy.resolve()} is a copy of the case in {signed.case.resolve()}: both have "
-        f"case identity {_meta(copy)['case_uuid']}. Sign in {signed.case.resolve()}."
+    from vhir_cli.case_identity import copy_text
+
+    assert err == copy_text(
+        str(copy.resolve()), str(signed.case.resolve()), _meta(copy)["case_uuid"]
     )
     assert _chain() == before
 

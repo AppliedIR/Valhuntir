@@ -54,10 +54,11 @@ VERBATIM = [
     "They carry no signature that 0.7 can check. They record that an approval was "
     "made, not who made it.",
     # a folder copied by hand
-    "Sign only in the case's original folder. A copy made by hand (outside backup and "
-    "restore) can't be told apart from the original when this box has no record of "
-    "where the original lives, and signing there would extend the original's signed "
-    "record.",
+    "Sign only in the case's original folder. On this box, the first folder to sign "
+    "for a case is taken as the original; a copy made by hand that signs first takes "
+    "that place, and the original is then refused by name.",
+    "move the copy back and run `vhir case new-identity` on the copy, never on the "
+    "original.",
     # collaboration: a bundle's chains are data
     "An import never replaces a local APPROVED or REJECTED item, and adds no chain file",
     # the accepted residuals, verbatim

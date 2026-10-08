@@ -274,6 +274,23 @@ def _kept_unsigned(case_dir, examiner, direct, todos, why: str, lead: str, after
 INTERRUPTED = "Interrupted; nothing was signed"
 
 
+def record_folder(case_dir: Path) -> None:
+    """Record this folder as its case identity's folder on this box, as
+    activation does (`record_case_path`); the first folder to sign is taken as
+    the original. Called under the case lock just before a commit, so a
+    preview or a cancelled review records nothing. A folder another one
+    holds the identity for, or a record that can't be read: CaseCopy."""
+    from vhir_cli.case_identity import copy_of, record_case_path
+
+    refusal = copy_of(case_dir)  # the signing wording, with the way back
+    if refusal:
+        raise ledger.CaseCopy(refusal)
+    try:
+        record_case_path(case_dir)
+    except ValueError as e:  # a copy recorded in between
+        raise ledger.CaseCopy(str(e)) from None
+
+
 def copy_problem(case_dir: Path) -> str:
     """Why this case folder can't sign (it's a copy of a case whose chain on
     this box began in another folder), or "". Read-only: checked before any
@@ -397,6 +414,7 @@ def sign_and_commit(
                     case_uuid=load_case_meta(case_dir).get("case_uuid"),
                 )  # fmt: skip
                 lines = [ledger.sign_body(b, private) for b in bodies]
+                record_folder(case_dir)  # under the case lock, just before the commit
                 head = ledger.commit(lock, bodies, lines, public)  # all or nothing
                 committed = True
                 for d, item, body in zip(every, items, bodies, strict=True):

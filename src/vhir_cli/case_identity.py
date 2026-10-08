@@ -124,15 +124,25 @@ def copy_of(case_dir: Path) -> str:
         return ""
     try:
         recorded = _read_paths().get(identity)
-    except ValueError:
-        return ""
+    except ValueError as e:  # never fail open: which folder is the original is unknown
+        return str(e)
     here = str(Path(case_dir).resolve())
     if recorded and recorded != here and _holds(recorded, identity):
-        return (
-            f"{here} is a copy of the case in {recorded}: both have case identity "
-            f"{identity}. Sign in {recorded}."
-        )
+        return copy_text(here, recorded, identity)
     return ""
+
+
+def copy_text(here: str, recorded: str, identity: str) -> str:
+    """The refusal for a folder whose identity another folder holds on this
+    box, and the way back when this folder is in fact the original (a copy
+    signed or was activated first)."""
+    return (
+        f"{here} is a copy of the case in {recorded}: both have case identity "
+        f"{identity}. Sign in {recorded}. If {here} is the original (the copy "
+        f"signed or was activated first): move {recorded} aside, sign in or "
+        f"activate {here}, then move the copy back and run `vhir case "
+        "new-identity` on the copy, never on the original."
+    )
 
 
 def record_case_path(case_dir: Path) -> None:

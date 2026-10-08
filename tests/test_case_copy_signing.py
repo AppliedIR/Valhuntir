@@ -20,6 +20,13 @@ from vhir_cli.ledger_verify import _malformed, verify_case
 
 from .test_signed_decisions import IDENT, _run, _signed, _status, case  # noqa: F401
 
+
+@pytest.fixture(autouse=True)
+def _own_home(tmp_path, monkeypatch):
+    """Signing records the case's folder in ~/.vhir: each row has its own."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+
 UUID = "11111111-2222-4333-8444-555555555555"
 OTHER = "99999999-8888-4777-8666-555555555555"
 
