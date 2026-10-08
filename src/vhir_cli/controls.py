@@ -55,8 +55,10 @@ ROWS = (
     (
         "Audit",
         (CLAUDE, CODEX),
-        "each shell command, failed and refused ones too, recorded in the active case",
-        "another OS user's sessions; a session after the active case was switched "
+        "each shell command, recorded in the active case, failed ones and the "
+        "case-data guard's refusals too",
+        "a deny rule's refusal (no hook runs for it); another OS user's sessions; "
+        "a session after the active case was switched "
         "through MCP; two sessions at once can share an audit id; Codex's typed shell "
         "input is recorded at its next hooked call or when the turn ends; a command "
         "with an MCP route is marked only when it's the first one (not later in a "
@@ -65,9 +67,11 @@ ROWS = (
     (
         "Case-data guard",
         (CLAUDE, CODEX),
-        "the listed ways to delete or overwrite case records (for Codex, a relative "
-        "path is refused: it doesn't say which folder a command runs in)",
-        "interpreters, editors, tee and scripts: a best-effort check, not a boundary",
+        "the listed ways to delete or overwrite case records with a shell command",
+        "interpreters, editors, tee and scripts: a best-effort check, not a boundary; "
+        "for Codex, apply_patch edits aren't checked, and a relative path is read "
+        "against the session's folder, so a command run in another folder isn't "
+        "checked correctly",
     ),
     (
         "Start-up check",

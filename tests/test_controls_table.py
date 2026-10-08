@@ -55,3 +55,15 @@ def test_codex_requirements_moved_away_read_codex_controls_off():
     assert "Managed requirements: CODEX CONTROLS OFF" in text
     on = "\n".join(controls.block_lines("codex"))
     assert "~/.codex and ~/.agents are read-only to it" in on
+
+
+def test_the_codex_guard_row_claims_no_relative_path_rule_and_names_apply_patch():
+    (guard,) = [r for r in controls.ROWS if r[0] == "Case-data guard"]
+    assert "relative path is refused" not in guard[2] + guard[3]
+    assert "apply_patch edits aren't checked" in guard[3]
+    assert "another folder isn't checked correctly" in guard[3]
+
+
+def test_the_audit_row_lists_a_deny_rules_refusal_as_not_recorded():
+    (audit,) = [r for r in controls.ROWS if r[0] == "Audit"]
+    assert "a deny rule's refusal" in audit[3] and "refused ones" not in audit[2]
