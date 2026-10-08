@@ -299,3 +299,169 @@ def test_update_drops_a_backend_the_gateway_no_longer_serves(box):
         BACKENDS.remove("report-mcp")
     assert cs.deploy_codex_assets() == "updated"
     assert "report-mcp" not in _profile(box)["mcp_servers"]
+
+
+# --- Remote Codex (another machine): fetched from sift-mcp on GitHub ----------------
+
+REMOTE = "## Codex on the examiner's machine\n\nNot in the case audit.\n"
+SERVED = {
+    "skills/MANIFEST": "# listed\nvhir-welcome/SKILL.md\n",
+    "skills/vhir-welcome/SKILL.md": SKILL,
+    "agents/finding-skeptic/codex.toml": CODEX_AGENT,
+    "AGENTS.md": AGENTS,
+    "claude-code/full/FORENSIC_DISCIPLINE.md": FD,
+    "codex/OVERLAY.md": OVERLAY,
+    "codex/REMOTE.md": REMOTE,
+}
+
+
+@pytest.fixture
+def laptop(tmp_path, monkeypatch):
+    home = tmp_path / "laptop"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cs.Path, "home", staticmethod(lambda: home))
+    monkeypatch.chdir(home)
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+    served = dict(SERVED)
+    fetched = []
+
+    def fetch(rel):
+        fetched.append(rel)
+        return served[rel].encode() if rel in served else None
+
+    monkeypatch.setattr(cs, "_fetch_raw", fetch)
+    monkeypatch.setattr(cs, "_probe_health_with_auth", lambda u, t: {"status": "ok"})
+    monkeypatch.setattr(
+        cs,
+        "_discover_services",
+        lambda url, token: [{"name": n, "started": True} for n in BACKENDS],
+    )
+    return types.SimpleNamespace(
+        home=home,
+        served=served,
+        fetched=fetched,
+        profile=home / ".codex" / "valhuntir.config.toml",
+        config=home / ".codex" / "config.toml",
+    )
+
+
+def _remote(**kw):
+    _setup(remote=True, sift="https://sift.example:4508", token=TOKEN, **kw)
+
+
+def test_remote_codex_writes_the_profile_and_prints_the_limits(laptop, capsys):
+    _remote()
+    p = tomllib.loads(laptop.profile.read_text())
+    assert laptop.profile.stat().st_mode & 0o777 == 0o600
+    assert p["mcp_servers"]["forensic-mcp"] == {
+        "url": "https://sift.example:4508/mcp/forensic-mcp",
+        "http_headers": {"Authorization": f"Bearer {TOKEN}"},
+        "default_tools_approval_mode": "approve",
+    }
+    assert (
+        p["developer_instructions"]
+        == "\n\n".join(x.strip() for x in (AGENTS, FD, OVERLAY, REMOTE)) + "\n"
+    )
+    out = capsys.readouterr().out
+    assert cs.CODEX_REMOTE_LIMITS in out and "cd ~/vhir && codex -p valhuntir" in out
+    assert (laptop.home / "vhir").is_dir() and TOKEN not in out
+
+
+def test_remote_codex_deploys_the_fetched_skills_and_agent(laptop):
+    _remote()
+    skill = laptop.home / ".agents" / "skills" / "vhir-welcome" / "SKILL.md"
+    assert skill.read_text() == SKILL
+    agent = laptop.home / ".codex" / "agents" / "finding-skeptic.toml"
+    assert agent.read_text() == CODEX_AGENT
+
+
+def test_remote_codex_never_writes_config_toml(laptop):
+    laptop.config.parent.mkdir(parents=True)
+    laptop.config.write_bytes(b'model = "gpt"\n')
+    _remote()
+    assert laptop.config.read_bytes() == b'model = "gpt"\n'
+
+
+def test_a_remote_re_run_shows_the_diff_and_keeps_a_backup(laptop, capsys):
+    _remote()
+    laptop.served["codex/REMOTE.md"] = REMOTE + "\nOne more line.\n"
+    capsys.readouterr()
+    _remote()  # -y
+    out = capsys.readouterr().out
+    assert "vhir would change" in out and "+One more line." in out
+    assert TOKEN not in out
+    (bak,) = laptop.profile.parent.glob("valhuntir.config.toml.vhir-backup-*")
+    assert "One more line." not in bak.read_text()
+    assert "One more line." in laptop.profile.read_text()
+
+
+def test_a_listed_skill_path_that_could_leave_the_skills_folder_is_refused(
+    laptop, capsys
+):
+    laptop.served["skills/MANIFEST"] = "../../.bashrc\nvhir-welcome/SKILL.md\n"
+    laptop.served["skills/../../.bashrc"] = "evil\n"
+    _remote()
+    assert "skipped an unexpected skills path: ../../.bashrc" in capsys.readouterr().out
+    assert "skills/../../.bashrc" not in laptop.fetched
+    assert not (laptop.home / ".bashrc").exists()
+
+
+def test_without_the_instructions_the_profile_isn_t_written(laptop, capsys):
+    del laptop.served["codex/REMOTE.md"]
+    _remote()
+    assert not laptop.profile.exists()
+    assert "couldn't be fetched" in capsys.readouterr().out
+
+
+def test_remote_codex_is_recorded_as_a_client(laptop):
+    (laptop.home / ".vhir").mkdir(exist_ok=True)
+    manifest = laptop.home / ".vhir" / "manifest.json"
+    manifest.write_text("{}")
+    _remote()
+    assert json.loads(manifest.read_text())["clients"] == ["codex"]
+
+
+def test_no_remote_block_claims_every_bash_command_is_captured():
+    from pathlib import Path
+
+    repo = Path(cs.__file__).resolve().parents[3]
+    for f in [
+        Path(cs.__file__),
+        *(repo / n for n in ("setup-client-linux.sh", "setup-client-macos.sh")),
+        repo / "setup-client-windows.ps1",
+    ]:
+        text = f.read_text()
+        assert "captures all Bash" not in text and "(audit logging," not in text, f
+        if f.suffix != ".py":
+            assert "aren't in the case audit" in text, f
+
+
+def test_off_sift_claude_code_says_its_shell_isn_t_in_the_case_audit(
+    laptop, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        cs,
+        "_deploy_claude_code_assets",
+        lambda project_dir=None: (laptop.home / ".claude" / "settings.json", "new"),
+    )
+    _remote(client="claude-code")
+    out = capsys.readouterr().out
+    assert "aren't in the case audit; these settings are user-switchable" in out
+
+
+def test_uninstall_removes_only_the_profile_and_vhir_s_skills_and_agent(
+    laptop, monkeypatch
+):
+    _remote()
+    laptop.config.write_bytes(b'model = "gpt"\n')
+    mine = laptop.home / ".agents" / "skills" / "my-notes"
+    mine.mkdir()
+    (mine / "SKILL.md").write_text("mine\n")
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda m: True)
+    cs._uninstall_project()
+    assert not laptop.profile.exists()
+    assert not (laptop.home / ".agents" / "skills" / "vhir-welcome").exists()
+    assert not (laptop.home / ".codex" / "agents" / "finding-skeptic.toml").exists()
+    assert laptop.config.read_bytes() == b'model = "gpt"\n'
+    assert (mine / "SKILL.md").read_text() == "mine\n"

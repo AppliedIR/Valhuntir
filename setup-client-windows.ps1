@@ -698,8 +698,9 @@ if ($clientType -eq "claude-code") {
     Write-Host "Valhuntir workspace created at $deployDir\" -ForegroundColor White
     Write-Host ""
     Write-Host "IMPORTANT: Always launch Claude Code from $deployDir\ or a subdirectory." -ForegroundColor Yellow
-    Write-Host "Forensic controls (audit logging, guardrails, MCP tools) only apply"
-    Write-Host "when Claude Code is started from within this directory."
+    Write-Host "Valhuntir's settings (guardrails, MCP tools) only apply when Claude Code"
+    Write-Host "is started from within this directory. Shell commands on this machine"
+    Write-Host "aren't in the case audit, and these settings are user-switchable."
     Write-Host ""
     Write-Host "  cd $deployDir; claude"
     Write-Host ""

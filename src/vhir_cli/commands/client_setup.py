@@ -787,10 +787,16 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         if settings and settings[1] != "kept":
             print("  Forensic controls deployed:")
             print("    Sandbox:     enabled (Bash writes restricted)")
-            print(
-                "    Audit hook:  forensic-audit.sh (records Bash commands while a "
-                "case is active)"
-            )
+            if sift:
+                print(
+                    "    Audit hook:  forensic-audit.sh (records Bash commands while a "
+                    "case is active)"
+                )
+            else:
+                print(
+                    "    Shell:       commands on this machine aren't in the case "
+                    "audit; these settings are user-switchable"
+                )
             print("    Provenance:  enforced (findings require evidence trail)")
             print("    Discipline:  FORENSIC_DISCIPLINE.md + TOOL_REFERENCE.md")
         elif settings:
@@ -1853,21 +1859,37 @@ def _codex_userns_restricted() -> bool:
         return False
 
 
-def deploy_codex_assets(servers: dict | None = None) -> str:
+def deploy_codex_assets(servers: dict | None = None, remote: bool = False) -> str:
     """Write Valhuntir's Codex profile, and deploy the skills to
     ~/.agents/skills/ and the skeptic's agent to ~/.codex/agents/.
 
     servers None (vhir update): rebuilt from this box, with the gateway's
     backends found again; it never prompts for anything new, and keeps the
     profile as it is when the gateway can't be reached. Returns the profile's
-    status: created, updated, unchanged, written, kept or missing."""
+    status: created, updated, unchanged, written, kept or missing.
+
+    remote (another machine): the skills, agent and instructions are fetched
+    from sift-mcp's main branch, with the remote overlay."""
+    path = codex_profile_path()
+    if remote:
+        instructions = _fetch_codex_assets()
+        if instructions is None or servers is None:
+            print(
+                "  Note: Valhuntir's instructions for Codex couldn't be fetched; "
+                f"{path} not written. Check the network and re-run."
+            )
+            return "missing"
+        status = _write_codex_profile(
+            path, _codex_profile_text(servers, instructions, [])
+        )
+        _codex_config_conflicts()
+        return status
     deploy_skills(Path.home() / ".agents" / "skills")
     agents = _sift_root_dir("agents")
     _deploy_copy(
         agents / "finding-skeptic" / "codex.toml" if agents else None,
         Path.home() / ".codex" / "agents" / "finding-skeptic.toml",
     )
-    path = codex_profile_path()
     kept: list[str] = []
     if servers is None:
         found = _codex_servers_from_box(path)
@@ -1889,6 +1911,131 @@ def deploy_codex_assets(servers: dict | None = None) -> str:
     status = _write_codex_profile(path, text)
     _codex_config_conflicts()
     return status
+
+
+_GITHUB_RAW = "https://raw.githubusercontent.com/AppliedIR/sift-mcp/main"
+_SKILL_PATH = r"[A-Za-z0-9._/-]+"
+CODEX_REMOTE_LIMITS = (
+    "Limits on this machine: Codex's shell commands here aren't in the case "
+    "audit (only the MCP tool calls, run on the SIFT box, are), and these "
+    "settings are user-switchable: there are no managed Codex settings here."
+)
+
+
+def _fetch_raw(rel: str) -> bytes | None:
+    """A file from sift-mcp's main branch on GitHub, or None."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{_GITHUB_RAW}/{rel}", timeout=20) as resp:
+            return resp.read() if resp.status == 200 else None
+    except Exception:
+        return None
+
+
+def _deploy_fetched(dst: Path, data: bytes) -> str:
+    """Write a fetched file; one that differs from it changes only as a user
+    file does (shown, and replaced with consent or -y, after a backup)."""
+    try:
+        text = data.decode()
+    except UnicodeDecodeError:
+        return "missing"
+    status = _write_user_file(
+        dst, text, "it differs from what vhir fetched, so it may hold your edits"
+    )
+    if status == "created":
+        print(f"  Deployed:  {dst}")
+    return status
+
+
+def _fetch_codex_assets() -> str | None:
+    """Fetch the skills to ~/.agents/skills/ and the skeptic's agent to
+    ~/.codex/agents/, as sift-mcp's main branch has them. Returns the remote
+    developer_instructions, or None if a part couldn't be fetched."""
+    import re
+
+    skills = Path.home() / ".agents" / "skills"
+    listed = _fetch_raw("skills/MANIFEST")
+    if listed is None:
+        print("  Warning: the skills list couldn't be fetched; skills not deployed.")
+    else:
+        for rel in listed.decode(errors="replace").splitlines():
+            if not rel or rel.startswith("#"):
+                continue
+            if not re.fullmatch(_SKILL_PATH, rel) or ".." in rel or rel.startswith("/"):
+                print(f"  Warning: skipped an unexpected skills path: {rel}")
+                continue
+            data = _fetch_raw(f"skills/{rel}")
+            if data is None:
+                print(f"  Warning: couldn't fetch skills/{rel}")
+                continue
+            _deploy_fetched(skills / rel, data)
+    agent = _fetch_raw("agents/finding-skeptic/codex.toml")
+    if agent is None:
+        print("  Warning: the finding-skeptic agent couldn't be fetched.")
+    else:
+        _deploy_fetched(
+            Path.home() / ".codex" / "agents" / "finding-skeptic.toml", agent
+        )
+    parts = [
+        _fetch_raw(p)
+        for p in (
+            "AGENTS.md",
+            "claude-code/full/FORENSIC_DISCIPLINE.md",
+            "codex/OVERLAY.md",
+            "codex/REMOTE.md",
+        )
+    ]
+    if any(p is None for p in parts):
+        return None
+    return "\n\n".join(p.decode().strip() for p in parts) + "\n"
+
+
+def _setup_codex_remote(servers: dict) -> None:
+    """Remote Codex: the profile, skills and agent on this machine, with the
+    instructions fetched from sift-mcp; Codex starts in ~/vhir."""
+    start = Path.home() / "vhir"
+    start.mkdir(exist_ok=True)
+    deploy_codex_assets(servers, remote=True)
+    _record_client("codex")
+    print("")
+    print("  Start Codex from ~/vhir with Valhuntir's profile:")
+    print("    cd ~/vhir && codex -p valhuntir")
+    print("  Not from your home folder: from there its shell could change ~/.vhir.")
+    print(f"  {CODEX_REMOTE_LIMITS}")
+
+
+def _uninstall_codex() -> None:
+    """Remove Valhuntir's Codex profile, its skills and the skeptic's agent;
+    ~/.codex/config.toml and the user's own skills are left alone."""
+    profile = codex_profile_path()
+    agent = Path.home() / ".codex" / "agents" / "finding-skeptic.toml"
+    skills_root = Path.home() / ".agents" / "skills"
+    skills = (
+        sorted(
+            d
+            for d in skills_root.iterdir()
+            if d.is_dir()
+            and (d.name.startswith("vhir-") or d.name == "finding-skeptic")
+        )
+        if skills_root.is_dir()
+        else []
+    )
+    found = [p for p in (profile, agent) if p.is_file()] + skills
+    if not found:
+        return
+    print("  Codex files to remove:")
+    for p in found:
+        print(f"    {p}")
+    if not _prompt_yn_strict("  Remove them?"):
+        print("  Skipped.")
+        return
+    for p in found:
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    print("  Removed.")
 
 
 def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
@@ -2333,6 +2480,7 @@ def _uninstall_project() -> None:
 
     if not files_to_remove and not claude_files_to_remove and not has_mcp_json:
         print("  No Valhuntir files found in current directory.")
+        _uninstall_codex()
         return
 
     print("  Files to remove:")
@@ -2369,6 +2517,8 @@ def _uninstall_project() -> None:
         print("  Removed.")
     else:
         print("  Skipped.")
+
+    _uninstall_codex()
 
     # Remove gateway credentials
     config_yaml = Path.home() / ".vhir" / "config.yaml"
@@ -2750,7 +2900,10 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
 
     # 7. Generate config
     try:
-        _generate_config(client, servers, examiner)
+        if client == "codex":
+            _setup_codex_remote(servers)
+        else:
+            _generate_config(client, servers, examiner)
     except OSError as e:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
