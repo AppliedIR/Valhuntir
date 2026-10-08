@@ -186,6 +186,19 @@ def cmd_setup_client(args, identity: dict) -> None:
                 print(f"    cp -p {shlex.quote(str(bak))} {shlex.quote(str(path))}")
 
 
+CLAUDE_CODE = "claude-code"
+
+
+def _sandbox_off(settings_path: Path) -> bool:
+    """Whether the deployed settings let Bash run without the sandbox: turned
+    off (a user's own value, kept), or allowed when it can't start."""
+    try:
+        sandbox = json.loads(settings_path.read_text()).get("sandbox") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    return sandbox.get("enabled") is False or sandbox.get("failIfUnavailable") is False
+
+
 def _allow_unsandboxed(args) -> bool:
     """Whether --allow-unsandboxed is confirmed: only by the phrase typed on
     a terminal. -y never gives it (the sandbox then stays required); with no
@@ -853,36 +866,14 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         print(f"  Examiner:  {examiner}")
         print("")
         if settings and settings[1] != "kept":
-            print("  Forensic controls deployed:")
-            if _ALLOW_UNSANDBOXED:
-                print(
-                    "    Sandbox:     SANDBOX OFF when bubblewrap can't start: Bash then "
-                    "runs unrestricted (--allow-unsandboxed)"
-                )
-            else:
-                print("    Sandbox:     enabled (Bash writes restricted)")
-            if sift:
-                print(
-                    "    Audit hook:  forensic-audit.sh (records Bash commands while a "
-                    "case is active)"
-                )
-            else:
-                print(
-                    "    Shell:       commands on this machine aren't in the case "
-                    "audit; these settings are user-switchable"
-                )
-            print("    Provenance:  enforced (findings require evidence trail)")
-            print("    Discipline:  FORENSIC_DISCIPLINE.md + TOOL_REFERENCE.md")
+            from vhir_cli.controls import block_lines
+
+            print(f"  Forensic controls deployed{' globally' if sift else ''}.")
+            print("  Start Claude Code from the case folder (cd <case>; claude).")
+            for line in block_lines(CLAUDE_CODE, sandbox_off=_sandbox_off(settings[0])):
+                print(line)
         elif settings:
             print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
-
-        if sift and settings and settings[1] != "kept":
-            print("")
-            print("  Forensic controls deployed globally.")
-            print("  Claude Code can be launched from any directory on this machine.")
-            print(
-                "  Audit logging, permission guardrails, and MCP tools will always apply."
-            )
 
     elif client == "codex":
         deploy_codex_assets(servers)

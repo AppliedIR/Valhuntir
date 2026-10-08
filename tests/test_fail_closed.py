@@ -56,7 +56,10 @@ def _fail_if_unavailable(box):  # noqa: F811
 def test_the_sandbox_is_required_by_default(box, monkeypatch, capsys):  # noqa: F811
     _run(box, monkeypatch, False, [], yes=True, allow_unsandboxed=False)
     assert _fail_if_unavailable(box) is True
-    assert "Sandbox:     enabled" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert (
+        "Sandbox: Bash: it can't write the controls" in out and "SANDBOX OFF" not in out
+    )
 
 
 def test_y_never_gives_the_phrase(box, monkeypatch, capsys):  # noqa: F811

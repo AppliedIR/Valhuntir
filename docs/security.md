@@ -325,3 +325,24 @@ Evidence IDs resume sequence numbering across process restarts.
 ## Responsible Use
 
 This project demonstrates the capabilities of AI-assisted incident response. While steps have been taken to enforce human-in-the-loop controls, it is ultimately the responsibility of each examiner to ensure that their findings are accurate and complete. Ultimate responsibility rests with the human. The AI, like a hex editor, is a tool to be used by properly trained incident response professionals. Users are responsible for ensuring their use complies with applicable laws, regulations, and organizational policies.
+
+## What each client's controls protect
+
+The block `vhir setup client` and `vhir update` print comes from the same
+table. The AI keeps sudo through `run_command`, so client-side controls
+prevent accidents and record what happened; an approved finding's signature
+is what catches a change made after approval.
+
+<!-- controls-table:begin (generated from vhir_cli/controls.py) -->
+| Control | Clients | Protects | Doesn't protect |
+|---|---|---|---|
+| run_command | Claude Code, Codex, MCP-only clients | nothing: it's the one tool that runs outside every client sandbox | it runs as the examiner, with sudo, and can rewrite or remove every client-side control below; the gateway's audit of the call is the only trace |
+| Signed approvals | Claude Code, Codex, MCP-only clients | an approved finding or timeline event: a later change fails verification | drafts, which the AI's shell can still change before the examiner approves them |
+| Deny rules | Claude Code | the Edit and Read tools on the case records, the signing store, the settings, hooks and deployed skills | Bash (the sandbox's job), MCP tools, and refusals, which no hook records |
+| Sandbox | Claude Code | Bash: it can't write the controls or read the signing store, and Claude Code won't start without it | MCP tools, and the case folder: Bash can write in it, drafts and audit files included |
+| Managed requirements | Codex | Codex's shell: its sandbox stays on, it can't read the signing store, the gateway's tokens or the profile, and ~/.codex and ~/.agents are read-only to it | every Codex session on the machine follows them; anyone with sudo (the AI too, through run_command) can move them away; sessions already running keep the old rules until restarted; a kernel that restricts user namespaces stops Codex's sandbox, and its shell commands then fail |
+| Audit | Claude Code, Codex | each shell command, failed and refused ones too, recorded in the active case | another OS user's sessions; a session after the active case was switched through MCP; two sessions at once can share an audit id; Codex's typed shell input is recorded at its next hooked call or when the turn ends |
+| Case-data guard | Claude Code, Codex | the listed ways to delete or overwrite case records (for Codex, a relative path is refused: it doesn't say which folder a command runs in) | interpreters, editors, tee and scripts: a best-effort check, not a boundary |
+| Start-up check | Claude Code, Codex | a warning when the session starts outside a case folder | it never stops the session |
+| MCP-only | MCP-only clients | the server-side controls only: tools, audit and approvals on the gateway | whether the client follows the forensic discipline can't be checked |
+<!-- controls-table:end -->
