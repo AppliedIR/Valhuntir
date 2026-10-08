@@ -863,12 +863,7 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                 print("  Start Claude Code from the case folder (cd <case>; claude).")
             else:
                 print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
-            print_block(CLAUDE_CODE, settings[0])  # what the file holds now
-            if not sift:  # no case on this machine: nothing to audit into
-                print(
-                    "    Shell:       commands on this machine aren't in the case "
-                    "audit; these settings are user-switchable"
-                )
+            print_block(CLAUDE_CODE, settings[0], sift=sift)  # as installed now
 
     elif client == "codex":
         from vhir_cli.commands.codex_controls import deploy_codex_controls

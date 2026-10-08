@@ -163,9 +163,21 @@ def applied(client: str, settings_path=None) -> tuple[bool, str]:
     return False, ""
 
 
-def print_block(client: str, settings_path=None) -> None:
-    """Print `client`'s controls block as installed now."""
-    sandbox_off, why = applied(client, settings_path)
+# Off the SIFT box there is no case: no row of Claude Code's holds there
+OFF_SIFT = (
+    "this machine has no case, and its local controls guard no case records: "
+    "Claude Code's shell commands here aren't in the case audit; these settings "
+    "are user-switchable"
+)
+
+
+def print_block(client: str, settings_path=None, sift: bool = True) -> None:
+    """Print `client`'s controls block as installed now. Off the SIFT box
+    (Claude Code on a laptop), only the gateway's rows and why."""
+    if client == CLAUDE and not sift:
+        sandbox_off, why = False, OFF_SIFT
+    else:
+        sandbox_off, why = applied(client, settings_path)
     for line in block_lines(client, sandbox_off, why):
         print(line)
 

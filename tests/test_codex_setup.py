@@ -518,9 +518,16 @@ def test_off_sift_claude_code_says_its_shell_isn_t_in_the_case_audit(
         "_deploy_claude_code_assets",
         lambda project_dir=None: (laptop.home / ".claude" / "settings.json", "new"),
     )
+    # even with every control in the laptop's settings as shipped
+    monkeypatch.setattr(cs, "settings_applied", lambda path: (True, False))
     _remote(client="claude-code")
     out = capsys.readouterr().out
     assert "aren't in the case audit; these settings are user-switchable" in out
+    # the block claims nothing of Claude Code's here: there is no case
+    assert "recorded in the active case" not in out
+    rows = ("Deny rules", "Sandbox", "Audit", "Case-data guard", "Start-up check")
+    assert not [r for r in rows if f"    {r}:" in out], out
+    assert "    Signed approvals:" in out  # the gateway's, which hold
 
 
 def test_uninstall_removes_only_the_profile_and_vhir_s_skills_and_agent(

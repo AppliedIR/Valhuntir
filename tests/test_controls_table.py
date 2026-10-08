@@ -97,8 +97,5 @@ def test_setup_shows_a_declined_change_as_the_file_holds_it(
     cs._generate_config("claude-code", {}, "steve")
     out = capsys.readouterr().out
     assert f"Forensic controls NOT applied to {mine}" in out
-    assert (
-        f"NOT in effect: Valhuntir's controls aren't fully applied in {mine} "
-        "(declined or edited); run vhir setup client to apply them." in out
-    )
+    assert "NOT in effect: this machine has no case" in out  # off the SIFT box
     assert not [r for r in CLIENT_ROWS if f"    {r}:" in out]
