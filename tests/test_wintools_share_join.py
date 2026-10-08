@@ -196,3 +196,11 @@ def test_a_join_with_no_case_active_marks_nothing(box):
     box.answers.append("10.0.0.20")
     join._setup_samba_share("CODE-ONE")
     assert not list((box.home / ".vhir" / "share-inactive").iterdir())
+
+
+def test_a_join_that_keeps_the_setup_still_marks_the_active_case(box):
+    case_dir = _case(box)
+    _configured(box)
+    box.answers.append("n")
+    assert join._setup_samba_share("CODE-TWO") == "10.0.0.20"
+    assert (case_dir / ".vhir-share-case").read_text() == "INC-1"

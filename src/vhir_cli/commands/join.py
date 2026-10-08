@@ -787,6 +787,14 @@ def _setup_samba_share(join_code: str) -> str:
             pass
     if keep_ip:
         _set_smb_password(join_code)
+        active = _active_case_dir()
+        if active is not None:  # the kept share still points at it: mark it
+            warning = mark_case(active)
+            if warning:
+                print(
+                    f"Warning: {warning}; wintools writes nothing to the case.",
+                    file=sys.stderr,
+                )
         return keep_ip
     username = getpass.getuser()
     group = private_primary_group(username)  # before anything is installed or changed
