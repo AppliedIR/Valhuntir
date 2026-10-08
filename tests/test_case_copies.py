@@ -457,14 +457,15 @@ def test_update_makes_the_signing_folders_it_lacks(tmp_path, monkeypatch):
     from vhir_cli.commands import update
 
     made = []
+    from vhir_cli.commands import client_setup
+
     monkeypatch.setattr(
-        update, "SIGNING_DIRS", (tmp_path / "keys", tmp_path / "ledger")
+        client_setup, "SIGNING_DIRS", (tmp_path / "keys", tmp_path / "ledger")
     )
     (tmp_path / "keys").mkdir()
     monkeypatch.setattr(
-        update, "subprocess",
-        types.SimpleNamespace(run=lambda argv, **k: made.append(argv) or
-                              types.SimpleNamespace(returncode=0, stderr="")),
+        "subprocess.run",
+        lambda argv, **k: made.append(argv) or types.SimpleNamespace(returncode=0, stderr=""),
     )  # fmt: skip
     update._ensure_signing_dirs()
     (cmd,) = made

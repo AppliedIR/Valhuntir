@@ -1190,6 +1190,9 @@ def _review_mode(
     file, under the case lock; nothing else in it changes."""
     examiner = identity["examiner"]
     delta_path = case_dir / "pending-reviews.json"
+    if credentials.signing_folders_problem():  # before the lock below needs ledger/
+        print(credentials.FINISH_UPDATE, file=sys.stderr)
+        sys.exit(1)
     _merge_processing(case_dir)
     with ledger.case_lock(case_id_of(case_dir)):  # a corrupt file is set aside
         delta = decide.read_delta(delta_path)

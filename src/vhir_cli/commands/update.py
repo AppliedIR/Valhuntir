@@ -208,33 +208,13 @@ def _ensure_password_dir() -> None:
         )
 
 
-SIGNING_DIRS = (Path("/var/lib/vhir/keys"), Path("/var/lib/vhir/ledger"))
-
-
 def _ensure_signing_dirs() -> None:
     """/var/lib/vhir/keys/ and /var/lib/vhir/ledger/ (the case lock lives
-    there), owned by this user, 0700."""
-    import getpass
+    there), owned by this user, 0700. The name also marks this update as one
+    that makes them (client_setup._under_an_older_update)."""
+    from vhir_cli.commands.client_setup import ensure_signing_dirs
 
-    user = getpass.getuser()
-    for folder in SIGNING_DIRS:
-        if folder.is_dir():
-            continue
-        print(f"  Creating {folder}... ", end="", flush=True)
-        result = subprocess.run(
-            ["sudo", "sh", "-c",
-             f"mkdir -p {folder} && chown {user}:{user} {folder} && chmod 700 {folder}"],
-            capture_output=True, text=True, timeout=10,
-        )  # fmt: skip
-        if result.returncode == 0:
-            print("done")
-        else:
-            print("failed")
-            print(
-                f"  Run manually: sudo mkdir -p {folder} && sudo chown $USER:$USER {folder} "
-                f"&& sudo chmod 700 {folder}",
-                file=sys.stderr,
-            )
+    ensure_signing_dirs()
 
 
 def _offer_signing_key(identity: dict) -> None:

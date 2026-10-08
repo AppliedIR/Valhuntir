@@ -439,12 +439,44 @@ def merge_restored_keys(examiner: str, public_keys: list[str]) -> list[str]:
 
 # --- Signing commands ---------------------------------------------------------------------
 
+FINISH_UPDATE = (
+    "Finish the update: run `vhir update` once more "
+    "(it creates /var/lib/vhir/keys and ledger)"
+)
+
+
+def signing_folders_problem() -> str:
+    """FINISH_UPDATE when the signing folders (keys/, ledger/) are missing or
+    not writable here, else "". A vhir updated from 0.6 by one `vhir update`
+    of the old code can lack them."""
+    for folder in (keys.KEYS_DIR, ledger.LEDGER_DIR):
+        if not (folder.is_dir() and os.access(folder, os.W_OK | os.X_OK)):
+            return FINISH_UPDATE
+    return ""
+
+
+def on_signing_folders(path) -> bool:
+    """True for a path in (or of) the signing folders or their parent."""
+    if not path:
+        return False
+    p = Path(os.fsdecode(path)) if not isinstance(path, Path) else path
+    roots = {
+        keys.KEYS_DIR,
+        ledger.LEDGER_DIR,
+        keys.KEYS_DIR.parent,
+        ledger.LEDGER_DIR.parent,
+    }
+    return p in roots or any(r in p.parents for r in (keys.KEYS_DIR, ledger.LEDGER_DIR))
+
 
 def preflight(examiner: str, config_path: Path) -> bool:
     """The checks that can fail, run before any item is displayed: a credential
     exists, no lockout is active, the keys file loads. A 0.6 credential is
     upgraded here, with its own prompts. Returns True when a new passphrase
-    was set (the final prompt then says so)."""
+    was set (the final prompt then says so). The signing folders come first:
+    without them nothing can be signed, or upgraded."""
+    if signing_folders_problem():
+        raise CredentialError(FINISH_UPDATE)
     try:
         current = state(examiner, config_path)
     except keys.KeysFileInvalid as e:

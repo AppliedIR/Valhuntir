@@ -13,7 +13,7 @@ from argparse import Namespace
 
 import pytest
 
-from vhir_cli import approval_auth, keys, ledger
+from vhir_cli import approval_auth, credentials, keys, ledger
 from vhir_cli.commands import approve as A
 from vhir_cli.commands import reject as RJ
 from vhir_cli.ledger_verify import approved_view, verify_case
@@ -458,6 +458,28 @@ def test_every_path_refuses_before_the_first_item_is_shown(
     assert _run(run) == 1
     out = capsys.readouterr().out
     assert "Other" not in out and "F-steve-002]" not in out  # nothing displayed
+    assert asked == [] and _signed() == []
+
+
+@pytest.mark.parametrize("folder", ["keys", "ledger"])
+@pytest.mark.parametrize("path", ["ids", "interactive", "review", "reattest", "reject"])
+def test_without_the_signing_folders_every_path_says_finish_the_update_first(
+    case, monkeypatch, capsys, path, folder
+):
+    """A box updated once by 0.6's update code can lack them: one line, before
+    anything is shown or asked, and no traceback."""
+    run = _path(case, path, monkeypatch)
+    target = keys.KEYS_DIR if folder == "keys" else ledger.LEDGER_DIR
+    target.chmod(0o500)  # as a root-owned folder is to the examiner
+    asked = []
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": asked.append(p))
+    try:
+        assert _run(run) == 1
+    finally:
+        target.chmod(0o700)
+    out = capsys.readouterr()
+    assert out.err.strip().splitlines()[-1] == credentials.FINISH_UPDATE
+    assert "Other" not in out.out and "F-steve-002]" not in out.out
     assert asked == [] and _signed() == []
 
 

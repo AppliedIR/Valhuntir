@@ -740,6 +740,13 @@ def main() -> None:
         except (CaseError, LockDirMissing) as e:  # one line, never a traceback
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+        except PermissionError as e:
+            from vhir_cli import credentials
+
+            if not credentials.on_signing_folders(e.filename):
+                raise
+            print(credentials.FINISH_UPDATE, file=sys.stderr)  # never a traceback
+            sys.exit(1)
     elif hasattr(args, "func"):
         try:
             args.func(args, identity)

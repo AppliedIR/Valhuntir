@@ -104,7 +104,7 @@ def test_a_replaced_wrapped_key_doesn_t_open(cred):
 )
 def test_a_weaker_or_malformed_file_is_refused(cred, change):
     change(cred)
-    keys.KEYS_DIR.mkdir(parents=True)
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
     (keys.KEYS_DIR / "steve.json").write_text(json.dumps(cred))
     with pytest.raises(keys.KeysFileInvalid):
         keys.load("steve")
@@ -176,7 +176,7 @@ def test_every_wrap_uses_a_fresh_nonce(cred):
     ids=["truncated", "not utf-8", "keys not entries"],
 )
 def test_a_keys_file_that_doesn_t_load_is_never_overwritten(cred, on_disk):
-    keys.KEYS_DIR.mkdir(parents=True)
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
     path = keys.KEYS_DIR / "steve.json"
     path.write_bytes(on_disk)
     with pytest.raises(keys.KeysFileInvalid):

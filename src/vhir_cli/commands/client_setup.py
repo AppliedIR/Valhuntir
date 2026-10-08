@@ -916,6 +916,55 @@ def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
         raise
 
 
+# keys/ holds each examiner's credential, ledger/ the chains and the case lock
+SIGNING_DIRS = (Path("/var/lib/vhir/keys"), Path("/var/lib/vhir/ledger"))
+
+
+def ensure_signing_dirs() -> None:
+    """Make the signing folders this box lacks, owned by this user, 0700
+    (/var/lib/vhir is root's: sudo). Never raises: a failure prints the
+    command to run instead."""
+    import getpass
+    import subprocess
+
+    user = getpass.getuser()
+    for folder in SIGNING_DIRS:
+        if folder.is_dir():
+            continue
+        print(f"  Creating {folder}... ", end="", flush=True)
+        try:
+            ok = (
+                subprocess.run(
+                    ["sudo", "sh", "-c",
+                     f"mkdir -p {folder} && chown {user}:{user} {folder} && chmod 700 {folder}"],
+                    capture_output=True, text=True, timeout=300,  # sudo may ask a password
+                ).returncode
+                == 0
+            )  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if ok:
+            print("done")
+            continue
+        print("failed")
+        print(
+            f"  Run manually: sudo mkdir -p {folder} && sudo chown $USER:$USER {folder} "
+            f"&& sudo chmod 700 {folder}",
+            file=sys.stderr,
+        )
+
+
+def _under_an_older_update() -> bool:
+    """True inside `vhir update` of a vhir from before the signing folders.
+    That update pulls this code, then imports this module and calls
+    `_isolate_gateway_launchers` from it, so this is where one update makes
+    them. Its own update module, loaded first, lacks `_ensure_signing_dirs`;
+    this vhir's has it (and makes the folders itself), and nothing else
+    loads it, so tests never get here."""
+    running = sys.modules.get("vhir_cli.commands.update")
+    return running is not None and not hasattr(running, "_ensure_signing_dirs")
+
+
 def _isolate_gateway_launchers() -> list[Path]:
     """Add -I to the gateway launch line in the files setup-sift.sh writes
     (~/.vhir/start-gateway.sh and the user unit), so the gateway never imports
@@ -923,9 +972,16 @@ def _isolate_gateway_launchers() -> list[Path]:
     on every run; here only the generated line changes. A line that differs
     (edited by the user) is left with a notice. Keeps the file's mode and a
     symlink. Never raises: an older vhir update runs this unguarded.
-    Returns the files rewritten."""
+    Returns the files rewritten. Inside an older vhir's update, the signing
+    folders are made here first."""
     import re
     import subprocess
+
+    if _under_an_older_update():
+        try:
+            ensure_signing_dirs()
+        except Exception as e:  # noqa: BLE001 - never raises (above)
+            print(f"  The signing folders weren't made ({e}); run `vhir update` again.")
 
     forms = (  # (file, the generated line); the paths vary per install
         (
