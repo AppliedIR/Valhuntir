@@ -36,7 +36,7 @@ def case(tmp_path, monkeypatch):
     (d / "CASE.yaml").write_text("case_id: C-1\nstatus: open\n")
     (d / "timeline.json").write_text("[]")
     monkeypatch.setenv("VHIR_CASE_DIR", str(d))
-    ledger.LEDGER_DIR.mkdir(parents=True)
+    ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     return d
 
 

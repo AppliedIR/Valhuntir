@@ -52,7 +52,7 @@ def _commit(private, decisions, case="C1", **kw):
 
 @pytest.fixture(autouse=True)
 def ledger_dir():
-    ledger.LEDGER_DIR.mkdir(parents=True)
+    ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def test_the_first_line_names_the_case_and_freezes_the_legacy_ledger(steve):

@@ -7,19 +7,57 @@ from pathlib import Path
 
 import yaml
 
-from vhir_cli.approval_auth import reset_password, setup_password
+from vhir_cli import credentials
+
+
+def _credential(action, name: str, config_path: Path, **kw) -> None:
+    try:
+        action(name, config_path, **kw)
+    except credentials.CredentialError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_enrol(args, identity: dict) -> None:
+    """`vhir enrol --name NAME [--reset | --forgot | --upgrade]`: a LAN
+    examiner's credential, set up at this terminal by the person named."""
+    from vhir_cli.identity import valid_name
+
+    config_path = Path.home() / ".vhir" / "config.yaml"
+    name = args.name
+    if not valid_name(name):
+        print(
+            f"Invalid examiner name: {name!r} (lower-case letters, digits and hyphens, "
+            "at most 20 characters)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.reset:
+        _credential(credentials.reset, name, config_path)
+    elif args.forgot:
+        _credential(credentials.forgot, name, config_path)
+    elif args.upgrade:
+        _credential(credentials.upgrade, name, config_path)
+    else:
+        _credential(credentials.enrol, name, config_path, by_name=True)
 
 
 def cmd_config(args, identity: dict) -> None:
     """Configure Valhuntir settings."""
     config_path = Path.home() / ".vhir" / "config.yaml"
+    examiner = identity["examiner"]
 
     if getattr(args, "setup_password", False):
-        setup_password(config_path, identity["examiner"])
+        _credential(credentials.enrol, examiner, config_path)
         return
-
     if getattr(args, "reset_password", False):
-        reset_password(config_path, identity["examiner"])
+        _credential(credentials.reset, examiner, config_path)
+        return
+    if getattr(args, "forgot_password", False):
+        _credential(credentials.forgot, examiner, config_path)
+        return
+    if getattr(args, "upgrade_key", False):
+        _credential(credentials.upgrade, examiner, config_path)
         return
 
     if args.show:

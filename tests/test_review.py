@@ -3,7 +3,6 @@
 import json
 import re
 from argparse import Namespace
-from pathlib import Path
 
 import pytest
 import yaml
@@ -21,6 +20,8 @@ from vhir_cli.commands.review import (
     _extract_text_iocs,
     cmd_review,
 )
+
+from .signing import approve_under_0_6
 
 
 @pytest.fixture
@@ -566,14 +567,10 @@ class TestVerifyTampered:
 def ledger_case(tmp_path, monkeypatch):
     import vhir_cli.approval_auth as auth
     import vhir_cli.verification as ver
-    from vhir_cli.commands import approve
 
     monkeypatch.setattr(ver, "VERIFICATION_DIR", tmp_path / "ledger")
-    monkeypatch.setattr(auth, "get_analyst_salt", lambda cfg, ex, **k: b"\x01" * 16)
-    monkeypatch.setattr(auth, "verify_password", lambda *a, **k: True)
     prompts = []
     monkeypatch.setattr(auth, "getpass_prompt", lambda p: (prompts.append(p), "pw")[1])
-    monkeypatch.setattr(approve, "require_confirmation", lambda cfg, ex: ("pw", "pw"))
     case = tmp_path / "V-case"
     case.mkdir()
     (case / "CASE.yaml").write_text(
@@ -611,16 +608,15 @@ def ledger_case(tmp_path, monkeypatch):
 
 
 def _approve_and_verify(case, prompts, capsys, *, findings, mine=False, alice=False):
-    """The real approve (its 0.6 ledger written for real), findings.json then
-    set to `findings` ("intact", "absent", "[]", "corrupt"), then --verify.
-    Returns (output, exit code)."""
+    """F-steve-001 and its event approved under 0.6 (as 0.6's approve left
+    them), findings.json then set to `findings` ("intact", "absent", "[]",
+    "corrupt"), then --verify. Returns (output, exit code)."""
     import vhir_cli.verification as ver
-    from vhir_cli.commands import approve
     from vhir_cli.commands.review import _show_findings_verify
 
     ident = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
     if findings != "none":
-        approve._approve_specific(case, ["F-steve-001"], ident, Path("cfg"))
+        approve_under_0_6(case, {"F-steve-001", "T-steve-001"}, "steve")
     if alice:  # another examiner's 0.6 line
         entry = {
             "finding_id": "F-alice-001",
@@ -635,7 +631,7 @@ def _approve_and_verify(case, prompts, capsys, *, findings, mine=False, alice=Fa
         with open(ver.VERIFICATION_DIR / "INC-REAL-1.jsonl", "a") as fh:
             fh.write(json.dumps(entry) + "\n")
     path = case / "findings.json"
-    path.chmod(0o644)  # approve leaves it read-only
+    path.chmod(0o644)
     if findings == "absent":
         path.unlink()
     elif findings in ("[]", "none"):

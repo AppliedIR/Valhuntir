@@ -20,7 +20,7 @@ from vhir_cli.case_io import DEFAULT_CASES_DIR, CaseError
 from vhir_cli.commands.approve import cmd_approve
 from vhir_cli.commands.audit_cmd import cmd_audit
 from vhir_cli.commands.backup import cmd_backup, cmd_restore
-from vhir_cli.commands.config import cmd_config
+from vhir_cli.commands.config import cmd_config, cmd_enrol
 from vhir_cli.commands.dashboard import cmd_dashboard, cmd_portal
 from vhir_cli.commands.evidence import (
     cmd_evidence,
@@ -154,6 +154,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply pending Examiner Portal reviews from pending-reviews.json",
     )
+    p_approve.add_argument(
+        "--reattest",
+        action="store_true",
+        help="Sign a fresh approval of APPROVED items with no signed line (IDs or --all)",
+    )
+    p_approve.add_argument(
+        "--all", action="store_true", help="With --reattest: every item it applies to"
+    )
+    p_approve.add_argument(
+        "--show-signed",
+        action="store_true",
+        help="Also print each item's full signed view",
+    )
 
     # reject
     p_reject = sub.add_parser("reject", help="Reject staged findings/timeline events")
@@ -168,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reject.add_argument(
         "--examiner", dest="examiner_override", help="Override examiner identity"
+    )
+    p_reject.add_argument(
+        "--show-signed",
+        action="store_true",
+        help="Also print each item's full signed view",
     )
     p_reject.add_argument(
         "--analyst", dest="examiner_override", help="(deprecated, use --examiner)"
@@ -475,12 +493,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument(
         "--setup-password",
         action="store_true",
-        help="Set approval password for current examiner",
+        help="Set up a passphrase and signing key (refused if one exists)",
     )
     p_config.add_argument(
         "--reset-password",
         action="store_true",
-        help="Reset approval password (requires current password)",
+        help="Change the passphrase (requires the current one); the key is unchanged",
+    )
+    p_config.add_argument(
+        "--forgot-password",
+        action="store_true",
+        help="Make a new signing key under a new passphrase; the old key is retired",
+    )
+    p_config.add_argument(
+        "--upgrade-key",
+        action="store_true",
+        help="Make the signing key for a 0.6 password (prints the fingerprint if done)",
+    )
+
+    # enrol
+    p_enrol = sub.add_parser(
+        "enrol", help="Set up or change another examiner's signing credential, by name"
+    )
+    p_enrol.add_argument(
+        "--name", required=True, help="Examiner name (as in the portal)"
+    )
+    enrol_mode = p_enrol.add_mutually_exclusive_group()
+    enrol_mode.add_argument(
+        "--reset", action="store_true", help="Change the passphrase"
+    )
+    enrol_mode.add_argument(
+        "--forgot", action="store_true", help="Make a new signing key"
+    )
+    enrol_mode.add_argument(
+        "--upgrade", action="store_true", help="Upgrade a 0.6 password"
     )
 
     # report
@@ -659,6 +705,7 @@ def main() -> None:
         "unlock-evidence": cmd_unlock_evidence,
         "register-evidence": cmd_register_evidence,
         "config": cmd_config,
+        "enrol": cmd_enrol,
         "todo": cmd_todo,
         "setup": cmd_setup,
         "export": cmd_export,

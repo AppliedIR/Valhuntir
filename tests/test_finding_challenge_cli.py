@@ -30,6 +30,8 @@ from vhir_cli.commands.approve import _apply_edit, _display_item, cmd_approve
 from vhir_cli.commands.review import cmd_review
 from vhir_cli.main import build_parser
 
+from .signing import PASSPHRASE, enrol
+
 IDENT = {"examiner": "analyst1", "os_user": "u", "examiner_source": "flag"}
 ALTERNATIVES = [
     {"explanation": "An admin's test", "status": "open"},
@@ -70,6 +72,10 @@ def case(tmp_path, monkeypatch):
     (d / "todos.json").write_text("[]")
     monkeypatch.setenv("VHIR_EXAMINER", "tester")
     monkeypatch.setenv("VHIR_CASE_DIR", str(d))
+    enrol("analyst1")
+    monkeypatch.setattr(
+        "vhir_cli.approval_auth.getpass_prompt", lambda p="": PASSPHRASE
+    )
     return d
 
 
@@ -184,8 +190,6 @@ def test_a_portal_edit_of_the_alternatives_is_applied_by_review(
     (case / "pending-reviews.json").write_text(
         json.dumps({"case_id": "C-1", "items": [entry]})
     )
-    monkeypatch.setattr(approve_mod, "require_confirmation", lambda *a: ("p", "p"))
-    monkeypatch.setattr(approve_mod, "_write_verification_entries", lambda *a, **k: [])
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     approve_mod._review_mode(case, IDENT, Path("cfg"))
     out = capsys.readouterr().out
@@ -424,10 +428,11 @@ def _review_output(case, monkeypatch, capsys, finding_id, action):
         json.dumps({"case_id": "C-1", "items": [entry]})
     )
 
-    def decline(*a):  # the examiner stops at the password prompt
+    def decline(*a):  # the examiner stops at the passphrase prompt
         raise SystemExit(1)
 
-    monkeypatch.setattr(approve_mod, "require_confirmation", decline)
+    monkeypatch.setattr("vhir_cli.approval_auth.getpass_prompt", decline)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")  # include it
     try:
         approve_mod._review_mode(case, IDENT, Path("cfg"))
     except SystemExit:
@@ -448,7 +453,7 @@ def test_a_review_file_can_t_clear_the_challenge_line(
     assert "\x1b[2J" not in out
     assert "?[2J" in out
     assert "Challenged (client-reported): stands" in out
-    assert "was modified after you reviewed it" in out
+    assert "changed after you reviewed it" in out  # stale: refused, not signed
 
 
 def test_a_multi_line_interpretation_keeps_its_lines(capsys):
@@ -518,8 +523,6 @@ def test_skipped_ids_and_reasons_are_escaped(case, monkeypatch, capsys):
     (case / "pending-reviews.json").write_text(
         json.dumps({"case_id": "C-1", "items": items})
     )
-    monkeypatch.setattr(approve_mod, "require_confirmation", lambda *a: ("p", "p"))
-    monkeypatch.setattr(approve_mod, "_write_verification_entries", lambda *a, **k: [])
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     approve_mod._review_mode(case, IDENT, Path("cfg"))
     out = capsys.readouterr().out

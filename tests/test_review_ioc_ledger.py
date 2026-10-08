@@ -1,7 +1,8 @@
 """Approved IOCs in the 0.6 verification ledger are verified like findings.
 
-The real approve writes the 0.6 ledger (VERIFICATION_DIR redirected to
-tmp_path), then the real --verify reads it. Those lines carry no signature
+The case is left as 0.6's approve left it: the finding and the IOC it
+approved with it, each with its 0.6 line (VERIFICATION_DIR redirected), then
+the real --verify reads it. Those lines carry no signature
 0.7 can check: an unchanged item is "approved under 0.6 (before signing)"
 (informational, exit 0), and a changed one fails.
 """
@@ -14,6 +15,8 @@ import re
 from pathlib import Path
 
 import pytest
+
+from .signing import approve_under_0_6
 
 
 def _ioc_hash(ioc: dict) -> str:
@@ -49,15 +52,9 @@ def _new_ioc(seq: int, value: str, finding_id: str, now: str) -> dict:
 
 @pytest.fixture
 def ioc_case(tmp_path, monkeypatch):
-    import vhir_cli.approval_auth as auth
     import vhir_cli.verification as ver
-    from vhir_cli.commands import approve
 
     monkeypatch.setattr(ver, "VERIFICATION_DIR", tmp_path / "ledger")
-    monkeypatch.setattr(auth, "get_analyst_salt", lambda cfg, ex, **k: b"\x01" * 16)
-    monkeypatch.setattr(auth, "verify_password", lambda *a, **k: True)
-    monkeypatch.setattr(auth, "getpass_prompt", lambda p: "pw")
-    monkeypatch.setattr(approve, "require_confirmation", lambda cfg, ex: ("pw", "pw"))
     case = tmp_path / "V-case"
     case.mkdir()
     (case / "CASE.yaml").write_text(
@@ -87,7 +84,7 @@ def ioc_case(tmp_path, monkeypatch):
     ]
     (case / "iocs.json").write_text(json.dumps(iocs))
     ident = {"examiner": "tester", "os_user": "tester", "analyst": "tester"}
-    approve._approve_specific(case, ["F-tester-001"], ident, Path("cfg"))
+    approve_under_0_6(case, {"F-tester-001", "IOC-tester-001"}, "tester", now)
     return case, ident
 
 

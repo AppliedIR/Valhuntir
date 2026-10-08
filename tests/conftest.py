@@ -92,6 +92,7 @@ def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
         (backup, "_SNAPSHOTS_DIR", "snapshots"),
     ):
         monkeypatch.setattr(mod, name, root / sub)
+    (root / "ledger").mkdir()  # the installer makes it: the case lock lives there
     # Built inside functions: the legacy pins/ migration and update's check.
     monkeypatch.setattr(approval_auth, "_maybe_migrate_pin_dir", lambda: None)
     monkeypatch.setattr(update, "_ensure_password_dir", lambda: None)

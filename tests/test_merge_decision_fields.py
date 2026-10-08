@@ -15,7 +15,6 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from vhir_cli.approval_auth import setup_password
 from vhir_cli.case_io import (
     export_bundle,
     import_bundle,
@@ -27,6 +26,8 @@ from vhir_cli.commands.approve import _approve_specific
 from vhir_cli.commands.reject import cmd_reject
 from vhir_cli.commands.report import _report_findings
 from vhir_cli.commands.review import _show_findings_detail
+
+from .signing import enrol
 
 DECISION = {
     "approved_at": "2026-09-01T00:00:00+00:00",
@@ -94,8 +95,7 @@ def isolate_password_state(tmp_path, monkeypatch):
 @pytest.fixture
 def pw_config(tmp_path):
     config = tmp_path / ".vhir" / "config.yaml"
-    with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=["testpass1"] * 2):
-        setup_password(config, "analyst1")
+    enrol("analyst1")  # passphrase testpass1
     return config
 
 

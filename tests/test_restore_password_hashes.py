@@ -134,26 +134,20 @@ def test_a_different_hash_is_kept_and_warned(box, capsys):
     assert box.salt("steve") == NEW and _warned(out.err), out
 
 
-def test_declining_the_ledger_keeps_live_hmac_working(box, capsys):
+def test_declining_the_ledger_keeps_the_live_hash_and_0_6_file(box, capsys):
     path = box.backup()
     box.pwfile("steve", NEW)
-    key = V.derive_hmac_key("pw", bytes.fromhex(NEW))
-    snap = "F-steve-001 First finding"
     entry = {
         "finding_id": "F-steve-001",
         "approved_by": "steve",
-        "hmac": V.compute_hmac(key, snap),
-        "content_snapshot": snap,
+        "hmac": "00",
+        "content_snapshot": "F-steve-001 First finding",
     }
-    (box.ver_dir / "hashes.jsonl").write_text(json.dumps(entry) + "\n")
-
-    def verified():
-        current = bytes.fromhex(box.salt("steve"))
-        return [r["verified"] for r in V.verify_items("hashes", "pw", current, "steve")]
-
-    assert verified() == [True]
+    live = box.ver_dir / "hashes.jsonl"
+    live.write_text(json.dumps(entry) + "\n")
+    before = live.read_bytes()
     assert box.restore(path, ["n"]) == 0
-    assert box.salt("steve") == NEW and verified() == [True]
+    assert box.salt("steve") == NEW and live.read_bytes() == before
 
 
 def test_no_ledger_in_the_backup_still_keeps_the_hash(box, capsys):

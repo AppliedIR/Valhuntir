@@ -23,6 +23,24 @@ _FILES = (
     ("iocs.json", "ioc"),
 )
 _KEYS: dict[tuple[str, str], Ed25519PrivateKey] = {}  # one key per examiner and case
+PASSPHRASE = "testpass1"
+_CREDENTIALS: dict[
+    tuple[str, str], dict
+] = {}  # one credential per examiner and passphrase
+
+
+def enrol(examiner: str, passphrase: str = PASSPHRASE) -> dict:
+    """A schema-3 credential for `examiner` in the (redirected) keys folder, and
+    the ledger folder the installer makes: the state `vhir enrol` leaves. The
+    key pair is made once per run (deriving is slow); each test's ledger is its own."""
+    data = _CREDENTIALS.get((examiner, passphrase))
+    if data is None:
+        data = _CREDENTIALS[(examiner, passphrase)] = keys.new_credential(
+            examiner, passphrase
+        )
+    keys.save(examiner, json.loads(json.dumps(data)))
+    ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    return data
 
 
 def sign_approved(case_dir: Path, examiner: str = "tester") -> None:
@@ -53,6 +71,38 @@ def sign_approved(case_dir: Path, examiner: str = "tester") -> None:
         bodies = ledger.prepare(case_id, decisions, by.pop(), pub, "cli", AT)
         with ledger.case_lock(case_id) as lock:
             ledger.commit(lock, bodies, [ledger.sign_body(b, key) for b in bodies], pub)
+        mode = path.stat().st_mode
+        path.chmod(0o644)
+        path.write_text(json.dumps(items, indent=2))
+        path.chmod(mode)
+
+
+def approve_under_0_6(
+    case_dir: Path, ids, examiner: str = "tester", at: str = AT
+) -> None:
+    """A case approved under 0.6, as 0.6's approve left it (its writer is
+    gone): each of `ids` APPROVED and stamped, with its 0.6 line in the
+    (redirected) 0.6 file. Nothing is signed, so the case has no genesis."""
+    from vhir_cli import verification
+
+    case_id = load_case_meta(case_dir).get("case_id") or case_dir.name
+    for name, kind in _FILES:
+        path = case_dir / name
+        if not path.exists():
+            continue
+        items = json.loads(path.read_text())
+        for item in items:
+            if isinstance(item, dict) and item.get("id") in ids:
+                item.update(status="APPROVED", approved_by=examiner, approved_at=at)
+                verification.VERIFICATION_DIR.mkdir(parents=True, exist_ok=True)
+                with open(
+                    verification.VERIFICATION_DIR / f"{case_id}.jsonl", "a"
+                ) as fh:
+                    fh.write(json.dumps({
+                        "finding_id": item["id"], "type": kind, "hmac": "00",
+                        "hmac_version": 2, "content_snapshot": signed_text(item, kind, 0),
+                        "approved_by": examiner, "approved_at": at, "case_id": case_id,
+                    }) + "\n")  # fmt: skip
         mode = path.stat().st_mode
         path.chmod(0o644)
         path.write_text(json.dumps(items, indent=2))

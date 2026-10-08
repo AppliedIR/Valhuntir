@@ -18,9 +18,10 @@ from argparse import Namespace
 import pytest
 import yaml
 
-import vhir_cli.commands.approve as approve_mod
 from vhir_cli.case_io import save_findings, save_timeline
 from vhir_cli.commands.approve import _display_item, cmd_approve
+
+from .signing import PASSPHRASE, enrol
 
 IDENT = {"examiner": "analyst1", "os_user": "u", "examiner_source": "flag"}
 ESC = "\x1b]0;owned\x07\x1b[2J"
@@ -54,6 +55,7 @@ def _finding(fid="F-tester-001", **extra):
         "modified_at": "2026-10-07T12:00:00Z",
         "created_by": "tester",
         "artifacts": ARTIFACTS,
+        "timeline_event_id": "T-tester-001",  # the signed link to its event
     }
     item.update(extra)
     return item
@@ -79,6 +81,7 @@ def case(tmp_path, monkeypatch):
     (d / "todos.json").write_text("[]")
     monkeypatch.setenv("VHIR_EXAMINER", "tester")
     monkeypatch.setenv("VHIR_CASE_DIR", str(d))
+    enrol("analyst1")
     return d
 
 
@@ -87,12 +90,14 @@ class _Prompt(Exception):
 
 
 def _until_prompt(monkeypatch, capsys, args) -> str:
-    """Everything printed before the password prompt."""
+    """Everything printed before the passphrase prompt (asked last, after
+    every item is approved at its own prompt)."""
 
     def prompt(*a, **k):
         raise _Prompt
 
-    monkeypatch.setattr(approve_mod, "require_confirmation", prompt)
+    monkeypatch.setattr("vhir_cli.approval_auth.getpass_prompt", prompt)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "a")
     with pytest.raises(_Prompt):
         cmd_approve(args, IDENT)
     return capsys.readouterr().out
@@ -109,7 +114,14 @@ def _stage(case, findings, events=(), review=None):
 
 INTERACTIVE = Namespace(case=None, ids=[], review=False)
 REVIEW = Namespace(case=None, ids=[], review=True)
-APPROVE = [{"id": "F-tester-001", "type": "finding", "action": "approve"}]
+APPROVE = [
+    {
+        "id": "F-tester-001",
+        "type": "finding",
+        "action": "approve",
+        "staged_by": "analyst1",
+    }
+]
 
 
 def _artifact_lines_present(out: str) -> None:
@@ -133,7 +145,14 @@ def test_review_shows_the_events_approved_with_it(case, monkeypatch, capsys):
 
 
 def test_review_shows_evidence_only_for_what_it_approves(case, monkeypatch, capsys):
-    reject = [{"id": "F-tester-001", "type": "finding", "action": "reject"}]
+    reject = [
+        {
+            "id": "F-tester-001",
+            "type": "finding",
+            "action": "reject",
+            "staged_by": "analyst1",
+        }
+    ]
     _stage(case, [_finding()], [EVENT], review=reject)
     out = _until_prompt(monkeypatch, capsys, REVIEW)
     assert "approved with it" not in out and "Artifacts" not in out
@@ -160,7 +179,7 @@ def test_interactive_findings_only_shows_the_events_approved_with_it(
 
 def test_each_interactive_decision_shows_a_short_header(case, monkeypatch, capsys):
     _stage(case, [_finding()])
-    monkeypatch.setattr(approve_mod, "require_confirmation", lambda *a: ("p", "p"))
+    monkeypatch.setattr("vhir_cli.approval_auth.getpass_prompt", lambda *a: PASSPHRASE)
     monkeypatch.setattr("builtins.input", lambda prompt="": "q")
     cmd_approve(INTERACTIVE, IDENT)
     out = capsys.readouterr().out
@@ -220,7 +239,8 @@ def test_the_withdrawn_line_comes_just_before_the_prompt(
     line = "1 candidate finding(s) withdrawn after challenge"
     assert out.count(line) == 1
     tail = [x for x in out.splitlines() if x.strip() and set(x.strip()) != {"="}]
-    assert line in tail[-1]
+    # just above the prompt: the ids to be signed, and the withdrawn line before them
+    assert tail[-1].startswith("To be signed: F-tester-001") and line in tail[-2]
 
 
 REFUSED = {
@@ -289,12 +309,23 @@ def test_every_field_review_prints_before_the_prompt_is_escaped(
     event = {**EVENT, "id": "T-tester-002", "timestamp": f"2026-10-01{ESC}"}
     del event["auto_created_from"]
     review = [
-        {"id": "F-tester-001", "type": "finding", "action": "approve"},
-        {"id": f"T-tester-002{ESC}", "type": "timeline", "action": "approve"},
+        {
+            "id": "F-tester-001",
+            "type": "finding",
+            "action": "approve",
+            "staged_by": "analyst1",
+        },
+        {
+            "id": f"T-tester-002{ESC}",
+            "type": "timeline",
+            "action": "approve",
+            "staged_by": "analyst1",
+        },
         {
             "id": "T-tester-002",
             "type": "timeline",
             "action": "todo",
+            "staged_by": "analyst1",
             "todo_description": f"check {ESC}",
             "todo_priority": f"high{ESC}",
         },

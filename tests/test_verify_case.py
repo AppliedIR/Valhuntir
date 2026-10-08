@@ -54,7 +54,7 @@ def case(tmp_path):
     d = tmp_path / "C1"
     d.mkdir()
     (d / "CASE.yaml").write_text("case_id: C1\nstatus: open\n")
-    ledger.LEDGER_DIR.mkdir(parents=True)
+    ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     _save(d, findings=[], timeline=[], iocs=[])
     return d
 

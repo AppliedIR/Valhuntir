@@ -474,6 +474,112 @@ def ioc_values(iocs_field) -> set[str]:
     return values
 
 
+def case_id_of(case_dir: Path) -> str:
+    """The case id every ledger writer and reader uses: CASE.yaml's
+    `case_id`, else the directory name."""
+    return str(load_case_meta(case_dir).get("case_id") or case_dir.name)
+
+
+def plan_cascades(
+    decided: dict[str, str],
+    findings: list[dict],
+    timeline: list[dict],
+    iocs: list[dict],
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> list[dict]:
+    """The items a commit decides along with its findings, chosen only through
+    each decided finding's signed fields (its `timeline_event_id` and `iocs`).
+
+    `decided`: finding id -> status_after, for findings decided directly in
+    this commit (approve, reject or edit; a re-attestation never cascades).
+    `findings` hold the post-edit items. `exclude`: ids decided directly or
+    skipped by the examiner; they are never cascaded.
+
+    A timeline event cascades when it is the finding's `timeline_event_id`,
+    its `auto_created_from` is that finding, it has no examiner
+    modifications, and it is DRAFT (approve) or not REJECTED (reject).
+    An IOC cascades when it is DRAFT and not manually reviewed, its value is
+    among a decided finding's IOCs, and every finding citing it has that
+    status after this commit. Unsigned data can only narrow a cascade.
+
+    Returns `{item, type, status_after, coupled_from}` per cascade."""
+    out: list[dict] = []
+    by_id = {f.get("id"): f for f in findings}
+    events = {t.get("id"): t for t in timeline}
+    for fid, after in decided.items():
+        f = by_id.get(fid)
+        if f is None or after not in ("APPROVED", "REJECTED"):
+            continue
+        t = events.get(f.get("timeline_event_id"))
+        if t is None or t.get("id") in exclude:
+            continue
+        if t.get("auto_created_from") != fid or t.get("examiner_modifications"):
+            continue
+        if (after == "APPROVED" and t.get("status") != "DRAFT") or (
+            after == "REJECTED" and t.get("status") == "REJECTED"
+        ):
+            continue
+        out.append(
+            {"item": t, "type": "timeline", "status_after": after, "coupled_from": fid}
+        )
+    status_after = {
+        f.get("id"): decided.get(f.get("id"), f.get("status", "DRAFT"))
+        for f in findings
+    }
+    cited = {f.get("id"): ioc_values(f.get("iocs")) for f in findings}
+    for ioc in iocs:
+        if not isinstance(ioc, dict) or ioc.get("id") in exclude:
+            continue
+        if ioc.get("manually_reviewed") or ioc.get("status") != "DRAFT":
+            continue
+        value = normalize_ioc(str(ioc.get("value", "")))
+        citing = [fid for fid, values in cited.items() if value in values]
+        sources = sorted(fid for fid in citing if fid in decided)
+        for after in ("APPROVED", "REJECTED"):
+            mine = [fid for fid in sources if decided[fid] == after]
+            if mine and all(status_after[fid] == after for fid in citing):
+                out.append(
+                    {
+                        "item": ioc,
+                        "type": "ioc",
+                        "status_after": after,
+                        "coupled_from": mine[0],
+                    }
+                )
+                break
+    return out
+
+
+def set_status(
+    item: dict,
+    decision: str,
+    status_after: str,
+    examiner: str,
+    at: str,
+    *,
+    reason: str = "",
+    fresh_approver: bool = False,
+) -> None:
+    """Apply a signed decision to its item, with the time and examiner from
+    the signed body (never a fresh clock). A re-attestation stamps
+    `reattested_*` and keeps `approved_*`, except on an item with no earlier
+    approval record (`fresh_approver`)."""
+    if decision == "reattest":
+        item["reattested_by"], item["reattested_at"] = examiner, at
+        if fresh_approver:
+            item["approved_by"], item["approved_at"] = examiner, at
+    elif status_after == "APPROVED":
+        item["status"] = "APPROVED"
+        item["approved_by"], item["approved_at"] = examiner, at
+    elif status_after == "REJECTED":
+        item["status"] = "REJECTED"
+        item["rejected_by"], item["rejected_at"] = examiner, at
+        if reason:
+            item["rejection_reason"] = reason
+    item["modified_at"] = at
+    item["content_hash"] = compute_content_hash(item)
+
+
 def hmac_text(item: dict) -> str:
     """Canonical text for HMAC signing.
 
@@ -719,37 +825,43 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
 
+    from vhir_cli import ledger
+
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
 
-    # A local file that can't be read as JSON would merge as empty and be
-    # written back holding only the bundle's items: refuse before writing either.
-    for key, filename in (("findings", "findings.json"), ("timeline", "timeline.json")):
-        local_file = case_dir / filename
-        if key not in bundle or not local_file.exists():
-            continue
-        try:
-            text = local_file.read_text()
-            if text.strip():
-                json.loads(text)
-        except (OSError, ValueError) as e:
-            return {
-                "status": "error",
-                "message": (
-                    f"{filename} can't be read as JSON ({e}); nothing was merged. "
-                    "Fix or restore it, then merge again."
-                ),
-            }
-
-    if "findings" in bundle:
-        findings_result = _merge_items(
-            case_dir, "findings.json", bundle["findings"], "id"
-        )
-
-    if "timeline" in bundle:
-        timeline_result = _merge_items(
-            case_dir, "timeline.json", bundle["timeline"], "id"
-        )
+    # One case-lock span around both merges and their saves, as every writer
+    # of the case files: a decision committed meanwhile can't be overwritten.
+    with ledger.case_lock(case_id_of(case_dir)):
+        # A local file that can't be read as JSON would merge as empty and be
+        # written back holding only the bundle's items: refuse before writing either.
+        for key, filename in (
+            ("findings", "findings.json"),
+            ("timeline", "timeline.json"),
+        ):
+            local_file = case_dir / filename
+            if key not in bundle or not local_file.exists():
+                continue
+            try:
+                text = local_file.read_text()
+                if text.strip():
+                    json.loads(text)
+            except (OSError, ValueError) as e:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"{filename} can't be read as JSON ({e}); nothing was merged. "
+                        "Fix or restore it, then merge again."
+                    ),
+                }
+        if "findings" in bundle:
+            findings_result = _merge_items(
+                case_dir, "findings.json", bundle["findings"], "id"
+            )
+        if "timeline" in bundle:
+            timeline_result = _merge_items(
+                case_dir, "timeline.json", bundle["timeline"], "id"
+            )
 
     return {
         "status": "merged",
@@ -828,7 +940,7 @@ def _merge_items(
             added += 1
         else:
             existing = local_by_id[item_id]
-            if existing.get("status") == "APPROVED":
+            if existing.get("status") in ("APPROVED", "REJECTED"):  # decided here
                 protected += 1
                 continue
             inc_ts = item.get("modified_at", item.get("staged", ""))
