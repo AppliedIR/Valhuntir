@@ -281,6 +281,27 @@ def test_a_restore_refuses_another_case_s_chain(box, tmp_path, capsys):
     assert verify_case(case).exit_code == 0
 
 
+@pytest.mark.parametrize(
+    "rel,why",
+    [("./ledger/chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes"),
+     ("ledger/x/../chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes"),
+     ("../escaped.jsonl", "leads outside the case directory")],
+)  # fmt: skip
+def test_a_restore_path_is_judged_where_it_lands(box, tmp_path, capsys, rel, why):
+    path, signer, case = _signed_backup(box, tmp_path)
+    src = Path(path) / rel
+    src.parent.mkdir(parents=True, exist_ok=True)
+    _plant_chain(src, "another-case")
+    manifest = json.loads((Path(path) / "backup-manifest.json").read_text())
+    manifest["files"].append({"path": rel, "sha256": B.sha256_file(src), "size": 1})
+    (Path(path) / "backup-manifest.json").write_text(json.dumps(manifest))
+    assert box.restore(path) == 0
+    assert why in capsys.readouterr().err
+    assert not (case / "ledger" / "chains" / "0123456789abcdef.jsonl").exists()
+    assert not (case.parent / "escaped.jsonl").exists()
+    assert verify_case(case).exit_code == 0
+
+
 def test_a_restore_adds_only_keys_from_verifying_lines(box, tmp_path, capsys):
     """A chain copy whose line doesn't verify is in the case when it's backed
     up: its key reaches neither keys.json nor this box."""

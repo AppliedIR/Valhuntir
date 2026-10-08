@@ -838,10 +838,12 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
 
-    # One case-lock span around both merges and their saves, as every writer
-    # of the case files: a decision committed meanwhile can't be overwritten.
     # A bundle's chains are never added: they are data, and its keys and
     # heads anchors (decisions don't travel by import; restore carries them).
+    # Read first, so a malformed block can't fail the merge after it saved.
+    anchors = _bundle_anchors(bundle.get("ledger"))
+    # One case-lock span around both merges and their saves, as every writer
+    # of the case files: a decision committed meanwhile can't be overwritten.
     with ledger.case_lock(case_id_of(case_dir)):
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
@@ -877,19 +879,30 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         "status": "merged",
         "findings": findings_result,
         "timeline": timeline_result,
-        "ledger": _bundle_anchors(bundle.get("ledger")),
+        "ledger": anchors,
     }
+
+
+_ANCHOR_FIELDS = {
+    "keys": ("examiner", "fingerprint", "chain_id", "first_seq", "last_seq", "label"),
+    "heads": ("chain_id", "seq", "hash"),
+}
 
 
 def _bundle_anchors(block: object) -> dict:
     """A bundle's signing keys and chain heads, as it states them: printed as
-    anchors, never added to this case's ledger."""
+    anchors, never added to this case's ledger. Only lists count, and only
+    entries with every field the printout reads."""
+    out: dict[str, list] = {"keys": [], "heads": []}
     if not isinstance(block, dict):
-        return {"keys": [], "heads": []}
-    return {
-        "keys": [k for k in block.get("keys") or [] if isinstance(k, dict)],
-        "heads": [h for h in block.get("heads") or [] if isinstance(h, dict)],
-    }
+        return out
+    for name, fields in _ANCHOR_FIELDS.items():
+        items = block.get(name)
+        if isinstance(items, list):
+            out[name] = [
+                x for x in items if isinstance(x, dict) and all(f in x for f in fields)
+            ]
+    return out
 
 
 def _parse_ts(ts: str) -> datetime:

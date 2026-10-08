@@ -245,6 +245,92 @@ def test_close_moves_aside_a_longer_copy_with_forged_lines(cases, monkeypatch, c
     assert f"seq {last['seq']} " in out and forged_fp not in out
 
 
+def test_a_longer_fork_diverging_before_the_box_head_supplies_no_anchor(
+    cases, monkeypatch, capsys
+):
+    """Box chain [A1, A2]; a file at its id holding [A1, B2, B3], signed by
+    another key and linked. The anchors close prints are A's alone."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    d = _case(cases, findings=[_finding(1, "APPROVED"), _finding(2, "APPROVED")])
+    sign_approved(d, "steve")
+    real = ledger.chain_path("C-5").read_text().splitlines()
+    a1, a2 = json.loads(real[0]), json.loads(real[1])
+    key = Ed25519PrivateKey.generate()
+    pub = keys.b64(keys.public_raw(key))
+    prev, fork = a1, [real[0]]
+    for seq, n in ((2, 8), (3, 9)):
+        item = _finding(n, "APPROVED")
+        (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
+                                          "decision": "approve", "status_after": "APPROVED",
+                                          "coupled_from": None,
+                                          "content_snapshot": signed_text(item, "finding")}],
+                                 "steve", pub, "cli", "2026-10-08T11:00:00+00:00",
+                                 head=(seq - 1, ledger.body_hash(ledger.body_of(prev))))  # fmt: skip
+        fork.append(ledger.sign_body(body, key))
+        prev = body
+    cid = ledger.chain_id(ledger.body_of(a1))
+    path = d / "ledger" / "chains" / f"{cid}.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("\n".join(fork) + "\n")
+    assert _close("C-5", monkeypatch) == 0
+    out = capsys.readouterr().out
+    forged = keys.fingerprint(keys.public_raw(key))
+    a2_hash = ledger.body_hash(ledger.body_of(a2))
+    assert forged not in out
+    assert f"chain {cid}: seq 2 sha256:{a2_hash}" in out
+    assert "a copy in the case differs from this box's chain" in out
+    record = json.loads((d / "ledger" / "keys.json").read_text())
+    assert forged not in json.dumps(record)
+    assert [(h["seq"], h["hash"]) for h in record["heads"]] == [(2, a2_hash)]
+
+
+def test_another_chain_whose_copies_diverge_gives_no_anchor(cases, monkeypatch, capsys):
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    d = _case(cases, findings=[_finding(1, "APPROVED")])
+    sign_approved(d, "steve")
+    key = Ed25519PrivateKey.generate()
+    pub = keys.b64(keys.public_raw(key))
+
+    def line(n, head):
+        item = _finding(n, "APPROVED")
+        (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
+                                          "decision": "approve", "status_after": "APPROVED",
+                                          "coupled_from": None,
+                                          "content_snapshot": signed_text(item, "finding")}],
+                                 "alice", pub, "cli", "2026-10-08T10:00:00+00:00", head=head)  # fmt: skip
+        if body["seq"] == 1:
+            body["genesis"] = {"legacy_sha256": hashlib.sha256(b"").hexdigest(),
+                               "legacy_bytes": 0}  # fmt: skip
+        return body, ledger.sign_body(body, key)
+
+    b1, l1 = line(7, (0, ledger.genesis_prev("C-5")))
+    after = (1, ledger.body_hash(b1))
+    cid = ledger.chain_id(b1)
+    chains = d / "ledger" / "chains"
+    chains.mkdir(parents=True)
+    (chains / f"{cid}.jsonl").write_text(l1 + "\n" + line(8, after)[1] + "\n")
+    (chains / f"{cid}.x.jsonl").write_text(l1 + "\n" + line(9, after)[1] + "\n")
+    assert _close("C-5", monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert keys.fingerprint(keys.unb64(pub)) not in out
+    assert f"Chain {cid}: its copies diverge, so no key or head is taken from it" in out
+    assert f"chain {cid}:" not in out  # no head printed for it
+
+
+def test_a_malformed_anchor_block_merges_the_items_and_prints_nothing(cases):
+    d = _case(cases)
+    for block in ({"keys": 42}, {"keys": [{}], "heads": [{}]}, "x"):
+        result = import_bundle(d, {"findings": [_finding(7)], "ledger": block})
+        assert result["ledger"] == {"keys": [], "heads": []}
+    assert [f["id"] for f in json.loads((d / "findings.json").read_text())] == [
+        "F-steve-007"
+    ]
+
+
 def test_a_key_or_head_from_a_failing_line_is_never_printed(cases, monkeypatch, capsys):
     d = _case(cases, findings=[_finding(1, "APPROVED")])
     sign_approved(d, "steve")

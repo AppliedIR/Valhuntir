@@ -1401,12 +1401,18 @@ def cmd_restore(args, identity: dict) -> None:
     from vhir_cli import case_copies
 
     refused: dict[str, str] = {}
+    root = target_dir.resolve()
+    chains_dir = root / "ledger" / "chains"
     for i, entry in enumerate(files, 1):
         rel = entry["path"]
         src = backup_path / rel
-        dst = target_dir / rel
+        dst = (target_dir / rel).resolve()
+        if not dst.is_relative_to(root) or dst == root:  # never outside the case
+            refused[rel] = "its path leads outside the case directory"
+            progress("Copying files", i, total)
+            continue
         if src.exists() and not _is_control(rel):
-            if rel.startswith("ledger/chains/"):  # never another case's chain
+            if dst.parent == chains_dir:  # never another case's chain, by any spelling
                 why = case_copies.restorable_chain(src.read_bytes(), case_id)
                 if why:
                     refused[rel] = why

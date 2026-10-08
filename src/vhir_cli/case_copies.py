@@ -28,6 +28,7 @@ from pathlib import Path
 from vhir_cli import ledger
 
 _CHAIN_ID = re.compile(r"[0-9a-f]{16}")
+_DIVERGED = re.compile(r"chain ([0-9a-f]{16}): copies ")
 LOCK_SECONDS = 30
 
 
@@ -167,47 +168,69 @@ def _write_copies(case_id: str, case_dir: Path, box: Path) -> dict:
 
 def case_keys(case_dir: Path) -> dict:
     """{"keys": [{examiner, fingerprint, public_key, chain_id, first_seq,
-    last_seq, label}], "heads": [{chain_id, seq, hash}]} over every chain
-    the case has (this box's and its copies), counting only verifying
-    lines: of this case, signed, and linked; and for this box's own chain,
-    no further than its last line here (a longer copy's extra lines aren't
-    this box's). A key with no such line isn't listed, and a chain's head is
-    its last such line, so a printed key or head is never one a failing or
-    foreign line claims."""
+    last_seq, label}], "heads": [{chain_id, seq, hash}], "diverged":
+    [chain_id]}: the anchors close, export and backup print, one chain id at
+    a time, counting only verifying lines (of this case, signed, linked).
+    - This box's own chain id: its lines come only from the box file,
+      verified alone, so no copy of that id (a fork, a longer file) can
+      supply a key or a head.
+    - Any other chain id: only when verify found its copies agree; copies
+      that diverge are listed in "diverged", with no key and no head.
+    A key or head a failing or forked line claims is never printed."""
     from vhir_cli.ledger_verify import verify_case
 
-    result = verify_case(Path(case_dir))
-    box = ledger.read_lines(ledger.chain_path(result.case_id))
-    first = box[0][2] if box else None
+    case_dir = Path(case_dir)
+    result = verify_case(case_dir)
+    box = ledger.chain_path(result.case_id)
+    first = next((p for _, _, p in ledger.read_lines(box)), None)
     own = ledger.chain_id(ledger.body_of(first)) if isinstance(first, dict) else None
-    own_last = box[-1][2].get("seq") if box and isinstance(box[-1][2], dict) else None
+    split = {
+        m.group(1)
+        for code, msg in result.failures
+        if code == "CHAIN_COPY_DIVERGED"
+        for m in [_DIVERGED.match(msg)]
+        if m
+    }
+    diverged = sorted(split - {own})
+    sources = [
+        (c, result) for c in result.chains if c.chain_id not in ({own} | set(diverged))
+    ]
+    if own:
+        alone = verify_case(case_dir, ledger_paths=[box])
+        sources += [(c, alone) for c in alone.chains if c.chain_id == own]
     ranges: dict[tuple[str, str], dict] = {}
+    pubs: dict[tuple[str, str], str] = {}
+    labels: dict[tuple[str, str], str] = {}
     heads = []
-    for c in result.chains:
+    for c, judged in sources:
         good = [
             ln
             for ln in c.lines
             if ln.sig_ok
             and ln.obj.get("case_id") == result.case_id
             and (c.broken_at is None or ln.seq < c.broken_at)
-            and (c.chain_id != own or own_last is None or ln.seq <= own_last)
         ]
         for ln in good:
-            r = ranges.setdefault((str(ln.obj.get("examiner")), ln.fp), {})
-            first, last = r.get(c.chain_id, (ln.seq, ln.seq))
-            r[c.chain_id] = (min(first, ln.seq), max(last, ln.seq))
+            who = (str(ln.obj.get("examiner")), ln.fp)
+            pubs.setdefault(who, ln.obj.get("public_key"))
+            r = ranges.setdefault(who, {})
+            first_seq, last_seq = r.get(c.chain_id, (ln.seq, ln.seq))
+            r[c.chain_id] = (min(first_seq, ln.seq), max(last_seq, ln.seq))
+        for k in judged.keys:
+            labels.setdefault((k["examiner"], k["fingerprint"]), k.get("label", ""))
         if good:
             last = good[-1]
             heads.append({"chain_id": c.chain_id, "seq": last.seq,
                           "hash": ledger.body_hash(ledger.body_of(last.obj))})  # fmt: skip
     keys = [
-        {"examiner": k["examiner"], "fingerprint": k["fingerprint"],
-         "public_key": k.get("public_key"), "chain_id": cid, "first_seq": first,
-         "last_seq": last, "label": k.get("label", "")}
-        for k in result.keys
-        for cid, (first, last) in sorted(ranges.get((k["examiner"], k["fingerprint"]), {}).items())
+        {"examiner": ex, "fingerprint": fp, "public_key": pubs[(ex, fp)],
+         "chain_id": cid, "first_seq": a, "last_seq": b, "label": labels.get((ex, fp), "")}
+        for (ex, fp), r in sorted(ranges.items())
+        for cid, (a, b) in sorted(r.items())
     ]  # fmt: skip
-    return {"keys": keys, "heads": heads}
+    heads.sort(key=lambda h: h["chain_id"])
+    return {"keys": keys, "heads": heads, "diverged": diverged,
+            "own_diverged": own if own in split else None}  # fmt: skip
 
 
 def summary_lines(case_id: str, summary: dict) -> list[str]:
@@ -224,6 +247,16 @@ def summary_lines(case_id: str, summary: dict) -> list[str]:
     for h in summary.get("heads", []):
         lines.append(
             ledger.format_head(case_id, (h["seq"], h["hash"]), f"chain {h['chain_id']}")
+        )
+    if summary.get("own_diverged"):
+        lines.append(
+            f"Chain {summary['own_diverged']}: a copy in the case differs from this box's "
+            "chain; the key and head above are this box's own."
+        )
+    for cid in summary.get("diverged", []):
+        lines.append(
+            f"Chain {cid}: its copies diverge, so no key or head is taken from it; "
+            "`vhir review --verify` names them."
         )
     return lines
 
@@ -246,7 +279,9 @@ def bundle_block(case_id: str, case_dir: Path, summary: dict | None = None) -> d
     if summary is None:
         summary = case_keys(case_dir)
     return {"keys": summary["keys"], "heads": summary["heads"],
-            "chains": chains, "legacy": legacy}  # fmt: skip
+            "diverged": summary.get("diverged", []),
+            "own_diverged": summary.get("own_diverged"), "chains": chains,
+            "legacy": legacy}  # fmt: skip
 
 
 def restorable_chain(data: bytes, case_id: str) -> str | None:
