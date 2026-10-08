@@ -882,3 +882,32 @@ def test_a_todo_that_can_t_be_written_is_kept_and_the_exit_is_1(
     assert (todo["id"], todo["action"]) == ("F-steve-002", "todo")
     err = capsys.readouterr().err
     assert "Your TODOs weren't created" in err and "Nothing was signed" not in err
+
+
+def test_a_torn_write_whose_save_also_fails_lists_the_todos_to_enter_again(
+    case, monkeypatch, capsys
+):
+    import builtins
+
+    from vhir_cli import decide
+
+    replies = iter(["a", "t", "check the other host", "", "high", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    real_open = builtins.open
+
+    def no_truncate(path, mode="r", *a, **k):
+        if mode == "r+b":
+            raise PermissionError("read-only")
+        return real_open(path, mode, *a, **k)
+
+    def no_save(*a, **k):
+        raise OSError("pending-reviews.json is read-only")
+
+    monkeypatch.setattr(ledger, "os", _FaultyOs("fsync", OSError("disk full")))
+    monkeypatch.setattr(builtins, "open", no_truncate)
+    monkeypatch.setattr(decide, "save_unsigned", no_save)
+    code = _run(lambda: A._interactive_review(case, IDENT, case / "cfg"))
+    monkeypatch.setattr(builtins, "open", real_open)
+    err = capsys.readouterr().err
+    assert code == 1 and "couldn't be saved (pending-reviews.json is read-only)" in err
+    assert "Enter this TODO again: check the other host (F-steve-002)" in err

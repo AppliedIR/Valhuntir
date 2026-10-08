@@ -395,8 +395,17 @@ def sign_and_commit(
             try:
                 if marked or todos:
                     save_unsigned(case_dir, examiner, marked, "LEDGER_TORN", todos)
-            except Exception:  # noqa: BLE001 - the message below says what to do
-                pass
+            except Exception as saving:  # noqa: BLE001 - said, never silent
+                print(
+                    f"Your review entries and TODOs couldn't be saved ({one_line(str(saving))}).",
+                    file=sys.stderr,
+                )
+                for t in todos:
+                    print(
+                        f"  Enter this TODO again: {one_line(t.get('description', ''))} "
+                        f"({one_line(', '.join(t.get('related_findings') or []))})",
+                        file=sys.stderr,
+                    )
             print(
                 f"{e}\nSome of these decisions may already be signed. "
                 "`vhir review --verify` lists each one as a failure, with its fix. If it "
