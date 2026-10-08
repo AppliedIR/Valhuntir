@@ -1127,6 +1127,11 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
         print(f"{prefix}{shown(val, ' ' * len(prefix))}")
 
 
+# An IOC's value and type are what the examiner decides: only its tags and
+# description are edited, here as in the portal
+_IOC_EDITABLE = frozenset({"tags", "description"})
+
+
 def _same_entry(a: dict, b: dict) -> bool:
     """Equal apart from the CLI's own stamps."""
     strip = lambda e: {  # noqa: E731
@@ -1275,6 +1280,10 @@ def _review_mode(
             skipped.append((item_id, "changed after you reviewed it"))
             continue
         mods = entry.get("modifications") or {}
+        fixed = sorted(f for f in mods if f not in _IOC_EDITABLE)
+        if decide.item_type(item_id) == "ioc" and fixed:  # value and type are decided
+            skipped.append((item_id, f"an IOC's {', '.join(fixed)} can't be edited"))
+            continue
         conflict = next(
             (f for f, m in mods.items() if item.get(f) != m.get("original")), None
         )
