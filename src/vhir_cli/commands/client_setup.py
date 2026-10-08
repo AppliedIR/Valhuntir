@@ -878,6 +878,9 @@ def _find_claude_code_assets() -> Path | None:
 
 
 _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
+# read by the audit hooks: the shell commands with an MCP route, and the
+# sidecar that looks a command up
+_HOOK_DATA = ("mcp-route.py", "mcp-routes.tsv")
 # `vhir setup client -y`: (backup, path) of each user file it changed. None
 # when a change is asked about on a terminal, or kept, instead.
 _APPLIED: list | None = None
@@ -1457,6 +1460,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             _deploy_hook(
                 _find_hook(hook_name), Path.home() / ".vhir" / "hooks" / hook_name
             )
+        for name in _HOOK_DATA:
+            _deploy_copy(_find_hook(name), Path.home() / ".vhir" / "hooks" / name)
 
         _drop_deprecated_hooks(Path.home() / ".vhir" / "hooks", settings_target)
 
@@ -1515,6 +1520,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             _deploy_hook(
                 _find_hook(hook_name), project_dir / ".claude" / "hooks" / hook_name
             )
+        for name in _HOOK_DATA:
+            _deploy_copy(_find_hook(name), project_dir / ".claude" / "hooks" / name)
 
         _drop_deprecated_hooks(project_dir / ".claude" / "hooks", settings_target)
 
@@ -2497,7 +2504,7 @@ def _uninstall_sift() -> None:
 
     # [3] Hook scripts
     hooks_dir = Path.home() / ".vhir" / "hooks"
-    hook_scripts = ["forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh"]
+    hook_scripts = [*_PRODUCT_HOOKS, *_HOOK_DATA]
     existing_hooks = [h for h in hook_scripts if (hooks_dir / h).is_file()]
     if existing_hooks:
         print(f"  [3] Hook scripts (~/.vhir/hooks/: {', '.join(existing_hooks)})")

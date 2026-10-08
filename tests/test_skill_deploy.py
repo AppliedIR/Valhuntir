@@ -150,3 +150,14 @@ def test_a_retired_file_with_the_user_s_edits_is_kept_with_a_notice(box, capsys,
     out = capsys.readouterr().out
     assert f"Kept:      {path}: it differs from every version vhir shipped" in out
     assert "vhir no longer uses it" in out
+
+
+def test_the_audit_hooks_route_table_and_sidecar_are_deployed_beside_them(box):
+    hooks = box.repo / "claude-code" / "shared" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "mcp-route.py").write_text("# sidecar\n")
+    (hooks / "mcp-routes.tsv").write_text("vol\tsift-mcp run_command\tvol3\n")
+    box.run()
+    deployed = box.home / ".vhir" / "hooks"
+    assert (deployed / "mcp-route.py").read_text() == "# sidecar\n"
+    assert (deployed / "mcp-routes.tsv").read_text().startswith("vol\t")
