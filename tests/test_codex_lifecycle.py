@@ -67,6 +67,10 @@ def test_after_the_opt_out_update_says_so_and_offers_nothing(box, calls, capsys)
     out = capsys.readouterr().out
     assert "codex-controls" not in calls and box.ran == []
     assert "CODEX CONTROLS OFF" in out and "vhir setup client --client=codex" in out
+    assert (
+        "Managed requirements: CODEX CONTROLS OFF: the requirements were moved away"
+        in out
+    )
 
 
 def test_an_older_manifest_with_one_client_still_redeploys_it(calls):
