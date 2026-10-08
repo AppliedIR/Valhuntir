@@ -388,6 +388,22 @@ def sign_and_commit(
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001 - never a traceback that loses the work
+        if isinstance(e, ledger.LedgerTorn):
+            # part of the write may be in the chain: stage nothing new, only
+            # mark the review entries and keep the TODOs
+            marked = [d for d in direct if d.delta_entry]
+            try:
+                if marked or todos:
+                    save_unsigned(case_dir, examiner, marked, "LEDGER_TORN", todos)
+            except Exception:  # noqa: BLE001 - the message below says what to do
+                pass
+            print(
+                f"{e}\nSome of these decisions may already be signed. "
+                "`vhir review --verify` lists each one as a failure, with its fix. If it "
+                "reports UNPARSEABLE_LINE on the last line, restore the chain from a copy first.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if not committed:  # the commit wrote nothing: keep every decision
             keep(type(e).__name__, f"The commit couldn't go ahead: {one_line(str(e))}")
         save_error = save_error or e

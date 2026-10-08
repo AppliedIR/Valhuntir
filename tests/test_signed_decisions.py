@@ -733,6 +733,7 @@ class _FaultyOs:
 
         self._os, self._fail_on, self._error = real, fail_on, error
         self._writes_before = writes_before
+        self._failed = False
 
     def __getattr__(self, name):
         if name == "fdopen" and self._fail_on == "write":
@@ -753,9 +754,10 @@ class _FaultyOs:
                 return f
 
             return fdopen
-        if name == self._fail_on:
+        if name == self._fail_on and not self._failed:
 
             def fail(*a, **k):
+                self._failed = True  # once: the cut-back that follows works
                 raise self._error
 
             return fail
@@ -817,8 +819,37 @@ def test_a_write_that_can_t_be_cut_back_says_so(case, monkeypatch, capsys):
     monkeypatch.setattr(builtins, "open", no_truncate)
     code = _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
     monkeypatch.setattr(builtins, "open", real_open)
-    assert code == 1
-    assert "couldn't be cut back" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert code == 1 and "couldn't be cut back" in err
+    assert "Nothing was signed" not in err and "`vhir review --verify`" in err
+    assert not (case / "pending-reviews.json").exists()  # nothing staged anew
+
+
+def test_a_torn_write_marks_the_review_entries_and_stages_nothing_new(
+    case, monkeypatch, capsys
+):
+    import builtins
+
+    (case / "pending-reviews.json").write_text(json.dumps({"case_id": "C-9", "items": [
+        {"id": "F-steve-002", "type": "finding", "action": "approve", "staged_by": "steve"}
+    ]}))  # fmt: skip
+    real_open = builtins.open
+
+    def no_truncate(path, mode="r", *a, **k):
+        if mode == "r+b":
+            raise PermissionError("read-only")
+        return real_open(path, mode, *a, **k)
+
+    monkeypatch.setattr(ledger, "os", _FaultyOs("fsync", OSError("disk full")))
+    monkeypatch.setattr(builtins, "open", no_truncate)
+    code = _run(lambda: A._review_mode(case, IDENT, case / "cfg"))
+    monkeypatch.setattr(builtins, "open", real_open)
+    import os as real_os
+
+    monkeypatch.setattr(ledger, "os", real_os)
+    assert code == 1 and "Nothing was signed" not in capsys.readouterr().err
+    (entry,) = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert entry["saved_unsigned"]["reason"] == "LEDGER_TORN"
 
 
 def test_a_saved_todo_survives_a_later_saved_decision_for_the_same_item(case):

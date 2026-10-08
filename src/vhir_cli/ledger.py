@@ -45,7 +45,8 @@ _STATUS_AFTER = ("APPROVED", "REJECTED", "DRAFT")
 
 
 class LedgerError(Exception):
-    """A ledger write that didn't happen; nothing was written."""
+    """A ledger write that didn't happen. Nothing was written, except for
+    LedgerTorn, which says part of the write may be left in the chain."""
 
 
 class LedgerMoved(LedgerError):
