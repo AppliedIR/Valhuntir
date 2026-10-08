@@ -67,8 +67,8 @@ _FORENSIC_DENY_RULES = {
     "Write(**/evidence.json)",
     "Edit(**/iocs.json)",
     "Write(**/iocs.json)",
-    "Read(/var/lib/vhir/**)",
-    "Edit(/var/lib/vhir/**)",
+    "Read(//var/lib/vhir/**)",
+    "Edit(//var/lib/vhir/**)",
     "Write(/var/lib/vhir/**)",
     "Bash(vhir approve*)",
     "Bash(*vhir approve*)",
@@ -96,8 +96,16 @@ _FORENSIC_DENY_RULES = {
     "Write(**/pending-reviews.json)",
 }
 
-# Old forensic deny rules — removed during migration re-deploy
-_OLD_FORENSIC_DENY_RULES = {"Bash(rm -rf *)", "Bash(mkfs*)", "Bash(dd *)"}
+# Old forensic deny rules — removed during migration re-deploy. The
+# single-slash /var/lib/vhir rules matched nothing: "//" marks an absolute
+# path in a permission rule.
+_OLD_FORENSIC_DENY_RULES = {
+    "Bash(rm -rf *)",
+    "Bash(mkfs*)",
+    "Bash(dd *)",
+    "Read(/var/lib/vhir/**)",
+    "Edit(/var/lib/vhir/**)",
+}
 
 # Valhuntir MCP names — used for uninstall identification.
 _VHIR_BACKEND_NAMES = {
@@ -1326,20 +1334,26 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                     current = [r for r in current if r not in _OLD_FORENSIC_DENY_RULES]
                 existing_perms[key] = add_missing(current, incoming["permissions"][key])
 
-    # Merge sandbox config (deep-merge filesystem.denyWrite)
+    # Merge sandbox config: every list (filesystem.denyWrite, denyRead, ...)
+    # is a union, so the user's own entries stay
     if "sandbox" in incoming:
         existing_sandbox = existing.setdefault("sandbox", {})
         incoming_sandbox = incoming["sandbox"]
         if "filesystem" in incoming_sandbox:
             existing_fs = existing_sandbox.setdefault("filesystem", {})
             for k, v in incoming_sandbox["filesystem"].items():
-                if k == "denyWrite":
-                    existing_fs[k] = add_missing(existing_fs.get(k, []), v)
+                if isinstance(v, list) and isinstance(existing_fs.get(k), list):
+                    existing_fs[k] = add_missing(existing_fs[k], v)
                 else:
                     existing_fs[k] = v
-        # Merge top-level sandbox keys (enabled, allowUnsandboxedCommands)
+        # Merge top-level sandbox keys (enabled, allowUnsandboxedCommands;
+        # a list is a union here too)
         for k, v in incoming_sandbox.items():
-            if k != "filesystem":
+            if k == "filesystem":
+                continue
+            if isinstance(v, list) and isinstance(existing_sandbox.get(k), list):
+                existing_sandbox[k] = add_missing(existing_sandbox[k], v)
+            else:
                 existing_sandbox[k] = v
     return existing
 

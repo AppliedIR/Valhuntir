@@ -109,10 +109,36 @@ def chain_id_of(data: bytes) -> str | None:
     return None
 
 
+def store_hidden() -> Path | None:
+    """The store folder when it's there but none of its folders can be seen,
+    or None. A shell whose sandbox read-denies /var/lib/vhir (as Claude
+    Code's does) sees it empty; copying from there would leave the chain out
+    silently. A box with no store has no folder at all."""
+    from vhir_cli import approval_auth, keys, verification
+
+    folders = (
+        verification.VERIFICATION_DIR,
+        approval_auth._PASSWORDS_DIR,
+        keys.KEYS_DIR,
+        ledger.LEDGER_DIR,
+    )
+    root = ledger.LEDGER_DIR.parent
+    if root.is_dir() and not any(f.is_dir() for f in folders):
+        return root
+    return None
+
+
 def write_case_copies(case_id: str, case_dir: Path) -> dict:
     """Write this box's chain, its 0.6 history and the case's keys into the
     case, under the case lock. Returns {"chain_id", "copies": [(what,
     path)], "keys", "heads"}. Raises CopyFailed."""
+    hidden = store_hidden()
+    if hidden is not None:
+        raise CopyFailed(
+            f"{hidden} looks empty from here: its signing and approval folders "
+            "can't be seen (a sandboxed shell, such as the AI's, hides them), so "
+            "the case's signed history can't be copied. Run this in your own terminal"
+        )
     box = ledger.chain_path(case_id)
     try:
         lock = ledger.case_lock(case_id, timeout=LOCK_SECONDS).acquire()
