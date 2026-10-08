@@ -34,6 +34,11 @@ HOOKS = (
     ("codex-stdin-capture.sh", "shared/hooks/codex-stdin-capture.sh"),
     ("case-dir-check.sh", "full/hooks/case-dir-check.sh"),
 )
+# Beside the audit hook when sift-mcp ships them: the MCP routes it marks
+OPTIONAL = (
+    ("mcp-route.py", "shared/hooks/mcp-route.py"),
+    ("mcp-routes.tsv", "shared/hooks/mcp-routes.tsv"),
+)
 USERNS = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
 USERNS_NOTICE = (
     "  NOTE: this kernel restricts unprivileged user namespaces "
@@ -121,6 +126,9 @@ def _sources() -> tuple[str, list[tuple[str, Path]]] | None:
     hooks = [(name, assets / rel) for name, rel in HOOKS]
     if not template.is_file() or not all(p.is_file() for _, p in hooks):
         return None
+    hooks += [
+        (name, assets / rel) for name, rel in OPTIONAL if (assets / rel).is_file()
+    ]
     return template.read_text(), hooks
 
 
@@ -131,8 +139,8 @@ def render(template: str, home: Path) -> str:
 def _commands(staged: Path, hooks) -> list[list[str]]:
     root = ["-o", "root", "-g", "root"]
     cmds = [["sudo", "install", "-d", "-m", "0755", *root, str(HOOKS_DIR)]]
-    cmds += [["sudo", "install", "-m", "0755", *root, str(src), str(HOOKS_DIR / name)]
-             for name, src in hooks]  # fmt: skip
+    cmds += [["sudo", "install", "-m", "0644" if name.endswith(".tsv") else "0755", *root,
+              str(src), str(HOOKS_DIR / name)] for name, src in hooks]  # fmt: skip
     cmds.append(
         ["sudo", "install", "-m", "0644", *root, str(staged), str(REQUIREMENTS)]
     )

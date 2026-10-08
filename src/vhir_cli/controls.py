@@ -58,7 +58,9 @@ ROWS = (
         "each shell command, failed and refused ones too, recorded in the active case",
         "another OS user's sessions; a session after the active case was switched "
         "through MCP; two sessions at once can share an audit id; Codex's typed shell "
-        "input is recorded at its next hooked call or when the turn ends",
+        "input is recorded at its next hooked call or when the turn ends; a command "
+        "with an MCP route is marked only when it's the first one (not later in a "
+        "pipe or chain, or inside a script)",
     ),
     (
         "Case-data guard",

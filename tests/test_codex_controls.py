@@ -178,3 +178,16 @@ def test_setup_test_reports_codex_controls_off(box, monkeypatch, capsys):
         pass
     out = capsys.readouterr().out
     assert "Codex controls:" in out and "CODEX CONTROLS OFF" in out
+
+
+def test_the_route_sidecar_is_installed_beside_the_hooks_when_shipped(box):
+    for name, rel in cc.OPTIONAL:
+        (box.assets / rel).write_text(f"# {name}\n")
+    cc.deploy_codex_controls(consent=True)
+    assert {"mcp-route.py", "mcp-routes.tsv"} <= {
+        p.name for p in cc.HOOKS_DIR.iterdir()
+    }
+    modes = {
+        c[-1].rsplit("/", 1)[-1]: c[c.index("-m") + 1] for c in box.ran if "-d" not in c
+    }
+    assert modes["mcp-routes.tsv"] == "0644" and modes["mcp-route.py"] == "0755"
