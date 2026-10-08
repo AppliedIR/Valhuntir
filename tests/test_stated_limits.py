@@ -53,6 +53,9 @@ VERBATIM = [
     # approvals made under 0.6
     "They carry no signature that 0.7 can check. They record that an approval was "
     "made, not who made it.",
+    # a folder copied by hand
+    "A folder copied by hand shares its case's identity; before signing in a copy, "
+    "give it its own with `vhir case new-identity`.",
     # collaboration: a bundle's chains are data
     "An import never replaces a local APPROVED or REJECTED item, and adds no chain file",
     # the accepted residuals, verbatim
