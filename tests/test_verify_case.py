@@ -117,7 +117,7 @@ def _status(result, item_id):
     return result.verdict(item_id).status
 
 
-# --- A clean case, with and without anchors (C1, F4) -------------------------------
+# --- A clean case, with and without anchors -------------------------------
 
 
 def test_a_clean_case_exits_0_without_anchors_and_says_so(case, steve):
@@ -181,7 +181,7 @@ def test_a_wrong_pin_is_key_not_pinned(case, steve):
     assert _status(result, "F-steve-001") == "KEY_NOT_PINNED" and result.exit_code == 2
 
 
-# --- Changes to the chain (F3, F4) -------------------------------------------------------
+# --- Changes to the chain -------------------------------------------------------
 
 
 def _three(case, steve):
@@ -221,7 +221,7 @@ def test_an_edited_time_breaks_the_signature(case, steve):
 
 
 def test_a_changed_signature_on_an_earlier_line_is_tampered_line(case, steve):
-    """F1 is decided again, so its first line is history: a bad signature
+    """Finding 1 is decided again, so its first line is history: a bad signature
     there is a case-level failure, and deciding again doesn't clear it."""
     _three(case, steve)
     approved = _load(case, "findings")[0]
@@ -298,7 +298,7 @@ def test_every_body_carries_view_1_and_changing_it_breaks_the_signature(case, st
     assert _status(verify_case(case), "F-steve-003") == "TAMPERED"
 
 
-# --- Decisions and status (F11) ----------------------------------------------------------
+# --- Decisions and status ----------------------------------------------------------
 
 
 def test_a_rejected_item_set_back_to_approved_is_revoked(case, steve):
@@ -347,7 +347,7 @@ def test_an_ioc_s_derived_fields_don_t_alter_it(case, steve):
     assert _status(verify_case(case), "IOC-steve-001") == "ALTERED_AFTER_APPROVAL"
 
 
-# --- Keys (N1, X7) -----------------------------------------------------------------------
+# --- Keys: a change, a retirement -----------------------------------------------------------------------
 
 
 def test_a_key_change_fails_unless_the_new_key_is_pinned(case, steve):
@@ -380,7 +380,7 @@ def test_a_retired_key_signing_after_its_supersedes_record_fails(case, steve):
     assert _status(result, "F-steve-003") == "RETIRED_KEY_USE" and result.exit_code == 2
 
 
-# --- 0.6 lines (C19-C24, F5) ---------------------------------------------------------------
+# --- 0.6 lines ---------------------------------------------------------------
 
 
 def _legacy_line(item, approved_by="steve", approved_at=AT, kind="finding") -> str:
@@ -460,7 +460,7 @@ def test_a_reattested_0_6_approval_is_valid_with_both_dates(case, steve):
     assert _status(verify_case(case), "F-steve-001") == "ALTERED_AFTER_APPROVAL"
 
 
-# --- Cascades (X4, F18) ---------------------------------------------------------------------
+# --- Cascades ---------------------------------------------------------------------
 
 
 def test_a_timeline_cascade_is_valid_only_through_the_signed_link(case, steve):
@@ -529,7 +529,7 @@ def test_an_ioc_cascade_needs_its_value_in_the_source_s_signed_iocs(case, steve)
     assert _status(result, "IOC-steve-002") == "CASCADE_UNSUPPORTED"
 
 
-# --- Several chains (X10, Z6.6, W4.3) ----------------------------------------------------------
+# --- Several chains ----------------------------------------------------------
 
 
 def _copy_dir(case) -> Path:
@@ -709,7 +709,7 @@ def test_case_text_is_printed_through_the_display_rule(case, steve):
     assert "\x1b" not in out
 
 
-# --- vhir report: the verified approvals and the block (C11, C24, C30, F12) ------------------
+# --- vhir report: the verified approvals and the block ------------------
 
 
 def _report(case, monkeypatch, capsys, **flags):
@@ -801,7 +801,7 @@ def test_a_pin_s_range_bounds_the_seqs_it_covers(case, steve):
     assert verify_case(case, expect_keys=[steve.pin(first=1)]).exit_code == 0
 
 
-# --- Rules on non-latest lines and across chains (V2, W4.3, W6, X10) --------------------------
+# --- Rules on non-latest lines and across chains --------------------------
 
 
 def _edit_again(case, ex, item_id, at=AT2):
@@ -838,7 +838,7 @@ def test_a_retired_key_on_an_earlier_line_of_another_item_is_case_level(case, st
     findings = _load(case, "findings")
     findings[1].update(status="APPROVED", approved_by="steve", approved_at=AT)
     _save(case, findings=findings)
-    _edit_again(case, new, "F-steve-003")  # F3 decided again with the new key
+    _edit_again(case, new, "F-steve-003")  # finding 3 decided again with the new key
     result = verify_case(case, expect_keys=[steve.pin(), new.pin()])
     assert _status(result, "F-steve-003") == "VALID"
     assert (
@@ -873,7 +873,7 @@ def test_two_chains_deciding_one_item_differently_without_a_reference_fork(case,
     _approve(case, steve, f)
     box = _chain_lines()
     other = Examiner("steve")
-    # A second box's chain for the same case: its own genesis, rejecting F1.
+    # A second box's chain for the same case: its own genesis, rejecting finding 1.
     approved = _load(case, "findings")[0]
     body = ledger.prepare("C1", [{"item_id": f["id"], "type": "finding", "decision": "reject",
                                   "status_after": "REJECTED", "coupled_from": None,
@@ -905,3 +905,175 @@ def test_a_reference_to_a_head_the_named_chain_doesn_t_hold(case, steve):
     assert any(
         c == "HEAD_MISMATCH" and "references chain" in m for c, m in result.failures
     )
+
+
+# --- What a file write alone must not produce -------------------------------------------------
+
+
+def test_a_0_6_line_added_to_the_close_copy_after_signing_began_fails(case, steve):
+    f1, forged = (
+        _finding(1),
+        _finding(3, status="APPROVED", approved_by="steve", approved_at=AT),
+    )
+    _save(case, findings=[f1])
+    _approve(case, steve, f1)  # signing begins (an empty 0.6 file)
+    _save(case, findings=_load(case, "findings") + [forged])
+    (case / "verification.jsonl").write_text(_legacy_line(forged) + "\n")
+    result = verify_case(case)
+    assert (
+        _status(result, "F-steve-003") == "LEGACY_AFTER_GENESIS"
+        and result.exit_code == 2
+    )
+    assert "F-steve-003" not in [f["id"] for f in approved_view(case)["findings"]]
+
+
+def test_anchor_a_close_copy_of_the_frozen_0_6_file_still_verifies(case, steve):
+    old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
+    box = _legacy([_legacy_line(old)])
+    fresh = _finding(2)
+    _save(case, findings=[old, fresh])
+    _approve(case, steve, fresh)  # genesis freezes the 0.6 file
+    (case / "verification.jsonl").write_bytes(box.read_bytes())  # 0.6 close's copy
+    box.unlink()  # verified from the case's copy alone
+    result = verify_case(case)
+    assert (
+        _status(result, "F-steve-001") == "APPROVED_UNDER_0_6" and result.exit_code == 0
+    )
+
+
+def test_a_second_record_with_a_signed_id_fails_the_case(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    signed = _load(case, "findings")[0]
+    _save(case, findings=[dict(signed, title="FORGED"), signed])
+    result = verify_case(case)
+    assert (
+        any(c == "DUPLICATE_ID" for c, _ in result.failures) and result.exit_code == 2
+    )
+    assert approved_view(case)["findings"] == []
+
+
+def test_a_finding_reusing_a_signed_timeline_id_fails_the_case(case, steve):
+    t = {
+        "id": "T-steve-001",
+        "timestamp": "2026-10-01T00:00:00Z",
+        "description": "e",
+        "status": "DRAFT",
+    }
+    _save(case, timeline=[t])
+    _sign(case, steve, [(t, "timeline", "approve", "APPROVED", None)])
+    _save(case, timeline=[dict(t, status="APPROVED", approved_by="steve", approved_at=AT)],
+          findings=[_finding(status="APPROVED", approved_by="steve", approved_at=AT,
+                             id="T-steve-001", title="FORGED")])  # fmt: skip
+    result = verify_case(case)
+    assert (
+        any(c == "DUPLICATE_ID" for c, _ in result.failures) and result.exit_code == 2
+    )
+    assert approved_view(case)["findings"] == []
+
+
+def test_nothing_is_shown_as_approved_while_the_case_fails(case, steve):
+    _three(case, steve)
+    lines = _chain_lines()
+    approved = _load(case, "findings")[0]
+    _sign(case, steve, [(approved, "finding", "edit", "APPROVED", None)], at=AT2)
+    findings = _load(case, "findings")
+    findings[0]["approved_at"] = AT2
+    _save(case, findings=findings)
+    lines = _chain_lines()
+    first = json.loads(lines[0])
+    first["sig"] = base64.b64encode(b"\0" * 64).decode()
+    _write_chain(
+        [json.dumps(first)] + lines[1:]
+    )  # a bad signature on a non-latest line
+    view = approved_view(case)
+    assert view["findings"] == [] and {n["status"] for n in view["not_verified"]} == {
+        "CASE_FAILURE"
+    }
+
+
+def test_a_parallel_chain_under_another_key_for_the_same_examiner_fails_unless_both_are_pinned(
+    case, steve
+):
+    f1, forged = _finding(1), _finding(2)
+    _save(case, findings=[f1, forged])
+    _approve(case, steve, f1)
+    other = Examiner("steve")
+    body = ledger.prepare("C1", [{"item_id": forged["id"], "type": "finding", "decision": "approve",
+                                  "status_after": "APPROVED", "coupled_from": None,
+                                  "content_snapshot": signed_text(forged, "finding")}],
+                          "steve", other.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
+    body[0]["genesis"] = {
+        "legacy_sha256": hashlib.sha256(b"").hexdigest(),
+        "legacy_bytes": 0,
+    }
+    cid = ledger.chain_id(body[0])
+    (_copy_dir(case) / f"{cid}.jsonl").write_text(
+        ledger.sign_body(body[0], other.key) + "\n"
+    )
+    findings = _load(case, "findings")
+    findings[1].update(status="APPROVED", approved_by="steve", approved_at=AT)
+    _save(case, findings=findings)
+    result = verify_case(case)
+    assert any(c == "KEY_CHANGED" for c, _ in result.failures) and result.exit_code == 2
+    assert "Key changed at seq 1 without the previous key's signature" in render(result)
+    assert verify_case(case, expect_keys=[steve.pin(), other.pin()]).exit_code == 0
+
+
+def test_a_long_chain_beside_a_second_chain_is_ordered_without_recursion(case, steve):
+    fs = [_finding(n) for n in range(1, 1101)]
+    _save(case, findings=fs)
+    _sign(case, steve, [(f, "finding", "approve", "APPROVED", None) for f in fs])
+    done = [dict(f, status="APPROVED", approved_by="steve", approved_at=AT) for f in fs]
+    _save(case, findings=done)
+    last = fs[-1]
+    body = ledger.prepare("C1", [{"item_id": last["id"], "type": "finding", "decision": "approve",
+                                  "status_after": "APPROVED", "coupled_from": None,
+                                  "content_snapshot": signed_text(last, "finding")}],
+                          "steve", steve.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
+    body[0]["genesis"] = {
+        "legacy_sha256": hashlib.sha256(b"").hexdigest(),
+        "legacy_bytes": 0,
+    }
+    cid = ledger.chain_id(body[0])
+    (_copy_dir(case) / f"{cid}.jsonl").write_text(
+        ledger.sign_body(body[0], steve.key) + "\n"
+    )
+    result = verify_case(case)
+    assert len(result.chains) == 2 and result.exit_code == 0
+    assert _status(result, last["id"]) == "VALID"
+
+
+@pytest.mark.parametrize(
+    "field, value", [("seq", "2"), ("view", []), ("prior_chains", [7])]
+)
+def test_a_line_with_a_wrongly_typed_field_is_malformed_not_a_crash(
+    case, steve, field, value
+):
+    _three(case, steve)
+    lines = _chain_lines()
+    second = json.loads(lines[1])
+    second[field] = value
+    _write_chain([lines[0], json.dumps(second), lines[2]])
+    result = verify_case(case)
+    assert (
+        any(c == "MALFORMED_LINE" for c, _ in result.failures) and result.exit_code == 2
+    )
+    render(result)  # and it renders
+
+
+def test_diverged_copies_are_judged_on_the_copy_whose_lines_verify(case, steve):
+    f1, f2 = _finding(1), _finding(2)
+    _save(case, findings=[f1, f2])
+    _approve(case, steve, f1)
+    _approve(case, steve, f2)
+    good = _chain_lines()
+    cid = ledger.chain_id(ledger.body_of(json.loads(good[0])))
+    (_copy_dir(case) / f"{cid}.jsonl").write_text("".join(x + "\n" for x in good))
+    bad = json.loads(good[1])
+    bad["sig"] = base64.b64encode(b"\1" * 64).decode()
+    _write_chain([good[0], json.dumps(bad)])  # the box copy's line 2 was altered
+    result = verify_case(case)
+    assert any(c == "CHAIN_COPY_DIVERGED" for c, _ in result.failures)
+    assert _status(result, "F-steve-002") == "VALID"  # judged on the copy that verifies

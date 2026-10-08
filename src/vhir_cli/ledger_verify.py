@@ -261,6 +261,8 @@ class ItemVerdict:
     status: str  # VALID, APPROVED_UNDER_0_6 or a failing status
     label: str = ""
     detail: list[str] = field(default_factory=list)
+    content_sha256: str = ""  # of the record judged, in the view judged
+    view: int = 1
 
 
 @dataclass
@@ -320,7 +322,16 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
             continue
         for item in data:
             if isinstance(item, dict) and item.get("id"):
-                items[str(item["id"])] = (kind, item)
+                item_id = str(item["id"])
+                if item_id in items:  # one record per id, across all three files
+                    result.failures.append(
+                        (
+                            "DUPLICATE_ID",
+                            f"{item_id} is used by more than one record ({name}, {items[item_id][0]})",
+                        )
+                    )
+                    continue
+                items[item_id] = (kind, item)
     return items
 
 
@@ -396,6 +407,56 @@ def _group_copies(
     return chains
 
 
+_STR_FIELDS = (
+    "prev", "case_id", "item_id", "type", "decision", "status_after", "examiner",
+    "at", "mode", "public_key", "content_sha256", "content_snapshot", "sig",
+)  # fmt: skip
+
+
+def _int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _malformed(obj: dict) -> str:
+    """Why a parsed line's fields have the wrong types ("" when they're fine)."""
+    if obj.get("v") != ledger.VERSION or not _int(obj.get("v")):
+        return "v"
+    if not _int(obj.get("view")) or obj["view"] not in VIEW_EXCLUDES:
+        return "view"
+    if not _int(obj.get("seq")) or obj["seq"] < 1:
+        return "seq"
+    bad = [f for f in _STR_FIELDS if not isinstance(obj.get(f), str)]
+    if bad:
+        return bad[0]
+    if obj.get("coupled_from") is not None and not isinstance(obj["coupled_from"], str):
+        return "coupled_from"
+    sup = obj.get("supersedes")
+    if sup is not None and not (
+        isinstance(sup, list) and all(isinstance(x, str) for x in sup)
+    ):
+        return "supersedes"
+    refs = obj.get("prior_chains")
+    if refs is not None and not (
+        isinstance(refs, list)
+        and all(
+            isinstance(r, dict)
+            and isinstance(r.get("chain_id"), str)
+            and _int(r.get("head_seq"))
+            and isinstance(r.get("head_hash"), str)
+            for r in refs
+        )
+    ):
+        return "prior_chains"
+    gen = obj.get("genesis")
+    if gen is not None and not (
+        isinstance(gen, dict)
+        and isinstance(gen.get("legacy_sha256"), str)
+        and _int(gen.get("legacy_bytes"))
+    ):
+        return "genesis"
+    return ""
+
+
 def _check_chain(
     cid: str,
     lines: list[tuple[int, str, dict | None]],
@@ -403,18 +464,25 @@ def _check_chain(
     case_id: str,
     result: Result,
 ) -> Chain:
-    """The V2 rules every line meets: parsing, links, case id. Signatures are
+    """The rules every line meets: parsing, links, case id. Signatures are
     recorded per line; they're judged per item or as TAMPERED_LINE later."""
     chain = Chain(cid, [], labels)
     expected, prev = 1, ledger.genesis_prev(case_id)
     for n, _, obj in lines:
-        if (
-            obj is None
-            or obj.get("v") != ledger.VERSION
-            or obj.get("view") not in VIEW_EXCLUDES
-        ):
+        if obj is None:
             result.failures.append(
                 ("UNPARSEABLE_LINE", f"chain {cid} line {n} doesn't parse")
+            )
+            chain.broken_at = chain.broken_at or expected
+            expected += 1
+            continue
+        bad = _malformed(obj)
+        if bad:
+            result.failures.append(
+                (
+                    "MALFORMED_LINE",
+                    f"chain {cid} line {n}: the field {bad!r} has the wrong type",
+                )
             )
             chain.broken_at = chain.broken_at or expected
             expected += 1
@@ -453,41 +521,68 @@ def _check_chain(
 def _legacy(
     case_id: str, case_dir: Path, chains: dict[str, Chain], result: Result
 ) -> tuple[list[tuple[dict, bool]], bool]:
-    """Every 0.6 line, with whether it was written before signing began (in the
-    frozen prefix, or with no genesis yet), and whether a prefix was altered."""
+    """Every 0.6 line, from every source, with whether it was written before
+    signing began; and whether a frozen prefix was altered.
+
+    One rule for every source: with no signed chain yet, every 0.6 line is
+    before signing. Once a chain has its genesis, a 0.6 line is before
+    signing only inside a prefix a genesis froze (its length, and its hash
+    matching): the box 0.6 file and a chain's own legacy copy are held to that
+    chain's genesis, and any other copy (the 0.6 close copy) to whichever
+    genesis its prefix matches. Every other 0.6 line was written after
+    signing began."""
     from vhir_cli import verification
 
-    sources: list[tuple[str, Path, dict | None]] = []
-    box = verification.VERIFICATION_DIR / f"{case_id}.jsonl"
+    geneses = [g for g in (_genesis(c) for c in chains.values()) if g is not None]
     box_chain = next((c for c in chains.values() if "box" in c.sources), None)
-    sources.append(("box legacy", box, _genesis(box_chain)))
-    copies = case_dir / "ledger"
+    sources: list[tuple[str, Path, dict | None]] = [
+        (
+            "box legacy",
+            verification.VERIFICATION_DIR / f"{case_id}.jsonl",
+            _genesis(box_chain),
+        )
+    ]
     for cid, chain in chains.items():
         sources.append(
-            (f"legacy copy {cid}", copies / f"legacy-{cid}.jsonl", _genesis(chain))
+            (
+                f"legacy copy {cid}",
+                case_dir / "ledger" / f"legacy-{cid}.jsonl",
+                _genesis(chain),
+            )
         )
     sources.append(("0.6 close copy", case_dir / "verification.jsonl", None))
     seen: set[bytes] = set()
     out: list[tuple[dict, bool]] = []
     altered = False
-    for label, path, genesis in sources:
+    for label, path, own in sources:
         try:
             data = path.read_bytes()
         except OSError:
             continue
         result.sources.append(f"{label}: {path}")
-        cut = len(data) if genesis is None else int(genesis.get("legacy_bytes") or 0)
-        if genesis is not None and (
-            hashlib.sha256(data[:cut]).hexdigest() != genesis.get("legacy_sha256")
-        ):
-            altered = True
-            result.notices.append(
-                f"PREFIX_ALTERED: {path}'s first {cut} bytes don't match this case's "
-                "signed genesis; its 0.6 lines fail"
+        if not geneses:
+            cut = len(data)  # no signed line yet: all 0.6 lines are before signing
+        else:
+            matching = [
+                int(g["legacy_bytes"])
+                for g in ([own] if own is not None else geneses)
+                if hashlib.sha256(data[: int(g["legacy_bytes"])]).hexdigest()
+                == g["legacy_sha256"]
+            ]
+            # an altered prefix still marks where signing began (PREFIX_ALTERED);
+            # a copy matching no genesis has no line from before signing
+            cut = max(
+                matching, default=int(own["legacy_bytes"]) if own is not None else 0
             )
+            if own is not None and not matching:
+                altered = True
+                result.notices.append(
+                    f"PREFIX_ALTERED: {path}'s first {own['legacy_bytes']} bytes don't match "
+                    "this case's signed genesis; its 0.6 lines fail"
+                )
         pos = 0
         for raw in data.splitlines(keepends=True):
-            start, pos = pos, pos + len(raw)
+            pos += len(raw)
             text = raw.strip()
             if not text or text in seen:
                 continue
@@ -497,8 +592,7 @@ def _legacy(
             except json.JSONDecodeError:
                 continue
             if isinstance(obj, dict) and obj.get("finding_id"):
-                # before signing began: no genesis yet, or inside the frozen prefix
-                out.append((obj, start < cut))
+                out.append((obj, pos <= cut))  # the whole line inside the frozen prefix
     return out, altered
 
 
@@ -516,43 +610,52 @@ def _genesis(chain: Chain | None) -> dict | None:
 
 class _Order:
     """Within a chain, by seq; across chains, every line up to a referenced
-    head precedes the line that references it (a vector clock per line)."""
+    head precedes the line that references it. A vector clock per line,
+    computed iteratively (pass by pass until nothing changes), never by
+    recursion, so a long chain can't exhaust the stack."""
 
     def __init__(self, chains: dict[str, Chain]):
         self.chains = chains
-        self.memo: dict[tuple[str, int], dict[str, int]] = {}
-
-    def clock(self, cid: str, seq: int) -> dict[str, int]:
-        key = (cid, seq)
-        if key in self.memo:
-            return self.memo[key]
-        self.memo[key] = {cid: seq}  # cuts a reference cycle
-        known = {cid: seq}
-        if seq > 1:
-            for other, s in self.clock(cid, seq - 1).items():
-                known[other] = max(known.get(other, 0), s)
-        line = self._line(cid, seq)
-        for ref in (line.obj.get("prior_chains") or []) if line else []:
-            rc, rs = ref.get("chain_id"), ref.get("head_seq")
-            if rc in self.chains and isinstance(rs, int) and self._line(rc, rs):
-                for other, s in self.clock(rc, rs).items():
-                    known[other] = max(known.get(other, 0), s)
-        self.memo[key] = known
-        return known
+        self.index = {
+            cid: {ln.seq: i for i, ln in enumerate(c.lines)}
+            for cid, c in chains.items()
+        }
+        self.clocks: dict[str, list[dict[str, int]]] = {
+            cid: [{} for _ in c.lines] for cid, c in chains.items()
+        }
+        for _ in range(
+            len(chains) + 1
+        ):  # references are acyclic in practice; bounded anyway
+            changed = False
+            for cid, c in chains.items():
+                known: dict[str, int] = {}
+                for i, ln in enumerate(c.lines):
+                    known = dict(known)
+                    known[cid] = max(known.get(cid, 0), ln.seq)
+                    for ref in ln.obj.get("prior_chains") or []:
+                        j = self.index.get(ref.get("chain_id"), {}).get(
+                            ref.get("head_seq")
+                        )
+                        if j is None:
+                            continue
+                        for other, s in self.clocks[ref["chain_id"]][j].items():
+                            known[other] = max(known.get(other, 0), s)
+                    if self.clocks[cid][i] != known:
+                        self.clocks[cid][i] = known
+                        changed = True
+            if not changed:
+                break
 
     def _line(self, cid: str, seq: int) -> Line | None:
-        lines = self.chains[cid].lines
-        return (
-            lines[seq - 1]
-            if 0 < seq <= len(lines) and lines[seq - 1].seq == seq
-            else None
-        )
+        i = self.index.get(cid, {}).get(seq)
+        return None if i is None else self.chains[cid].lines[i]
 
     def before(self, a: Line, b: Line) -> bool:
         """`a` precedes `b`."""
         if a.chain == b.chain:
             return a.seq < b.seq
-        return self.clock(b.chain, b.seq).get(a.chain, 0) >= a.seq
+        i = self.index[b.chain].get(b.seq)
+        return i is not None and self.clocks[b.chain][i].get(a.chain, 0) >= a.seq
 
 
 # --- The verdict --------------------------------------------------------------------
@@ -689,26 +792,30 @@ def verify_case(
                         )
                     )
 
-    # A key change not pinned (N1).
+    # More than one key for one examiner, across every chain presented, whatever
+    # their order: a warning and a failure unless every one of the keys is pinned.
+    keys_of: dict[str, dict[str, list[Line]]] = {}
     for ln in every_line:
-        ex = ln.obj.get("examiner")
-        earlier = [
-            m
-            for m in every_line
-            if m.obj.get("examiner") == ex and m.fp != ln.fp and order.before(m, ln)
-        ]
-        first_of_key = not any(
-            m.obj.get("examiner") == ex and m.fp == ln.fp and order.before(m, ln)
-            for m in every_line
+        keys_of.setdefault(str(ln.obj.get("examiner")), {}).setdefault(
+            ln.fp, []
+        ).append(ln)
+    for ex, by_key in sorted(keys_of.items()):
+        if len(by_key) < 2:
+            continue
+        pinned_fps = {p.fingerprint for p in pins if p.examiner == ex}
+        if all(fp in pinned_fps for fp in by_key):
+            continue
+        firsts = sorted(
+            (min(ln.seq for ln in lines), lines[0].chain, fp)
+            for fp, lines in by_key.items()
         )
-        if earlier and first_of_key and not pinned(ln):
-            result.failures.append(
-                (
-                    "KEY_CHANGED",
-                    f"{ex} {ln.fp} in chain {ln.chain}: "
-                    + KEY_CHANGED.format(seq=ln.seq),
-                )
-            )
+        listed = "; ".join(
+            f"{fp} from chain {cid} seq {seq}" for seq, cid, fp in firsts
+        )
+        result.failures.append(
+            ("KEY_CHANGED", f"{ex} signed with {len(by_key)} keys ({listed}): "
+             + KEY_CHANGED.format(seq=firsts[1][0]))
+        )  # fmt: skip
 
     # Items.
     legacy_by_item: dict[str, list[tuple[dict, bool]]] = {}
@@ -723,34 +830,29 @@ def verify_case(
     for item_id, (kind, item) in sorted(items.items()):
         status = item.get("status", "DRAFT")
         if item_id in latest_of:
-            result.items.append(
-                _v3_verdict(
-                    item_id,
-                    kind,
-                    item,
-                    latest_line,
-                    chains,
-                    pinned,
-                    pinned_names,
-                    retired_use,
-                    legacy_by_item,
-                )
-            )
+            v = _v3_verdict(
+                item_id, kind, item, latest_line, chains, pinned, pinned_names,
+                retired_use, legacy_by_item,
+            )  # fmt: skip
+            line, _ = latest_line(item_id)
+            v.view = line.obj.get("view", 1) if line else 1
         elif item_id in legacy_by_item and status == "APPROVED":
-            result.items.append(
-                _legacy_verdict(
-                    item_id, kind, item, legacy_by_item[item_id], prefix_altered
-                )
+            v = _legacy_verdict(
+                item_id, kind, item, legacy_by_item[item_id], prefix_altered
             )
+            v.view = 0
         elif status == "APPROVED":
-            result.items.append(
-                ItemVerdict(
-                    item_id,
-                    kind,
-                    "APPROVED_NO_LINE",
-                    "no approval record exists for this item",
-                )
+            v = ItemVerdict(
+                item_id,
+                kind,
+                "APPROVED_NO_LINE",
+                "no approval record exists for this item",
             )
+        else:
+            continue
+        # the verdict is about this exact record: its type and its content
+        v.content_sha256 = _record_sha(item, kind, v.view)
+        result.items.append(v)
 
     if (
         any(i[1].get("status") == "APPROVED" for i in items.values())
@@ -771,6 +873,10 @@ def verify_case(
     _keys(result, chains, registry)
     _anchor(result, chains, heads, pins, every_line, pinned)
     return result
+
+
+def _record_sha(item: dict, kind: str, view: int) -> str:
+    return hashlib.sha256(signed_text(item, kind, view).encode("utf-8")).hexdigest()
 
 
 def _differs(signed: str, item: dict, kind: str, view: int) -> list[str]:
@@ -1194,7 +1300,7 @@ def _heads(result: Result) -> list[str]:
 
 
 def verification_block(view: dict) -> list[str]:
-    """The block every report and export ends with (C11, C30): what verified,
+    """The block every report and export ends with : what verified,
     what didn't, the "Not anchored" sentence, every signing key with its full
     fingerprint, and each chain's head. A copy that leaves this machine is an
     anchor for the keys as they were then."""
@@ -1262,6 +1368,7 @@ def approved_view(case_dir: Path) -> dict:
 
     result = verify_case(case_dir)
     by_id = {v.item_id: v for v in result.items}
+    kinds = {"findings": "finding", "timeline": "timeline", "iocs": "ioc"}
     view: dict = {
         "findings": [],
         "timeline": [],
@@ -1281,7 +1388,9 @@ def approved_view(case_dir: Path) -> dict:
             if (
                 v
                 and v.status in ("VALID", "APPROVED_UNDER_0_6")
-                and not result.failures
+                and not result.failures  # nothing counts while the case fails
+                and v.item_type == kinds[key]  # this record's own verdict:
+                and v.content_sha256 == _record_sha(item, kinds[key], v.view)
             ):
                 view[key].append(item)
                 shown = (
@@ -1292,8 +1401,14 @@ def approved_view(case_dir: Path) -> dict:
                 if shown:
                     view["labels"][item["id"]] = shown
             else:
-                view["not_verified"].append(
-                    {"id": item.get("id"), "status": v.status if v else "CASE_FAILURE"}
-                )
+                if v is None or (
+                    v.status in ("VALID", "APPROVED_UNDER_0_6") and not result.failures
+                ):
+                    status = "DUPLICATE_ID"  # another record holds this id's verdict
+                elif result.failures and v.status in ("VALID", "APPROVED_UNDER_0_6"):
+                    status = "CASE_FAILURE"
+                else:
+                    status = v.status
+                view["not_verified"].append({"id": item.get("id"), "status": status})
     view["result"] = result
     return view
