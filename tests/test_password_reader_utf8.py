@@ -73,7 +73,8 @@ def test_a_0_6_non_ascii_password_still_opens_and_is_marked(tmp_path, monkeypatc
         tmp_path, monkeypatch, pw, approval_auth.legacy_decoded(pw)
     )
     monkeypatch.setattr(approval_auth, "getpass_prompt", lambda prompt: pw)
-    assert approval_auth.require_confirmation(config, "steve") == ("password", pw)
+    reading = approval_auth.legacy_decoded(pw)  # what 0.6 stored: keys derive from it
+    assert approval_auth.require_confirmation(config, "steve") == ("password", reading)
     assert approval_auth._recent_failure_count("steve") == 0
     import json
 
@@ -98,3 +99,58 @@ def test_an_examiner_name_with_a_trailing_newline_is_refused():
         approval_auth._validate_examiner_name("steve\n")
     with pytest.raises(CaseError):
         _validate_examiner("steve\n")
+
+
+def test_a_0_6_non_ascii_password_keeps_its_0_6_key_everywhere(tmp_path, monkeypatch):
+    """One 0.6 case: a historical HMAC line, a new approval, then a reset.
+    Every key comes from the reading that reproduces the stored hash, so the
+    history and the new line verify, the new line uses the key the 0.6 portal
+    signs with (the stored hash), and the reset re-signs with the right old key."""
+    import json
+
+    from vhir_cli import verification as ver
+    from vhir_cli.case_io import hmac_text
+    from vhir_cli.commands.approve import _approve_specific
+
+    pw, new_pw = "café-lab-2026", "a new long passphrase"
+    reading = approval_auth.legacy_decoded(pw)
+    config, path = _legacy_entry(tmp_path, monkeypatch, pw, reading)
+    stored = json.loads(path.read_text())
+    salt = bytes.fromhex(stored["salt"])
+    case = tmp_path / "C1"
+    case.mkdir()
+    (case / "CASE.yaml").write_text("case_id: C1\nstatus: open\n")
+    old = {
+        "id": "F-steve-001",
+        "title": "old",
+        "status": "APPROVED",
+        "approved_by": "steve",
+    }
+    new = {"id": "F-steve-002", "title": "new", "status": "DRAFT"}
+    (case / "findings.json").write_text(json.dumps([old, new]))
+    (case / "timeline.json").write_text("[]")
+    ver.write_ledger_entry("C1", {
+        "finding_id": old["id"], "type": "finding",
+        "hmac": ver.compute_hmac(ver.derive_hmac_key(reading, salt), hmac_text(old)),
+        "content_snapshot": hmac_text(old), "approved_by": "steve", "case_id": "C1",
+    })  # fmt: skip
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda prompt: pw)
+    ident = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
+    _approve_specific(case, ["F-steve-002"], ident, config)
+
+    assert approval_auth.verify_password(config, "steve", pw) == reading
+    results = ver.verify_items("C1", reading, salt, "steve")
+    assert [r["verified"] for r in results] == [True, True]
+    line = json.loads(ver.read_ledger("C1")[-1]["content_snapshot"])
+    assert line["id"] == "F-steve-002"
+    portal_key = bytes.fromhex(stored["hash"])  # what the 0.6 portal signs with
+    assert ver.read_ledger("C1")[-1]["hmac"] == ver.compute_hmac(
+        portal_key, ver.read_ledger("C1")[-1]["content_snapshot"]
+    )
+
+    answers = iter([pw, new_pw, new_pw])
+    monkeypatch.setattr(approval_auth, "getpass_prompt", lambda prompt: next(answers))
+    approval_auth.reset_password(config, "steve")
+    new_salt = approval_auth.get_analyst_salt(config, "steve")
+    after = ver.verify_items("C1", new_pw, new_salt, "steve")
+    assert [r["verified"] for r in after] == [True, True]

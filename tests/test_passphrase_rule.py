@@ -65,3 +65,10 @@ def test_the_name_rule_alone():
         "Most of it is your name or product words (vhir, valhuntir, sift)."
     ]
     assert check("steve sift and a long unrelated phrase", "steve") == (None, [])
+
+
+def test_a_passphrase_that_is_only_the_name_gets_the_name_warning():
+    error, warnings = check("steve-steve-steve-2026", "steve")
+    assert error is None and warnings == [
+        "Most of it is your name or product words (vhir, valhuntir, sift)."
+    ]

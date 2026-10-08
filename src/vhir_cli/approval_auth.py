@@ -180,8 +180,10 @@ def _ensure_passwords_dir(passwords_dir: Path) -> None:
 def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | None]:
     """Require password confirmation. Returns (mode, password).
 
-    Returns ('password', raw_password_string) on success. The raw password
-    is needed for HMAC derivation in the verification ledger.
+    Returns ('password', reading) on success: the password text that
+    reproduces the stored hash (verify_password's return). Every key derived
+    from the password is derived from this reading, never from the typed text,
+    so a 0.6 non-ASCII password keeps its 0.6 key.
 
     Password must be configured for the analyst. If not, prints setup
     instructions and exits.
@@ -196,7 +198,8 @@ def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | No
         sys.exit(1)
     _check_lockout(analyst)
     password = getpass_prompt("Enter password to confirm: ")
-    if not verify_password(config_path, analyst, password):
+    reading = verify_password(config_path, analyst, password)
+    if reading is None:
         _record_failure(analyst)
         remaining = _MAX_PASSWORD_ATTEMPTS - _recent_failure_count(analyst)
         if remaining <= 0:
@@ -211,7 +214,7 @@ def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | No
             )
         sys.exit(1)
     _clear_failures(analyst)
-    return ("password", password)
+    return ("password", reading)
 
 
 def require_tty_confirmation(prompt: str) -> bool:
@@ -255,8 +258,10 @@ def has_password(
 
 def verify_password(
     config_path: Path, analyst: str, password: str, *, passwords_dir: Path | None = None
-) -> bool:
-    """Verify a password against stored hash (new location, fallback old)."""
+) -> str | None:
+    """The reading of `password` that reproduces the stored hash (new
+    location, fallback old), or None. That is the typed text, or for a 0.6
+    entry stored byte by byte, its 0.6 reading. Derive keys only from it."""
     passwords_dir = passwords_dir or _PASSWORDS_DIR
     _maybe_migrate(config_path, passwords_dir, analyst)
     entry = _load_password_entry(passwords_dir, analyst)
@@ -266,12 +271,12 @@ def verify_password(
         section = config.get("passwords", config.get("pins", {}))
         entry = section.get(analyst) if isinstance(section, dict) else None
     if not entry:
-        return False
+        return None
     try:
         stored_hash = entry["hash"]
         salt = bytes.fromhex(entry["salt"])
     except (KeyError, ValueError):
-        return False
+        return None
 
     def matches(text: str) -> bool:
         computed = hashlib.pbkdf2_hmac(
@@ -280,15 +285,15 @@ def verify_password(
         return secrets.compare_digest(computed, stored_hash)
 
     if matches(password):
-        return True
+        return password
     # 0.6 read each byte on its own, so a non-ASCII password was stored as
     # that reading. Accept it, and mark the entry for the upgrade at the
     # next signed decision.
     legacy = legacy_decoded(password)
     if legacy == password or not matches(legacy):
-        return False
+        return None
     _mark_legacy_decoding(passwords_dir, analyst)
-    return True
+    return legacy
 
 
 def _mark_legacy_decoding(passwords_dir: Path, analyst: str) -> None:
@@ -363,8 +368,10 @@ def reset_password(
         )
         sys.exit(1)
 
-    current = getpass_prompt("Enter current password: ")
-    if not verify_password(config_path, analyst, current, passwords_dir=passwords_dir):
+    typed = getpass_prompt("Enter current password: ")
+    # the reading that reproduces the stored hash: the old key comes from it
+    current = verify_password(config_path, analyst, typed, passwords_dir=passwords_dir)
+    if current is None:
         print("Incorrect current password.", file=sys.stderr)
         print(
             "\nIf you have forgotten your password, you can force a reset by removing\n"

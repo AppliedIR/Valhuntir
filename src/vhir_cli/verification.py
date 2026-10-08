@@ -83,7 +83,8 @@ def copy_ledger_to_case(case_id: str, case_dir: Path) -> None:
 
 
 def verify_items(case_id: str, password: str, salt: bytes, examiner: str) -> list[dict]:
-    """Verify HMAC for all items belonging to examiner."""
+    """Verify HMAC for all items belonging to examiner. `password` is the
+    reading `approval_auth.verify_password` returned, never the typed text."""
     derived_key = derive_hmac_key(password, salt)
     entries = read_ledger(case_id)
     results = []
