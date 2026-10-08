@@ -87,13 +87,16 @@ RECOVERY = {
     ),
     "APPROVED_NO_LINE": "Optionally `vhir approve --reattest <id>`, or decide again",
     "LEGACY_PREFIX_MISSING": (
-        "Present a copy of the 0.6 file as it was when signing began (the case's "
-        "ledger/legacy-<chain>.jsonl, the box's 0.6 file, or a backup); otherwise "
-        "re-attest each 0.6 approval with `vhir approve --reattest <id>`"
+        "Restore the frozen 0.6 copy from a backup (the case's "
+        "ledger/legacy-<chain>.jsonl, or the box's 0.6 file as it was when signing "
+        "began), or re-attest every item approved before signing (`vhir approve "
+        "--reattest`); once no approved item depends on the pre-signing history, "
+        "this becomes a note"
     ),
     "CONFLICTING_PREFIXES": (
-        "Two signed 0.6 histories disagree on an item's latest approval: compare them, "
-        "and re-attest or decide the item again"
+        "Re-attest every item approved before signing (`vhir approve --reattest`), "
+        "or decide it again; once no approved item depends on the pre-signing "
+        "history, this becomes a note"
     ),
     "TAMPERED": (
         "The line stays in the chain, so deciding the item again doesn't clear it. "
@@ -542,9 +545,11 @@ def _check_chain(
 
 def _legacy(
     case_id: str, case_dir: Path, chains: dict[str, Chain], result: Result
-) -> tuple[dict[str, list[dict]], set[str]]:
-    """The 0.6 approvals that count, by item, in order; and the items that
-    have only 0.6 lines that don't count.
+) -> tuple[dict[str, list[dict]], set[str], list[tuple[str, str]]]:
+    """The 0.6 approvals that count, by item, in order; the items that have
+    only 0.6 lines that don't count; and the problems with the 0.6 history
+    signing froze (the caller fails the case on them while an approved item
+    depends on that history).
 
     Which files are present is never evidence: every source is read the same
     way, and only a signed genesis vouches for 0.6 lines.
@@ -594,8 +599,9 @@ def _legacy(
                 if text not in seen.setdefault(item_id, []):
                     seen[item_id].append(text)
                     counted.setdefault(item_id, []).append(obj)
-        return counted, set()
+        return counted, set(), []
 
+    problems: list[tuple[str, str]] = []
     prefixes: dict[tuple[str, int], tuple[str, bytes]] = {}  # one per frozen prefix
     for cid, chain in chains.items():
         g = _genesis(chain)
@@ -614,7 +620,7 @@ def _legacy(
             None,
         )
         if match is None:
-            result.failures.append(
+            problems.append(
                 (
                     "LEGACY_PREFIX_MISSING",
                     f"chain {cid}'s genesis froze {key[1]} bytes of 0.6 history "
@@ -631,7 +637,7 @@ def _legacy(
         for item_id, lines in mine.items():
             if item_id in latest:
                 if latest[item_id][1] != lines[-1][0]:
-                    result.failures.append(
+                    problems.append(
                         (
                             "CONFLICTING_PREFIXES",
                             f"{item_id}: the 0.6 history chain {latest[item_id][0]} froze and "
@@ -647,7 +653,7 @@ def _legacy(
         for _, obj in records(data)
         if str(obj["finding_id"]) not in counted
     }
-    return counted, uncounted
+    return counted, uncounted, problems
 
 
 def _genesis(chain: Chain | None) -> dict | None:
@@ -746,7 +752,9 @@ def verify_case(
     for cid, (lines, labels) in grouped.items():
         chains[cid] = _check_chain(cid, lines, labels, case_id, result)
     result.chains = list(chains.values())
-    legacy_by_item, uncounted = _legacy(case_id, case_dir, chains, result)
+    legacy_by_item, uncounted, prefix_problems = _legacy(
+        case_id, case_dir, chains, result
+    )
     order = _Order(chains)
 
     every_line = [ln for c in chains.values() for ln in c.lines]
@@ -904,6 +912,21 @@ def verify_case(
         # the verdict is about this exact record: its type and its content
         v.content_sha256 = _record_sha(item, kind, v.view)
         result.items.append(v)
+
+    # The frozen 0.6 history matters only while an approved item rests on it:
+    # once every APPROVED item has its own signed line, its problems are a note.
+    resting = [
+        i for i, (_, it) in items.items()
+        if it.get("status") == "APPROVED" and i not in latest_of
+    ]  # fmt: skip
+    if resting:
+        result.failures += prefix_problems
+    else:
+        result.notices += [
+            f"{code} (a note: every approved item has its own signed line, so none "
+            f"depends on the pre-signing history): {msg}"
+            for code, msg in prefix_problems
+        ]
 
     if (
         any(i[1].get("status") == "APPROVED" for i in items.values())

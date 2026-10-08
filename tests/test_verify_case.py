@@ -1369,3 +1369,58 @@ def test_anchor_an_unsigned_case_s_0_6_approvals_from_any_source_stay_informatio
         "APPROVED_UNDER_0_6", "APPROVED_UNDER_0_6"
     ]  # fmt: skip
     assert result.exit_code == 0
+
+
+def _reattest(case, steve, ids, fresh=False):
+    """`vhir approve --reattest` for `ids`, as the writer does: with no 0.6
+    approval that counts (`fresh`), the re-attester becomes the approver."""
+    findings = _load(case, "findings")
+    picked = [f for f in findings if f["id"] in ids]
+    _sign(
+        case,
+        steve,
+        [(f, "finding", "reattest", "APPROVED", None) for f in picked],
+        at=AT2,
+    )
+    for f in picked:
+        f.update(reattested_by="steve", reattested_at=AT2)
+        if fresh:
+            f.update(approved_by="steve", approved_at=AT2)
+    _save(case, findings=findings)
+
+
+def test_a_missing_prefix_becomes_a_note_once_every_0_6_approval_is_reattested(
+    case, steve
+):
+    one = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
+    two = _finding(2, status="APPROVED", approved_by="steve", approved_at=AT)
+    box, _ = _signed_over(
+        case, steve, [_legacy_line(one), _legacy_line(two)], [one, two]
+    )
+    _save(
+        case, findings=[f for f in _load(case, "findings") if f["id"] != "F-steve-003"]
+    )
+    box.write_bytes(b"\n" + box.read_bytes())  # the frozen history is gone
+    _reattest(case, steve, {"F-steve-001"}, fresh=True)  # partly
+    partial = verify_case(case)
+    assert any(c == "LEGACY_PREFIX_MISSING" for c, _ in partial.failures)
+    assert partial.exit_code == 2
+    _reattest(case, steve, {"F-steve-002"}, fresh=True)  # every one
+    result = verify_case(case)
+    assert result.failures == [] and result.exit_code == 0
+    assert any(n.startswith("LEGACY_PREFIX_MISSING (a note") for n in result.notices)
+    assert {"F-steve-001", "F-steve-002"} <= set(_shown(case))
+
+
+def test_conflicting_prefixes_become_a_note_once_the_item_is_reattested(case, steve):
+    old, new, l_old, l_new = _old_new()
+    _signed_over(case, steve, [l_old, l_new], [new])
+    _second_chain(case, steve, (l_old + "\n").encode())  # [OLD] on the other box
+    _save(
+        case, findings=[f for f in _load(case, "findings") if f["id"] != "F-steve-003"]
+    )
+    assert verify_case(case).exit_code == 2
+    _reattest(case, steve, {"F-steve-001"})
+    result = verify_case(case)
+    assert result.failures == [] and result.exit_code == 0
+    assert any(n.startswith("CONFLICTING_PREFIXES (a note") for n in result.notices)
