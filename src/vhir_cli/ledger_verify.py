@@ -538,18 +538,20 @@ def _check_chain(
 def _legacy(
     case_id: str, case_dir: Path, chains: dict[str, Chain], result: Result
 ) -> tuple[list[tuple[dict, bool]], bool]:
-    """Every 0.6 line, from every source, with whether it was written before
-    signing began; and whether a frozen prefix was altered.
+    """The 0.6 lines that judge each item, with whether each was written
+    before signing began; and whether a frozen prefix was altered.
 
-    One rule for every source: with no signed chain yet, every 0.6 line is
-    before signing. Once a chain has its genesis, a 0.6 line is before
-    signing only inside a prefix a genesis froze (its length, and its hash
-    matching): the box 0.6 file and a chain's own legacy copy are held to that
-    chain's genesis, and any other copy (the 0.6 close copy) to whichever
-    genesis its prefix matches. Every other 0.6 line was written after
-    signing began. Each source is classified on its own; a line that several
-    sources hold is before signing when any of them places it so (a moved
-    case beside the new box's own 0.6 file)."""
+    With no signed chain yet, every 0.6 line from every source is before
+    signing (informational). Once a chain has its genesis:
+    - A prefix a genesis froze (its length and hash matching) is
+      authenticated: the box 0.6 file and a chain's own legacy copy are held
+      to that chain's genesis, any other copy to whichever genesis it matches.
+      For every item such a prefix covers, only the prefix's lines decide, in
+      its own order; no other source can reorder, supersede or add to them.
+    - For an item no prefix covers, other lines count: a line past a matching
+      or own cut was written after signing began; the box 0.6 file of a box
+      that holds no chain for the case, matching no genesis, is bound by none,
+      so its lines (pre-signing work on that box) are before signing."""
     from vhir_cli import verification
 
     geneses = [g for g in (_genesis(c) for c in chains.values()) if g is not None]
@@ -570,7 +572,8 @@ def _legacy(
             )
         )
     sources.append(("0.6 close copy", case_dir / "verification.jsonl", None))
-    found: dict[bytes, tuple[dict, bool]] = {}  # line → (record, before signing)
+    authentic: dict[bytes, dict] = {}  # lines inside a matching frozen prefix, in order
+    other: dict[bytes, tuple[dict, bool]] = {}  # line → (record, before signing)
     altered = False
     for label, path, own in sources:
         try:
@@ -578,6 +581,7 @@ def _legacy(
         except OSError:
             continue
         result.sources.append(f"{label}: {path}")
+        matched, unbound = False, not geneses
         if not geneses:
             cut = len(data)  # no signed line yet: all 0.6 lines are before signing
         else:
@@ -587,6 +591,7 @@ def _legacy(
                 if hashlib.sha256(data[: int(g["legacy_bytes"])]).hexdigest()
                 == g["legacy_sha256"]
             ]
+            matched = bool(matching)
             # an altered prefix still marks where signing began (PREFIX_ALTERED);
             # a copy matching no genesis has no line from before signing
             cut = max(
@@ -598,24 +603,32 @@ def _legacy(
                     f"PREFIX_ALTERED: {path}'s first {own['legacy_bytes']} bytes don't match "
                     "this case's signed genesis; its 0.6 lines fail"
                 )
+            unbound = label == "box legacy" and own is None and not matching
         pos = 0
         for raw in data.splitlines(keepends=True):
             pos += len(raw)
             text = raw.strip()
             if not text:
                 continue
-            before = pos <= cut  # the whole line inside the frozen prefix
-            if text in found:
-                if before and not found[text][1]:
-                    found[text] = (found[text][0], True)
-                continue
+            before = unbound or pos <= cut  # the whole line inside the cut
             try:
                 obj = json.loads(text)
             except json.JSONDecodeError:
                 continue
-            if isinstance(obj, dict) and obj.get("finding_id"):
-                found[text] = (obj, before)
-    return list(found.values()), altered
+            if not (isinstance(obj, dict) and obj.get("finding_id")):
+                continue
+            if matched and pos <= cut:
+                authentic.setdefault(text, obj)
+            elif text not in other or (before and not other[text][1]):
+                other[text] = (obj, before)
+    covered = {str(obj["finding_id"]) for obj in authentic.values()}
+    out = [(obj, True) for obj in authentic.values()]
+    out += [
+        (obj, before)
+        for text, (obj, before) in other.items()
+        if text not in authentic and str(obj["finding_id"]) not in covered
+    ]
+    return out, altered
 
 
 def _genesis(chain: Chain | None) -> dict | None:

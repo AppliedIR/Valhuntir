@@ -1164,3 +1164,60 @@ def test_an_approved_record_with_no_verdict_and_no_duplicate_is_no_signed_line(c
     assert approved_view(case)["not_verified"] == [
         {"id": "", "status": "NO_SIGNED_LINE"}
     ]
+
+
+def _moved(case, steve, frozen_lines, findings):
+    """A case whose 0.6 file held `frozen_lines` when signing began, moved to
+    another box with its chain and its frozen 0.6 copy. Returns that box's
+    own 0.6 file (empty) and the moved finding list."""
+    box = _legacy(frozen_lines)
+    frozen = box.read_bytes()
+    fresh = _finding(9)
+    _save(case, findings=findings + [fresh])
+    _approve(case, steve, fresh)  # genesis freezes the 0.6 file
+    cid = verify_case(case).chains[0].chain_id
+    ledger.chain_path("C1").rename(_copy_dir(case) / f"{cid}.jsonl")
+    (case / "ledger" / f"legacy-{cid}.jsonl").write_bytes(frozen)
+    box.write_text("")
+    return box
+
+
+@pytest.mark.parametrize("other", ["none", "reordered", "added"])
+def test_only_the_frozen_prefix_decides_a_covered_item_s_0_6_approvals(
+    case, steve, other
+):
+    old = _finding(
+        1, status="APPROVED", approved_by="steve", approved_at=AT, observation="OLD"
+    )
+    new = dict(old, observation="NEW", approved_at=AT2)
+    l_old, l_new = _legacy_line(old, approved_at=AT), _legacy_line(new, approved_at=AT2)
+    box = _moved(case, steve, [l_old, l_new], [new])
+    # the new box's own 0.6 file, bound by no genesis
+    if other == "reordered":
+        box.write_text(l_new + "\n" + l_old + "\n")
+    elif other == "added":  # a later 0.6 approval of the old content
+        box.write_text(
+            _legacy_line(old, approved_at="2026-10-08T12:00:00+00:00") + "\n"
+        )
+    findings = _load(case, "findings")
+    findings[0] = dict(findings[0], observation="OLD", approved_at=AT)  # rolled back
+    _save(case, findings=findings)
+    result = verify_case(case)
+    assert (
+        _status(result, "F-steve-001") == "ALTERED_AFTER_APPROVAL"
+        and result.exit_code == 2
+    )
+    assert "F-steve-001" not in [f["id"] for f in approved_view(case)["findings"]]
+
+
+def test_a_second_box_s_pre_signing_0_6_item_outside_the_prefix_is_informational(
+    case, steve
+):
+    old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
+    there = _finding(5, status="APPROVED", approved_by="steve", approved_at=AT)
+    box = _moved(case, steve, [_legacy_line(old)], [old, there])
+    box.write_text(_legacy_line(there) + "\n")  # approved under 0.6 on the new box
+    result = verify_case(case)
+    assert _status(result, "F-steve-005") == "APPROVED_UNDER_0_6"
+    assert _status(result, "F-steve-001") == "APPROVED_UNDER_0_6"
+    assert result.exit_code == 0
