@@ -993,6 +993,27 @@ def test_nothing_is_shown_as_approved_while_the_case_fails(case, steve):
     }
 
 
+def _parallel_chain(case, ex: Examiner, item):
+    """A second chain, written by file alone under `ex`'s key, approving `item`."""
+    body = ledger.prepare("C1", [{"item_id": item["id"], "type": "finding", "decision": "approve",
+                                  "status_after": "APPROVED", "coupled_from": None,
+                                  "content_snapshot": signed_text(item, "finding")}],
+                          ex.name, ex.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
+    body[0]["genesis"] = {
+        "legacy_sha256": hashlib.sha256(b"").hexdigest(),
+        "legacy_bytes": 0,
+    }
+    cid = ledger.chain_id(body[0])
+    (_copy_dir(case) / f"{cid}.jsonl").write_text(
+        ledger.sign_body(body[0], ex.key) + "\n"
+    )
+    findings = _load(case, "findings")
+    for f in findings:
+        if f["id"] == item["id"]:
+            f.update(status="APPROVED", approved_by=ex.name, approved_at=AT)
+    _save(case, findings=findings)
+
+
 def test_a_parallel_chain_under_another_key_for_the_same_examiner_fails_unless_both_are_pinned(
     case, steve
 ):
@@ -1000,25 +1021,27 @@ def test_a_parallel_chain_under_another_key_for_the_same_examiner_fails_unless_b
     _save(case, findings=[f1, forged])
     _approve(case, steve, f1)
     other = Examiner("steve")
-    body = ledger.prepare("C1", [{"item_id": forged["id"], "type": "finding", "decision": "approve",
-                                  "status_after": "APPROVED", "coupled_from": None,
-                                  "content_snapshot": signed_text(forged, "finding")}],
-                          "steve", other.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
-    body[0]["genesis"] = {
-        "legacy_sha256": hashlib.sha256(b"").hexdigest(),
-        "legacy_bytes": 0,
-    }
-    cid = ledger.chain_id(body[0])
-    (_copy_dir(case) / f"{cid}.jsonl").write_text(
-        ledger.sign_body(body[0], other.key) + "\n"
-    )
-    findings = _load(case, "findings")
-    findings[1].update(status="APPROVED", approved_by="steve", approved_at=AT)
-    _save(case, findings=findings)
+    _parallel_chain(case, other, forged)
     result = verify_case(case)
     assert any(c == "KEY_CHANGED" for c, _ in result.failures) and result.exit_code == 2
     assert "Key changed at seq 1 without the previous key's signature" in render(result)
     assert verify_case(case, expect_keys=[steve.pin(), other.pin()]).exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "name", ["st\u0435ve", "Steve", "steve\u200b"], ids=["cyrillic", "upper", "zwsp"]
+)
+def test_a_line_whose_examiner_breaks_the_name_rule_is_malformed(case, steve, name):
+    f1, forged = _finding(1), _finding(2)
+    _save(case, findings=[f1, forged])
+    _approve(case, steve, f1)
+    _parallel_chain(case, Examiner(name), forged)  # a look-alike of steve
+    result = verify_case(case)
+    assert (
+        any(c == "MALFORMED_LINE" and "'examiner'" in m for c, m in result.failures)
+        and result.exit_code == 2
+    )
+    assert approved_view(case)["findings"] == []
 
 
 def test_a_long_chain_beside_a_second_chain_is_ordered_without_recursion(case, steve):
@@ -1077,3 +1100,67 @@ def test_diverged_copies_are_judged_on_the_copy_whose_lines_verify(case, steve):
     result = verify_case(case)
     assert any(c == "CHAIN_COPY_DIVERGED" for c, _ in result.failures)
     assert _status(result, "F-steve-002") == "VALID"  # judged on the copy that verifies
+
+
+def test_a_moved_case_beside_the_new_box_s_own_0_6_file_verifies(case, steve):
+    old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
+    box = _legacy([_legacy_line(old)])
+    frozen = box.read_bytes()
+    fresh = _finding(2)
+    _save(case, findings=[old, fresh])
+    _approve(case, steve, fresh)
+    cid = verify_case(case).chains[0].chain_id
+    # the case moved to another box, with its chain and its frozen 0.6 copy
+    ledger.chain_path("C1").rename(_copy_dir(case) / f"{cid}.jsonl")
+    (case / "ledger" / f"legacy-{cid}.jsonl").write_bytes(frozen)
+    box.write_bytes(b'{"note": "this box\'s own older 0.6 file"}\n' + frozen)
+    result = verify_case(case)
+    assert (
+        _status(result, "F-steve-001") == "APPROVED_UNDER_0_6" and result.exit_code == 0
+    )
+
+
+def test_the_report_judges_the_records_verify_read(case, steve, monkeypatch):
+    import vhir_cli.ledger_verify as lv
+
+    f = _finding()
+    _save(case, findings=[f])
+    _sign(case, steve, [(f, "finding", "reject", "REJECTED", None)])
+    _save(case, findings=[dict(f, status="REJECTED")])
+    real = lv.verify_case
+
+    def then_flipped(*a, **k):  # a write landing just after verify read the files
+        result = real(*a, **k)
+        _save(
+            case,
+            findings=[dict(f, status="APPROVED", approved_by="steve", approved_at=AT)],
+        )
+        return result
+
+    monkeypatch.setattr(lv, "verify_case", then_flipped)
+    view = approved_view(case)
+    assert view["findings"] == [] and view["not_verified"] == []
+
+
+def test_an_entry_that_is_not_a_record_fails_and_the_report_still_renders(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    _save(case, findings=_load(case, "findings") + ["stray"])
+    result = verify_case(case)
+    assert (
+        any(c == "MALFORMED_RECORD" for c, _ in result.failures)
+        and result.exit_code == 2
+    )
+    view = approved_view(case)
+    assert view["findings"] == [] and view["not_verified"] == [
+        {"id": "F-steve-001", "status": "CASE_FAILURE"}
+    ]
+
+
+def test_an_approved_record_with_no_verdict_and_no_duplicate_is_no_signed_line(case):
+    _save(case, findings=[_finding(status="APPROVED", approved_by="steve", approved_at=AT,
+                                   id="")])  # fmt: skip
+    assert approved_view(case)["not_verified"] == [
+        {"id": "", "status": "NO_SIGNED_LINE"}
+    ]

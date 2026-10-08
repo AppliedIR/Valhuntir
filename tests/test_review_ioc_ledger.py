@@ -207,4 +207,6 @@ def test_an_entry_that_is_not_an_ioc_record_does_not_break_verify(ioc_case, caps
     _edit_iocs(case, lambda xs: xs + ["not a record", 7])
     out, code = _verify(case, ident, capsys)
     assert re.search(r"IOC-tester-001\s+approved under 0.6", out), out
-    assert code == 0, out
+    # verify still runs; an entry that isn't a record fails the case by name
+    assert "MALFORMED_RECORD: iocs.json entry 3 isn't a record" in out, out
+    assert code == 2, out

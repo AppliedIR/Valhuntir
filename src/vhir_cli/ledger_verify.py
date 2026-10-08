@@ -32,6 +32,7 @@ from vhir_cli.case_io import (
     normalize_ioc,
     signed_text,
 )
+from vhir_cli.identity import valid_name
 from vhir_cli.keys import fingerprint
 
 NOT_ANCHORED = (
@@ -276,6 +277,9 @@ class Result:
     notices: list[str] = field(default_factory=list)
     keys: list[dict] = field(default_factory=list)
     anchored: bool = False
+    # every entry of each case file exactly as verify read it: (file key, entry)
+    records: list[tuple[str, object]] = field(default_factory=list)
+    duplicate_ids: set[str] = field(default_factory=set)
     missing: list[str] = field(default_factory=list)  # why it isn't anchored
     after_head: list[str] = field(default_factory=list)
 
@@ -301,12 +305,14 @@ def _case_id(case_dir: Path) -> tuple[str, str]:
 
 
 def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
-    """Every item by id, with its type. A case file that doesn't parse fails."""
+    """Every item by id, with its type. A case file that doesn't parse, an
+    entry that isn't a record and an id used twice fail. Each entry is kept in
+    `result.records`, so a report judges exactly what was verified."""
     items: dict[str, tuple[str, dict]] = {}
-    for name, kind in (
-        ("findings.json", "finding"),
-        ("timeline.json", "timeline"),
-        ("iocs.json", "ioc"),
+    for name, kind, key in (
+        ("findings.json", "finding", "findings"),
+        ("timeline.json", "timeline", "timeline"),
+        ("iocs.json", "ioc", "iocs"),
     ):
         path = case_dir / name
         if not path.exists():
@@ -320,10 +326,17 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
                 ("CASE_FILE_UNREADABLE", f"{name} couldn't be read ({e})")
             )
             continue
-        for item in data:
-            if isinstance(item, dict) and item.get("id"):
+        for n, item in enumerate(data, 1):
+            result.records.append((key, item))
+            if not isinstance(item, dict):
+                result.failures.append(
+                    ("MALFORMED_RECORD", f"{name} entry {n} isn't a record")
+                )
+                continue
+            if item.get("id"):
                 item_id = str(item["id"])
                 if item_id in items:  # one record per id, across all three files
+                    result.duplicate_ids.add(item_id)
                     result.failures.append(
                         (
                             "DUPLICATE_ID",
@@ -418,7 +431,9 @@ def _int(value) -> bool:
 
 
 def _malformed(obj: dict) -> str:
-    """Why a parsed line's fields have the wrong types ("" when they're fine)."""
+    """The field of a parsed line that has the wrong type or form ("" when
+    they're fine). An examiner name must meet the enrolment rule, so a
+    look-alike name can't pass as a second examiner."""
     if obj.get("v") != ledger.VERSION or not _int(obj.get("v")):
         return "v"
     if not _int(obj.get("view")) or obj["view"] not in VIEW_EXCLUDES:
@@ -428,6 +443,8 @@ def _malformed(obj: dict) -> str:
     bad = [f for f in _STR_FIELDS if not isinstance(obj.get(f), str)]
     if bad:
         return bad[0]
+    if not valid_name(obj["examiner"]):
+        return "examiner"
     if obj.get("coupled_from") is not None and not isinstance(obj["coupled_from"], str):
         return "coupled_from"
     sup = obj.get("supersedes")
@@ -481,7 +498,7 @@ def _check_chain(
             result.failures.append(
                 (
                     "MALFORMED_LINE",
-                    f"chain {cid} line {n}: the field {bad!r} has the wrong type",
+                    f"chain {cid} line {n}: the field {bad!r} has the wrong type or form",
                 )
             )
             chain.broken_at = chain.broken_at or expected
@@ -530,7 +547,9 @@ def _legacy(
     matching): the box 0.6 file and a chain's own legacy copy are held to that
     chain's genesis, and any other copy (the 0.6 close copy) to whichever
     genesis its prefix matches. Every other 0.6 line was written after
-    signing began."""
+    signing began. Each source is classified on its own; a line that several
+    sources hold is before signing when any of them places it so (a moved
+    case beside the new box's own 0.6 file)."""
     from vhir_cli import verification
 
     geneses = [g for g in (_genesis(c) for c in chains.values()) if g is not None]
@@ -551,8 +570,7 @@ def _legacy(
             )
         )
     sources.append(("0.6 close copy", case_dir / "verification.jsonl", None))
-    seen: set[bytes] = set()
-    out: list[tuple[dict, bool]] = []
+    found: dict[bytes, tuple[dict, bool]] = {}  # line → (record, before signing)
     altered = False
     for label, path, own in sources:
         try:
@@ -584,16 +602,20 @@ def _legacy(
         for raw in data.splitlines(keepends=True):
             pos += len(raw)
             text = raw.strip()
-            if not text or text in seen:
+            if not text:
                 continue
-            seen.add(text)
+            before = pos <= cut  # the whole line inside the frozen prefix
+            if text in found:
+                if before and not found[text][1]:
+                    found[text] = (found[text][0], True)
+                continue
             try:
                 obj = json.loads(text)
             except json.JSONDecodeError:
                 continue
             if isinstance(obj, dict) and obj.get("finding_id"):
-                out.append((obj, pos <= cut))  # the whole line inside the frozen prefix
-    return out, altered
+                found[text] = (obj, before)
+    return list(found.values()), altered
 
 
 def _genesis(chain: Chain | None) -> dict | None:
@@ -1363,9 +1385,8 @@ def verification_json(view: dict) -> dict:
 def approved_view(case_dir: Path) -> dict:
     """The items a report may show as approved: VALID (in any form) and
     approved under 0.6, each with its label. Every other APPROVED item is in
-    `not_verified` with its status."""
-    from vhir_cli.case_io import load_findings, load_iocs, load_timeline
-
+    `not_verified` with its status. It judges the records verify read, not a
+    second read of the files."""
     result = verify_case(case_dir)
     by_id = {v.item_id: v for v in result.items}
     kinds = {"findings": "finding", "timeline": "timeline", "iocs": "ioc"}
@@ -1376,39 +1397,41 @@ def approved_view(case_dir: Path) -> dict:
         "not_verified": [],
         "labels": {},
     }
-    for key, loaded in (
-        ("findings", load_findings(case_dir)),
-        ("timeline", load_timeline(case_dir)),
-        ("iocs", load_iocs(case_dir)),
-    ):
-        for item in loaded:
-            if item.get("status") != "APPROVED":
-                continue
-            v = by_id.get(str(item.get("id")))
-            if (
-                v
-                and v.status in ("VALID", "APPROVED_UNDER_0_6")
-                and not result.failures  # nothing counts while the case fails
-                and v.item_type == kinds[key]  # this record's own verdict:
-                and v.content_sha256 == _record_sha(item, kinds[key], v.view)
-            ):
-                view[key].append(item)
-                shown = (
-                    "approved under 0.6 (before signing)"
-                    if v.status == "APPROVED_UNDER_0_6"
-                    else v.label
-                )
-                if shown:
-                    view["labels"][item["id"]] = shown
-            else:
-                if v is None or (
-                    v.status in ("VALID", "APPROVED_UNDER_0_6") and not result.failures
-                ):
-                    status = "DUPLICATE_ID"  # another record holds this id's verdict
-                elif result.failures and v.status in ("VALID", "APPROVED_UNDER_0_6"):
-                    status = "CASE_FAILURE"
-                else:
-                    status = v.status
-                view["not_verified"].append({"id": item.get("id"), "status": status})
+    for key, item in result.records:
+        if not isinstance(item, dict) or item.get("status") != "APPROVED":
+            continue
+        v = by_id.get(str(item.get("id")))
+        own = (
+            v is not None
+            and v.item_type == kinds[key]  # this record's own verdict:
+            and v.content_sha256 == _record_sha(item, kinds[key], v.view)
+        )
+        if (
+            own
+            and v.status in ("VALID", "APPROVED_UNDER_0_6")
+            and not result.failures  # nothing counts while the case fails
+        ):
+            view[key].append(item)
+            shown = (
+                "approved under 0.6 (before signing)"
+                if v.status == "APPROVED_UNDER_0_6"
+                else v.label
+            )
+            if shown:
+                view["labels"][item["id"]] = shown
+            continue
+        if v is None:
+            status = (
+                "DUPLICATE_ID"
+                if str(item.get("id")) in result.duplicate_ids
+                else "NO_SIGNED_LINE"
+            )
+        elif not own:
+            status = "DUPLICATE_ID"  # another record holds this id's verdict
+        elif v.status in ("VALID", "APPROVED_UNDER_0_6"):
+            status = "CASE_FAILURE"
+        else:
+            status = v.status
+        view["not_verified"].append({"id": item.get("id"), "status": status})
     view["result"] = result
     return view
