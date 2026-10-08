@@ -1174,7 +1174,9 @@ def _open_case_folders(case_dir: Path) -> str | None:
 
 def _set_case_wintools_permissions(case_dir: Path) -> str | None:
     """Open the case's folders to the share (`_open_case_folders`), then set
-    group-based permissions for wintools access on it.
+    group-based permissions for wintools access on it: the group the share
+    writes as (`force_group`) on a box joined with vhir's own share, else
+    `sift`.
 
     Returns a warning when a step can't be applied (a process that doesn't
     have the sift group yet), so the caller still repoints the share and
@@ -1185,10 +1187,20 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
     import os
     import stat
 
+    from vhir_cli.commands.join import SHARE_NAME, share_settings
+
     opened = _open_case_folders(case_dir)  # whatever the group step does
+    share = share_settings()
+    own_share = share.get("share_name") == SHARE_NAME and share.get("force_group")
+    group = str(share["force_group"]) if own_share else "sift"
     try:
-        sift_gid = grp.getgrnam("sift").gr_gid
+        sift_gid = grp.getgrnam(group).gr_gid
     except KeyError:
+        if own_share:
+            raise RuntimeError(
+                f"Group {group!r}, which the share writes as, not found. "
+                "Re-join with 'vhir join' to set the share up again."
+            ) from None
         raise RuntimeError(
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
