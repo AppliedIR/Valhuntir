@@ -969,6 +969,31 @@ def test_anchor_a_close_copy_of_the_frozen_0_6_file_still_verifies(case, steve):
     )
 
 
+@pytest.mark.parametrize("status", ["APPROVED", "REJECTED"])
+@pytest.mark.parametrize("missing", [None, ""])
+def test_a_decided_record_with_no_id_is_malformed(case, steve, status, missing):
+    """It can't be tied to any line: it fails the case (it would otherwise
+    pass unjudged, and be left out of reports with no mark)."""
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    signed = _load(case, "findings")[0]
+    stray = dict(signed, status=status)
+    if missing is None:
+        stray.pop("id")
+    else:
+        stray["id"] = missing
+    _save(case, findings=[signed, stray])
+    result = verify_case(case)
+    assert result.exit_code == 2
+    assert ("MALFORMED_RECORD", f"findings.json entry 2 is {status} with no id") in (
+        result.failures
+    )
+    draft = dict(stray, status="DRAFT")  # an undecided one is only data
+    _save(case, findings=[signed, draft])
+    assert verify_case(case).exit_code == 0
+
+
 def test_a_second_record_with_a_signed_id_fails_the_case(case, steve):
     f = _finding()
     _save(case, findings=[f])

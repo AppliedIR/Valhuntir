@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import types
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -510,3 +511,38 @@ def test_no_restart_says_what_the_old_gateway_still_does():
     src = inspect.getsource(update.cmd_update)
     assert "must wait for the gateway restart" in src
     assert "gateway applies every staged entry as the committer's decision" in src
+
+
+def test_a_decision_signed_while_a_backup_copies_the_files_fails_it(
+    tmp_path, monkeypatch
+):
+    """The chain copies are written first; a line appended while the case
+    files are copied would leave a backup whose files are newer than its
+    chain. The backup fails, and none is left under the backup's name."""
+    import vhir_cli.commands.backup as B
+
+    case = tmp_path / "cases" / "C-B"
+    case.mkdir(parents=True)
+    (case / "CASE.yaml").write_text("case_id: C-B\nstatus: open\nname: r\n")
+    (case / "findings.json").write_text(json.dumps([
+        {"id": "F-steve-001", "title": "t", "status": "APPROVED", "created_by": "steve"}
+    ]))  # fmt: skip
+    sign_approved(case, "steve")
+    real = B.shutil.copy2
+    signed = []
+
+    def copy2(src, dst, **kw):
+        if not signed:  # a signer commits after the chain copies were written
+            signed.append(1)
+            sign_approved(case, "steve")
+        return real(src, dst, **kw)
+
+    monkeypatch.setattr(B.shutil, "copy2", copy2)
+    with pytest.raises(
+        OSError, match="a decision was signed during the backup; run it again"
+    ):
+        B.create_backup_data(case, str(tmp_path / "backups"), "steve")
+    assert signed and not list((tmp_path / "backups").glob("C-B-*[0-9]"))
+    monkeypatch.setattr(B.shutil, "copy2", real)
+    out = B.create_backup_data(case, str(tmp_path / "backups"), "steve")
+    assert Path(out["backup_path"]).name.startswith("C-B-")

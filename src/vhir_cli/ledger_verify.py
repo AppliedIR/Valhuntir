@@ -369,6 +369,17 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
                     ("MALFORMED_RECORD", f"{name} entry {n} isn't a record")
                 )
                 continue
+            if not item.get("id") and str(item.get("status", "")).upper() in (
+                "APPROVED",
+                "REJECTED",
+            ):  # a decided record verify can't tie to any line
+                result.failures.append(
+                    (
+                        "MALFORMED_RECORD",
+                        f"{name} entry {n} is {item['status']} with no id",
+                    )
+                )
+                continue
             if item.get("id"):
                 item_id = str(item["id"])
                 if item_id in items:  # one record per id, across all three files
@@ -500,6 +511,8 @@ def _malformed(obj: dict) -> str:
         )
     ):
         return "prior_chains"
+    if obj.get("case_uuid") is not None and not isinstance(obj["case_uuid"], str):
+        return "case_uuid"
     gen = obj.get("genesis")
     if gen is not None and not (
         isinstance(gen, dict)

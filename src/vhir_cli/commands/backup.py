@@ -347,6 +347,10 @@ def _create_backup_data(
         shutil.copy2(str(abs_path), str(dst))
         if progress_fn:
             progress_fn("Copying", i, total_files)
+    # The chain copies were written before the case files were copied; a
+    # decision signed in between would leave files newer than their chain
+    if case_copies.box_moved(case_id, copied):
+        raise OSError("a decision was signed during the backup; run it again")
 
     # OpenSearch snapshot (local Docker only)
     opensearch_snapshot_info: dict = {}

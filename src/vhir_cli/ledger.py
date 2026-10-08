@@ -69,6 +69,35 @@ class LockNotHeld(LedgerError):
     """`commit` was called without holding this case's lock."""
 
 
+class CaseCopy(LedgerError):
+    """This box's chain for the case id begins in another case folder (CASE_COPY)."""
+
+
+def copy_text(case_id: str) -> str:
+    return (
+        f"This folder is a copy of case {case_id}; this box's signed chain for "
+        f"{case_id} belongs to the original. Signing here would extend {case_id}'s "
+        "chain. Sign in the original folder."
+    )
+
+
+def bound_uuid(lines: list[tuple[int, str, dict | None]]) -> str | None:
+    """The case folder the chain's first line binds (its `case_uuid`), or None
+    for a chain begun before folders were bound, or none yet."""
+    first = lines[0][2] if lines else None
+    if not first or first.get("seq") != 1:
+        return None
+    value = first.get("case_uuid")
+    return value if isinstance(value, str) else None
+
+
+def copy_problem(case_id: str, case_uuid: str | None) -> str:
+    """`copy_text` when this box's chain for `case_id` binds a case folder
+    other than the one whose identity is `case_uuid`, else "". Read-only."""
+    bound = bound_uuid(read_lines(chain_path(case_id)))
+    return copy_text(case_id) if bound is not None and bound != case_uuid else ""
+
+
 class BadSignature(LedgerError):
     """A line's signature doesn't verify under the examiner's active key (BAD_SIGNATURE)."""
 
@@ -237,6 +266,7 @@ def prepare(
     head: tuple[int, str] | None = None,
     retired: list[str] | None = None,
     prior_chains: list[dict] | None = None,
+    case_uuid: str | None = None,
 ) -> list[dict]:
     """The bodies for `decisions`, chained from the box chain's head (read
     now, or `head` as pinned by a portal challenge). Pure apart from reading
@@ -246,10 +276,16 @@ def prepare(
     content_snapshot}`; `content_snapshot` is `case_io.signed_text(item, type)`.
     `retired`: the examiner's retired fingerprints; those that signed lines
     here are named in `supersedes` on this key's first line in the chain.
+    `case_uuid`: the identity of the case folder signing (CASE.yaml's). A first
+    line records it; a chain whose first line records another one belongs to
+    another folder with this case id, and CaseCopy is raised.
     """
     if mode not in ("cli", "portal"):
         raise ValueError(f"mode {mode!r}")
     lines = read_lines(chain_path(case_id))
+    bound = bound_uuid(lines)
+    if bound is not None and bound != case_uuid:
+        raise CaseCopy(copy_text(case_id))
     if head is None:
         head = head_of(lines)
     seq, prev = (head[0], head[1]) if head else (0, genesis_prev(case_id))
@@ -282,6 +318,8 @@ def prepare(
         }
         if seq == 1:
             body["genesis"] = _genesis(case_id)
+            if case_uuid:
+                body["case_uuid"] = case_uuid
         if not bodies:
             if supersedes:
                 body["supersedes"] = supersedes

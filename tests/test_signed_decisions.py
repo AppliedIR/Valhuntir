@@ -495,16 +495,24 @@ def test_with_nothing_to_decide_nothing_is_checked_or_prompted(
     assert asked == [] and "No passphrase" not in out.err
 
 
-def test_ctrl_c_at_the_final_prompt_signs_and_saves_nothing(case, monkeypatch, capsys):
-    def interrupt(prompt=""):
+@pytest.mark.parametrize("where", ["at the prompt", "deriving the key"])
+def test_ctrl_c_at_the_final_prompt_signs_and_saves_nothing(
+    case, monkeypatch, capsys, where
+):
+    def interrupt(*a, **k):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(approval_auth, "getpass_prompt", interrupt)
+    if where == "at the prompt":
+        monkeypatch.setattr(approval_auth, "getpass_prompt", interrupt)
+    else:
+        monkeypatch.setattr(keys, "open_key", interrupt)
     assert (
         _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
-        == 1
+        == 130
     )
-    assert "Nothing was signed and nothing was saved." in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert err.strip().splitlines()[-1] == "Interrupted; nothing was signed"
+    assert "Traceback" not in err
     assert _signed() == [] and not (case / "pending-reviews.json").exists()
     assert _status(case, "findings.json", "F-steve-002") == "DRAFT"
 
@@ -818,13 +826,33 @@ def test_a_write_that_fails_part_way_leaves_the_chain_as_it_was(
     assert verify_case(case).exit_code == 0
 
 
-def test_ctrl_c_inside_the_write_leaves_the_chain_as_it_was(case, monkeypatch):
+def test_ctrl_c_inside_the_write_leaves_the_chain_as_it_was(case, monkeypatch, capsys):
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")
     before = _chain_bytes()
+    capsys.readouterr()
     monkeypatch.setattr(ledger, "os", _FaultyOs("fsync", KeyboardInterrupt()))
-    with pytest.raises(KeyboardInterrupt):
-        A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
-    assert _chain_bytes() == before
+    code = _run(lambda: A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg"))
+    assert code == 130 and _chain_bytes() == before
+    err = capsys.readouterr().err
+    assert err.strip().splitlines()[-1] == "Interrupted; nothing was signed"
+    assert "Traceback" not in err
+
+
+def test_ctrl_c_after_the_commit_says_what_was_signed(case, monkeypatch, capsys):
+    from vhir_cli import decide
+
+    def interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(decide, "_save_twice", interrupt)
+    code = _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+    assert code == 130 and _signed() == [("F-steve-002", "approve")]
+    err = capsys.readouterr().err
+    assert "Interrupted after the decisions were signed" in err
+    assert (
+        "Re-run the same command for: F-steve-002" in err
+        and "nothing was signed" not in err
+    )
 
 
 def test_a_write_that_can_t_be_cut_back_says_so(case, monkeypatch, capsys):

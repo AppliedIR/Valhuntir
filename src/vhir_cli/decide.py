@@ -33,6 +33,7 @@ from vhir_cli import credentials, keys, ledger
 from vhir_cli.case_io import (
     case_id_of,
     compute_content_hash,
+    load_case_meta,
     plan_cascades,
     save_findings,
     save_iocs,
@@ -270,6 +271,18 @@ def _kept_unsigned(case_dir, examiner, direct, todos, why: str, lead: str, after
 # --- Signing ------------------------------------------------------------------------------
 
 
+INTERRUPTED = "Interrupted; nothing was signed"
+
+
+def copy_problem(case_dir: Path) -> str:
+    """Why this case folder can't sign (it's a copy of a case whose chain on
+    this box began in another folder), or "". Read-only: checked before any
+    item is shown; the commit checks again under the lock."""
+    return ledger.copy_problem(
+        case_id_of(case_dir), load_case_meta(case_dir).get("case_uuid")
+    )
+
+
 def _find(lists: dict[str, list[dict]], kind: str, item_id: str) -> dict | None:
     return next(
         (x for x in lists[kind] if isinstance(x, dict) and x.get("id") == item_id), None
@@ -334,9 +347,9 @@ def sign_and_commit(
 
     try:
         private, public = credentials.unlock(examiner, prompt)
-    except KeyboardInterrupt:  # the examiner chose to stop
-        print("\nNothing was signed and nothing was saved.", file=sys.stderr)
-        sys.exit(1)
+    except KeyboardInterrupt:  # the examiner chose to stop (at the prompt, or deriving)
+        print(f"\n{INTERRUPTED}", file=sys.stderr)
+        sys.exit(130)
     except keys.KeyUnwrapFailed:
         keep("KEY_UNWRAP_FAILED", keys.KeyUnwrapFailed.MESSAGE,
              "after `vhir config --forgot-password`")  # fmt: skip
@@ -379,6 +392,7 @@ def sign_and_commit(
                     case_id, decisions, examiner, public, mode, at,
                     retired=credentials.retired_fingerprints(examiner),
                     prior_chains=refs or None,
+                    case_uuid=load_case_meta(case_dir).get("case_uuid"),
                 )  # fmt: skip
                 lines = [ledger.sign_body(b, private) for b in bodies]
                 head = ledger.commit(lock, bodies, lines, public)  # all or nothing
@@ -392,6 +406,16 @@ def sign_and_commit(
                 inside_lock(lists, every)  # `every`: exactly the decisions signed
     except SystemExit:
         raise
+    except KeyboardInterrupt:  # an interrupted append is cut back: nothing signed
+        if not committed:
+            print(f"\n{INTERRUPTED}", file=sys.stderr)
+            sys.exit(130)
+        print(
+            "\nInterrupted after the decisions were signed; case data may not be "
+            f"saved. Re-run the same command for: {', '.join(d.id for d in every)}",
+            file=sys.stderr,
+        )
+        sys.exit(130)
     except Exception as e:  # noqa: BLE001 - never a traceback that loses the work
         if isinstance(e, ledger.LedgerTorn):
             # part of the write may be in the chain: stage nothing new, only

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli import approval_auth, keys, ledger, passphrase
+from vhir_cli.display import one_line
 from vhir_cli.identity import valid_name
 
 FINGERPRINT_NOTE = (
@@ -222,15 +223,37 @@ def enrol(examiner: str, config_path: Path, *, by_name: bool = False) -> None:
 
 
 def _found_keys(examiner: str) -> list[str]:
-    """The public keys a keys file that won't be adopted holds (read, not moved)."""
+    """The public keys a keys file that won't be adopted holds (read, not
+    moved). Only a key that decodes to 32 bytes is kept (it is recorded as
+    retired); any other entry is named and left out."""
+    path = keys.keys_path(examiner)
     try:
-        found = json.loads(keys.keys_path(examiner).read_text())
+        found = json.loads(path.read_text())
         pubs = [
             k.get("public_key") for k in found.get("keys", []) if isinstance(k, dict)
         ]
     except (OSError, ValueError, TypeError, AttributeError):
         pubs = []
-    return list(dict.fromkeys(p for p in pubs if isinstance(p, str)))
+    kept = []
+    for pub in dict.fromkeys(
+        p for p in pubs if p is not None and not isinstance(p, (dict, list))
+    ):
+        if _is_public_key(pub):
+            kept.append(pub)
+        else:
+            print(
+                f"A public key in {path} isn't a valid key and was left out: "
+                f"{one_line(str(pub))[:60]!r}",
+                file=sys.stderr,
+            )
+    return kept
+
+
+def _is_public_key(value) -> bool:
+    try:
+        return isinstance(value, str) and len(keys.unb64(value)) == 32
+    except ValueError:  # not base64, or not ASCII
+        return False
 
 
 def _replace_credential(examiner: str, data: dict, retired: list[str], reason: str,

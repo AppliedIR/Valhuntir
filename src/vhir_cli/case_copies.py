@@ -163,7 +163,26 @@ def _write_copies(case_id: str, case_dir: Path, box: Path) -> dict:
         raise CopyFailed(
             f"the case copy of the signed history couldn't be written: {e}"
         ) from e
-    return {"chain_id": cid, "copies": copies, **summary}
+    # what the copies were taken from: a backup checks it again after it has
+    # copied the case files (backup_moved)
+    return {"chain_id": cid, "copies": copies, "box_sha256": _sha(data), **summary}
+
+
+def _sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def box_moved(case_id: str, copied: dict) -> bool:
+    """True when this box's chain has changed since `write_case_copies`
+    returned `copied`: a decision was signed in between."""
+    box = ledger.chain_path(case_id)
+    try:
+        data = box.read_bytes() if box.exists() else b""
+    except OSError:
+        return True
+    return _sha(data) != copied.get("box_sha256")
 
 
 def case_keys(case_dir: Path) -> dict:

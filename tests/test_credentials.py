@@ -354,6 +354,27 @@ def test_forgot_recovers_from_an_invalid_keys_file(config, monkeypatch, capsys):
     assert credentials.preflight("steve", config) is False
 
 
+@pytest.mark.parametrize("bad", ["%%%", "YQ==", 7])
+def test_forgot_over_a_malformed_public_key_keeps_the_good_ones_and_names_it(
+    config, monkeypatch, capsys, bad
+):
+    """The documented recovery must not crash on the file it recovers from."""
+    good = keys.b64(keys.public_raw(Ed25519PrivateKey.generate()))
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    keys.keys_path("steve").write_text(json.dumps({"schema": 3, "keys": [
+        {"public_key": bad, "status": "active"}, {"public_key": good, "status": "retired"},
+    ]}))  # fmt: skip
+    monkeypatch.setattr(credentials, "_confirm_new_key", lambda: None)
+    _typed(monkeypatch, NEW, NEW)
+    credentials.forgot("steve", config)
+    data = keys.load("steve")
+    assert keys.check_password(data, NEW)
+    retired = [k["public_key"] for k in data["keys"] if k["status"] == "retired"]
+    assert good in retired and bad not in retired
+    err = capsys.readouterr().err
+    assert "isn't a valid key and was left out" in err and repr(str(bad)) in err
+
+
 def test_the_key_scans_skip_a_malformed_ledger_line(config, monkeypatch):
     ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     ledger.chain_path("C1").write_text('[1, 2]\n{"examiner": "steve", "seq": "x"}\n')

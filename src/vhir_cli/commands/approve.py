@@ -146,14 +146,19 @@ def cmd_approve(args, identity: dict) -> None:
 _STATUS_AFTER = {"approve": "APPROVED", "reject": "REJECTED"}
 
 
-def _preflight(identity: dict, config_path: Path) -> bool:
+def _preflight(identity: dict, config_path: Path, case_dir: Path) -> bool:
     """The checks that can fail, before any item is shown (and a 0.6 upgrade).
     Returns True when a new passphrase was set."""
     try:
-        return credentials.preflight(identity["examiner"], config_path)
+        new_passphrase = credentials.preflight(identity["examiner"], config_path)
     except credentials.CredentialError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
+    copy = decide.copy_problem(case_dir)
+    if copy:  # signing would extend another folder's chain
+        print(copy, file=sys.stderr)
+        sys.exit(1)
+    return new_passphrase
 
 
 def _modifications(loaded: dict, item: dict) -> dict:
@@ -247,7 +252,7 @@ def _approve_specific(
         _no_items(decision)
         return
 
-    new_passphrase = _preflight(identity, config_path)
+    new_passphrase = _preflight(identity, config_path, case_dir)
     direct = []
     for item in picked:
         loaded = copy.deepcopy(item)
@@ -317,7 +322,7 @@ def _interactive_review(
             print(withdrawn_line)
         return
 
-    new_passphrase = _preflight(identity, config_path)
+    new_passphrase = _preflight(identity, config_path, case_dir)
     print(f"Reviewing {len(all_items)} DRAFT item(s)...\n")
     for item in all_items:
         _print_pending_item(item, timeline)
@@ -451,7 +456,7 @@ def _reattest(
     if not wanted:
         print("No items to re-attest.")
         return
-    new_passphrase = _preflight(identity, config_path)
+    new_passphrase = _preflight(identity, config_path, case_dir)
     lists = {
         "finding": load_findings(case_dir),
         "timeline": load_timeline(case_dir),
@@ -1216,7 +1221,7 @@ def _review_mode(
         )
         sys.exit(1)
 
-    new_passphrase = _preflight(identity, config_path)
+    new_passphrase = _preflight(identity, config_path, case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
