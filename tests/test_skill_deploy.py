@@ -3,9 +3,9 @@
 Every folder in sift-mcp's `skills/` goes to `~/.claude/skills/`, and
 `agents/finding-skeptic/claude.md` to `~/.claude/agents/finding-skeptic.md`,
 file by file: a version vhir shipped is updated, and an edited one isn't
-overwritten without consent. Two files vhir used to deploy retire:
-`~/.claude/rules/TOOL_REFERENCE.md` and `~/.claude/commands/welcome.md`. A
-shipped copy is removed; an edited one is kept with a notice. The user's own
+overwritten without consent. `~/.claude/rules/TOOL_REFERENCE.md` retires (a
+shipped copy is removed; an edited one is kept with a notice), and
+`~/.claude/commands/welcome.md` becomes a pointer to the vhir-welcome skill. The user's own
 skills are never touched. Everything here is under tmp_path.
 """
 
@@ -28,6 +28,7 @@ SKILLS = {
 AGENT = "---\nname: finding-skeptic\ndescription: s\ntools: mcp__a__b\n---\n\npart\n"
 TR_V1, TR_V2 = "tool reference v1\n", "tool reference v2\n"
 WELCOME_V1 = "welcome command v1\n"
+POINTER = "Run the `vhir-welcome` skill now.\n"
 
 
 def _git(repo, *args):
@@ -59,7 +60,7 @@ def box(tmp_path, monkeypatch):
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "v1")
-    _git(repo, "rm", "-q", "-r", "claude-code/full/commands")
+    (full / "commands" / "welcome.md").write_text(POINTER)
     (full / "TOOL_REFERENCE.md").write_text(TR_V2)
     for rel, text in SKILLS.items():
         (repo / "skills" / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +99,7 @@ def test_every_skill_and_the_skeptic_agent_are_deployed_equal_to_the_source(box)
     box.run()
     assert _tree(box.skills) == SKILLS
     assert box.agent.read_text() == AGENT
-    assert not box.tr.exists() and not box.welcome.exists()
+    assert not box.tr.exists() and box.welcome.read_text() == POINTER
 
 
 def test_a_skill_from_an_older_release_is_updated_and_an_edited_one_kept(box, capsys):
@@ -129,7 +130,7 @@ def test_the_user_s_own_skills_and_agents_are_left_alone(box):
     assert other.read_text() == "mine\n"
 
 
-@pytest.mark.parametrize("which", ["tr", "welcome"])
+@pytest.mark.parametrize("which", ["tr"])
 def test_a_retired_file_vhir_shipped_is_removed(box, capsys, which):
     path = getattr(box, which)
     path.parent.mkdir(parents=True)
@@ -140,7 +141,7 @@ def test_a_retired_file_vhir_shipped_is_removed(box, capsys, which):
     assert f"Removed:   {path} (now the {skill} skill)" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("which", ["tr", "welcome"])
+@pytest.mark.parametrize("which", ["tr"])
 def test_a_retired_file_with_the_user_s_edits_is_kept_with_a_notice(box, capsys, which):
     path = getattr(box, which)
     path.parent.mkdir(parents=True)
@@ -161,3 +162,16 @@ def test_the_audit_hooks_route_table_and_sidecar_are_deployed_beside_them(box):
     deployed = box.home / ".vhir" / "hooks"
     assert (deployed / "mcp-route.py").read_text() == "# sidecar\n"
     assert (deployed / "mcp-routes.tsv").read_text().startswith("vol\t")
+
+
+def test_an_old_welcome_command_becomes_the_pointer_and_an_edited_one_is_kept(
+    box, capsys
+):
+    box.welcome.parent.mkdir(parents=True)
+    box.welcome.write_text(WELCOME_V1)  # an older release's
+    box.run()
+    assert box.welcome.read_text() == POINTER
+    assert f"Updated:   {box.welcome}" in capsys.readouterr().out
+    box.welcome.write_text("my own welcome\n")
+    box.run()  # no terminal: kept
+    assert box.welcome.read_text() == "my own welcome\n"

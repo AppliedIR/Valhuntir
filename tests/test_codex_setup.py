@@ -487,3 +487,31 @@ def test_uninstall_removes_only_the_profile_and_vhir_s_skills_and_agent(
     assert not (laptop.home / ".codex" / "agents" / "finding-skeptic.toml").exists()
     assert laptop.config.read_bytes() == b'model = "gpt"\n'
     assert (mine / "SKILL.md").read_text() == "mine\n"
+
+
+@pytest.mark.parametrize(
+    "line,secret",
+    [
+        (f'http_headers = {{ Authorization = "Bearer {TOKEN}" }}', TOKEN[8:]),
+        ('http_headers = { Authorization = "Bearer remnux-s3cr3t-T0k" }', "s3cr3t"),
+    ],
+    ids=["gateway", "remnux"],
+)
+def test_the_profile_diff_hides_every_bearer_token(line, secret):
+    shown = cs._redact_tokens(line)
+    assert secret not in shown and "Bearer " in shown and "…" in shown
+
+
+def test_uninstall_unlinks_a_linked_skill_folder_and_keeps_its_target(
+    laptop, monkeypatch
+):
+    _remote()
+    target = laptop.home / "elsewhere" / "vhir-mine"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("kept\n")
+    link = laptop.home / ".agents" / "skills" / "vhir-linked"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda m: True)
+    cs._uninstall_project()
+    assert not link.exists() and not link.is_symlink()
+    assert (target / "SKILL.md").read_text() == "kept\n"

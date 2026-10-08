@@ -1477,18 +1477,13 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             toolref_src=_find_asset("TOOL_REFERENCE.md"),
         )
 
-        # Commands (the full set has none left), then the skills and the
-        # skeptic's agent; /welcome is the vhir-welcome skill now
+        # Commands (/welcome now points to the vhir-welcome skill), then the
+        # skills and the skeptic's agent
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = Path.home() / ".claude" / "commands"
             for skill_file in commands_src.glob("*.md"):
                 _deploy_copy(skill_file, commands_target / skill_file.name)
-        _retire(
-            Path.home() / ".claude" / "commands" / "welcome.md",
-            mode_dir / "commands" / "welcome.md",
-            "the vhir-welcome skill",
-        )
         deploy_skills(Path.home() / ".claude" / "skills")
         _deploy_copy(
             _sift_root_dir("agents") / "finding-skeptic" / "claude.md"
@@ -1790,7 +1785,8 @@ def _manifest_set(key: str, value) -> None:
 def _redact_tokens(text: str) -> str:
     import re
 
-    return re.sub(r"(vhir_[a-z]{2}_)[0-9A-Za-z]+", r"\1…", text)
+    text = re.sub(r"(vhir_[a-z]{2}_)[0-9A-Za-z]+", r"\1…", text)
+    return re.sub(r"(Bearer\s+)(?!vhir_[a-z]{2}_…)[^\s\"']+", r"\1…", text)
 
 
 def _write_codex_profile(path: Path, text: str) -> str:
@@ -2048,10 +2044,10 @@ def _uninstall_codex() -> None:
         print("  Skipped.")
         return
     for p in found:
-        if p.is_dir():
+        if p.is_dir() and not p.is_symlink():
             shutil.rmtree(p)
         else:
-            p.unlink()
+            p.unlink()  # a file, or a link (never its target)
     print("  Removed.")
 
 
