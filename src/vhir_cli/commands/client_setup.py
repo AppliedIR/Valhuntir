@@ -169,6 +169,9 @@ def _setup_client(args, identity: dict) -> None:
 
     # 1. Resolve parameters from switches (or interactive wizard)
     client = _resolve_client(args, auto)
+    if client == "codex" and not _is_sift():
+        print(CODEX_OFF_SIFT, file=sys.stderr)
+        sys.exit(1)
     sift_url = _resolve_sift(args, auto)
     windows_url, windows_token = _resolve_windows(args, auto)
     remnux_url, remnux_token = _resolve_remnux(args, auto)
@@ -274,15 +277,8 @@ def _setup_client(args, identity: dict) -> None:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 4. Record client type in manifest (for vhir update)
-    manifest_path = Path.home() / ".vhir" / "manifest.json"
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text())
-            manifest["client"] = client
-            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-        except (json.JSONDecodeError, OSError):
-            pass  # Non-critical
+    # 4. Record the client in the manifest (for vhir update)
+    _record_client(client)
 
     # 5. Print internet MCP summary
     internet_mcps = []
@@ -499,6 +495,7 @@ def _wizard_client() -> str:
     print("  2. Claude Desktop   Desktop app (writes claude_desktop_config.json)")
     print("  3. LibreChat        Web UI (writes librechat_mcp.yaml)")
     print("  4. Other / manual   Raw JSON config for any MCP client")
+    print("  5. Codex            CLI agent (writes ~/.codex/valhuntir.config.toml)")
 
     choice = _prompt("\nChoose", "1")
     return {
@@ -506,6 +503,7 @@ def _wizard_client() -> str:
         "2": "claude-desktop",
         "3": "librechat",
         "4": "other",
+        "5": "codex",
     }.get(choice, "other")
 
 
@@ -805,6 +803,16 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             print(
                 "  Audit logging, permission guardrails, and MCP tools will always apply."
             )
+
+    elif client == "codex":
+        deploy_codex_assets(servers)
+        print(f"  Examiner:  {examiner}")
+        print("")
+        print("  Start Codex in a case folder with Valhuntir's profile:")
+        print("    cd <case folder> && codex -p valhuntir")
+        if _codex_userns_restricted():
+            print("")
+            print(f"  NOTE: {CODEX_USERNS_NOTICE}")
 
     elif client == "claude-desktop":
         output = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
@@ -1148,7 +1156,14 @@ def _shipped(dst: Path, src: Path) -> bool:
     return blob.returncode == 0 and blob.stdout.strip() in ids
 
 
-def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> str:
+def _write_user_file(
+    path: Path,
+    new: str,
+    why: str,
+    as_json: bool = False,
+    mode: int | None = None,
+    redact=None,
+) -> str:
     """Write a file the user may have edited, only with their consent.
 
     Returns "created" (no file was there), "unchanged" (nothing would change),
@@ -1157,7 +1172,9 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
     the change and keeps the file.
     """
     if not path.exists():
-        _replace_bytes(path, new.encode(), 0o600 if as_json else 0o644)
+        if mode is None:
+            mode = 0o600 if as_json else 0o644
+        _replace_bytes(path, new.encode(), mode)
         return "created"
     try:
         old = path.read_text()
@@ -1185,7 +1202,7 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
         old.splitlines(), new_view.splitlines(), "current", "proposed", lineterm=""
     )
     for line in diff:
-        print(f"    {line}")
+        print(f"    {redact(line) if redact else line}")
     if _APPLIED is None and not sys.stdin.isatty():
         print(
             f"  Not changed: {path}. To review and apply, re-run `vhir update` "
@@ -1565,6 +1582,313 @@ def _retire(dst: Path, src: Path | None, now: str) -> None:
         f"hold your edits. vhir no longer uses it ({now} replaces it); remove it "
         "when you no longer need it."
     )
+
+
+# --- Codex ---------------------------------------------------------------------
+
+_INTERNET_MCPS = (_ZELTSER_MCP["name"], _MSLEARN_MCP["name"])
+CODEX_OFF_SIFT = (
+    "Codex is set up on the SIFT box itself. On another machine, run "
+    "`vhir setup client --remote --client=codex`, or the client setup script."
+)
+_USERNS_SYSCTL = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+CODEX_USERNS_NOTICE = (
+    "On this system Codex's sandbox can't start, so every shell command Codex "
+    "runs will fail. An administrator can allow it with an AppArmor profile for "
+    "bwrap: see the Codex section of the docs."
+)
+
+
+def codex_profile_path() -> Path:
+    """Valhuntir's Codex profile: `codex -p valhuntir` reads it."""
+    return Path.home() / ".codex" / "valhuntir.config.toml"
+
+
+def _record_client(client: str) -> None:
+    """Add client to the manifest's `clients` (once, in the order they were
+    set up) and make it `client`, the latest. Written atomically. No readable
+    manifest: nothing is recorded."""
+    path = Path.home() / ".vhir" / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(manifest, dict):
+        return
+    clients = manifest.get("clients")
+    clients = (
+        [c for c in clients if isinstance(c, str)] if isinstance(clients, list) else []
+    )
+    earlier = manifest.get("client")
+    if isinstance(earlier, str) and earlier not in clients:
+        clients.insert(0, earlier)  # set up before the list was kept
+    if client not in clients:
+        clients.append(client)
+    manifest["clients"], manifest["client"] = clients, client
+    try:
+        mode = path.stat().st_mode & 0o777
+        _replace_bytes(path, (json.dumps(manifest, indent=2) + "\n").encode(), mode)
+    except OSError:
+        pass  # non-critical, as before
+
+
+def _codex_instructions() -> str | None:
+    """developer_instructions: the AGENTS.md core, the forensic discipline and
+    the Codex overlay, or None if any is missing."""
+    assets = _find_claude_code_assets()  # all three from the one checkout
+    parts = (
+        [
+            assets.parent / "AGENTS.md",
+            assets / "full" / "FORENSIC_DISCIPLINE.md",
+            assets.parent / "codex" / "OVERLAY.md",
+        ]  # fmt: skip
+        if assets
+        else []
+    )
+    if not parts or not all(p.is_file() for p in parts):
+        return None
+    return "\n\n".join(p.read_text().strip() for p in parts) + "\n"
+
+
+def _toml_str(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)  # a valid TOML basic string
+
+
+def _toml_key(key: str) -> str:
+    import re
+
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else _toml_str(key)
+
+
+def _codex_server(name: str, entry: dict) -> str:
+    lines = [f"[mcp_servers.{_toml_key(name)}]"]
+    if entry.get("url"):
+        lines.append(f"url = {_toml_str(entry['url'])}")
+        headers = entry.get("headers") or {}
+        if headers:
+            inner = ", ".join(
+                f"{_toml_key(k)} = {_toml_str(v)}" for k, v in headers.items()
+            )
+            lines.append(f"http_headers = {{ {inner} }}")
+    else:
+        lines.append(f"command = {_toml_str(entry['command'])}")
+        args = ", ".join(_toml_str(a) for a in entry.get("args", []))
+        lines.append(f"args = [{args}]")
+    if name not in _INTERNET_MCPS:  # Valhuntir's tools run without a prompt
+        lines.append('default_tools_approval_mode = "approve"')
+    return "\n".join(lines) + "\n"
+
+
+def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> str:
+    quotes = "'" * 3  # a multi-line literal string, when the text allows one
+    if quotes in instructions:
+        body = _toml_str(instructions)
+    else:
+        body = quotes + "\n" + instructions + quotes
+    head = (
+        "# Valhuntir's Codex profile. Start Codex in a case folder with:\n"
+        "#   codex -p valhuntir\n"
+        "# vhir setup client and vhir update write this file. It holds the\n"
+        "# gateway token, so only you can read it.\n"
+        'sandbox_mode = "workspace-write"\n'
+        'approval_policy = "on-request"\n'
+        "project_doc_max_bytes = 0\n"
+        f"developer_instructions = {body}\n"
+    )
+    sections = [_codex_server(n, e) for n, e in servers.items()] + kept
+    return head + "".join("\n" + x for x in sections)
+
+
+def _profile_sections(text: str) -> dict[str, str]:
+    """The [mcp_servers.<name>] sections of a profile vhir wrote, by name."""
+    import re
+
+    out: dict[str, str] = {}
+    name = None
+    for line in text.splitlines(keepends=True):
+        m = re.match(r"\[mcp_servers\.(\"[^\"]*\"|[A-Za-z0-9_-]+)\]\s*$", line)
+        if m:
+            key = m.group(1)
+            name = json.loads(key) if key.startswith('"') else key
+            out[name] = line
+        elif line.startswith("["):
+            name = None
+        elif name is not None:
+            out[name] += line
+    return {n: t.rstrip("\n") + "\n" for n, t in out.items()}
+
+
+def _codex_servers_from_box(profile: Path) -> tuple[dict, list[str]] | None:
+    """The gateway's backends as this box serves them now, plus opensearch-mcp,
+    and the profile's other server sections kept as they are. None if the
+    gateway can't be reached."""
+    import importlib.util
+
+    from vhir_cli.gateway import get_local_gateway_url
+
+    url = get_local_gateway_url().rstrip("/")
+    token = _read_local_token()
+    services = _discover_services(url, token)
+    running = [s["name"] for s in services or [] if s.get("started")]
+    if not running:
+        return None
+    servers: dict[str, dict] = {}
+    for name in running:
+        servers[name] = {"url": f"{url}/mcp/{name}"}
+        if token:
+            servers[name]["headers"] = {"Authorization": f"Bearer {token}"}
+    if importlib.util.find_spec("opensearch_mcp") is not None:
+        servers.setdefault(
+            "opensearch-mcp",
+            {"command": sys.executable, "args": ["-I", "-m", "opensearch_mcp"]},
+        )
+    try:
+        old = _profile_sections(profile.read_text()) if profile.is_file() else {}
+    except (OSError, UnicodeDecodeError):
+        old = {}
+    gateway = f'url = "{url}/mcp/'
+    # another section is kept, unless it names a gateway backend now gone
+    kept = [t for n, t in old.items() if n not in servers and gateway not in t]
+    return servers, kept
+
+
+def _manifest_get(key: str):
+    try:
+        manifest = json.loads((Path.home() / ".vhir" / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return manifest.get(key) if isinstance(manifest, dict) else None
+
+
+def _manifest_set(key: str, value) -> None:
+    path = Path.home() / ".vhir" / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text())
+        if not isinstance(manifest, dict):
+            return
+        manifest[key] = value
+        mode = path.stat().st_mode & 0o777
+        _replace_bytes(path, (json.dumps(manifest, indent=2) + "\n").encode(), mode)
+    except (OSError, ValueError):
+        pass
+
+
+def _redact_tokens(text: str) -> str:
+    import re
+
+    return re.sub(r"(vhir_[a-z]{2}_)[0-9A-Za-z]+", r"\1…", text)
+
+
+def _write_codex_profile(path: Path, text: str) -> str:
+    """Create, or replace a profile vhir wrote last (its sha256 is in the
+    manifest); anything else is the user's, changed only with consent."""
+    import hashlib
+
+    def record():
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        _manifest_set("codex_profile_sha256", digest)
+
+    if not path.exists():
+        _replace_bytes(path, text.encode(), 0o600)
+        record()
+        print(f"  Deployed:  {path}")
+        return "created"
+    try:
+        current = path.read_bytes()
+    except OSError as e:
+        print(f"  Not changed: {path} can't be read ({e}).")
+        return "kept"
+    if current == text.encode():
+        record()
+        return "unchanged"
+    if hashlib.sha256(current).hexdigest() == _manifest_get("codex_profile_sha256"):
+        _replace_bytes(path, text.encode(), 0o600)
+        record()
+        print(f"  Updated:   {path}")
+        return "updated"
+    status = _write_user_file(
+        path,
+        text,
+        "it isn't the profile vhir wrote last, so it may hold your edits",
+        mode=0o600,
+        redact=_redact_tokens,
+    )
+    if status == "written":
+        path.chmod(0o600)
+        record()
+    return status
+
+
+def _codex_config_conflicts() -> None:
+    """Name each top-level value in the user's ~/.codex/config.toml (never
+    written) that Valhuntir's managed Codex settings refuse."""
+    import re
+
+    cfg = Path.home() / ".codex" / "config.toml"
+    try:
+        text = cfg.read_text()
+    except (OSError, UnicodeDecodeError):
+        return
+    allowed = {
+        "sandbox_mode": ("read-only", "workspace-write"),
+        "approval_policy": ("untrusted", "on-request", "never"),
+    }
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break  # top-level keys come before the first table
+        m = re.match(r"(sandbox_mode|approval_policy)\s*=\s*\"([^\"]*)\"", stripped)
+        if m and m.group(2) not in allowed[m.group(1)]:
+            print(
+                f'  Note: {cfg} sets {m.group(1)} = "{m.group(2)}", which '
+                "Valhuntir's managed Codex settings refuse: Codex stops with an "
+                "error until it is changed. vhir doesn't edit that file."
+            )
+
+
+def _codex_userns_restricted() -> bool:
+    try:
+        return _USERNS_SYSCTL.read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+def deploy_codex_assets(servers: dict | None = None) -> str:
+    """Write Valhuntir's Codex profile, and deploy the skills to
+    ~/.agents/skills/ and the skeptic's agent to ~/.codex/agents/.
+
+    servers None (vhir update): rebuilt from this box, with the gateway's
+    backends found again; it never prompts for anything new, and keeps the
+    profile as it is when the gateway can't be reached. Returns the profile's
+    status: created, updated, unchanged, written, kept or missing."""
+    deploy_skills(Path.home() / ".agents" / "skills")
+    agents = _sift_root_dir("agents")
+    _deploy_copy(
+        agents / "finding-skeptic" / "codex.toml" if agents else None,
+        Path.home() / ".codex" / "agents" / "finding-skeptic.toml",
+    )
+    path = codex_profile_path()
+    kept: list[str] = []
+    if servers is None:
+        found = _codex_servers_from_box(path)
+        if found is None:
+            print(
+                f"  Kept:      {path}: the gateway can't be reached, so its "
+                "backends can't be listed. Run `vhir update` again once it runs."
+            )
+            return "kept"
+        servers, kept = found
+    instructions = _codex_instructions()
+    if instructions is None:
+        print(
+            "  Note: Valhuntir's instructions for Codex weren't found (sift-mcp "
+            f"AGENTS.md, FORENSIC_DISCIPLINE.md, codex/OVERLAY.md); {path} not written."
+        )
+        return "missing"
+    text = _codex_profile_text(servers, instructions, kept)
+    status = _write_codex_profile(path, text)
+    _codex_config_conflicts()
+    return status
 
 
 def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:

@@ -421,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
             "claude-desktop",
             "librechat",
             "other",
+            "codex",
         ],
         help="Target LLM client",
     )
