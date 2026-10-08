@@ -112,82 +112,9 @@ def _mode(p):
     return stat.S_IMODE(p.stat().st_mode)
 
 
-# --- Claude Desktop config (macOS: node; Windows: pwsh) -----------------------
-
-MAC_DESKTOP = _between(
-    MAC,
-    '            CONFIG_DIR="$HOME/Library/Application Support/Claude"',
-    "\n        fi\n        ;;",
-)
-
-
-def _mac_desktop(tmp_path, content, tools=("node",)):
-    home = tmp_path / "home"
-    cfg = (
-        home
-        / "Library"
-        / "Application Support"
-        / "Claude"
-        / "claude_desktop_config.json"
-    )
-    cfg.parent.mkdir(parents=True)
-    if content is not None:
-        cfg.write_text(content)
-        cfg.chmod(0o600)
-    path = _bin(tmp_path, SH_TOOLS + list(tools))
-    rc, out = _bash(
-        MAC, MAC_DESKTOP, home, path, MCP_JSON_STDIO=json.dumps(GENERATED, indent=2)
-    )
-    return rc, out, cfg
-
-
-def _check_merged(cfg, before, out):
-    data = json.loads(cfg.read_text())
-    assert {k: v for k, v in data.items() if k != "mcpServers"} == {
-        k: v for k, v in USER.items() if k != "mcpServers"
-    }  # by value, 7 deep
-    assert data["mcpServers"]["filesystem"] == USER["mcpServers"]["filesystem"]
-    assert data["mcpServers"]["forensic-mcp"] == GENERATED["mcpServers"]["forensic-mcp"]
-    (bak,) = [p for p in cfg.parent.iterdir() if ".vhir-backup-" in p.name]
-    assert bak.read_bytes() == before
-    return bak
-
-
-@pytest.mark.parametrize("python3", [True, False], ids=["python3", "no python3"])
-def test_mac_desktop_config_is_merged_backed_up_and_restorable(tmp_path, python3):
-    tools = ("node", "python3") if python3 else ("node",)
-    rc, out, cfg = _mac_desktop(tmp_path, json.dumps(USER, indent=2), tools)
-    before = json.dumps(USER, indent=2).encode()
-    assert rc == 0, out
-    bak = _check_merged(cfg, before, out)
-    assert _mode(bak) == 0o600 and _mode(cfg) == 0o600
-    (line,) = _undo(out)
-    subprocess.run(["/bin/bash", "-c", line], check=True)  # the path has a space
-    assert cfg.read_bytes() == before
-
-
-def test_mac_unparseable_desktop_config_is_left_with_the_entries_to_add(tmp_path):
-    rc, out, cfg = _mac_desktop(tmp_path, TRUNCATED)
-    assert rc == 0 and cfg.read_text() == TRUNCATED
-    assert "isn't valid JSON: NOT changed" in out and '"forensic-mcp"' in out
-    assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
-
-
-@pytest.mark.parametrize("content", [None, ""], ids=["absent", "empty"])
-def test_anchor_absent_or_empty_desktop_config_is_written(tmp_path, content):
-    rc, out, cfg = _mac_desktop(tmp_path, content)
-    assert rc == 0 and "Written:" in out
-    assert json.loads(cfg.read_text()) == GENERATED
-    if content is None:
-        assert _mode(cfg) == 0o600
-
+# --- Windows: Set-UserFile, the writer every user file goes through ----------
 
 PWSH = shutil.which("pwsh")
-WIN_DESKTOP = _between(
-    WIN,
-    '            $claudeDir2 = Join-Path $env:APPDATA "Claude"',
-    '\n        }\n    }\n    "librechat"',
-)
 
 
 def _win_helpers():
@@ -220,42 +147,6 @@ def _pwsh(tmp_path, body, appdata):
     return p.returncode, p.stdout + p.stderr
 
 
-def _win_desktop(tmp_path, content):
-    appdata = tmp_path / "App Data"  # a space
-    cfg = appdata / "Claude" / "claude_desktop_config.json"
-    cfg.parent.mkdir(parents=True)
-    if content is not None:
-        cfg.write_text(content)
-    servers = json.dumps(GENERATED["mcpServers"])
-    body = (
-        f"$mcpServersStdio = @{{}}\n"
-        f"($('{servers}') | ConvertFrom-Json -AsHashtable).GetEnumerator() |"
-        " ForEach-Object { $mcpServersStdio[$_.Key] = $_.Value }\n"
-        "$mcpConfigStdio = @{ mcpServers = $mcpServersStdio }\n" + WIN_DESKTOP
-    )
-    rc, out = _pwsh(tmp_path, body, appdata)
-    return rc, out, cfg
-
-
-@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
-def test_win_desktop_config_is_merged_backed_up_and_restorable(tmp_path):
-    before = json.dumps(USER, indent=2)
-    rc, out, cfg = _win_desktop(tmp_path, before)
-    assert rc == 0, out
-    _check_merged(cfg, before.encode(), out)
-    (line,) = _undo(out)
-    subprocess.run([PWSH, "-NoProfile", "-Command", line], check=True)
-    assert cfg.read_bytes() == before.encode()
-
-
-@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
-def test_win_unparseable_desktop_config_is_left(tmp_path):
-    rc, out, cfg = _win_desktop(tmp_path, TRUNCATED)
-    assert rc == 0 and cfg.read_text() == TRUNCATED, out
-    assert "isn't valid JSON: NOT changed" in out and "forensic-mcp" in out
-    assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
-
-
 @pytest.mark.skipif(not PWSH, reason="pwsh not installed")
 def test_win_a_failed_backup_leaves_the_file(tmp_path):
     """A copy that fails (non-terminating, as Copy-Item's errors are) stops the
@@ -269,10 +160,7 @@ def test_win_a_failed_backup_leaves_the_file(tmp_path):
     body = (
         "function Copy-Item { [CmdletBinding()] param($LiteralPath, $Destination)"
         ' Write-Error "disk full" }\n'
-        f"$mcpServersStdio = @{{}}\n"
-        f"($('{servers}') | ConvertFrom-Json -AsHashtable).GetEnumerator() |"
-        " ForEach-Object { $mcpServersStdio[$_.Key] = $_.Value }\n"
-        "$mcpConfigStdio = @{ mcpServers = $mcpServersStdio }\n" + WIN_DESKTOP
+        f"if (Set-UserFile '{cfg}' '{servers}') {{ Write-Output 'Merged' }}\n"
     )
     rc, out = _pwsh(tmp_path, body, appdata)
     assert cfg.read_text() == before, out
@@ -296,10 +184,7 @@ def test_win_a_failed_staging_write_leaves_the_file(tmp_path):
         "function Set-Content { [CmdletBinding()] param("
         "[Parameter(ValueFromPipeline)]$Value, $LiteralPath, $Encoding)"
         ' Write-Error "disk full" }\n'
-        f"$mcpServersStdio = @{{}}\n"
-        f"($('{servers}') | ConvertFrom-Json -AsHashtable).GetEnumerator() |"
-        " ForEach-Object { $mcpServersStdio[$_.Key] = $_.Value }\n"
-        "$mcpConfigStdio = @{ mcpServers = $mcpServersStdio }\n" + WIN_DESKTOP
+        f"if (Set-UserFile '{cfg}' '{servers}') {{ Write-Output 'Merged' }}\n"
     )
     rc, out = _pwsh(tmp_path, body, appdata)
     assert cfg.read_text() == before, out

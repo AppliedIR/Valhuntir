@@ -14,7 +14,9 @@ ROOT = Path(__file__).parent.parent
 
 def linux_assets(text: str) -> dict[str, str]:
     """curl -fsSL "…/sift-mcp/main/<path>" -o "<dest>": dest's file name -> path.
-    The skills, fetched as skills/MANIFEST lists them, aren't fixed files."""
+    The skills, fetched as skills/MANIFEST lists them, aren't fixed files, and
+    the Codex section's files are Codex's."""
+    text = re.sub(r"# ---- Codex:.*?(?=# ---- Phase 6)", "", text, flags=re.S)
     pairs = re.findall(r'sift-mcp/main/([^"\s]+)"\s+-o\s+"([^"]+)"', text)
     return {
         dest.rsplit("/", 1)[-1]: path

@@ -92,6 +92,42 @@ function Prompt-YN-Strict {
     }
 }
 
+# Fetch every skill file skills/MANIFEST lists into $Dest. Each file is fetched
+# and replaced: an edit to a vhir skill is lost on re-run. Counts failures in
+# $script:errors.
+function Fetch-Skills {
+    param([string]$Dest)
+    Write-Info "Fetching skills..."
+    try {
+        $manifest = (Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/skills/MANIFEST" -UseBasicParsing).Content
+    } catch {
+        Write-Warn "Could not fetch the skills list"
+        $script:errors++
+        return
+    }
+    if ($manifest -is [byte[]]) { $manifest = [System.Text.Encoding]::UTF8.GetString($manifest) }
+    $fetched = 0
+    foreach ($rel in ($manifest -split "`r?`n")) {
+        if (-not $rel -or $rel.StartsWith("#")) { continue }
+        if ($rel -notmatch '^[A-Za-z0-9._/-]+$' -or $rel.Contains("..") -or $rel.StartsWith("/")) {
+            Write-Warn "Skipped an unexpected skills path: $rel"
+            $script:errors++
+            continue
+        }
+        $target = Join-Path $Dest ($rel -replace '/', '\')
+        New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+        try {
+            Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/skills/$rel" -OutFile $target -UseBasicParsing
+            $fetched++
+        } catch {
+            Write-Warn "Could not fetch skills/$rel"
+            $script:errors++
+        }
+    }
+    Write-Ok "$fetched skill files"
+}
+
+
 # =============================================================================
 # Banner + Help
 # =============================================================================
@@ -123,6 +159,28 @@ if ($Uninstall) {
     Write-Host ""
     Write-Host "Valhuntir Forensic Controls - Uninstall" -ForegroundColor White
     Write-Host ""
+
+    # Codex: Valhuntir's profile, skills and agent (never ~/.codex/config.toml)
+    $codexFiles = @()
+    foreach ($f in @((Join-Path $HOME (Join-Path ".codex" "valhuntir.config.toml")),
+                     (Join-Path $HOME (Join-Path ".codex" (Join-Path "agents" "finding-skeptic.toml"))))) {
+        if (Test-Path -LiteralPath $f -PathType Leaf) { $codexFiles += $f }
+    }
+    $agentSkills = Join-Path $HOME (Join-Path ".agents" "skills")
+    if (Test-Path -LiteralPath $agentSkills) {
+        $codexFiles += Get-ChildItem -LiteralPath $agentSkills -Directory |
+            Where-Object { $_.Name -like "vhir-*" -or $_.Name -eq "finding-skeptic" } |
+            ForEach-Object { $_.FullName }
+    }
+    if ($codexFiles.Count -gt 0) {
+        Write-Host "  Codex files:"
+        $codexFiles | ForEach-Object { Write-Host "    $_" }
+        if (Prompt-YN-Strict "  Remove Valhuntir's Codex profile, skills and agent?") {
+            $codexFiles | ForEach-Object { Remove-Item -LiteralPath $_ -Recurse -Force }
+            Write-Ok "Removed Valhuntir's Codex files"
+        }
+        Write-Host ""
+    }
 
     if (-not (Test-Path $deployDir)) {
         Write-Info "No Valhuntir workspace found at $deployDir."
@@ -307,40 +365,23 @@ $mcpServers["microsoft-learn"] = @{
 
 $mcpConfig = @{ mcpServers = $mcpServers }
 
-# Build stdio-format config for Claude Desktop (mcp-remote bridge)
-$mcpServersStdio = @{}
-foreach ($backend in $backends) {
-    $mcpServersStdio[$backend] = @{
-        command = "npx"
-        args = @("-y", "mcp-remote", "$gatewayUrl/mcp/$backend",
-                 "--header", "Authorization:`${AUTH_HEADER}")
-        env = @{ AUTH_HEADER = "Bearer $gatewayToken" }
-    }
-}
-$mcpServersStdio["zeltser-ir-writing"] = @{
-    command = "npx"
-    args = @("-y", "mcp-remote", "https://website-mcp.zeltser.com/mcp")
-}
-$mcpServersStdio["microsoft-learn"] = @{
-    command = "npx"
-    args = @("-y", "mcp-remote", "https://learn.microsoft.com/api/mcp")
-}
-$mcpConfigStdio = @{ mcpServers = $mcpServersStdio }
-
 # ---- Client Choice ----
 
 Write-Host ""
 Write-Host "  Which LLM client?"
 Write-Host "  1. Claude Code"
-Write-Host "  2. Claude Desktop"
+Write-Host "  2. Codex"
 Write-Host "  3. LibreChat"
 Write-Host "  4. Other"
+Write-Host ""
+Write-Host "  (Claude Desktop isn't offered: its commands aren't audited. Use Claude Code"
+Write-Host "  on the SIFT workstation, or Claude Code or Codex here.)"
 Write-Host ""
 $clientChoice = Read-Host "  Choose [1]"
 if (-not $clientChoice) { $clientChoice = "1" }
 $clientType = switch ($clientChoice) {
     "1" { "claude-code" }
-    "2" { "claude-desktop" }
+    "2" { "codex" }
     "3" { "librechat" }
     default { "other" }
 }
@@ -360,41 +401,7 @@ switch ($clientType) {
         Set-Acl -Path $mcpJsonPath -AclObject $acl
         Write-Ok "Written: $mcpJsonPath"
     }
-    "claude-desktop" {
-        if (-not (Get-Command npx -ErrorAction SilentlyContinue)) {
-            Write-Warn "Claude Desktop requires npx (Node.js) for mcp-remote bridge."
-            Write-Warn "Install Node.js: https://nodejs.org/"
-            Write-Warn "Skipping Claude Desktop config generation."
-        } else {
-            $claudeDir2 = Join-Path $env:APPDATA "Claude"
-            if (-not (Test-Path $claudeDir2)) {
-                New-Item -ItemType Directory -Path $claudeDir2 -Force | Out-Null
-            }
-            $configPath = Join-Path $claudeDir2 "claude_desktop_config.json"
-            $raw = if (Test-Path -LiteralPath $configPath) { Get-Content -LiteralPath $configPath -Raw } else { "" }
-            if (-not $raw) {
-                $mcpConfigStdio | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
-                Write-Ok "Written: $configPath (stdio via mcp-remote)"
-            } else {
-                try { $cur = $raw | ConvertFrom-Json -ErrorAction Stop } catch { $cur = $null }
-                $servers = if ($cur -is [pscustomobject]) { $cur.PSObject.Properties['mcpServers'] }
-                if ($cur -isnot [pscustomobject] -or ($servers -and $servers.Value -isnot [pscustomobject])) {
-                    Write-Warn "$configPath isn't valid JSON: NOT changed."
-                    Write-Warn 'Add these to its "mcpServers" by hand:'
-                    Write-Host ($mcpConfigStdio | ConvertTo-Json -Depth 100)
-                } else {
-                    # vhir's entries replace same-named ones; every other key stays
-                    if (-not $servers) { $cur | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) }
-                    foreach ($name in $mcpServersStdio.Keys) {
-                        $cur.mcpServers | Add-Member -NotePropertyName $name -NotePropertyValue $mcpServersStdio[$name] -Force
-                    }
-                    if (Set-UserFile $configPath ($cur | ConvertTo-Json -Depth 100)) {
-                        Write-Ok "Merged into: $configPath (stdio via mcp-remote)"
-                    }
-                }
-            }
-        }
-    }
+    "codex" { }  # Valhuntir's Codex profile, below
     "librechat" {
         $configPath = Join-Path $deployDir "librechat_mcp.yaml"
         $mcpConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
@@ -405,6 +412,101 @@ switch ($clientType) {
         $mcpConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $configPath -Encoding UTF8
         Write-Ok "Written: $configPath (reference config)"
         Write-Info "Configure your LLM client using the entries in this file."
+    }
+}
+
+# ---- Codex: Valhuntir's profile, the skills and the skeptic's agent ----
+# The profile is ~/.codex/valhuntir.config.toml (codex -p valhuntir); the
+# user's ~/.codex/config.toml is never written.
+
+if ($clientType -eq "codex") {
+    $githubRaw = "https://raw.githubusercontent.com/AppliedIR"
+    $errors = 0
+    $codexDir = Join-Path $HOME ".codex"
+    $profilePath = Join-Path $codexDir "valhuntir.config.toml"
+    New-Item -ItemType Directory -Force -Path (Join-Path $codexDir "agents") | Out-Null
+    Fetch-Skills (Join-Path $HOME (Join-Path ".agents" "skills"))
+    try {
+        Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/agents/finding-skeptic/codex.toml" -OutFile (Join-Path $codexDir (Join-Path "agents" "finding-skeptic.toml")) -UseBasicParsing
+        Write-Ok "finding-skeptic agent"
+    } catch {
+        Write-Warn "Could not fetch the finding-skeptic agent"
+        $errors++
+    }
+    $parts = @()
+    foreach ($part in @("AGENTS.md", "claude-code/full/FORENSIC_DISCIPLINE.md", "codex/OVERLAY.md", "codex/REMOTE.md")) {
+        try {
+            $c = (Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/$part" -UseBasicParsing).Content
+            if ($c -is [byte[]]) { $c = [System.Text.Encoding]::UTF8.GetString($c) }
+            $parts += ($c -replace "`r`n", "`n").Trim()
+        } catch {
+            Write-Warn "Could not fetch $part"
+            $parts = $null
+            $errors++
+            break
+        }
+    }
+    $quotes = "'" * 3
+    $nl = "`n"
+    if (-not $parts -or ($parts -join "").Contains($quotes)) {
+        Write-Warn "Valhuntir's instructions for Codex couldn't be fetched; $profilePath not written."
+    } else {
+        $text = "# Valhuntir's Codex profile, for: codex -p valhuntir$nl" +
+            "# vhir's client setup writes this file. It holds the$nl" +
+            "# gateway token, so only you can read it.$nl" +
+            'sandbox_mode = "workspace-write"' + $nl +
+            'approval_policy = "on-request"' + $nl +
+            "project_doc_max_bytes = 0$nl" +
+            "developer_instructions = $quotes$nl" + ($parts -join "$nl$nl") + "$nl$quotes$nl"
+        foreach ($b in $backends) {
+            if ($b -notmatch '^[A-Za-z0-9_-]+$') { continue }
+            $text += "$nl[mcp_servers.$b]$nl" +
+                "url = `"$gatewayUrl/mcp/$b`"$nl" +
+                "http_headers = { Authorization = `"Bearer $gatewayToken`" }$nl" +
+                'default_tools_approval_mode = "approve"' + $nl
+        }
+        $text += "$nl[mcp_servers.zeltser-ir-writing]$nl" + 'url = "https://website-mcp.zeltser.com/mcp"' + $nl
+        $text += "$nl[mcp_servers.microsoft-learn]$nl" + 'url = "https://learn.microsoft.com/api/mcp"' + $nl
+        $new = (New-Object System.Text.UTF8Encoding $false).GetBytes($text)  # no BOM
+        $write = $true
+        if (Test-Path -LiteralPath $profilePath) {
+            $old = [IO.File]::ReadAllBytes($profilePath)
+            if (($old -join ',') -eq ($new -join ',')) {
+                $write = $false
+            } else {
+                Write-Host "  Changes to ${profilePath}:"
+                $before = [IO.File]::ReadAllText($profilePath) -split "`n"
+                Compare-Object $before ($text -split "`n") | ForEach-Object {
+                    $mark = if ($_.SideIndicator -eq "=>") { "+" } else { "-" }
+                    Write-Host ("    " + $mark + ($_.InputObject -replace '(vhir_[a-z]{2}_)[0-9A-Za-z]+', '$1...'))
+                }
+                try { Backup-UserFile $profilePath } catch {
+                    Write-Warn "Could not back up ${profilePath}: $($_.Exception.Message). NOT changed."
+                    $write = $false
+                }
+            }
+        }
+        if ($write) {
+            [IO.File]::WriteAllBytes($profilePath, $new)
+            if ($env:OS -eq "Windows_NT") {
+                $acl = Get-Acl $profilePath
+                $acl.SetAccessRuleProtection($true, $false)
+                $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                    "FullControl", "Allow")
+                $acl.SetAccessRule($rule)
+                Set-Acl -Path $profilePath -AclObject $acl
+            }
+            Write-Ok "Written: $profilePath"
+        }
+    }
+    $codexConfig = Join-Path $codexDir "config.toml"
+    if ((Test-Path -LiteralPath $codexConfig) -and
+        (Select-String -LiteralPath $codexConfig -Pattern '^\s*sandbox_mode\s*=\s*"danger-full-access"' -Quiet)) {
+        Write-Warn "$codexConfig sets sandbox_mode = `"danger-full-access`": that widens Codex's sandbox. vhir doesn't edit that file."
+    }
+    if ($errors -gt 0) {
+        Write-Warn "$errors Codex file(s) could not be fetched. Re-run, or fetch them by hand."
     }
 }
 
@@ -615,36 +717,8 @@ foreach ($asset in $assets) {
     }
 }
 
-# Skills, as skills/MANIFEST lists them. Each file is fetched and replaced: an
-# edit to a vhir skill is lost on re-run.
-$skillsDir = Join-Path $deployDir ".claude\skills"
-Write-Info "Fetching skills..."
-try {
-    $manifest = (Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/skills/MANIFEST" -UseBasicParsing).Content
-    if ($manifest -is [byte[]]) { $manifest = [System.Text.Encoding]::UTF8.GetString($manifest) }
-    $fetched = 0
-    foreach ($rel in ($manifest -split "`r?`n")) {
-        if (-not $rel -or $rel.StartsWith("#")) { continue }
-        if ($rel -notmatch '^[A-Za-z0-9._/-]+$' -or $rel.Contains("..") -or $rel.StartsWith("/")) {
-            Write-Warn "Skipped an unexpected skills path: $rel"
-            $errors++
-            continue
-        }
-        $dest = Join-Path $skillsDir ($rel -replace '/', '\')
-        New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
-        try {
-            Invoke-WebRequest -Uri "$githubRaw/sift-mcp/main/skills/$rel" -OutFile $dest -UseBasicParsing
-            $fetched++
-        } catch {
-            Write-Warn "Could not fetch skills/$rel"
-            $errors++
-        }
-    }
-    Write-Ok "$fetched skill files"
-} catch {
-    Write-Warn "Could not fetch the skills list"
-    $errors++
-}
+# Skills: every file skills/MANIFEST lists
+Fetch-Skills (Join-Path $deployDir ".claude\skills")
 
 # Note: forensic-audit.sh is a POSIX shell script. Claude Code hooks on Windows
 # run via the shell. This script may require WSL or Git Bash to execute.
@@ -690,7 +764,7 @@ if ($clientType -eq "claude-code") {
     Write-Host "    - ssh-agent confirmation per use"
     Write-Host "    - Hardware security keys (FIDO2/U2F)"
     Write-Host ""
-    Write-Host "  Alternatively, use an MCP-only client (Claude Desktop, LibreChat,"
+    Write-Host "  Alternatively, use an MCP-only client (LibreChat,"
     Write-Host "  or any client without terminal access) which can only interact"
     Write-Host "  with SIFT through audited MCP tools."
 
@@ -711,5 +785,18 @@ if ($clientType -eq "claude-code") {
 }
 
 Write-Host ""
+if ($clientType -eq "codex") {
+    Write-Host ""
+    Write-Host "Start Codex from ~/vhir with Valhuntir's profile:"
+    Write-Host ""
+    Write-Host "  cd ~/vhir; codex -p valhuntir"
+    Write-Host ""
+    Write-Host "Not from your home folder: from there its shell could change ~/.vhir."
+    Write-Host "Limits on this machine: Codex's shell commands here aren't in the case"
+    Write-Host "audit (only the MCP tool calls, run on the SIFT box, are), and these"
+    Write-Host "settings are user-switchable: there are no managed Codex settings here."
+    Write-Host ""
+}
+
 Write-Host "Documentation: https://appliedir.github.io/Valhuntir/" -ForegroundColor White
 Write-Host ""

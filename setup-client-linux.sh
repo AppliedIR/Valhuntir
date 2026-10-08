@@ -44,7 +44,7 @@ for arg in "$@"; do
             echo "Usage: setup-client-linux.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --client=CLIENT    LLM client (claude-code, librechat, other)"
+            echo "  --client=CLIENT    LLM client (claude-code, codex, librechat, other)"
             echo "  --examiner=NAME    Examiner identity"
             echo "  --sift=URL         Gateway URL (forces remote mode)"
             echo "  --code=CODE        Join code (remote mode)"
@@ -95,6 +95,37 @@ replace_file() {
 }
 err()    { echo -e "${RED}[ERROR]${NC} $*"; }
 header() { echo -e "\n${BOLD}=== $* ===${NC}\n"; }
+
+# Fetch every skill file skills/MANIFEST lists into $1. Each file is fetched and
+# replaced: an edit to a vhir skill is lost on re-run. Counts failures in ERRORS.
+fetch_skills() {
+    local dest="$1" manifest rel fetched=0
+    info "Fetching skills..."
+    if ! manifest=$(curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/MANIFEST" 2>/dev/null); then
+        warn "Could not fetch the skills list"
+        ERRORS=$((ERRORS + 1))
+        return 0
+    fi
+    while IFS= read -r rel; do
+        case "$rel" in
+            "" | \#*) continue ;;
+            /* | *..* | *[!A-Za-z0-9._/-]*)
+                warn "Skipped an unexpected skills path: $rel"
+                ERRORS=$((ERRORS + 1))
+                continue
+                ;;
+        esac
+        mkdir -p "$(dirname "$dest/$rel")"
+        if curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/$rel" -o "$dest/$rel" 2>/dev/null; then
+            fetched=$((fetched + 1))
+        else
+            warn "Could not fetch skills/$rel"
+            ERRORS=$((ERRORS + 1))
+        fi
+    done <<< "$manifest"
+    ok "$fetched skill files"
+}
+
 
 prompt() {
     local msg="$1" default="${2:-}"
@@ -157,6 +188,25 @@ echo ""
 if $UNINSTALL; then
     DEPLOY_DIR="$HOME/vhir"
     header "Valhuntir Forensic Controls — Uninstall"
+
+    # Codex: Valhuntir's profile, skills and agent (never ~/.codex/config.toml)
+    CODEX_FILES=()
+    for f in "$HOME/.codex/valhuntir.config.toml" "$HOME/.codex/agents/finding-skeptic.toml"; do
+        [[ -f "$f" ]] && CODEX_FILES+=("$f")
+    done
+    for d in "$HOME/.agents/skills"/vhir-* "$HOME/.agents/skills/finding-skeptic"; do
+        [[ -d "$d" ]] && CODEX_FILES+=("$d")
+    done
+    if (( ${#CODEX_FILES[@]} > 0 )); then
+        echo "  Codex files:"
+        printf '    %s\n' "${CODEX_FILES[@]}"
+        if prompt_yn_strict "  Remove Valhuntir's Codex profile, skills and agent?"; then
+            rm -rf "${CODEX_FILES[@]}"
+            ok "Removed Valhuntir's Codex files"
+        fi
+        echo ""
+    fi
+
 
     if [[ ! -d "$DEPLOY_DIR" ]]; then
         info "No Valhuntir workspace found at $DEPLOY_DIR."
@@ -411,13 +461,15 @@ header "LLM Client"
 
 if [[ -z "$CLIENT" ]]; then
     echo "  1. Claude Code"
-    echo "  2. LibreChat"
-    echo "  3. Other"
+    echo "  2. Codex"
+    echo "  3. LibreChat"
+    echo "  4. Other"
     echo ""
     CHOICE=$(prompt "Which LLM client?" "1")
     case "$CHOICE" in
         1) CLIENT="claude-code" ;;
-        2) CLIENT="librechat" ;;
+        2) CLIENT="codex" ;;
+        3) CLIENT="librechat" ;;
         *) CLIENT="other" ;;
     esac
 fi
@@ -492,6 +544,8 @@ case "$CLIENT" in
             replace_file "$CONFIG_FILE.vhir-new" "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE"
         ;;
+    codex)
+        ;;  # Valhuntir's Codex profile, below
     librechat)
         CONFIG_FILE="$DEPLOY_DIR/librechat_mcp.yaml"
         # Shell installer writes JSON reference; examiner merges into librechat.yaml
@@ -505,6 +559,78 @@ case "$CLIENT" in
         info "Configure your LLM client using the entries in this file."
         ;;
 esac
+
+# ---- Codex: Valhuntir's profile, the skills and the skeptic's agent ----
+# The profile is ~/.codex/valhuntir.config.toml (codex -p valhuntir); the
+# user's ~/.codex/config.toml is never written.
+
+if [[ "$CLIENT" == "codex" ]]; then
+    header "Codex"
+    GITHUB_RAW="https://raw.githubusercontent.com/AppliedIR"
+    ERRORS=0
+    PROFILE="$HOME/.codex/valhuntir.config.toml"
+    mkdir -p "$HOME/.codex/agents" "$HOME/.agents/skills"
+    fetch_skills "$HOME/.agents/skills"
+    if curl -fsSL "$GITHUB_RAW/sift-mcp/main/agents/finding-skeptic/codex.toml" -o "$HOME/.codex/agents/finding-skeptic.toml" 2>/dev/null; then
+        ok "finding-skeptic agent"
+    else
+        warn "Could not fetch the finding-skeptic agent"
+        ERRORS=$((ERRORS + 1))
+    fi
+    PARTS=$(mktemp -d)
+    INSTRUCTIONS=""
+    NL=$'\n'
+    for part in AGENTS.md claude-code/full/FORENSIC_DISCIPLINE.md codex/OVERLAY.md codex/REMOTE.md; do
+        if curl -fsSL "$GITHUB_RAW/sift-mcp/main/$part" -o "$PARTS/part" 2>/dev/null; then
+            # each part without its trailing newlines, joined by a blank line
+            [[ -n "$INSTRUCTIONS" ]] && INSTRUCTIONS+="$NL$NL"
+            INSTRUCTIONS+="$(cat "$PARTS/part")"
+        else
+            warn "Could not fetch $part"
+            INSTRUCTIONS=""
+            ERRORS=$((ERRORS + 1))
+            break
+        fi
+    done
+    rm -rf "$PARTS"
+    if [[ -z "$INSTRUCTIONS" ]] || [[ "$INSTRUCTIONS" == *"'''"* ]]; then
+        warn "Valhuntir's instructions for Codex couldn't be fetched; $PROFILE not written."
+    else
+        (
+            umask 077
+            {
+                echo "# Valhuntir's Codex profile, for: codex -p valhuntir"
+                echo "# vhir's client setup writes this file. It holds the"
+                echo "# gateway token, so only you can read it."
+                echo 'sandbox_mode = "workspace-write"'
+                echo 'approval_policy = "on-request"'
+                echo 'project_doc_max_bytes = 0'
+                printf "developer_instructions = '''\n%s\n'''\n" "$INSTRUCTIONS"
+                while IFS= read -r backend; do
+                    [[ "$backend" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+                    printf '\n[mcp_servers.%s]\nurl = "%s"\n' "$backend" "$GATEWAY_URL/mcp/$backend"
+                    printf 'http_headers = { Authorization = "Bearer %s" }\n' "$GATEWAY_TOKEN"
+                    printf 'default_tools_approval_mode = "approve"\n'
+                done <<< "$BACKENDS"
+                printf '\n[mcp_servers.zeltser-ir-writing]\nurl = "https://website-mcp.zeltser.com/mcp"\n'
+                printf '\n[mcp_servers.microsoft-learn]\nurl = "https://learn.microsoft.com/api/mcp"\n'
+            } > "$PROFILE.vhir-new"
+        )
+        if [[ -f "$PROFILE" ]] && ! cmp -s "$PROFILE.vhir-new" "$PROFILE"; then
+            echo "  Changes to $PROFILE:"
+            { diff -u "$PROFILE" "$PROFILE.vhir-new" || true; } | sed -E 's/(vhir_[a-z]{2}_)[0-9A-Za-z]+/\1…/g; s/^/    /'
+        fi
+        replace_file "$PROFILE.vhir-new" "$PROFILE"
+        chmod 600 "$PROFILE"
+        ok "Written: $PROFILE"
+    fi
+    if [[ -f "$HOME/.codex/config.toml" ]] && grep -Eq '^[[:space:]]*sandbox_mode[[:space:]]*=[[:space:]]*"danger-full-access"' "$HOME/.codex/config.toml"; then
+        warn "$HOME/.codex/config.toml sets sandbox_mode = \"danger-full-access\": that widens Codex's sandbox. vhir doesn't edit that file."
+    fi
+    if (( ERRORS > 0 )); then
+        warn "$ERRORS Codex file(s) could not be fetched. Re-run, or fetch them by hand."
+    fi
+fi
 
 # ---- Phase 6: Claude Code Asset Deployment ----
 
@@ -541,34 +667,8 @@ if [[ "$CLIENT" == "claude-code" ]]; then
         ERRORS=$((ERRORS + 1))
     fi
 
-    # Skills and the finding skeptic's agent, as skills/MANIFEST lists them. Each
-    # file is fetched and replaced: an edit to a vhir skill is lost on re-run.
-    info "Fetching skills..."
-    SKILLS_DIR="$DEPLOY_DIR/.claude/skills"
-    if MANIFEST=$(curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/MANIFEST" 2>/dev/null); then
-        FETCHED=0
-        while IFS= read -r rel; do
-            case "$rel" in
-                "" | \#*) continue ;;
-                /* | *..* | *[!A-Za-z0-9._/-]*)
-                    warn "Skipped an unexpected skills path: $rel"
-                    ERRORS=$((ERRORS + 1))
-                    continue
-                    ;;
-            esac
-            mkdir -p "$(dirname "$SKILLS_DIR/$rel")"
-            if curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/$rel" -o "$SKILLS_DIR/$rel" 2>/dev/null; then
-                FETCHED=$((FETCHED + 1))
-            else
-                warn "Could not fetch skills/$rel"
-                ERRORS=$((ERRORS + 1))
-            fi
-        done <<< "$MANIFEST"
-        ok "$FETCHED skill files"
-    else
-        warn "Could not fetch the skills list"
-        ERRORS=$((ERRORS + 1))
-    fi
+    # Skills and the finding skeptic's agent
+    fetch_skills "$DEPLOY_DIR/.claude/skills"
     mkdir -p "$DEPLOY_DIR/.claude/agents"
     if curl -fsSL "$GITHUB_RAW/sift-mcp/main/agents/finding-skeptic/claude.md" -o "$DEPLOY_DIR/.claude/agents/finding-skeptic.md" 2>/dev/null; then
         ok "finding-skeptic agent"
@@ -856,5 +956,17 @@ if [[ "$CLIENT" == "claude-code" ]]; then
 fi
 
 echo ""
+if [[ "$CLIENT" == "codex" ]]; then
+    echo ""
+    echo "Start Codex from ~/vhir with Valhuntir's profile:"
+    echo ""
+    echo "  cd ~/vhir && codex -p valhuntir"
+    echo ""
+    echo "Not from your home folder: from there its shell could change ~/.vhir."
+    echo "Limits on this machine: Codex's shell commands here aren't in the case"
+    echo "audit (only the MCP tool calls, run on the SIFT box, are), and these"
+    echo "settings are user-switchable: there are no managed Codex settings here."
+fi
+
 echo -e "${BOLD}Documentation:${NC} https://appliedir.github.io/Valhuntir/"
 echo ""

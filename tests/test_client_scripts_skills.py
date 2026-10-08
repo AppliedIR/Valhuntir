@@ -63,13 +63,20 @@ def _serve(tmp_path, manifest_lines):
     return serve
 
 
+def _function(text):
+    start = text.index("fetch_skills() {")
+    start = text.rindex("\n", 0, start) + 1
+    return text[start : text.index("\n}\n", start) + 3]
+
+
 def _block(text):
-    start = text.index("# Skills and the finding skeptic's agent")
+    """The shared fetch_skills function and the Claude block that calls it."""
+    start = text.index("# Skills and the finding skeptic's agent\n")
     start = text.rindex("\n", 0, start) + 1
     m = re.compile(r"^ *fi\n", re.M).search(
-        text, text.index('ok "finding-skeptic agent"')
+        text, text.index('ok "finding-skeptic agent"', start)
     )
-    return text[start : m.end()]
+    return _function(text) + text[start : m.end()]
 
 
 def _run_sh(tmp_path, script, serve):
@@ -129,14 +136,22 @@ def test_no_script_fetches_the_tool_reference_any_more(text):
     assert "claude-code/full/TOOL_REFERENCE.md" not in text
 
 
+def _win_function():
+    start = WIN.index("function Fetch-Skills {")
+    return WIN[start : WIN.index("\n}\n", start) + 3]
+
+
 @pytest.mark.skipif(not PWSH, reason="pwsh not installed")
 def test_windows_fetches_every_listed_skill_and_refuses_a_path_outside(tmp_path):
     serve = _serve(tmp_path, ["..\\..\\evil.md", *FILES])
-    block = WIN[
-        WIN.index("# Skills, as skills/MANIFEST") : WIN.index(
-            "# Note: forensic-audit.sh"
-        )
-    ]
+    block = (
+        _win_function()
+        + WIN[
+            WIN.index("# Skills: every file skills/MANIFEST lists") : WIN.index(
+                "# Note: forensic-audit.sh"
+            )
+        ]
+    )
     deploy = tmp_path / "vhir"
     stub = (
         'function Write-Info($m) { Write-Host "INFO $m" }\n'
