@@ -710,6 +710,45 @@ def _share_conf(doc: dict, target: str) -> str:
 """
 
 
+CASE_MARKER = (
+    ".vhir-share-case"  # at a case's root: its folder name, which wintools checks
+)
+
+
+def share_settings() -> dict:
+    """`~/.vhir/samba.yaml`, or {} when the share isn't set up."""
+    try:
+        doc = yaml.safe_load((Path.home() / ".vhir" / "samba.yaml").read_text())
+    except (OSError, yaml.YAMLError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def mark_case(case_dir: Path) -> str | None:
+    """Write the case's share marker (0644, its folder name): wintools
+    writes through the share only while the marker names the case it was
+    told is active. Returns why it couldn't be written, or None."""
+    import stat
+
+    marker = Path(case_dir) / CASE_MARKER  # never through a link (O_NOFOLLOW)
+    refused = (
+        f"Share marker not written: {marker} is not a regular file inside the case."
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(marker, flags, 0o644)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return refused
+            os.fchmod(fd, 0o644)
+            os.write(fd, Path(case_dir).name.encode())
+        finally:
+            os.close(fd)
+    except OSError as e:
+        return f"Share marker not written: {marker}: {e.strerror or e}"
+    return None
+
+
 def share_needs_rejoin() -> bool:
     """A box joined before vhir had its own share name: wintools has to join
     again to reach the case through it."""
@@ -835,8 +874,16 @@ def _setup_samba_share(join_code: str) -> str:
     # when there is none; activation repoints it from then on.
     placeholder = Path.home() / ".vhir" / "share-inactive"
     placeholder.mkdir(parents=True, exist_ok=True)
-    share_target = str(_active_case_dir() or placeholder)
+    active = _active_case_dir()
+    share_target = str(active or placeholder)
     check_share_path(share_target)
+    if active is not None:  # the share and its marker move together
+        warning = mark_case(active)
+        if warning:
+            print(
+                f"Warning: {warning}; wintools writes nothing to the case.",
+                file=sys.stderr,
+            )
 
     # Write Samba config — files are written as the installer and their own
     # private group, so the installer can change what wintools wrote without
@@ -1201,6 +1248,13 @@ def _repoint_samba_share(case_dir: Path | None) -> None:
     target = str(case_dir) if case_dir else str(placeholder)
 
     check_share_path(target)  # before the no-op, so a bad tracked target is still said
+    if case_dir is not None:  # the share and its marker move together, tracked or not
+        warning = mark_case(case_dir)
+        if warning:
+            print(
+                f"Warning: {warning}; wintools writes nothing to the case.",
+                file=sys.stderr,
+            )
     if target == current_target:
         return  # No-op
 

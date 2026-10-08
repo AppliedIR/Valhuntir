@@ -1006,10 +1006,11 @@ def _print_share_rejoin_notice() -> None:
 
     if share_needs_rejoin():
         print(
-            f"\n  wintools: the case share is now //SIFT/{SHARE_NAME}. Until wintools joins"
-            " again it writes nothing to the case.\n"
-            "  Join again: on SIFT run 'vhir setup join-code', then on Windows run"
-            " setup-windows.ps1 with the new join code."
+            f"\n  wintools: vhir now shares the case as //SIFT/{SHARE_NAME}. This box still"
+            " shares it as [cases], which also covers SIFT's own [cases] share.\n"
+            "  Join wintools again to move to the new share: on SIFT run"
+            " 'vhir setup join-code', then on Windows run setup-windows.ps1 with the new"
+            " join code. The active case stays shared through the move."
         )
 
 

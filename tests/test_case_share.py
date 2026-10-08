@@ -172,7 +172,7 @@ def test_update_says_wintools_must_join_again_only_on_an_old_share(
     assert bool(out) is said
 
 
-# -- what sharing a case gives the share
+# -- the marker moves with the share
 
 
 @pytest.fixture
@@ -183,6 +183,7 @@ def case(tmp_path, monkeypatch):
     )
     d = tmp_path / "cases" / "INC-7"
     d.mkdir(parents=True)
+    (d / "CASE.yaml").write_text("case_id: INC-7\n")
     return d
 
 
@@ -190,44 +191,144 @@ def _mode(path):
     return stat.S_IMODE(os.stat(path).st_mode)
 
 
-def test_sharing_a_case_writes_its_marker_readable_by_all(case):
+def test_the_marker_names_its_case_readable_by_all(case):
     old = os.umask(0o077)
     try:
-        assert main._set_case_wintools_permissions(case) is None
+        assert join.mark_case(case) is None
     finally:
         os.umask(old)
     marker = case / ".vhir-share-case"
-    assert marker.read_text() == "INC-7"
-    assert _mode(marker) == 0o644
+    assert marker.read_text() == "INC-7" and _mode(marker) == 0o644
 
 
 def test_a_marker_from_another_case_is_replaced(case):
     (case / ".vhir-share-case").write_text("INC-OTHER-AND-LONGER")
-    main._set_case_wintools_permissions(case)
+    join.mark_case(case)
     assert (case / ".vhir-share-case").read_text() == "INC-7"
-
-
-def test_an_old_cases_folders_are_opened_to_the_owners_group(case):
-    for folder in ("extractions", "audit"):
-        (case / folder).mkdir(mode=0o700)
-        (case / folder).chmod(0o700)
-    assert main._set_case_wintools_permissions(case) is None
-    assert _mode(case / "extractions") == 0o775
-    assert _mode(case / "audit") == 0o775
-    assert _mode(case / "extractions" / "wintools") == 0o2775
 
 
 def test_a_marker_that_is_a_link_is_never_followed(case, tmp_path):
     outside = tmp_path / "outside"
     outside.write_text("keep")
     (case / ".vhir-share-case").symlink_to(outside)
-    warning = main._set_case_wintools_permissions(case)
-    assert "Share marker not written" in warning
+    assert "Share marker not written" in join.mark_case(case)
     assert outside.read_text() == "keep"
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes here")
 def test_a_marker_that_is_a_pipe_is_refused_without_waiting(case):
     os.mkfifo(case / ".vhir-share-case")
+    assert ".vhir-share-case" in join.mark_case(case)
+
+
+def test_pointing_the_share_at_a_case_marks_it_even_when_already_tracked(sudo, case):
+    """An upgraded box: the share already points at the case, which has no
+    marker yet. Activating it again writes the marker."""
+    sudo.write({"share_name": "cases", "wintools_ip": "192.0.2.5", "force_user": "ex1",
+                "active_share_target": str(case)})  # fmt: skip
+    join._repoint_samba_share(case)
+    assert sudo.calls() == []  # the share itself didn't move
+    assert (case / ".vhir-share-case").read_text() == "INC-7"
+
+
+def test_pointing_the_share_away_leaves_the_old_marker_naming_its_own_case(
+    sudo, case, tmp_path
+):
+    sudo.write({"share_name": "vhir-cases", "wintools_ip": "192.0.2.5", "force_user": "ex1",
+                "force_group": "ex1"})  # fmt: skip
+    join._repoint_samba_share(case)
+    other = tmp_path / "cases" / "INC-8"
+    other.mkdir()
+    join._repoint_samba_share(other)
+    assert (case / ".vhir-share-case").read_text() == "INC-7"
+    assert (other / ".vhir-share-case").read_text() == "INC-8"
+
+
+# -- the case's folders, on a box joined with vhir's own share
+
+
+def _joined(monkeypatch, tmp_path, share_name="vhir-cases"):
+    home = tmp_path / "home"
+    (home / ".vhir").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    own = grp.getgrgid(os.getgid()).gr_name
+    (home / ".vhir" / "samba.yaml").write_text(
+        yaml.dump({"share_name": share_name, "force_user": "ex1", "force_group": own})
+    )
+    real = grp.getgrnam
+    monkeypatch.setattr(
+        grp, "getgrnam",
+        lambda name: types.SimpleNamespace(gr_gid=os.getgid()) if name in ("sift", own)
+        else real(name),
+    )  # fmt: skip
+
+
+def _closed(case):
+    for folder in ("extractions", "audit"):
+        (case / folder).mkdir(mode=0o700, exist_ok=True)
+        (case / folder).chmod(0o700)
+
+
+def test_an_old_cases_folders_are_opened_to_the_private_group(
+    case, tmp_path, monkeypatch
+):
+    _joined(monkeypatch, tmp_path)
+    _closed(case)
+    assert main._set_case_wintools_permissions(case) is None
+    assert _mode(case / "extractions") == 0o775 and _mode(case / "audit") == 0o775
+    assert _mode(case / "extractions" / "wintools") == 0o2775
+
+
+def test_a_folder_of_another_group_is_left_as_it_is(case, tmp_path, monkeypatch):
+    _joined(monkeypatch, tmp_path)
+    _closed(case)
+    real = os.fstat
+
+    def other_group(fd):  # the folder belongs to a shared group, not the private one
+        st = real(fd)
+        if stat.S_ISDIR(st.st_mode):
+            return os.stat_result((*st[:5], st.st_gid + 1, *st[6:]))
+        return st
+
+    monkeypatch.setattr(os, "fstat", other_group)
     warning = main._set_case_wintools_permissions(case)
-    assert warning and ".vhir-share-case" in warning
+    assert "left as it is: its group isn't" in warning
+    assert _mode(case / "audit") == 0o700
+
+
+def test_a_failed_group_step_still_opens_the_folders(case, tmp_path, monkeypatch):
+    _joined(monkeypatch, tmp_path)
+    _closed(case)
+
+    def chown(fd, uid, gid):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "fchown", chown)
+    warning = main._set_case_wintools_permissions(case)
+    assert "Group permissions not applied" in warning
+    assert _mode(case / "extractions") == 0o775 and _mode(case / "audit") == 0o775
+
+
+def test_a_box_not_joined_with_vhirs_share_leaves_the_folders(
+    case, tmp_path, monkeypatch
+):
+    _joined(monkeypatch, tmp_path, share_name="cases")
+    _closed(case)
+    main._set_case_wintools_permissions(case)
+    assert _mode(case / "audit") == 0o700
+
+
+def test_sharing_a_case_no_longer_writes_the_marker_itself(case, tmp_path, monkeypatch):
+    _joined(monkeypatch, tmp_path)
+    main._set_case_wintools_permissions(case)
+    assert not (case / ".vhir-share-case").exists()
+
+
+# -- nsswitch's comments
+
+
+def test_a_commented_out_source_isnt_read(tmp_path, monkeypatch):
+    _accounts(monkeypatch)
+    conf = tmp_path / "nsswitch.conf"
+    conf.write_text("passwd: files systemd # sss\ngroup: files # ldap\n")
+    assert join.private_primary_group("ex1", str(conf)) == "ex1"

@@ -179,3 +179,20 @@ def test_a_join_whose_group_isnt_the_installers_alone_changes_nothing(box, monke
         join._setup_samba_share("CODE-ONE")
     assert box.ran == [] and box.answers == []
     assert not (box.home / ".vhir" / "samba.yaml").exists()
+
+
+def test_a_join_with_a_case_active_marks_that_case_for_wintools(box):
+    """A fresh join, or the re-join after an update, while a case is open:
+    the share and its marker move together, so wintools' first run is
+    accepted."""
+    case_dir = _case(box)
+    box.answers.append("10.0.0.20")
+    join._setup_samba_share("CODE-ONE")
+    assert f"path = {case_dir}\n" in _share_conf(box)
+    assert (case_dir / ".vhir-share-case").read_text() == "INC-1"
+
+
+def test_a_join_with_no_case_active_marks_nothing(box):
+    box.answers.append("10.0.0.20")
+    join._setup_samba_share("CODE-ONE")
+    assert not list((box.home / ".vhir" / "share-inactive").iterdir())

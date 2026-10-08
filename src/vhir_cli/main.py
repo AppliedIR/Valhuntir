@@ -1128,24 +1128,64 @@ def _case_init_data(
     return result
 
 
-# At a case's root, holding the case's folder name: wintools writes through the
-# share only when it names the case wintools was told is active.
-CASE_MARKER = ".vhir-share-case"
+def _open_case_folders(case_dir: Path) -> str | None:
+    """On a box joined with vhir's own share, open `extractions/` and
+    `audit/` to 0775 by the owner's own chmod, so files the share writes as
+    the installer's group can go in them, old cases included: only a folder
+    whose group is the installer's private group (checked at join). Returns
+    what was left as it was, or None."""
+    import grp
+    import os
+    import stat
+
+    from vhir_cli.commands.join import SHARE_NAME, share_settings
+
+    share = share_settings()
+    group = share.get("force_group")
+    if share.get("share_name") != SHARE_NAME or not group:
+        return None
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        return f"extractions/ and audit/ left as they are: group {group!r} not found"
+    root = os.path.realpath(case_dir)
+    notes = []
+    for name in ("extractions", "audit"):
+        path = case_dir / name
+        try:
+            path.mkdir(exist_ok=True)
+            if os.path.commonpath([os.path.realpath(path), root]) != root:
+                notes.append(f"{path} left as it is: it leads outside the case")
+                continue
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_DIRECTORY
+            fd = os.open(path, flags)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISDIR(st.st_mode) or st.st_gid != gid:
+                    notes.append(f"{path} left as it is: its group isn't {group}")
+                    continue
+                os.fchmod(fd, 0o775)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            notes.append(f"{path} left as it is: {e.strerror or e}")
+    return "; ".join(notes) or None
 
 
 def _set_case_wintools_permissions(case_dir: Path) -> str | None:
-    """Set group-based permissions for wintools access on a case directory,
-    open `extractions/` and `audit/` to the owner's group (0775, by the
-    owner's own chmod) and write the case's share marker.
+    """Open the case's folders to the share (`_open_case_folders`), then set
+    group-based permissions for wintools access on it.
 
-    Returns a warning when the group step can't be applied (a process that
-    doesn't have the sift group yet), so the caller still repoints the share
-    and notifies wintools.
+    Returns a warning when a step can't be applied (a process that doesn't
+    have the sift group yet), so the caller still repoints the share and
+    notifies wintools. The share marker is written when the share is pointed
+    at the case (`join.mark_case`).
     """
     import grp
     import os
     import stat
 
+    opened = _open_case_folders(case_dir)  # whatever the group step does
     try:
         sift_gid = grp.getgrnam("sift").gr_gid
     except KeyError:
@@ -1159,12 +1199,9 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
         real = os.path.realpath(path)
         return os.path.commonpath([real, root]) == root
 
-    def share_with_group(
-        path: Path, mode: int, directory: bool = False, gid: int | None = None
-    ) -> str | None:
-        """Give `path` to the group (`gid`, the sift group by default; -1
-        keeps its group): only a regular file or folder (as asked) inside
-        the case, never through a link, and never waiting on a pipe."""
+    def share_with_group(path: Path, mode: int, directory: bool = False) -> str | None:
+        """Give `path` to the group: only a regular file or folder (as asked)
+        inside the case, never through a link, and never waiting on a pipe."""
         kind = stat.S_ISDIR if directory else stat.S_ISREG
         refused = (
             f"Group permissions not applied: {path} is not a "
@@ -1178,7 +1215,7 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             try:
                 if not kind(os.fstat(fd).st_mode):  # replaced since the check
                     return refused
-                os.fchown(fd, -1, sift_gid if gid is None else gid)
+                os.fchown(fd, -1, sift_gid)
                 os.fchmod(fd, mode)
             finally:
                 os.close(fd)
@@ -1187,66 +1224,32 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             raise
         return None
 
-    def write_marker() -> str | None:
-        marker = case_dir / CASE_MARKER
-        refused = (
-            f"Share marker not written: {marker} is not a regular file inside the case."
-        )
-        if marker.is_symlink() or not inside(marker):
-            return refused
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
+    def group_step() -> str | None:
         try:
-            fd = os.open(marker, flags, 0o644)
-            try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    return refused
-                os.fchmod(fd, 0o644)
-                os.write(fd, case_dir.name.encode())
-            finally:
-                os.close(fd)
-        except OSError as e:
-            e.filename = str(marker)
-            raise
-        return None
-
-    try:
-        warning = write_marker()
-        if warning:
-            return warning
-        # Create extractions/wintools/ with setgid + group-writable
-        wintools_dir = case_dir / "extractions" / "wintools"
-        if not inside(wintools_dir):
-            return (
-                f"Group permissions not applied: {wintools_dir} leads outside the case."
-            )
-        wintools_dir.mkdir(parents=True, exist_ok=True)
-        warning = share_with_group(wintools_dir, 0o2775, directory=True)
-        if warning:
-            return warning
-
-        # Create audit/wintools-mcp.jsonl with group-writable
-        audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
-        if not inside(audit_file):
-            return (
-                f"Group permissions not applied: {audit_file} leads outside the case."
-            )
-        if not audit_file.exists() and not audit_file.is_symlink():
-            audit_file.parent.mkdir(parents=True, exist_ok=True)
-            audit_file.touch()
-        warning = share_with_group(audit_file, 0o664)
-        if warning:
-            return warning
-        # what the share writes as the owner's group can go in them, old cases too
-        for folder in ("extractions", "audit"):
-            warning = share_with_group(case_dir / folder, 0o775, directory=True, gid=-1)
+            # Create extractions/wintools/ with setgid + group-writable
+            wintools_dir = case_dir / "extractions" / "wintools"
+            if not inside(wintools_dir):
+                return f"Group permissions not applied: {wintools_dir} leads outside the case."
+            wintools_dir.mkdir(parents=True, exist_ok=True)
+            warning = share_with_group(wintools_dir, 0o2775, directory=True)
             if warning:
                 return warning
-        return None
-    except OSError as e:
-        return (
-            f"Group permissions not applied to {e.filename or case_dir}: "
-            f"{e.strerror or e}. Log out and back in, then activate the case again."
-        )
+
+            # Create audit/wintools-mcp.jsonl with group-writable
+            audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
+            if not inside(audit_file):
+                return f"Group permissions not applied: {audit_file} leads outside the case."
+            if not audit_file.exists() and not audit_file.is_symlink():
+                audit_file.parent.mkdir(parents=True, exist_ok=True)
+                audit_file.touch()
+            return share_with_group(audit_file, 0o664)
+        except OSError as e:
+            return (
+                f"Group permissions not applied to {e.filename or case_dir}: "
+                f"{e.strerror or e}. Log out and back in, then activate the case again."
+            )
+
+    return "; ".join(w for w in (opened, group_step()) if w) or None
 
 
 def _wintools_configured() -> bool:
