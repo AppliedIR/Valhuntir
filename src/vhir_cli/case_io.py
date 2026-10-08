@@ -584,12 +584,9 @@ def set_status(
 
 
 def hmac_text(item: dict) -> str:
-    """Canonical text for HMAC signing.
-
-    Signs all substantive fields — everything except volatile/derived
-    metadata. Same exclusion set as compute_content_hash(). Used for
-    both findings and timeline events (same formula, no type branching).
-    """
+    """The text a 0.6 approval line signed: every field outside the
+    content-hash exclusions (view 0 of `signed_text`). Read only to judge
+    0.6 lines; no 0.7 code signs it."""
     hashable = {k: v for k, v in item.items() if k not in HASH_EXCLUDE_KEYS}
     return json.dumps(hashable, sort_keys=True, default=str)
 

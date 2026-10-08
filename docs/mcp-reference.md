@@ -127,7 +127,7 @@ Report generation with data-driven profiles and Zeltser IR Writing integration. 
 
 ### How report-mcp Works
 
-`generate_report()` collects approved findings, timeline events, and IOCs, performs MITRE ATT&CK mapping, aggregates IOCs, runs report reconciliation against the HMAC verification ledger (detecting any post-approval tampering), and returns structured JSON with Zeltser IR Writing guidance. The LLM uses this data and the Zeltser guidance to render narrative sections, then saves the result with `save_report()`.
+`generate_report()` collects approved findings, timeline events, and IOCs, performs MITRE ATT&CK mapping, aggregates IOCs, shows as approved only the items that verify (listing the rest under `verification.not_verified`), carries every signing key and chain head, and returns structured JSON with Zeltser IR Writing guidance. The LLM uses this data and the Zeltser guidance to render narrative sections, then saves the result with `save_report()`.
 
 ## sift-mcp (5 tools)
 

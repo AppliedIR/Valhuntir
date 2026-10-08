@@ -59,35 +59,33 @@ The installer requires typing `security_hole` (or passing `-AcknowledgeSecurityH
 
 ## Human-in-the-Loop Controls
 
-Nine layers of defense-in-depth protect the integrity of forensic findings. The HMAC verification ledger (L2) shows later changes to approved text; what it does and doesn't prove is below. The other layers are advisory controls that raise the bar.
+Nine layers of defense-in-depth protect the integrity of forensic findings. The signed decision ledger (L2) records every examiner decision with a signature that verification checks; what a verified result does and doesn't show is in [Stated limits](#stated-limits). The other layers are advisory controls that raise the bar.
 
 ### L1 — Structural Approval Gate
 
-All findings and timeline events stage as DRAFT. Only a human examiner can move them to APPROVED or REJECTED. There is no MCP tool for approval. The password is the real gate — both the Examiner Portal (challenge-response: browser computes HMAC(PBKDF2(password), nonce), password never leaves the browser) and the vhir CLI require the examiner's password to approve findings. Without the password, no approval can occur regardless of the client or access method.
+All findings and timeline events stage as DRAFT. Only a human examiner can move them to APPROVED or REJECTED. There is no MCP tool for approval. Every decision is signed with the examiner's own signing key, which only their passphrase unlocks: at the vhir CLI the passphrase is typed at the terminal; in the Examiner Portal the browser unlocks the key and signs, and the passphrase never leaves the browser. The gateway checks every signature before it changes anything.
 
-### L2 — HMAC Verification Ledger
+### L2 — Signed Decision Ledger
 
-When an examiner approves findings, an HMAC-SHA256 signature is computed over the substantive text (observation + interpretation for findings, description for timeline events) using a key derived from the examiner's password (PBKDF2, 600K iterations). These signatures are stored in `/var/lib/vhir/verification/{case-id}.jsonl` — outside the case directory and outside the Claude Code sandbox.
+Each examiner has an Ed25519 signing key. The private key is stored only encrypted (AES-256-GCM) under a key derived from the examiner's passphrase (PBKDF2-SHA256, 600,000 iterations), in `/var/lib/vhir/keys/{examiner}.json`, beside a separate login verifier.
 
-- `vhir review --verify` performs full HMAC verification with per-examiner password prompts
-- `vhir review --verify --mine` filters to the current examiner only
-- Report generation includes automatic reconciliation (no password needed) that detects mismatches between approved items and ledger entries
-- Password rotation (`vhir config --reset-password`) re-signs all ledger entries with the new key
-- Case close copies the verification ledger into the case directory for archival
+Every decision (approve, reject, edit, re-attest, and each item decided with it) is one line in the case's ledger, `/var/lib/vhir/ledger/{case-id}.jsonl`, outside the case directory:
 
-What the ledger shows, and what it doesn't:
-
-- It shows a later change to approved text made by anyone who has neither the examiner's password nor their password file.
-- The signing key is the stored password hash. Anyone, or any program, running as a user who can read the examiner's password file in `/var/lib/vhir/passwords` can create ledger entries that verify.
-- The terminal password prompt stops a command that only pipes input into `vhir`. It doesn't stop a program that controls a terminal.
-- Claude Code's deny rules and sandbox limit that client's own tools. They don't limit other programs running as the examiner's user.
+- Each line signs the decision and the item's content at that moment, and names the hash of the line before it, so the lines form a chain. The first line also fixes the 0.6 approval records beside it by length and hash.
+- `vhir_cli.ledger` is the only writer. Every writer of a case's findings, timeline and IOCs, and of the ledger, holds the case lock (`{case-id}.lock` beside the chain) from load to save.
+- Before you sign, every decision is displayed, including each item decided with another ("cascade from F-…"). What is displayed is what is signed.
+- After each signed decision, vhir prints the ledger head (sequence and hash) and your key's fingerprint.
+- `vhir review --verify` checks every line's signature and link, and each approved item against its latest line. It needs no passphrase. Optional anchors (`--expect-key` for fingerprints, `--expect-head` for heads) let it say `anchored`. Without them it prints "Not anchored", every signing key with its full fingerprint, and each chain's head.
+- Close, export and backup write the case's own copies of its signed history into the case (`ledger/`), so the case verifies on another machine.
+- Approvals made under 0.6 show as "approved under 0.6 (before signing)". `vhir approve --reattest` (optional) adds a signed approval of the current content.
+- `vhir config --reset-password` re-encrypts the same key under a new passphrase. `vhir config --forgot-password` makes a new key and keeps the old public key as retired; earlier approvals keep verifying under it.
 
 ### L3 — Case Data Deny Rules
 
 When Claude Code is the LLM client, deny rules block its Edit and Write tools on case data and control files, and its Read tool on `/var/lib/vhir`:
 
 - Case data: `findings.json`, `timeline.json`, `approvals.jsonl`, `todos.json`, `CASE.yaml`, `actions.jsonl`, `audit/*.jsonl`, `evidence.json`, `pending-reviews.json`
-- System: `/var/lib/vhir/**` (verification ledger + password hashes)
+- System: `/var/lib/vhir/**` (the ledgers, the signing keys and the passphrase verifiers)
 - CLI: `Bash(vhir approve*)` and `Bash(vhir reject*)` (including path-qualified variants)
 - Control files: `.claude/settings.json`, `.claude/CLAUDE.md`, `.claude/rules/**`, `.vhir/hooks/**`, `.vhir/active_case`, `.vhir/gateway.yaml`, `.vhir/config.yaml`, `.vhir/.password_lockout`
 
@@ -103,22 +101,21 @@ Case data files with forensic value (findings.json, timeline.json, approvals.jso
 
 At case initialization, the filesystem is checked. Non-POSIX filesystems (NTFS, exFAT, VFAT) trigger a warning since chmod has no effect.
 
-### L6 — Report Reconciliation
+### L6 — One Verdict Source
 
-When generating reports, report-mcp performs a bidirectional reconciliation between approved items and the verification ledger. This does not require a password. It detects:
+Every place that says whether an approval holds takes it from the same verification as `vhir review --verify`:
 
-- Items approved but missing from the ledger (APPROVED_NO_VERIFICATION)
-- Ledger entries with no corresponding approved item (VERIFICATION_NO_FINDING)
-- Substantive text changed after signing (DESCRIPTION_MISMATCH)
-- Count mismatches between approved items and ledger entries
-
-Alerts are included in the generated report as `verification_alerts`.
+- Reports (report-mcp and `vhir report`) list as approved only the items that verify, and those approved under 0.6 (labelled). Every other APPROVED item is listed as not verified, with its status.
+- Every report profile, every saved report and every export carries the case's signing keys with their full fingerprints and each chain's head. A copy that leaves this machine is an anchor you can compare with later.
+- `save_report` appends a verification block made by the server.
+- The Examiner Portal's badges come from the same verification. A valid item reads "Valid (not anchored): compare the fingerprint with a copy kept off this machine."
+- An IOC's sources, sightings, confidence and MITRE techniques are derived from the findings that cite it and aren't signed; reports and the portal label them so.
 
 ### L7-L8 — Integrity Controls
 
-- **Password authentication**: Both the `vhir approve` CLI command and the Examiner Portal Commit button require password-based authentication. The CLI uses direct password entry via `/dev/tty`. The portal uses challenge-response: the browser derives a PBKDF2 key and computes HMAC-SHA256(key, server_nonce) — the password never leaves the browser. Passwords are set per examiner via `vhir config --setup-password` (minimum 8 characters).
+- **Passphrase and signing key**: Both `vhir approve` and the Examiner Portal sign each decision with the examiner's own key. The CLI reads the passphrase from `/dev/tty`. In the portal the browser signs in with a challenge-response (the passphrase never leaves the browser), then unlocks the key and signs the exact decisions it displayed. Each examiner enrols once with `vhir config --setup-password` (or `vhir enrol --name NAME` at the SIFT terminal for a LAN examiner): at least 8 characters, 15 or more recommended.
 - **Provenance enforcement**: Findings must be traceable to evidence (MCP > HOOK > SHELL > NONE). NONE provenance with no supporting commands is rejected by a hard gate in `record_finding()`.
-- **Content hash integrity**: SHA-256 hashes computed at staging, verified at approval. `vhir review --verify` detects post-approval tampering via cross-file hash comparison.
+- **Content hash integrity**: SHA-256 hashes computed at staging, checked at review, so a decision staged in the portal isn't signed over content that changed since. `vhir review --verify` checks each approved item against its signed line.
 
 ### L9 — Kernel Sandbox (bubblewrap)
 
@@ -174,13 +171,88 @@ When Claude Code is the LLM client, `vhir setup client --client=claude-code` dep
 - **PreToolUse case-data guard**: Refuses Bash commands that would delete or overwrite case records (findings, timeline, approvals, IOCs, evidence registry, TODOs, CASE.yaml, actions, pending reviews), `audit/` or evidence files, or `/` and the folders above the cases root (such as `~`): `rm`, `mv`, `cp`, `truncate`, `shred`, `unlink`, redirections and `find -delete`, seen through `sudo`, `env`, chains, newlines, `$(...)` and `cd`. Moving other files into `DELETE/`, filing new evidence and work in `reports/` are allowed. It is a best-effort check of those commands, not a security boundary: it does not see into `bash -c`, `xargs`, scripts, `tee`, in-place editors (`sed -i`, `perl -i`), `git clean`, `rsync --delete`, `dd of=`, `>&`, brace expansion, variables, backquotes, a quoted `"$(...)"` or an operand after a `$(...)` inside an argument, nor anything after a `#` comment (on later lines too), nor `timeout -s`/`env -u` options, an option value placed after the operands of `cp`, `install` or `ln` (`--suffix .bak`, `-m 0644`), a single-operand `ln` (the link is created in the current folder) or a `cd` inside a subshell or one that fails, and it reads a quoted `'>'` as a redirection (a false block), blocks `find` with `-exec` or `-delete` rooted at `/` or a folder above the cases root whatever its predicates (`find ~ -exec grep …` too), and can misread a quoted `'x$'` before `\(` as a `$(`; and it guards only cases under `$VHIR_CASES_DIR` (default `~/cases`)
 - **PostToolUse audit hook**: While a case is active, records each Bash command and its output to the case's `audit/claude-code.jsonl` (with no active case, it records nothing)
 - **Provenance enforcement**: Findings without an evidence trail are rejected
-- **Password-gated human approval**: Approval requires the examiner's password + writes HMAC ledger entry (L2)
+- **Signed human approval**: Every decision is signed with the examiner's key, unlocked by their passphrase (L2)
+
+## What a Verified Result Shows
+
+Valhuntir assumes the AI client keeps administrative rights (sudo) on this machine. Under that assumption:
+
+- An anchored exit 0 from `vhir review --verify` shows that each chain presented ends at the head you supplied, and that every line in it was signed with a key you pinned, within its range.
+- It shows that you approved that content only if all of these hold: neither your password nor the signing key had been exposed, in the session that made the line or in any earlier session in which the key was unwrapped or the password typed; the code that displayed the items and signed them was unmodified in that session (limit 3); and the heads and fingerprints are your own records kept off this machine, or fingerprints and heads in a report, export or backup that left it before the line was made, checked off this machine (limits 1, 7 and 8).
+- A copy of the key, or a password that was observed or guessed (limit 2), can sign lines later without a session of yours, and those lines verify.
+- Rotating the key (`--forgot-password`) stops it from making lines that verify after its `supersedes` record. It doesn't invalidate lines signed before that record. A `supersedes` record is written only in chains where the retired key has lines. Elsewhere only your pins exclude the old key, so don't pin a retired key without a range.
+
+## Stated Limits
+
+1. **What a pass shows.** Exit 0 means that every APPROVED item is VALID, or approved under 0.6 (before signing), and that there's no failure. An anchored exit 0 means also that every chain presented is intact and ends at the `--expect-head` you supplied, and that every signing key is pinned with `--expect-key` within its range; verify then prints `anchored`.
+   - Verify can't tell where the pins and heads came from. The result is evidence of your approval of that content, while the display and signing code was unmodified (limit 3), only when they are your own records kept off this machine, or fingerprints and heads in a report, export or backup that left it before the line was made, and the check runs off this machine (limits 7 and 8).
+   - Making a line that verifies requires the examiner's password (typed, observed or guessed; limits 2 and 3) or a copy of the signing key. A key copied while it was unwrapped in any earlier session stays usable. A password observed at enrolment, reset, upgrade or any approval stays usable until the key is rotated.
+   - A cascaded line, `VALID (cascade from F-…)`, shows that the same key signed it with the same `at` as the source decision, at a higher seq. That it was listed before signing is a property of unmodified code (limit 3). Verify prints the source item's current status beside it.
+   - Without both anchors, or when a supplied head isn't its chain's last line, the result can still be exit 0, and verify prints "Not anchored: to prove this independently of this machine, compare the key fingerprint with a copy kept off it (any earlier report, export or backup)."
+   - Exit 0 without anchors shows that the case files and the ledger on this machine agree with each other. It doesn't show that the keys that signed them are the examiners' own: files on this machine can contain a key no examiner made. Comparing the printed fingerprints with a copy that left this machine earlier (a report, export or backup), or passing them with `--expect-key`, shows that.
+2. **Offline guessing.**
+   - The verifier and the wrapped key can be read and written by processes running as the examiner.
+   - Any copy of a 0.6 password file (a backup or any other copy) stays an offline-guessing target for the examiner's passphrase if it was kept at upgrade; fresh salts don't change that. From this release, backups carry public keys only.
+   - Serving the wrapped key only after a verified portal login protects it from gateway-token holders, not from processes that read `/var/lib/vhir/keys/` directly.
+   - The minimum is 8 characters, as in 0.6; 15 or more is recommended, and the examiner chooses. A short passphrase, or one built from common words, names or patterns, can be guessed offline from these files in practical time. A randomly generated passphrase of four or more words makes that impractical. A guessed passphrase can sign lines that verify. If a passphrase may have been guessed, run `--forgot-password` to replace the key.
+   - Any gateway token holder can post wrong portal responses and use up an examiner's attempts, as in 0.6. That blocks the examiner's approvals for the lockout period; it doesn't produce one.
+3. **Code and memory on this machine.** The code that displays items, takes the password and signs runs on, or is served from, this machine. Any process with administrative rights, or modified code, can observe the password, use or copy the signing key while it's in use, or sign content other than what was displayed. A line made that way verifies VALID, and so do lines made later with a copied key or an observed password. This build doesn't protect against that, or detect it, while the AI keeps sudo.
+   - The CLI prompt and the portal page are files the examiner account can write.
+   - The portal's frozen snapshot and the CLI's re-plan under the lock protect against changes made after the display. Whatever the files held when the display was built is displayed (not every signed field, unless `--show-signed` or the portal's "show all signed fields" toggle is used; limit 6), and is signed if you confirm it.
+   - Valhuntir's Claude Code settings deny `vhir approve` and `vhir reject` to the assistant's shell tool. This guards against an accidental or instructed run. It doesn't stop a process with administrative rights, or a program that drives vhir through a pseudo-terminal.
+4. **Key changes.**
+   - `--forgot-password` creates a new key and keeps the old public key as a retired record. The new key's first line in each case ledger carries a signed `supersedes` record.
+   - Lines signed with a superseded key after that record fail `RETIRED_KEY_USE`. That holds for the ledger presented: a copy cut back to before the record shows no retirement. The seq-bounded pin `--forgot-password` prints, and a head recorded after the new key's first line, cover that case.
+   - A key you didn't pin is listed under "Not anchored", with its fingerprint and its first and last seq. Compare it with an earlier report, export or backup.
+   - When one examiner has more than one key in the chains presented, and a key isn't endorsed by a signed change from another of that examiner's keys, verify warns "Key changed at seq N without the previous key's signature" and exits 2, unless every one of that examiner's keys is pinned with `--expect-key`.
+   - Valhuntir commands never replace a key without a retired record. The file itself stays writable (limit 2).
+   - A password change re-wraps the same key; it doesn't revoke it. If the password or key may have been exposed, use `--forgot-password`.
+   - Rotating a key doesn't invalidate lines already signed with it. Lines signed with an exposed key before its `supersedes` record still verify. Bounded pins (`:FROM-TO`) limit which seqs you accept for that key.
+5. **Truncation and restore.**
+   - Removing lines from the end of a chain, or restoring an older backup, is detected against a recorded head: with your most recent head, verify says `anchored` only if the chain ends exactly there, and otherwise lists the later lines. Without a head, removal from the end isn't detected, and the result can be exit 0. Removing a whole chain copy is detected only if you supply that chain's head.
+   - Removal or reordering elsewhere in a chain is detected when every key that signed it is pinned and wasn't exposed.
+   - A pinned head fixes every body, and so every key, at or before its seq.
+6. **What a VALID line covers.** It covers the signed view of the item at decision time: every field except `status`, `approved_at`, `approved_by`, `rejected_at`, `rejected_by`, `rejection_reason`, `examiner_notes`, `examiner_modifications`, `content_hash`, `verification`, `modified_at`, `provenance`, `provenance_warnings`, `source_evidence` and `reattested_*`, and for IOCs also `source_findings`, `sightings`, `confidence` and `mitre_techniques`.
+   - Unsigned: the examiner's note, the rejection reason, and the record of original values in `examiner_modifications`. The edited values themselves are signed as part of the item.
+   - The four derived IOC fields come from every citing finding, DRAFT and rejected included. They are labelled "derived, not signed".
+   - The signature covers the whole recorded item, including fields the display may not show (for example `artifacts`).
+   - A cascaded line is signed by the same key, with the same `at`, as its source decision, at a higher seq, and its link is checked (`CASCADE_UNSUPPORTED` otherwise). That it was listed before signing is a property of unmodified code (limit 3).
+7. **Anchors.** An anchor is a fingerprint (or head) held somewhere this machine can't change: a report, export or backup that has left it, or a note you made. Every report and export prints the signing keys and fingerprints, so each copy that leaves the machine anchors the keys as of the time it left. A copy still on this machine isn't an anchor. A copy made after a key change carries the changed fingerprint, so compare with the earliest copy you have. Pass fingerprints with `--expect-key`, and heads with `--expect-head`, to have verify print `anchored`. A verdict is independent of this machine only when it's run off it (limit 8).
+8. **Verification code.**
+   - Verification runs Valhuntir's own code.
+   - A check that doesn't depend on this machine copies the case directory after close (which writes the chain copies) to a clean Valhuntir install on another machine, and runs `vhir review --findings --verify` there, with your own `--expect-key` and `--expect-head`.
+   - `--ledger PATH` adds a chain copy that was taken separately.
+   - No separate verifier ships in this release.
+9. **Approvals made under 0.6** show as "approved under 0.6 (before signing)". They carry no signature that 0.7 can check. They record that an approval was made, not who made it. Once a case has its first signed line, its 0.6 records are fixed by length and hash, and a 0.6-format record added later fails (`LEGACY_AFTER_GENESIS`). In a case with no signed line yet, a file write can add or remove such a record. `vhir approve --reattest` (optional) adds a signed approval of the current content, dated now; the original record is unchanged.
+10. **Clocks.** `at`, `created_at` and retired dates come from the signer's local clock and aren't verified. Order comes from `seq` within a chain, and across chains from the signed `prior_chains` references.
+11. **Status counters and labels.**
+    - Status counters and status-only displays (`vhir case status`, `get_case_status`, `/api/summary`, forensic-mcp `get_findings`/`get_timeline`, `vhir review --iocs` grouping, the portal's "By <approved_by>") are based on status and aren't verification. report-mcp's approved-findings count comes from verification.
+    - The pending-reviews file is shared by everyone who holds a gateway token for the case. An entry's `staged_by` records who posted it, as stamped by the gateway; it is a label, not a verified identity.
+    - `saved_unsigned` is also a label. Any writer of the case directory can set it, so "saved unsigned from the CLI" doesn't show that the CLI saved the entry. Entries posted with an examiner's gateway token, including by an MCP client using that token, are labelled as that examiner's own.
+    - The box owner's gateway token is also the token that local MCP clients use. Whoever holds it can mint a join code bound to any LAN examiner's name except the owner's. A join with that code gets a gateway token under that name and ends that name's earlier tokens. That token can stage entries labelled as that examiner's, and can use up that examiner's attempts (limit 2). It can't sign as them: signing needs that examiner's passphrase or key, and a join changes neither.
+12. **Collaboration.** Approvals don't travel through bundle import (`vhir merge`, case-mcp `import_bundle`), which enters items as DRAFT. An import never replaces a local APPROVED or REJECTED item, and adds no chain file: a bundle's chains, keys and heads are data, printed as anchors to compare with the other box. A case's signed history reaches another box only by restore, or by a copy of the case directory after close.
+13. **Uninstall** removes `/var/lib/vhir`, including the ledgers and the signing keys. Close or export each case first, so its chain copies and keys are in the case. Move a case to another box only after close or export, which write the chain copies. A directory copied while the case is open carries no chain copy.
+14. **Shared OS account.**
+    - The installer sets up one OS account for examiners on this box, so examiners share it.
+    - Anyone at its terminal, and any process running as that account, can run `--forgot-password` for any name (also as `vhir enrol --name NAME --forgot`), or enrol a name that has no credential yet.
+    - The change shows as a new fingerprint, and verify warns that the key changed (limit 4). Pins (limits 1 and 4) are what detect it.
+15. **What file writes can do to the result.** A file write can stop a case from reaching exit 0: for example, one signed line naming an item the case doesn't have, or a chain broken by an edit. Where the recovery verify prints is a new case, the block is permanent for this case. File writes to case and ledger data, made without your password, a signing key or a change to Valhuntir's code, can block exit 0. They can't produce an anchored exit 0 in a check run off this machine with your most recent head for every chain and your pins (limits 5, 7 and 8). With an older head, or without a chain's head, they can, because they can remove the decisions made after the head you supplied, or a whole chain copy (limit 5).
+    - Without anchors, file writes can produce exit 0 (limit 1). In a case with no signed line, they can add a 0.6 record (limit 9). Removing or demoting a 0.6-only approval removes an unsigned record; it doesn't produce a signed one.
+    - In a case with no signed line yet, a file write can add a record that shows as "approved under 0.6 (before signing)", and the result can be exit 0; that record carries no signature.
+    - Any process can also hold the case lock. While it does, approvals wait or return `LEDGER_BUSY`. That blocks approvals; it doesn't produce one.
+
+## Accepted Residuals
+
+The project owner accepted these residuals on 2026-10-08:
+
+- **Code and memory on this machine** (limit 3): the code that displays items, takes the password and signs runs on, or is served from, this machine. Any process with administrative rights, or modified code, can observe the password, use or copy the signing key while it's in use, or sign content other than what was displayed. A copied key or an observed password can sign later lines, and those lines verify VALID. Rotating the key doesn't invalidate lines signed before the rotation. This build doesn't protect against that, or detect it, while the AI keeps sudo.
+- **The first line and key:** verify can't prove the case's first line and key are the originals using only this machine; comparing the key fingerprint with any earlier copy that left the machine (a backup, report or export) proves it; and a verdict is independent of this machine only when it's run off it.
 
 ## SSH Security Consideration
 
 Remote deployments (Path 2) require SSH access to SIFT only for CLI-exclusive operations: case initialization, evidence registration, evidence unlocking, and command execution. Finding approval and rejection are available through the Examiner Portal in the browser — SSH is not required for the review workflow.
 
-If the remote LLM client has terminal access (e.g., Claude Code), it can potentially use the examiner's SSH credentials to run commands on SIFT outside of MCP controls. The password gate prevents the LLM from approving findings — whether through the CLI (`/dev/tty` password entry) or the portal (challenge-response authentication). Other operations (file modification, evidence access) are not password-gated.
+If the remote LLM client has terminal access (e.g., Claude Code), it can potentially use the examiner's SSH credentials to run commands on SIFT outside of MCP controls. Signing needs the examiner's passphrase, typed at the CLI (`/dev/tty`) or in the portal's browser; what that does and doesn't stop is in [Stated limits](#stated-limits). Other operations (file modification, evidence access) are not passphrase-gated.
 
 For production forensic work with remote Claude Code, examiners should use SSH authentication that requires human interaction per use:
 

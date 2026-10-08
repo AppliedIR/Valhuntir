@@ -39,7 +39,7 @@ These are structural facts. If any other document contradicts these, the invaria
 3. **wintools-mcp runs on a Windows machine.** The gateway proxies requests to wintools-mcp over HTTPS — the LLM client does not connect directly (except in Lite mode).
 4. **Clients connect to two endpoints at most:** the gateway (SIFT tools) and remnux-mcp (malware analysis, if configured). The gateway proxies wintools-mcp and OpenCTI.
 5. **The case directory is local per examiner.** Multi-examiner collaboration uses export/merge, not shared filesystem.
-6. **Human approval is structural.** The AI cannot approve its own work. Only the Examiner Portal (preferred) or vhir CLI — both requiring password-based authentication — can move findings to APPROVED.
+6. **Human approval is structural.** The AI cannot approve its own work. Only the Examiner Portal (preferred) or vhir CLI — both signing each decision with the examiner's key, unlocked by their passphrase — can move findings to APPROVED.
 7. **AGENTS.md is the source of truth for forensic rules.** Per-client config files (CLAUDE.md) are copies, not sources.
 8. **forensic-knowledge is a shared data package.** It has no runtime state. Used by forensic-mcp, sift-mcp, and wintools-mcp.
 
@@ -96,7 +96,7 @@ Case lifecycle management. 15 tools for init, activate, close, list, status, evi
 
 ### report-mcp
 
-Report generation with 6 data-driven profiles. 6 tools. Aggregates approved findings, IOCs, and MITRE ATT&CK mappings. Includes bidirectional reconciliation against the HMAC verification ledger to detect post-approval tampering. Integrates with Zeltser IR Writing MCP for report templates and writing guidance. IOC extraction searches finding text (observation + interpretation + description) for patterns.
+Report generation with 6 data-driven profiles. 6 tools. Aggregates approved findings, IOCs, and MITRE ATT&CK mappings. Shows as approved only the items that verify (the same verification as `vhir review --verify`), lists the rest as not verified, and carries every signing key and chain head in each profile; saved reports end with a verification block the server appends. Integrates with Zeltser IR Writing MCP for report templates and writing guidance. IOC extraction searches finding text (observation + interpretation + description) for patterns.
 
 ### sift-mcp
 
@@ -126,7 +126,7 @@ Read-only threat intelligence from OpenCTI. 8 tools with rate limiting (configur
 
 ### case-dashboard (Examiner Portal)
 
-Web-based review interface served by the gateway at `/portal/`. 8 tabs: Overview, Findings, Timeline, Hosts, Accounts, Evidence, IOCs, TODOs. Keyboard shortcuts for navigation (`1-8` tabs, `j/k` items, `a` approve, `r` reject, `e` edit, `Shift+C` commit). Challenge-response authentication for commits — the browser derives PBKDF2 key and computes HMAC without sending the password. Light and dark themes.
+Web-based review interface served by the gateway at `/portal/`. 8 tabs: Overview, Findings, Timeline, Hosts, Accounts, Evidence, IOCs, TODOs. Keyboard shortcuts for navigation (`1-8` tabs, `j/k` items, `a` approve, `r` reject, `e` edit, `Shift+C` commit). Signing in the browser — the commit dialog lists every decision, then the browser signs in (challenge-response), unlocks the examiner's key and signs; the passphrase never leaves the browser. Light and dark themes.
 
 ### forensic-knowledge
 
@@ -300,16 +300,16 @@ Nine layers of defense-in-depth protect the integrity of forensic findings. See 
 | Layer | Control | Type |
 |-------|---------|------|
 | L1 | Structural approval gate (DRAFT → APPROVED requires human) | Structural |
-| L2 | HMAC verification ledger (PBKDF2 + HMAC-SHA256 signatures) | Cryptographic |
+| L2 | Signed decision ledger (each examiner's Ed25519 key; chained lines) | Cryptographic |
 | L3 | Case data deny rules (Edit/Write on protected files, Read on `/var/lib/vhir`) | Permission |
 | L4 | Sandbox filesystem write protection (bwrap) | Kernel |
 | L5 | File permission protection (chmod 444 after write) | Filesystem |
-| L6 | Report reconciliation (bidirectional ledger cross-check) | Integrity |
-| L7 | Password authentication (CLI + portal challenge-response) | Authentication |
+| L6 | One verdict source (reports, portal and verify all use the same verification) | Integrity |
+| L7 | Passphrase unlocks the signing key (CLI terminal prompt; portal signs in the browser) | Authentication |
 | L8 | Provenance enforcement (MCP > HOOK > SHELL > NONE) | Structural |
 | L9 | Kernel sandbox (bubblewrap namespaces) | Kernel |
 
-The HMAC ledger (L2) shows later changes to approved text by anyone without the examiner's password or password file; anyone running as a user who can read that file can sign entries (see [Security](security.md)). The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
+The signed ledger (L2) records every decision with the examiner's signature, which `vhir review --verify` checks; what a verified result does and doesn't show is in the [stated limits](security.md#stated-limits). The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
 
 ## Grounding Score
 

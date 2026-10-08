@@ -4,7 +4,7 @@
 
 - SIFT Workstation (Ubuntu-based). WSL2 on Windows is also supported.
 - Python 3.10+
-- sudo access (required for HMAC verification ledger at `/var/lib/vhir/verification/`)
+- sudo access (required for the ledger and signing-key folders under `/var/lib/vhir/`)
 - A **locally installed** MCP-compatible LLM client that supports Streamable HTTP transport with Bearer token authentication (Claude Code, Claude Desktop, Cherry Studio, self-hosted LibreChat, etc.). The client must run on your machine or local network — cloud-hosted LLM services (claude.ai, etc.) cannot reach internal gateway addresses. OAuth is not supported.
 
 ## Installation
@@ -142,7 +142,7 @@ cases/INC-2026-0225/
 
 ### Human-in-the-Loop
 
-The AI cannot approve its own work. All findings and timeline events stage as DRAFT. Only a human examiner can move them to APPROVED or REJECTED. The Examiner Portal is the preferred review interface — approve, reject, and commit decisions directly in the browser with challenge-response authentication. The vhir CLI (`vhir approve`) provides the same capability from the terminal. There is no MCP tool for approval.
+The AI cannot approve its own work. All findings and timeline events stage as DRAFT. Only a human examiner can move them to APPROVED or REJECTED. The Examiner Portal is the preferred review interface — approve and reject in the browser, then sign the decisions with your passphrase (the browser signs; the passphrase never leaves it). The vhir CLI (`vhir approve`) provides the same capability from the terminal. There is no MCP tool for approval.
 
 ### Evidence IDs
 

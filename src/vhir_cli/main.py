@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument(
         "--skip-ledger",
         action="store_true",
-        help="Skip verification ledger + password hash restore",
+        help="Skip restoring the case's 0.6 approval records to this box",
     )
     p_restore.add_argument(
         "--target",

@@ -748,11 +748,12 @@ echo "Workspace:   $DEPLOY_DIR"
 
 echo ""
 echo -e "${BOLD}SSH Access${NC}"
-echo "  SSH access to SIFT is required for finding approval and rejection"
-echo "  (vhir approve, vhir reject), evidence unlocking (vhir evidence"
-echo "  unlock), and command execution (vhir execute). These operations"
-echo "  require password or terminal confirmation and are not available through"
-echo "  MCP. All other operations are available through MCP tools."
+echo "  Approvals and rejections are signed in the Examiner Portal, or at the"
+echo "  SIFT terminal over SSH (vhir approve, vhir reject). Evidence unlocking"
+echo "  (vhir evidence unlock) and command execution (vhir execute) need SSH."
+echo "  These operations need the examiner's passphrase or terminal confirmation"
+echo "  and are not available through MCP. All other operations are available"
+echo "  through MCP tools."
 
 if [[ "$CLIENT" == "claude-code" ]]; then
     echo ""

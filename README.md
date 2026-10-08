@@ -18,7 +18,7 @@ Valhuntir turns a single incident response analyst into the manager of an agenti
 
 ## Valhuntir — AI-Assisted Forensic Investigation
 
-Valhuntir ensures accountability and enforces human review of findings through cryptographic signing, password-gated approvals, and multiple layered controls.
+Valhuntir ensures accountability and enforces human review of findings through signed approvals (each examiner's own key, unlocked by their passphrase) and multiple layered controls.
 
 Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, Cherry Studio, self-hosted LibreChat, and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
 
@@ -41,7 +41,7 @@ Every parser produces deterministic content-based document IDs (re-ingest = zero
 5. **Enrich programmatically** — validate files/services against known-good baselines, check IOCs against threat intelligence (zero LLM tokens with opensearch-mcp)
 6. **Search and analyze** — query across millions of records, aggregate patterns, build timelines
 7. **Record findings** — LLM stages findings and timeline events as DRAFT with full evidence provenance
-8. **Human review** — examiner approves or rejects each finding via the Examiner Portal or CLI (HMAC-signed)
+8. **Human review** — examiner approves or rejects each finding via the Examiner Portal or CLI (each decision signed with the examiner's key)
 9. **Generate report** — produce IR report from approved findings with MITRE mappings and IOC aggregation
 
 Without OpenSearch, steps 3-6 are replaced by the LLM doing direct tool execution and analysis. Still very effective, but slower and with much higher token cost. Findings, timeline, approval workflow, and reporting are identical either way.
@@ -150,7 +150,7 @@ graph LR
 
 ### Human-in-the-Loop Workflow
 
-All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings. MCP guidance provides reminders to the LLM to check in with the human frequently for review and guidance.
+All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths sign each decision with the examiner's own key into the case's ledger, which `vhir review --verify` checks. The AI cannot approve its own findings. MCP guidance provides reminders to the LLM to check in with the human frequently for review and guidance.
 
 ```mermaid
 sequenceDiagram
@@ -163,13 +163,13 @@ sequenceDiagram
     Note over Case: Staged for review
 
     Human->>Case: Review, edit, approve/reject
-    Human->>Case: Commit (password + HMAC signing)
+    Human->>Case: Sign (passphrase unlocks the examiner's key)
 
     Note over Case: Only APPROVED items<br/>appear in reports
     Human->>Case: vhir report --full
 ```
 
-The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Commit button requires the examiner's password. The CLI's `vhir approve` provides the same capability from the terminal.
+The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Sign button lists every decision, then signs them with the examiner's passphrase. The CLI's `vhir approve` provides the same capability from the terminal.
 
 Examiners review findings in the Examiner Portal — validating artifacts, observations, and interpretations, with the full command audit trail from original evidence to final result.
 
@@ -294,7 +294,7 @@ cases/INC-2026-0219/
 
 ### SIFT Workstation
 
-Requires Python 3.10+ and sudo access. The installer handles everything: MCP servers, gateway, vhir CLI, HMAC verification ledger, examiner identity, and LLM client configuration. When you select Claude Code, additional forensic controls are deployed (kernel-level sandbox, case data deny rules, PreToolUse guard hook, PostToolUse audit hook, provenance enforcement, password-gated human approval with HMAC signing). Other clients get MCP config only.
+Requires Python 3.10+ and sudo access. The installer handles everything: MCP servers, gateway, vhir CLI, the signed decision ledger and signing-key folders, examiner identity, and LLM client configuration. When you select Claude Code, additional forensic controls are deployed (kernel-level sandbox, case data deny rules, PreToolUse guard hook, PostToolUse audit hook, provenance enforcement, signed human approval). Other clients get MCP config only.
 
 **Quick** — Core platform only, no databases (~70 MB):
 
@@ -350,17 +350,17 @@ Any data loaded into the system or its component VMs, computers, or instances ru
 
 Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
 
-Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) get additional forensic controls deployed by `vhir setup client` — sandbox, deny rules, audit hooks, and provenance enforcement. The password-gated approval system (HMAC-signed) is the primary security control and applies to all clients. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy. See the [Security Model](https://appliedir.github.io/Valhuntir/security/) for details.
+Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) get additional forensic controls deployed by `vhir setup client` — sandbox, deny rules, audit hooks, and provenance enforcement. Signed approval (each examiner's key, unlocked by their passphrase) is the primary security control and applies to all clients; what it does and doesn't prove is in the stated limits. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy. See the [Security Model](https://appliedir.github.io/Valhuntir/security/) for details.
 
 ## Commands
 
 Most `vhir` CLI operations have MCP equivalents via case-mcp, forensic-mcp, and report-mcp. When working with an MCP-connected client, you can ask the AI to handle case management, evidence registration, report generation, and more — the AI operates through audited MCP tools rather than direct CLI invocation.
 
-The commands below require the examiner's password and are intentional human-in-the-loop checkpoints. The password is the security gate — without it, no findings can be approved or rejected regardless of the client or access method.
+The commands below are intentional human-in-the-loop checkpoints. Approving and rejecting sign each decision with the examiner's key, which only their passphrase unlocks; verify checks every signature. The passphrase is read from the terminal, which a plain shell pipe can't supply. What that does and doesn't stop (a pseudo-terminal, a process with administrative rights) is in the [stated limits](https://appliedir.github.io/Valhuntir/security/#stated-limits).
 
-### Human-Only Commands (require password)
+### Human-Only Commands (require the passphrase or a terminal)
 
-These commands require password entry that the AI cannot supply. This is by design — the examiner must authenticate to approve, reject, or commit findings.
+These commands are for the examiner at a terminal. Valhuntir's Claude Code settings deny `vhir approve` and `vhir reject` to the assistant's shell tool, which guards against an accidental or instructed run; it isn't a security boundary.
 
 #### approve
 
@@ -372,10 +372,11 @@ vhir approve F-alice-001 --note "Malware family unconfirmed"  # Approve with exa
 vhir approve --by jane                                   # Filter to IDs with jane's examiner prefix
 vhir approve --findings-only                             # Skip timeline events
 vhir approve --timeline-only                             # Skip findings
-vhir approve --review                                    # Apply pending portal edits
+vhir approve --review                                    # Sign reviews staged in the portal
+vhir approve --reattest F-alice-005                      # Fresh signed approval of an item approved under 0.6
 ```
 
-Requires the examiner's password. Approved findings are HMAC-signed with a PBKDF2-derived key. The `--review` flag applies edits made in the Examiner Portal (stored in `pending-reviews.json`), recomputes content hashes and HMAC signatures, then removes the pending file. Alternatively, use the portal's Commit button (Shift+C) which performs the same operation via challenge-response authentication — the password never leaves the browser.
+Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Sign button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
 
 #### reject
 
@@ -385,7 +386,7 @@ vhir reject F-alice-003 T-alice-002 --reason "Contradicted by memory analysis"
 vhir reject --review                                     # Interactive walk-through of DRAFT items
 ```
 
-Requires the examiner's password.
+Signed like an approval; it can also reject an APPROVED item.
 
 #### exec
 
@@ -404,23 +405,26 @@ vhir evidence unlock
 
 Requires terminal confirmation. Unlocking evidence allows writes to the evidence directory.
 
-#### Password management
+#### Passphrase and signing key
 
 ```
-vhir config --setup-password               # Set approval password (PBKDF2-hashed, min 8 chars)
-vhir config --reset-password               # Reset password (requires current, re-signs ledger)
+vhir config --setup-password               # Passphrase and signing key (at least 8 characters; 15+ recommended)
+vhir config --reset-password               # Change the passphrase (the same key, re-encrypted)
+vhir config --forgot-password              # New key under a new passphrase; the old one is kept as retired
+vhir config --upgrade-key                  # Signing key for a 0.6 password
+vhir enrol --name lab2                     # A LAN examiner enrols at the SIFT terminal (also --reset, --forgot, --upgrade)
 ```
 
-Password entry uses masked input. The AI cannot supply the password.
+The passphrase is read from the terminal without echo. That stops a plain shell pipe from supplying it; it doesn't stop a program that runs vhir under a pseudo-terminal, or a process with administrative rights. See the [Security Model](https://appliedir.github.io/Valhuntir/security/#stated-limits).
 
-#### HMAC verification
+#### Verification
 
 ```
-vhir review --verify                       # Cross-check content hashes + HMAC verification
-vhir review --verify --mine                # HMAC verification for current examiner only
+vhir review --findings --verify                                      # Verify every signed decision
+vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored to your records
 ```
 
-Requires the examiner's password to derive the HMAC key and confirm integrity. `--verify` also works with `--findings` (`vhir review --findings --verify`).
+No passphrase or terminal needed. Exit 0 means every approved item verifies (or was approved under 0.6, labelled so) with no failure. Verify prints every signing key with its full fingerprint and each chain's head. Without `--expect-key` and `--expect-head` it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup).
 
 ### All Commands
 
@@ -432,7 +436,7 @@ The remaining commands can also be performed through MCP tools (case-mcp, forens
 vhir portal                                              # Open the Examiner Portal in your browser
 ```
 
-Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Commit button (Shift+C) requires the examiner's password. Alternatively, `vhir approve --review` applies pending edits from the CLI.
+Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Sign button (Shift+C) lists every decision, then signs them with the examiner's passphrase. Alternatively, `vhir approve --review` signs the staged reviews from the CLI.
 
 #### backup
 
@@ -445,18 +449,18 @@ vhir backup /path/to/destination --include-extractions   # Include extraction fi
 vhir backup --verify /path/to/backup/                    # Verify backup integrity
 ```
 
-Creates a timestamped backup with SHA-256 manifest. Password hash files are always included for HMAC verification. The `--all` flag includes evidence, extractions, and OpenSearch indices (if available). Without flags, interactive mode prompts per category with size estimates.
+Creates a timestamped backup with SHA-256 manifest. It carries the case's signed history and public signing keys (`ledger/`), and no passphrase verifier or signing-key file. The `--all` flag includes evidence, extractions, and OpenSearch indices (if available). Without flags, interactive mode prompts per category with size estimates.
 
 #### restore
 
 ```
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Restore from backup
 vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch restore
-vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger
+vhir restore /path/to/backup/... --skip-ledger           # Skip restoring the 0.6 approval records
 vhir restore /path/to/backup/... --target /cases/INC-1   # Restore here, without asking
 ```
 
-Restores a case from backup. Restore asks where to put the case, offering the folder it was backed up from; without a terminal (scripts), `--target` is required. A folder left by an interrupted restore is removed only after you answer yes (default no); without a terminal, remove it yourself first. Includes case files, verification ledger, password hashes, and OpenSearch indices (if present in backup). Prompts for the examiner password to verify HMAC integrity. Never auto-activates — run `vhir case activate` after restore.
+Restores a case from backup. Restore asks where to put the case, offering the folder it was backed up from; without a terminal (scripts), `--target` is required. A folder left by an interrupted restore is removed only after you answer yes (default no); without a terminal, remove it yourself first. Includes case files, the case's signed history, and OpenSearch indices (if present in backup). Each signing key the case's chains hold is added to this box as a retired public key ("KEY ADDED"), so the case verifies here. No credential is restored. Never auto-activates — run `vhir case activate` after restore.
 
 #### case
 
@@ -784,7 +788,7 @@ Both modes share the same Python venv, triage databases, and RAG index.
 Valhuntir adds the gateway (up to 8 MCP backends behind one HTTP endpoint),
 4+ additional MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp,
 and optionally opensearch-mcp), a web-based review portal (Examiner Portal),
-structured case management, sandbox enforcement, and HMAC-signed approvals.
+structured case management, sandbox enforcement, and signed approvals.
 
 To upgrade, run `setup-sift.sh` from your existing sift-mcp clone. The
 installer reuses the existing venv and databases. Lite case data (markdown

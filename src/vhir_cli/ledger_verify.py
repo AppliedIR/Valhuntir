@@ -43,6 +43,15 @@ KEY_CHANGED = (
     "Key changed at seq {seq} without the previous key's signature (expected only "
     "after a forgotten-password reset): compare the fingerprint with an earlier copy."
 )
+LIMITS = (
+    "What this shows: the case files and the ledger agree, and each line was signed "
+    "by the key it carries. The keys are your examiners' own only if their "
+    "fingerprints match a copy kept off this machine (or --expect-key). Code or a "
+    "process with administrative rights on this machine can observe a passphrase or "
+    "use a key while it's unlocked, and a verdict is independent of this machine only "
+    "when run off it. All stated limits: "
+    "https://appliedir.github.io/Valhuntir/security/#stated-limits"
+)
 REPLACE_NOTE = (
     "Replace a chain file only with the gateway stopped and no Valhuntir command or "
     "MCP server running, or while holding the case lock "
@@ -1389,6 +1398,7 @@ def render(result: Result) -> str:
         out.append(NOT_ANCHORED)
         out += [f"  {s(m)}" for m in result.missing]
     out += [s(x) for x in result.after_head]
+    out.append(LIMITS)
     out.append(f"Exit {result.exit_code}")
     return "\n".join(out)
 

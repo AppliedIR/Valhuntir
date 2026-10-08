@@ -7,13 +7,12 @@ Claude Code deny rules for `vhir approve`/`vhir reject` stop an assistant's
 shell tool from running them. They guard against accidents and aren't a
 security boundary. Credential files are readable by processes running as the
 examiner (limit 2).
-A password must be configured before approvals are allowed.
 
-Password hashes are stored in /var/lib/vhir/passwords/{examiner}.json
-(0o600, directory 0o700). Claude Code's deny rules keep that client's own
-tools from reading them; other programs running as the examiner's user can
-(the hash is also the ledger's signing key). Auto-migration from the legacy
-config.yaml location happens on first use.
+A 0.6 password (a PBKDF2 hash in /var/lib/vhir/passwords/{examiner}.json, or
+the older config.yaml location) is read here only to upgrade it to a signing
+key; the credential since 0.7 is the keys file (vhir_cli.keys), and
+passwords/{examiner}.json then holds a pointer to it. The failed-attempt
+lockout is kept here, shared by the CLI and the portal.
 """
 
 from __future__ import annotations

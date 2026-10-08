@@ -19,7 +19,7 @@ OpenCTI-mcp is always optional (requires an OpenCTI instance).
 - Ubuntu 22.04+ (SIFT Workstation recommended)
 - Python 3.10+
 - Git
-- sudo access (required — creates the HMAC verification ledger at `/var/lib/vhir/verification/`)
+- sudo access (required — creates the ledger and signing-key folders under `/var/lib/vhir/`)
 
 ### Install
 
@@ -31,7 +31,7 @@ git clone https://github.com/AppliedIR/sift-mcp.git && cd sift-mcp
 The installer:
 1. Creates a Python virtual environment
 2. Installs MCP servers, gateway, and vhir CLI via pip
-3. Creates the HMAC verification ledger directory at `/var/lib/vhir/verification/` (requires sudo)
+3. Creates `/var/lib/vhir/` with `ledger/`, `keys/`, `passwords/` and `verification/` (the 0.6 records), owned by the examiner account, mode 700 (requires sudo)
 4. Sets examiner identity
 5. Generates `gateway.yaml` configuration
 6. Creates a systemd service for the gateway (optional)

@@ -118,7 +118,7 @@ vhir backup /path/to/destination --include-opensearch # Include OpenSearch indic
 vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
 ```
 
-Backups include password hash files for HMAC verification and the verification ledger. After backup, a warning reminds you to remember the examiner password — it's needed to verify findings on restore.
+Backups carry the case's signed history and the public signing keys (`ledger/`), and no passphrase verifier or signing-key file. The printout lists every signing key with its full fingerprint and each chain's head; a copy kept off this machine is an anchor.
 
 The LLM can create case-data-only backups at investigation checkpoints — it uses the `backup_case` tool on case-mcp. OpenSearch indices are not included in MCP backups.
 
@@ -128,7 +128,7 @@ To restore a case from backup:
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13
 ```
 
-Restore asks where to put the case, offering the folder it was backed up from (Enter accepts it); in a script, pass `--target <folder>`. It never removes an existing folder without asking. After restoring, the case must be activated manually (`vhir case activate`). The restore wizard prompts for the examiner password to verify HMAC integrity. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
+Restore asks where to put the case, offering the folder it was backed up from (Enter accepts it); in a script, pass `--target <folder>`. It never removes an existing folder without asking. After restoring, the case must be activated manually (`vhir case activate`). Restore adds each signing key the case's chains hold to this box as a retired public key ("KEY ADDED"), so the case verifies here; it restores no credential. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
 
 ## Evidence Indexing with OpenSearch
 
@@ -449,7 +449,7 @@ Examiners can edit finding fields inline (confidence, justification, observation
 
 Keyboard shortcuts: `1`-`8` switch tabs, `j`/`k` navigate items, `a` approve, `r` reject, `e` edit, `Shift+C` commit.
 
-The Commit button (`Shift+C`) requires the examiner's password — the password never leaves the browser.
+The Sign button (`Shift+C`) opens a dialog that lists every decision to be signed, including items decided with them and entries another examiner staged (included only if you tick them). Your passphrase then signs exactly those, in the browser; it never leaves the browser. A LAN examiner enrols once at the SIFT terminal with `vhir enrol --name NAME`.
 
 ### CLI Approval
 
@@ -489,14 +489,12 @@ The LLM can retrieve findings, timeline events, TODOs, case status, and audit da
 ### Integrity Verification
 
 ```bash
-vhir review --verify                # Full verification (all examiners)
-vhir review --verify --mine         # Current examiner only
+vhir review --findings --verify          # Verify every signed decision (all examiners)
+vhir review --findings --verify --mine   # Show only your items
+vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored
 ```
 
-This performs three levels of verification:
-- **Content hash check**: SHA-256 hashes in `findings.json` vs. `approvals.jsonl`
-- **Ledger reconciliation**: Cross-checks approved items against the HMAC verification ledger
-- **HMAC verification**: Recomputes HMAC-SHA256 signatures using the examiner's password
+Verification needs no passphrase. It checks every line's signature and link in the case's ledger, and each approved item against its latest signed line, and prints every signing key with its full fingerprint and each chain's head. Without anchors it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup). Exit 0: every approved item verifies (or was approved under 0.6, labelled so) with no failure; 2: a failure, each with how to recover. See the [stated limits](security.md#stated-limits).
 
 ## Report Generation
 

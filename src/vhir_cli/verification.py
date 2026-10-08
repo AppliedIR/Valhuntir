@@ -1,16 +1,12 @@
-"""HMAC verification ledger for approved findings and timeline events.
+"""The 0.6 approval records: /var/lib/vhir/verification/{case-id}.jsonl.
 
-The verification ledger lives at /var/lib/vhir/verification/{case-id}.jsonl,
-outside every user's home directory. Claude Code's deny rules and sandbox keep
-that client's own tools away from it; they don't limit other programs running
-as the examiner's user.
-
-Each entry records an HMAC-SHA256 over the description text, keyed by
-PBKDF2(password, salt). That key is the same value as the stored password
-hash, so anyone (or any program) running as a user who can read the
-examiner's password file in /var/lib/vhir/passwords can create entries that
-verify. The ledger does show a later change to approved text made by anyone
-without that file or the password.
+0.6 wrote one HMAC line per approval here, keyed by the stored password hash,
+so anyone who could read that file could make lines it accepted. 0.7 never
+writes this file: every decision is a signed line in the case's ledger
+(vhir_cli.ledger). Verify reads these records only to show 0.6 approvals as
+"approved under 0.6 (before signing)"; once a case has its first signed line,
+its 0.6 records are fixed by length and hash in that line. This module keeps
+the folder's location and the reader backup uses.
 """
 
 from __future__ import annotations
