@@ -226,33 +226,31 @@ def _found_keys(examiner: str) -> list[str]:
         ]
     except (OSError, ValueError, TypeError, AttributeError):
         pubs = []
-    return [p for p in dict.fromkeys(pubs) if isinstance(p, str)]
+    return list(dict.fromkeys(p for p in pubs if isinstance(p, str)))
 
 
 def _replace_credential(examiner: str, data: dict, retired: list[str], reason: str,
-                        what: str, move: bool = False) -> None:  # fmt: skip
+                        what: str) -> None:  # fmt: skip
     """Write `data` as the credential in one step: the keys it replaces are
     recorded as retired, the file it replaces is kept byte-identical as
     `.untrusted-<UTC>` (a hard link, made first), then the new file replaces
     it atomically and the 0.6 entry becomes a stub. An interruption before
-    the replace leaves everything as it was. `move`: a file that doesn't load
-    (no credential) is moved aside instead, since it is never overwritten."""
+    the replace leaves everything as it was, including a file that doesn't
+    load, which is replaced only because its copy was just made."""
     new_fp = keys.key_fingerprint(keys.active(data))
     for pub in retired:
         if pub != keys.active(data)["public_key"]:
             keys.add_retired(data, pub, reason, superseded_by=new_fp)
     path = keys.keys_path(examiner)
+    target = None
     if path.exists():
         target = path.with_name(f"{path.name}.untrusted-{_now()}")
-        if move:
-            path.rename(target)
-        else:
-            try:
-                os.link(path, target)
-            except OSError:
-                shutil.copy2(path, target)
+        try:
+            os.link(path, target)
+        except OSError:
+            shutil.copy2(path, target)
         print(f"{what} was set aside: {target}")
-    keys.save(examiner, data)
+    keys.save(examiner, data, set_aside=target)
     _write_stub(examiner)
 
 
@@ -377,7 +375,7 @@ def forgot(examiner: str, config_path: Path) -> None:
         retired = _found_keys(examiner) + _ledger_keys(examiner)
         _replace_credential(examiner, data, list(dict.fromkeys(retired)),
                             "set aside: the keys file was invalid",
-                            "The keys file that couldn't be read", move=True)  # fmt: skip
+                            "The keys file that couldn't be read")  # fmt: skip
         print(f"New signing key made for {examiner}.")
         _print_new_key(data)
         return

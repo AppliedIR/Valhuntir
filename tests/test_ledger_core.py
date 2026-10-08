@@ -158,7 +158,7 @@ def test_a_held_lock_makes_another_writer_wait_then_give_up():
 
 def test_a_missing_ledger_folder_says_to_rerun_the_installer():
     ledger.LEDGER_DIR.rmdir()
-    with pytest.raises(ledger.LockDirMissing, match="re-run the installer"):
+    with pytest.raises(ledger.LockDirMissing, match="run `vhir update` to create it"):
         ledger.case_lock("C1").acquire()
 
 

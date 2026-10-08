@@ -212,10 +212,14 @@ def save_unsigned(
                 entry["note"] = d.note
             if d.reason:
                 entry["rejection_reason"] = d.reason
-            entries = [
+            entries = [  # a decision replaces only this examiner's decision for the id
                 e
                 for e in entries
-                if not (e.get("id") == d.id and e.get("staged_by") == examiner)
+                if not (
+                    e.get("id") == d.id
+                    and e.get("staged_by") == examiner
+                    and e.get("action") != "todo"
+                )
             ]
             entries.append(entry)
         for t in todos:  # a TODO the examiner asked for, created by --review
@@ -323,8 +327,10 @@ def sign_and_commit(
     prompt = _prompt_text(direct, planned, new_passphrase)
     todos = list(todos)
 
-    def keep(why: str, lead: str, after: str = "once the problem above is fixed"):
-        _kept_unsigned(case_dir, examiner, direct, todos, why, lead, after)
+    def keep(why: str, lead: str, after: str = "once the problem above is fixed",
+             which=None):  # fmt: skip
+        _kept_unsigned(case_dir, examiner, direct if which is None else which, todos,
+                       why, lead, after)  # fmt: skip
 
     try:
         private, public = credentials.unlock(examiner, prompt)
@@ -345,7 +351,8 @@ def sign_and_commit(
     case_id = case_id_of(case_dir)
     head, every, items, discarded = None, [], [], []
     unreadable: list[str] = []
-    committed, save_error = False, None
+    bodies: list[dict] = []
+    save_error = None
     try:
         with ledger.case_lock(
             case_id,
@@ -371,7 +378,6 @@ def sign_and_commit(
                 )  # fmt: skip
                 lines = [ledger.sign_body(b, private) for b in bodies]
                 head = ledger.commit(lock, bodies, lines, public)
-                committed = True
                 for d, item, body in zip(every, items, bodies, strict=True):
                     set_status(item, d.decision, d.status_after, body["examiner"],
                                body["at"], reason=d.reason,
@@ -382,9 +388,28 @@ def sign_and_commit(
     except SystemExit:
         raise
     except Exception as e:  # noqa: BLE001 - never a traceback that loses the work
-        if not committed:
+        # what was committed is read from the ledger, never assumed: a commit
+        # can fail after its lines were appended (fsync, chmod)
+        in_chain = _in_chain(case_id, bodies)
+        if not in_chain:
             keep(type(e).__name__, f"The commit couldn't go ahead: {one_line(str(e))}")
-        save_error = save_error or e
+        save_error = _apply_committed(case_dir, every, bodies, in_chain)
+        head = _head(case_id)
+        signed = [
+            d for d, b in zip(every, bodies, strict=True)
+            if ledger.body_hash(b) in in_chain
+        ]  # fmt: skip
+        unsigned = [d for d in direct if d in every and d not in signed]
+        every = signed
+        items = [_find_now(case_dir, d) for d in every]
+        if inside_lock is not None and signed and save_error is None:
+            with ledger.case_lock(case_id):  # remove exactly the entries signed
+                inside_lock({}, signed)
+        if unsigned:
+            print(f"Signed decisions were recorded for: {', '.join(d.id for d in signed)}",
+                  file=sys.stderr)  # fmt: skip
+            keep(type(e).__name__, f"The rest couldn't be signed: {one_line(str(e))}",
+                 which=unsigned)  # fmt: skip
 
     if unreadable:  # no per-item judgement is possible: keep every decision
         keep(
@@ -393,23 +418,36 @@ def sign_and_commit(
             f"The file was left as it is.\n{'!' * 60}",
             "once the file is repaired; it signs those whose content still matches what you saw",
         )
+    todo_error = None
     if todos and make_todos is not None:
         try:
             make_todos(todos)
-        except Exception as e:  # noqa: BLE001
-            print(f"WARNING: the TODOs weren't created ({one_line(str(e))}).",
-                  file=sys.stderr)  # fmt: skip
+        except Exception as e:  # noqa: BLE001 - the TODOs are kept, below
+            todo_error = e
     for line in discarded:
         print(line, file=sys.stderr)
     if every:
         _activity_log(case_dir, identity, every, items, mode)
         _report(case_id, every, head, examiner, public)
+    if todo_error is not None:
+        try:
+            save_unsigned(case_dir, examiner, [], "TODO not written", todos)
+            kept = "they were saved to pending-reviews.json; `vhir approve --review` creates them"
+        except Exception as e:  # noqa: BLE001
+            kept = f"they couldn't be saved either ({one_line(str(e))}); add them again"
+        print(
+            f"Your TODOs weren't created ({one_line(str(todo_error))}); {kept}."
+            + (" The signed decisions stand." if every else ""),
+            file=sys.stderr,
+        )
     if save_error is not None:
         print(
             f"Signed decisions were recorded; case data was not saved ({save_error}); "
             f"re-run the same command for: {', '.join(d.id for d in every)}",
             file=sys.stderr,
         )
+        sys.exit(1)
+    if todo_error is not None:
         sys.exit(1)
     if discarded:
         print(
@@ -418,6 +456,54 @@ def sign_and_commit(
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _in_chain(case_id: str, bodies: list[dict]) -> set[str]:
+    """The hashes of `bodies` that are lines of the box chain now."""
+    if not bodies:
+        return set()
+    wanted = {ledger.body_hash(b) for b in bodies}
+    found = set()
+    for _, _, o in ledger.read_lines(ledger.chain_path(case_id)):
+        if isinstance(o, dict):
+            h = ledger.body_hash(ledger.body_of(o))
+            if h in wanted:
+                found.add(h)
+    return found
+
+
+def _head(case_id: str):
+    return ledger.head_of(ledger.read_lines(ledger.chain_path(case_id)))
+
+
+def _find_now(case_dir: Path, d: Decision) -> dict:
+    lists, _ = _reload(case_dir)
+    return _find(lists, d.type, d.id) or d.item
+
+
+def _apply_committed(case_dir: Path, every, bodies, in_chain) -> Exception | None:
+    """After a failure: apply the decisions whose lines are in the chain, as
+    the commit would have, under the case lock; the error if the save fails."""
+    done = [
+        (d, b) for d, b in zip(every, bodies, strict=True)
+        if ledger.body_hash(b) in in_chain
+    ]  # fmt: skip
+    if not done:
+        return None
+    with ledger.case_lock(case_id_of(case_dir)):
+        lists, unreadable = _reload(case_dir)
+        if unreadable:
+            return OSError(f"{', '.join(unreadable)} couldn't be read")
+        for d, body in done:
+            item = _find(lists, d.type, d.id)
+            if item is None:
+                continue
+            lst = lists[d.type]
+            i = lst.index(item)
+            lst[i] = _spliced(item, d)
+            set_status(lst[i], d.decision, d.status_after, body["examiner"], body["at"],
+                       reason=d.reason, fresh_approver=d.fresh_approver)  # fmt: skip
+        return _save_twice(case_dir, lists, {d.type for d, _ in done})
 
 
 def _save_twice(case_dir: Path, lists, touched) -> Exception | None:

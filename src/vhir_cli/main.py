@@ -723,9 +723,11 @@ def main() -> None:
 
     handler = dispatch.get(args.command)
     if handler:
+        from vhir_cli.ledger import LockDirMissing
+
         try:
             handler(args, identity)
-        except CaseError as e:
+        except (CaseError, LockDirMissing) as e:  # one line, never a traceback
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
     elif hasattr(args, "func"):

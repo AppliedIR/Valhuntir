@@ -184,18 +184,28 @@ def load(examiner: str, keys_dir: Path | None = None) -> dict | None:
         raise KeysFileInvalid("malformed keys file") from e
 
 
-def save(examiner: str, data: dict, keys_dir: Path | None = None) -> None:
+def save(
+    examiner: str,
+    data: dict,
+    keys_dir: Path | None = None,
+    set_aside: Path | None = None,
+) -> None:
     """Write atomically (0600 in a 0700 folder). Append-only: every key the
-    file on disk holds must still be in `data`, by fingerprint."""
+    file on disk holds must still be in `data`, by fingerprint. A file on
+    disk that doesn't load is never overwritten, unless `set_aside` is a
+    byte-identical copy of it just made (its keys are then recorded by the
+    caller as retired)."""
     _validate(data)
     path = keys_path(examiner, keys_dir)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         on_disk = load(examiner, keys_dir)  # a file that doesn't load refuses the save
     except KeysFileInvalid as e:
-        raise KeysFileInvalid(
-            f"{path} doesn't load ({e}); it isn't overwritten (set it aside first)"
-        ) from e
+        if not (set_aside is not None and _same_bytes(set_aside, path)):
+            raise KeysFileInvalid(
+                f"{path} doesn't load ({e}); it isn't overwritten (set it aside first)"
+            ) from e
+        on_disk = None
     kept = {key_fingerprint(k) for k in data["keys"]}
     dropped = [
         k for k in (on_disk or {}).get("keys", []) if key_fingerprint(k) not in kept
@@ -216,6 +226,13 @@ def save(examiner: str, data: dict, keys_dir: Path | None = None) -> None:
         except OSError:
             pass
         raise
+
+
+def _same_bytes(a: Path, b: Path) -> bool:
+    try:
+        return Path(a).read_bytes() == Path(b).read_bytes()
+    except OSError:
+        return False
 
 
 def active(data: dict) -> dict | None:

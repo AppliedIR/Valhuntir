@@ -360,3 +360,42 @@ def test_the_key_scans_skip_a_malformed_ledger_line(config, monkeypatch):
     _typed(monkeypatch, PW, PW)
     credentials.enrol("steve", config)  # no crash
     assert keys.check_password(keys.load("steve"), PW)
+
+
+def test_an_upgrade_replaces_a_malformed_keys_file_found_beside_a_0_6_password(
+    config, monkeypatch
+):
+    _legacy(OLD_06)
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    keys.keys_path("steve").write_text('{"schema": 3}')
+    _typed(monkeypatch, OLD_06)
+    credentials.upgrade("steve", config)
+    assert keys.check_password(keys.load("steve"), OLD_06)
+    (aside,) = keys.KEYS_DIR.glob("steve.json.untrusted-*")
+    assert aside.read_text() == '{"schema": 3}'
+
+
+def test_forgot_handles_a_keys_file_with_a_list_for_a_public_key(config, monkeypatch):
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    keys.keys_path("steve").write_text('{"schema": 3, "keys": [{"public_key": []}]}')
+    monkeypatch.setattr(credentials, "_confirm_new_key", lambda: None)
+    _typed(monkeypatch, NEW, NEW)
+    credentials.forgot("steve", config)
+    assert keys.check_password(keys.load("steve"), NEW)
+
+
+def test_keys_save_replaces_an_unreadable_file_only_with_its_copy_just_made(tmp_path):
+    keys.KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    path = keys.keys_path("steve")
+    path.write_text("junk")
+    data = keys.new_credential("steve", PW)
+    with pytest.raises(keys.KeysFileInvalid):
+        keys.save("steve", data)
+    other = tmp_path / "not-a-copy"
+    other.write_text("different")
+    with pytest.raises(keys.KeysFileInvalid):
+        keys.save("steve", data, set_aside=other)
+    copy = tmp_path / "copy"
+    copy.write_text("junk")
+    keys.save("steve", data, set_aside=copy)
+    assert keys.load("steve") is not None

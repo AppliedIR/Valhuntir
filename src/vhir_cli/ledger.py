@@ -323,7 +323,7 @@ class CaseLock:
         except OSError as e:
             raise LockDirMissing(
                 f"the case lock directory {LEDGER_DIR}/ is missing or not writable "
-                f"({e.strerror or e}); re-run the installer"
+                f"({e.strerror or e}); run `vhir update` to create it"
             ) from e
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
         waited = False
@@ -424,11 +424,12 @@ def commit(
         ):
             raise BadSignature(f"the signature on {body.get('item_id')} doesn't verify")
     LEDGER_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with open(path, "a", encoding="ascii") as f:
+    # created 0600; nothing after the append can fail but the fsync
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "a", encoding="ascii") as f:
         f.write(lead)
         for text in lines:
             f.write(text + "\n")
         f.flush()
         os.fsync(f.fileno())
-    os.chmod(path, 0o600)
     return bodies[-1]["seq"], body_hash(bodies[-1])

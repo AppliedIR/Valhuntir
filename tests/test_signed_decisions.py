@@ -701,7 +701,7 @@ def test_an_error_after_the_review_saves_the_decisions_and_never_tracebacks(
 
 def _missing_lock_dir(case_id, *a, **k):
     raise ledger.LockDirMissing(
-        "the case lock directory is missing; re-run the installer"
+        "the case lock directory is missing; run `vhir update` to create it"
     )
 
 
@@ -720,3 +720,56 @@ def test_a_corrupt_pending_file_is_set_aside_not_overwritten(case, monkeypatch, 
 def test_an_id_named_twice_is_signed_once(case):
     A._approve_specific(case, ["F-steve-002", "F-steve-002"], IDENT, case / "cfg")
     assert _signed() == [("F-steve-002", "approve")]
+
+
+# --- What a failure leaves (CR's five probes) -----------------------------------------
+
+
+def test_a_failure_after_the_lines_are_appended_still_applies_what_was_signed(
+    case, monkeypatch, capsys
+):
+    real = ledger.commit
+
+    def appended_then_failed(*a, **k):
+        real(*a, **k)
+        raise OSError("fsync failed")
+
+    monkeypatch.setattr(ledger, "commit", appended_then_failed)
+    code = _run(lambda: A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg"))
+    assert _signed() == [("F-steve-002", "approve")]  # one line, never re-staged
+    assert _status(case, "findings.json", "F-steve-002") == "APPROVED"
+    assert not (case / "pending-reviews.json").exists()
+    assert "Nothing was signed" not in capsys.readouterr().err
+    assert code == 0 and verify_case(case).exit_code == 0
+
+
+def test_a_saved_todo_survives_a_later_saved_decision_for_the_same_item(case):
+    from vhir_cli.decide import Decision, save_unsigned
+
+    f = json.loads((case / "findings.json").read_text())[1]
+    save_unsigned(case, "steve", [], "attempts",
+                  [{"description": "check", "related_findings": ["F-steve-002"]}])  # fmt: skip
+    save_unsigned(case, "steve", [Decision(f, "finding", "approve", "APPROVED", loaded=f)],
+                  "attempts")  # fmt: skip
+    items = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert [(e["id"], e["action"]) for e in items] == [
+        ("F-steve-002", "todo"), ("F-steve-002", "approve")
+    ]  # fmt: skip
+
+
+def test_a_todo_that_can_t_be_written_is_kept_and_the_exit_is_1(
+    case, monkeypatch, capsys
+):
+    replies = iter(["a", "t", "check the other host", "", "high", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+
+    def broken(*a, **k):
+        raise OSError("todos.json is read-only")
+
+    monkeypatch.setattr(A, "_create_todos", broken)
+    assert _run(lambda: A._interactive_review(case, IDENT, case / "cfg")) == 1
+    assert ("F-steve-001", "approve") in _signed()  # the signed decisions stand
+    (todo,) = json.loads((case / "pending-reviews.json").read_text())["items"]
+    assert (todo["id"], todo["action"]) == ("F-steve-002", "todo")
+    err = capsys.readouterr().err
+    assert "Your TODOs weren't created" in err and "Nothing was signed" not in err
