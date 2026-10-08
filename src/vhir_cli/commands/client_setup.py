@@ -832,6 +832,8 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         output = Path.cwd() / "vhir-mcp-config.json"
         _merge_and_write(output, config)
         print(f"  Generated: {output}")
+        print("")
+        print(f"  NOTE: {OTHER_CLIENT_NOTICE}")
 
 
 def _find_claude_code_assets() -> Path | None:
@@ -1575,6 +1577,12 @@ def _retire(dst: Path, src: Path | None, now: str) -> None:
 # --- Codex ---------------------------------------------------------------------
 
 _INTERNET_MCPS = (_ZELTSER_MCP["name"], _MSLEARN_MCP["name"])
+OTHER_CLIENT_NOTICE = (
+    "Claude Code and Codex are the only supported clients with a shell. A "
+    "client that runs shell commands any other way runs them outside every "
+    "Valhuntir control. An MCP-only client gets the server-side controls only: "
+    "the gateway audit, the case records' rules and signed approvals."
+)
 DESKTOP_DROPPED = (
     "Claude Desktop is no longer supported: the commands it runs aren't "
     "audited. Use Claude Code on the SIFT workstation, or Claude Code or Codex "

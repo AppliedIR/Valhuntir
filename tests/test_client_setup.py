@@ -432,6 +432,17 @@ class TestCmdSetupClient:
         assert "zeltser-ir-writing" in doc["mcpServers"]
         assert "Admin Panel" in capsys.readouterr().out
 
+    def test_other_prints_the_supported_shell_client_notice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from vhir_cli.commands.client_setup import OTHER_CLIENT_NOTICE
+
+        monkeypatch.chdir(tmp_path)
+        self._isolate_home(monkeypatch, tmp_path)
+        cmd_setup_client(self._make_args(client="other"), {"examiner": "t"})
+        assert OTHER_CLIENT_NOTICE in capsys.readouterr().out
+        assert (tmp_path / "vhir-mcp-config.json").is_file()
+
     def test_librechat_no_json_merge(self, tmp_path, monkeypatch):
         """LibreChat writes YAML, not JSON — no .mcp.json created."""
         monkeypatch.chdir(tmp_path)
