@@ -734,12 +734,16 @@ def mark_case(case_dir: Path) -> str | None:
     refused = (
         f"Share marker not written: {marker} is not a regular file inside the case."
     )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
+    # truncated only once it is known to be a regular file with one link, so
+    # a hard link to another case file is never emptied
+    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         fd = os.open(marker, flags, 0o644)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                 return refused
+            os.ftruncate(fd, 0)
             os.fchmod(fd, 0o644)
             os.write(fd, Path(case_dir).name.encode())
         finally:

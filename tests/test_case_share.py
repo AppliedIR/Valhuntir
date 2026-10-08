@@ -216,6 +216,14 @@ def test_a_marker_that_is_a_link_is_never_followed(case, tmp_path):
     assert outside.read_text() == "keep"
 
 
+def test_a_marker_hard_linked_to_a_case_file_never_empties_it(case):
+    findings = case / "findings.json"
+    findings.write_text('[{"id": "F-steve-001"}]')
+    os.link(findings, case / ".vhir-share-case")
+    assert "Share marker not written" in join.mark_case(case)
+    assert findings.read_text() == '[{"id": "F-steve-001"}]'
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes here")
 def test_a_marker_that_is_a_pipe_is_refused_without_waiting(case):
     os.mkfifo(case / ".vhir-share-case")
