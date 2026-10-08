@@ -1108,7 +1108,8 @@ def _isolate_gateway_launchers() -> list[Path]:
 def _shipped(dst: Path, src: Path) -> bool:
     """Whether dst's bytes are a version of src the product shipped: dst's
     blob id appears in the history of src's checkout (HEAD, following
-    renames). Without git or a checkout: False, so the user is asked."""
+    renames). src may be gone from the checkout (a retired file). Without git
+    or a checkout: False, so the user is asked."""
     import subprocess
 
     def git(*args):
@@ -1117,7 +1118,8 @@ def _shipped(dst: Path, src: Path) -> bool:
         )
 
     try:
-        top = git("-C", str(src.parent), "rev-parse", "--show-toplevel")
+        here = next(p for p in src.parents if p.is_dir())
+        top = git("-C", str(here), "rev-parse", "--show-toplevel")
         if top.returncode:
             return False
         root = Path(top.stdout.strip()).resolve()
@@ -1361,11 +1363,14 @@ def _deploy_global_rules(
     discipline_src: Path | None,
     toolref_src: Path | None,
 ) -> None:
-    """Deploy discipline docs to ~/.claude/rules/ (SIFT only)."""
+    """Deploy discipline docs to ~/.claude/rules/ (SIFT only). The tool
+    reference is a skill now: the copy vhir put in rules/ retires."""
     rules_dir = Path.home() / ".claude" / "rules"
+    _retire(
+        rules_dir / "TOOL_REFERENCE.md", toolref_src, "the vhir-tool-reference skill"
+    )
     for src, name in [
         (discipline_src, "FORENSIC_DISCIPLINE.md"),
-        (toolref_src, "TOOL_REFERENCE.md"),
         (_find_agents_md(global_rule=True), "AGENTS.md"),  # never the cwd's
     ]:
         _deploy_copy(src, rules_dir / name)
@@ -1455,12 +1460,25 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             toolref_src=_find_asset("TOOL_REFERENCE.md"),
         )
 
-        # Deploy skills to ~/.claude/commands/
+        # Commands (the full set has none left), then the skills and the
+        # skeptic's agent; /welcome is the vhir-welcome skill now
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = Path.home() / ".claude" / "commands"
             for skill_file in commands_src.glob("*.md"):
                 _deploy_copy(skill_file, commands_target / skill_file.name)
+        _retire(
+            Path.home() / ".claude" / "commands" / "welcome.md",
+            mode_dir / "commands" / "welcome.md",
+            "the vhir-welcome skill",
+        )
+        deploy_skills(Path.home() / ".claude" / "skills")
+        _deploy_copy(
+            _sift_root_dir("agents") / "finding-skeptic" / "claude.md"
+            if _sift_root_dir("agents")
+            else None,
+            Path.home() / ".claude" / "agents" / "finding-skeptic.md",
+        )
 
         # Also deploy docs to project root (contextual, harmless)
         if project_dir:
@@ -1508,6 +1526,45 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         for doc_name in ("FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
             _deploy_copy(_find_asset(doc_name), project_dir / doc_name)
         return settings if settings_src else None
+
+
+def _sift_root_dir(name: str) -> Path | None:
+    """A folder at the top of the sift-mcp checkout (skills/, agents/)."""
+    assets = _find_claude_code_assets()
+    folder = assets.parent / name if assets else None
+    return folder if folder and folder.is_dir() else None
+
+
+def deploy_skills(target: Path) -> None:
+    """Deploy every skill in sift-mcp's skills/ under `target` (one folder
+    each), file by file through _deploy_copy: a version vhir shipped is
+    updated, and an edited one changes only with the user's consent. The
+    user's own skills are never touched."""
+    source = _sift_root_dir("skills")
+    if source is None:
+        print("  Note: sift-mcp skills not found. Skill deployment skipped.")
+        return
+    for skill in sorted(p for p in source.iterdir() if p.is_dir()):
+        for src in sorted(skill.rglob("*")):
+            if src.is_file():
+                _deploy_copy(src, target / src.relative_to(source))
+
+
+def _retire(dst: Path, src: Path | None, now: str) -> None:
+    """A file vhir used to deploy at `dst`: removed if it is a version vhir
+    shipped (`src`'s history); kept, with a notice, if it holds the user's
+    edits."""
+    if not dst.is_file():
+        return
+    if src is not None and _shipped(dst, src):
+        dst.unlink()
+        print(f"  Removed:   {dst} (now {now})")
+        return
+    print(
+        f"  Kept:      {dst}: it differs from every version vhir shipped, so it may "
+        f"hold your edits. vhir no longer uses it ({now} replaces it); remove it "
+        "when you no longer need it."
+    )
 
 
 def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
