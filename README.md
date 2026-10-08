@@ -20,7 +20,7 @@ Valhuntir turns a single incident response analyst into the manager of an agenti
 
 Valhuntir ensures accountability and enforces human review of findings through signed approvals (each examiner's own key, unlocked by their passphrase) and multiple layered controls.
 
-Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, Cherry Studio, self-hosted LibreChat, and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
+Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code and Codex (agents with a shell, set up with Valhuntir's controls), self-hosted LibreChat, and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
 
 > Looking for a simpler setup without the gateway or OpenSearch? See [Valhuntir Lite](#valhuntir-lite).
 
@@ -618,17 +618,14 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/Valhuntir/mai
 
 Always launch your LLM client from `~/vhir/` or a subdirectory. Forensic controls only apply when started from within the workspace. To uninstall, re-run the setup script with `--uninstall` (Linux/macOS) or `-Uninstall` (Windows).
 
-Claude Desktop's config file supports stdio transport only. The [mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge is used to connect to the gateway. `vhir setup client --client=claude-desktop` generates the correct mcp-remote config automatically.
-
 | Client | Platforms | Config file | Extras |
 |--------|-----------|-------------|--------|
 | Claude Code | Linux, macOS, Windows | `~/vhir/.mcp.json` or `~/.claude.json` (SIFT) | `CLAUDE.md`, `settings.json`, sandbox, audit hooks |
-| Claude Desktop | macOS, Windows | `claude_desktop_config.json` (see note) | Requires mcp-remote bridge. Project instructions from AGENTS.md |
-| Cherry Studio | Linux, macOS, Windows | JSON import (manual) | `baseUrl` field, `streamableHttp` type (camelCase) |
+| Codex | Linux, macOS, Windows | `~/.codex/valhuntir.config.toml` (`codex -p valhuntir`) | Instructions in the profile, skills in `~/.agents/skills/`, Codex's sandbox |
 | LibreChat | Any (browser) | `librechat.yaml` (`mcpServers` section) | Valhuntir generates `librechat_mcp.yaml` reference to merge |
 | Other | Any | `vhir-mcp-config.json` | Manual integration |
 
-Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Claude Desktop is not available on Linux and requires the [mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge (stdio-only config). Config paths: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows). Any MCP client that supports Streamable HTTP transport with Bearer token authentication will work — the gateway is not client-specific.
+Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Any MCP client that supports Streamable HTTP transport with Bearer token authentication will work — the gateway is not client-specific.
 
 ## Examiner Identity
 

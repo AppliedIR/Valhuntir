@@ -169,6 +169,9 @@ def _setup_client(args, identity: dict) -> None:
 
     # 1. Resolve parameters from switches (or interactive wizard)
     client = _resolve_client(args, auto)
+    if client == "claude-desktop":
+        print(DESKTOP_DROPPED, file=sys.stderr)
+        sys.exit(1)
     if client == "codex" and not _is_sift():
         print(CODEX_OFF_SIFT, file=sys.stderr)
         sys.exit(1)
@@ -492,18 +495,16 @@ def _wizard_client() -> str:
     print("\n=== Valhuntir Client Configuration ===")
     print("Which LLM client will connect to your Valhuntir endpoints?\n")
     print("  1. Claude Code      CLI agent (writes .mcp.json + CLAUDE.md)")
-    print("  2. Claude Desktop   Desktop app (writes claude_desktop_config.json)")
+    print("  2. Codex            CLI agent (writes ~/.codex/valhuntir.config.toml)")
     print("  3. LibreChat        Web UI (writes librechat_mcp.yaml)")
     print("  4. Other / manual   Raw JSON config for any MCP client")
-    print("  5. Codex            CLI agent (writes ~/.codex/valhuntir.config.toml)")
 
     choice = _prompt("\nChoose", "1")
     return {
         "1": "claude-code",
-        "2": "claude-desktop",
+        "2": "codex",
         "3": "librechat",
         "4": "other",
-        "5": "codex",
     }.get(choice, "other")
 
 
@@ -819,25 +820,6 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         if _codex_userns_restricted():
             print("")
             print(f"  NOTE: {CODEX_USERNS_NOTICE}")
-
-    elif client == "claude-desktop":
-        output = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
-        _merge_and_write(output, config)
-        print(f"  Generated: {output}")
-        agents_md = _find_agents_md()
-        print("")
-        print("  To enable forensic discipline guidance:")
-        print("    1. Open Claude Desktop")
-        print("    2. Create a new Project (or open an existing one)")
-        print("    3. Click 'Set project instructions'")
-        if agents_md:
-            print(f"    4. Paste the contents of: {agents_md}")
-        else:
-            print("    4. Paste the contents of AGENTS.md from the sift-mcp repo")
-        print("")
-        print("  The MCP servers also provide instructions automatically via")
-        print("  the MCP protocol. Project instructions provide additional")
-        print("  context for your investigation workflow.")
 
     elif client == "librechat":
         output = Path.cwd() / "librechat_mcp.yaml"
@@ -1593,6 +1575,12 @@ def _retire(dst: Path, src: Path | None, now: str) -> None:
 # --- Codex ---------------------------------------------------------------------
 
 _INTERNET_MCPS = (_ZELTSER_MCP["name"], _MSLEARN_MCP["name"])
+DESKTOP_DROPPED = (
+    "Claude Desktop is no longer supported: the commands it runs aren't "
+    "audited. Use Claude Code on the SIFT workstation, or Claude Code or Codex "
+    "on another machine with --remote (their shell commands there aren't in "
+    "the case audit)."
+)
 CODEX_OFF_SIFT = (
     "Codex is set up on the SIFT box itself. On another machine, run "
     "`vhir setup client --remote --client=codex`, or the client setup script."
@@ -2776,8 +2764,6 @@ def _cmd_add_remnux(args) -> None:
             remnux_entry["type"] = "http"
         else:
             config_path = Path.cwd() / ".mcp.json"
-    elif client == "claude-desktop":
-        config_path = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
     elif client == "librechat":
         config_path = Path.cwd() / ".mcp.json"
     else:
@@ -2804,6 +2790,9 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
     """
     auto = getattr(args, "yes", False)
     client = _resolve_client(args, auto)
+    if client == "claude-desktop":
+        print(DESKTOP_DROPPED, file=sys.stderr)
+        sys.exit(1)
     examiner = _resolve_examiner(args, identity)
 
     # 1. Resolve gateway URL
@@ -2915,30 +2904,7 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
 
 
 def _format_server_entry(client: str, url: str, token: str | None) -> dict:
-    """Format a server entry appropriate for the target client.
-
-    Claude Desktop's config file supports stdio transport only.
-    Uses mcp-remote to bridge to the gateway's streamable-http endpoint.
-    All other clients use native streamable-http with Authorization header.
-    """
-    if client == "claude-desktop" and token:
-        if not shutil.which("npx"):
-            raise SystemExit(
-                "Claude Desktop requires npx (Node.js) for mcp-remote bridge.\n"
-                "Install Node.js: https://nodejs.org/ or: sudo apt install nodejs npm"
-            )
-        return {
-            "command": "npx",
-            "args": [
-                "-y",
-                "mcp-remote",
-                url,
-                "--header",
-                "Authorization:${AUTH_HEADER}",
-            ],
-            "env": {"AUTH_HEADER": f"Bearer {token}"},
-        }
-
+    """A gateway server entry: streamable-http with the bearer token."""
     entry: dict = {
         "type": "streamable-http",
         "url": url,

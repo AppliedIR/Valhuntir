@@ -261,7 +261,7 @@ For production forensic work with remote Claude Code, examiners should use SSH a
 - `ssh-add -c` for per-use agent confirmation
 - Hardware security keys (FIDO2/U2F)
 
-Alternatively, MCP-only clients (Claude Desktop, LibreChat) eliminate this concern entirely — they can only reach SIFT through audited MCP tools.
+Alternatively, MCP-only clients (LibreChat) eliminate this concern entirely — they can only reach SIFT through audited MCP tools.
 
 ## Adversarial Evidence
 

@@ -8,6 +8,7 @@ import pytest
 
 from vhir_cli.commands.client_setup import (
     _MSLEARN_MCP,
+    DESKTOP_DROPPED,
     _claude_mcp_add,
     _cmd_setup_client_remote,
     _ensure_mcp_path,
@@ -318,16 +319,17 @@ class TestCmdSetupClient:
         }
         mock_test.assert_called_once_with("http://10.0.0.5:3000", "test_token_123")
 
-    def test_claude_desktop_config(self, tmp_path, monkeypatch):
+    def test_claude_desktop_is_refused_with_the_way_forward(
+        self, tmp_path, monkeypatch, capsys
+    ):
         monkeypatch.chdir(tmp_path)
-        # Redirect home to tmp_path so we don't write to real home
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         args = self._make_args(client="claude-desktop")
-        identity = {"examiner": "testuser"}
-        cmd_setup_client(args, identity)
-
-        config_path = tmp_path / ".config" / "claude" / "claude_desktop_config.json"
-        assert config_path.is_file()
+        with pytest.raises(SystemExit) as e:
+            cmd_setup_client(args, {"examiner": "testuser"})
+        assert e.value.code == 1
+        assert DESKTOP_DROPPED in capsys.readouterr().err
+        assert not (tmp_path / ".config" / "claude").exists()
 
     def test_merge_preserves_existing(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -444,30 +446,10 @@ class TestFormatServerEntry:
         assert entry["url"] == "https://sift:4508/mcp"
         assert entry["headers"]["Authorization"] == "Bearer tok123"
 
-    def test_claude_desktop_uses_mcp_remote(self):
-        with patch(
-            "vhir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx"
-        ):
-            entry = _format_server_entry(
-                "claude-desktop", "https://sift:4508/mcp", "tok123"
-            )
-        assert entry["command"] == "npx"
-        assert "mcp-remote" in entry["args"]
-        assert "https://sift:4508/mcp" in entry["args"]
-        assert entry["env"]["AUTH_HEADER"] == "Bearer tok123"
-
     def test_no_token(self):
         entry = _format_server_entry("claude-code", "https://sift:4508/mcp", None)
         assert entry["type"] == "streamable-http"
         assert "headers" not in entry
-
-    def test_claude_desktop_requires_npx(self):
-        """Verify SystemExit raised when npx is not installed."""
-        with patch("vhir_cli.commands.client_setup.shutil.which", return_value=None):
-            with pytest.raises(SystemExit, match="npx"):
-                _format_server_entry(
-                    "claude-desktop", "https://sift:4508/mcp", "tok123"
-                )
 
 
 class TestRemoteSetup:
@@ -572,28 +554,14 @@ class TestRemoteSetup:
             "https://sift.example.com:4508", "vhir_gw_abc123"
         )
 
-    @patch("vhir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx")
-    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
-    @patch("vhir_cli.commands.client_setup._discover_services")
-    @patch("vhir_cli.commands.client_setup._save_gateway_config")
-    def test_remote_claude_desktop_uses_mcp_remote(
-        self, mock_save, mock_discover, mock_probe, mock_which, tmp_path, monkeypatch
-    ):
+    def test_remote_claude_desktop_is_refused(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        mock_probe.return_value = {"status": "ok"}
-        mock_discover.return_value = [{"name": "forensic-mcp", "started": True}]
         args = self._make_args(client="claude-desktop")
-        identity = {"examiner": "testuser"}
-        _cmd_setup_client_remote(args, identity)
-
-        config_path = tmp_path / ".config" / "claude" / "claude_desktop_config.json"
-        assert config_path.is_file()
-        data = json.loads(config_path.read_text())
-        # Claude Desktop entries use mcp-remote bridge
-        entry = data["mcpServers"]["forensic-mcp"]
-        assert entry["command"] == "npx"
-        assert "mcp-remote" in entry["args"]
+        with pytest.raises(SystemExit) as e:
+            _cmd_setup_client_remote(args, {"examiner": "testuser"})
+        assert e.value.code == 1 and DESKTOP_DROPPED in capsys.readouterr().err
+        assert not (tmp_path / ".config" / "claude").exists()
 
 
 class TestSaveGatewayConfig:
@@ -903,3 +871,10 @@ class TestClaudeMcpAddArgvOrder:
         with patch("subprocess.run", side_effect=fake_run):
             _claude_mcp_add("some-stdio", {"headers": {}})
         assert calls == []  # no subprocess invocation at all
+
+
+def test_readme_and_getting_started_name_neither_desktop_nor_cherry_studio():
+    repo = Path(__file__).resolve().parents[1]
+    for doc in ("README.md", "docs/getting-started.md"):
+        text = (repo / doc).read_text()
+        assert "Claude Desktop" not in text and "Cherry" not in text, doc

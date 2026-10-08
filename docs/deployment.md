@@ -261,22 +261,11 @@ api_keys:
 - `FORENSIC_DISCIPLINE.md` and `TOOL_REFERENCE.md` for LLM context
 - `CLAUDE.md` referencing AGENTS.md
 
-### Claude Desktop
+### Codex
 
-`vhir setup client --client=claude-desktop` generates `claude_desktop_config.json`:
+`vhir setup client --client=codex` (on SIFT, or with `--remote` on another machine) writes `~/.codex/valhuntir.config.toml` (0600), which `codex -p valhuntir` reads: every backend with its bearer token, `sandbox_mode = "workspace-write"`, `approval_policy = "on-request"`, `project_doc_max_bytes = 0`, and the instructions. The user's `~/.codex/config.toml` is never written. The skills go to `~/.agents/skills/` and the finding skeptic's agent to `~/.codex/agents/`.
 
-```json
-{
-  "mcpServers": {
-    "vhir": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://127.0.0.1:4508/mcp",
-               "--header", "Authorization:${AUTH_HEADER}"],
-      "env": { "AUTH_HEADER": "Bearer <your-token>" }
-    }
-  }
-}
-```
+Claude Desktop is no longer supported: the commands it runs aren't audited, so `vhir setup client` refuses it.
 
 ### External MCPs
 

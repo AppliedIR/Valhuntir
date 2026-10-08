@@ -400,7 +400,7 @@ vhir setup client --remote --token=vhir_gw_...       # Remote with auth
 
 | Option | Description |
 |--------|-------------|
-| `--client` | Target client: claude-code, claude-desktop, librechat, other |
+| `--client` | Target client: claude-code, codex, librechat, other (claude-desktop is refused) |
 | `--sift` | SIFT gateway URL |
 | `--windows` | Windows wintools-mcp endpoint |
 | `--remnux` | REMnux endpoint |

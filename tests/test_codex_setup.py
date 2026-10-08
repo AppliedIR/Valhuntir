@@ -143,7 +143,7 @@ def test_off_the_sift_box_codex_is_refused_with_the_way_to_set_it_up(
 
 
 def test_the_wizard_offers_codex(monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda _: "5")
+    monkeypatch.setattr("builtins.input", lambda _: "2")
     assert cs._wizard_client() == "codex"
 
 
