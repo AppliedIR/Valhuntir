@@ -40,6 +40,27 @@ function Write-Ok    { param([string]$Msg) Write-Host "[OK] $Msg" -ForegroundCol
 function Write-Warn  { param([string]$Msg) Write-Host "[WARN] $Msg" -ForegroundColor Yellow }
 function Write-Err   { param([string]$Msg) Write-Host "[ERROR] $Msg" -ForegroundColor Red }
 
+# Merge a hashtable of vhir's settings into the user's (from ConvertFrom-Json):
+# a list is a union, a nested object is merged the same way, a scalar is set
+function Merge-Union($cur, $new) {
+    foreach ($k in $new.Keys) {
+        $v = $new[$k]
+        $have = $cur.PSObject.Properties[$k]
+        if (-not $have) {
+            $cur | Add-Member -NotePropertyName $k -NotePropertyValue $v
+        } elseif ($v -is [hashtable] -and $have.Value -is [psobject] -and $have.Value -isnot [string] -and $have.Value -isnot [array]) {
+            Merge-Union $have.Value $v
+        } elseif (($v -is [array]) -and ($have.Value -is [array] -or $have.Value -is [string])) {
+            $list = [System.Collections.Generic.List[object]]::new()
+            foreach ($x in @($have.Value)) { $list.Add($x) }
+            foreach ($x in $v) { if (-not $list.Contains($x)) { $list.Add($x) } }
+            $cur.$k = $list.ToArray()
+        } else {
+            $cur.$k = $v
+        }
+    }
+}
+
 # A user's file is backed up before it's changed, with the command that puts it back.
 function Backup-UserFile {
     param([string]$Path)
@@ -585,7 +606,14 @@ $settingsObj = @{
             "Edit(**/.vhir/gateway.yaml)",
             "Edit(**/.vhir/config.yaml)",
             "Edit(**/.vhir/.password_lockout)",
-            "Edit(**/pending-reviews.json)"
+            "Edit(**/pending-reviews.json)",
+            "Edit(**/.claude/skills/**)",
+            "Edit(**/.claude/agents/**)",
+            "Edit(**/host-observations.jsonl)",
+            "Edit(**/host-decisions.jsonl)",
+            "Edit(**/host-ops.json)",
+            "Edit(**/host-dictionary.yaml)",
+            "Edit(**/.vhir/case-paths.json)"
         )
     }
     sandbox = @{
@@ -653,9 +681,12 @@ if (Test-Path $settingsPath) {
             }
         }
 
-        # Merge sandbox
+        # Merge sandbox: every list is a union with the user's own (a scalar
+        # takes vhir's value; the change is shown before it's written)
         if (-not $existing.sandbox) {
             $existing | Add-Member -NotePropertyName sandbox -NotePropertyValue $settingsObj.sandbox
+        } else {
+            Merge-Union $existing.sandbox $settingsObj.sandbox
         }
 
         if (Set-UserFile $settingsPath ($existing | ConvertTo-Json -Depth 10)) {

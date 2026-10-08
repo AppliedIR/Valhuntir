@@ -75,6 +75,28 @@ _FORENSIC_DENY_RULES = {
     "Edit(**/.vhir/.password_lockout)",
     # Sync with template (was in settings.json but missing here)
     "Edit(**/pending-reviews.json)",
+    # The same rules anchored at the home folder: "**/" matches inside the
+    # session's folder only
+    "Edit(~/.claude/settings.json)",
+    "Edit(~/.claude/CLAUDE.md)",
+    "Edit(~/.claude/rules/**)",
+    "Edit(~/.vhir/hooks/**)",
+    "Edit(~/.vhir/active_case)",
+    "Edit(~/.vhir/gateway.yaml)",
+    "Edit(~/.vhir/config.yaml)",
+    "Edit(~/.vhir/.password_lockout)",
+    # Deployed skills and agents, and the Codex folders
+    "Edit(~/.claude/skills/**)",
+    "Edit(~/.claude/agents/**)",
+    "Edit(~/.agents/**)",
+    "Edit(~/.codex/**)",
+    # Host identity's records and the case paths map
+    "Edit(**/host-observations.jsonl)",
+    "Edit(**/host-decisions.jsonl)",
+    "Edit(**/host-ops.json)",
+    "Edit(**/host-dictionary.yaml)",
+    "Edit(**/.vhir/case-paths.json)",
+    "Edit(~/.vhir/case-paths.json)",
 }
 
 # Old forensic deny rules — removed during migration re-deploy. The

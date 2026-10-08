@@ -763,7 +763,14 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "Edit(**/.vhir/gateway.yaml)",
       "Edit(**/.vhir/config.yaml)",
       "Edit(**/.vhir/.password_lockout)",
-      "Edit(**/pending-reviews.json)"
+      "Edit(**/pending-reviews.json)",
+      "Edit(**/.claude/skills/**)",
+      "Edit(**/.claude/agents/**)",
+      "Edit(**/host-observations.jsonl)",
+      "Edit(**/host-decisions.jsonl)",
+      "Edit(**/host-ops.json)",
+      "Edit(**/host-dictionary.yaml)",
+      "Edit(**/.vhir/case-paths.json)"
     ]
   },
   "sandbox": {
@@ -848,9 +855,20 @@ if "permissions" in incoming:
             existing_deny.add(rule)
         existing_perms["deny"] = sorted(existing_deny)
 
-# Merge sandbox
+# Merge sandbox: every list is a union with the user's own (a scalar takes
+# vhir's value; the change is shown before it's written)
+def _union(cur, new):
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(cur.get(k), dict):
+            _union(cur[k], v)
+        elif isinstance(v, list) and isinstance(cur.get(k), list):
+            cur[k] = cur[k] + [x for x in v if x not in cur[k]]
+        else:
+            cur[k] = v
+
+
 if "sandbox" in incoming:
-    existing.setdefault("sandbox", {}).update(incoming["sandbox"])
+    _union(existing.setdefault("sandbox", {}), incoming["sandbox"])
 
 with open(target_path + ".vhir-new", "w") as f:
     json.dump(existing, f, indent=2)
