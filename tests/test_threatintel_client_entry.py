@@ -77,3 +77,35 @@ def test_the_entries_being_written_are_never_counted_as_duplicates(box):
         path, **{"forensic-mcp": {"type": "http", "url": f"{GW}/mcp/forensic-mcp"}}
     )
     assert cs._duplicate_backends(_servers(), path) == ["opencti-mcp"]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://sift.local:45080/mcp/opencti-mcp",  # another port starting the same
+        "https://sift.local:4508/mcp/opencti-mcp",  # another scheme
+        "http://sift.local.example:4508/mcp/opencti-mcp",  # another host
+        "http://sift.local:4508/other/opencti-mcp",  # not a gateway route
+    ],
+)
+@pytest.mark.parametrize("vhir", [True, False])  # the gateway read from either entry
+def test_only_an_entry_for_this_very_gateway_is_ever_removed(box, url, vhir):
+    home, _ = box
+    path = home / ".claude.json"
+    _existing(path)
+    data = json.loads(path.read_text())
+    data["mcpServers"]["opencti-mcp"]["url"] = url
+    data["mcpServers"]["case-mcp"] = {
+        "type": "http",
+        "url": url.replace("opencti", "case"),
+    }
+    path.write_text(json.dumps(data))
+    servers = {**({"vhir": {"type": "http", "url": f"{GW}/mcp"}} if vhir else {}),
+               **_servers()}  # fmt: skip
+    assert cs._duplicate_backends(servers, path) == []
+    # the same entries for this gateway are removed (the control)
+    for name in ("opencti-mcp", "case-mcp"):
+        data["mcpServers"][name]["url"] = f"{GW}/mcp/{name}"
+    path.write_text(json.dumps(data))
+    removed = ["opencti-mcp", "case-mcp"] if vhir else ["opencti-mcp"]
+    assert cs._duplicate_backends(servers, path) == removed

@@ -695,7 +695,7 @@ def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
     names = _BACKEND_NAMES if "vhir" in servers else set()
     if "threatintel-mcp" in servers:
         names = names | {"opencti-mcp"}
-    gw_base = gw_url.rsplit("/mcp/", 1)[0]
+    gw = _gateway_of(gw_url)
     try:
         existing = json.loads((path or Path.home() / ".claude.json").read_text())[
             "mcpServers"
@@ -710,8 +710,24 @@ def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
         if name in names
         and name not in servers
         and isinstance(entry, dict)
-        and entry.get("url", "").startswith(gw_base)
+        and gw is not None
+        and _gateway_of(str(entry.get("url", "")), routed=True) == gw
     ]
+
+
+def _gateway_of(url: str, routed: bool = False) -> tuple | None:
+    """A URL's gateway: its scheme, host and port, compared exactly (so :4508
+    is never :45080). `routed`: only a per-backend route under /mcp/."""
+    from urllib.parse import urlsplit
+
+    try:
+        u = urlsplit(url)
+        where = (u.scheme.lower(), u.hostname, u.port)
+    except ValueError:
+        return None
+    if not u.scheme or not u.hostname or (routed and not u.path.startswith("/mcp/")):
+        return None
+    return where
 
 
 def _cleanup_duplicate_backends(servers: dict, path: Path | None = None) -> None:
