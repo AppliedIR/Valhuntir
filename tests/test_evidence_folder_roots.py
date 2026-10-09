@@ -197,3 +197,19 @@ def test_a_folder_file_isnt_found_through_a_changed_manifest(case):
     manifest = case / r["manifest_path"]
     manifest.write_text(manifest.read_text() + "\n")
     assert registered_entry_for(case, case / "evidence/kape/C/b.evtx") is None
+
+
+def test_an_unreadable_subfolder_is_listed_never_dropped(case):
+    kape = case / "evidence" / "kape"
+    locked = kape / "C" / "Locked"
+    locked.mkdir()
+    (locked / "secret.evtx").write_bytes(b"S")
+    locked.chmod(0)
+    try:
+        r = register_evidence_data(case, str(kape), "tester")
+    finally:
+        locked.chmod(0o755)
+    m = json.loads((case / r["manifest_path"]).read_text())
+    (unreadable,) = m["unreadable"]
+    assert unreadable["path"] == "evidence/kape/C/Locked" and unreadable["error"]
+    assert r["file_count"] == 2

@@ -334,18 +334,25 @@ def _hash_each(case_dir, paths: list[str]) -> tuple[dict[str, str], str]:
     return {p: _sha256_of(p) for p in paths}, ""
 
 
-def _walk_folder(folder: Path) -> tuple[list[str], list[str]]:
-    """(regular files, everything else) under folder, in a stable order. Links
-    aren't followed: a link, FIFO or device is listed, never read."""
-    regular, skipped = [], []
-    for root, dirs, files in os.walk(folder):
+def _walk_folder(folder: Path) -> tuple[list[str], list[str], dict[str, str]]:
+    """(regular files, everything else, what couldn't be read: path -> why)
+    under folder, in a stable order. Links aren't followed: a link, FIFO or
+    device is listed, never read; a folder that can't be listed is named,
+    never silently left out."""
+    regular, skipped, unreadable = [], [], {}
+    walk = os.walk(folder, onerror=lambda e: unreadable.__setitem__(e.filename, str(e)))
+    for root, dirs, files in walk:
         dirs.sort()
         links = sorted(d for d in dirs if os.path.islink(os.path.join(root, d)))
         for name in sorted(files) + links:
             p = os.path.join(root, name)
-            is_reg = stat.S_ISREG(os.lstat(p).st_mode)
+            try:
+                is_reg = stat.S_ISREG(os.lstat(p).st_mode)
+            except OSError as e:
+                unreadable[p] = str(e)
+                continue
             (regular if is_reg else skipped).append(p)
-    return regular, skipped
+    return regular, skipped, unreadable
 
 
 def _register_folder(
@@ -357,7 +364,7 @@ def _register_folder(
     file is still hashing."""
     from vhir_cli.case_io import _atomic_write
 
-    regular, skipped = _walk_folder(folder)
+    regular, skipped, unreadable = _walk_folder(folder)
     hashes, job_id = hasher(case_dir, regular)
     if job_id:
         return {"status": "hashing", "job_id": job_id, "path": str(folder),
@@ -375,7 +382,9 @@ def _register_folder(
                      "st_ino": st.st_ino})  # fmt: skip
     manifest = json.dumps(
         {"folder": str(folder), "files": rows,
-         "skipped": sorted(os.path.relpath(p, base) for p in skipped)},
+         "skipped": sorted(os.path.relpath(p, base) for p in skipped),
+         "unreadable": [{"path": os.path.relpath(p, base), "error": why}
+                        for p, why in sorted(unreadable.items())]},
         indent=2, sort_keys=True,
     ).encode()  # fmt: skip
     manifest_sha = hashlib.sha256(manifest).hexdigest()
