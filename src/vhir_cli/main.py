@@ -479,6 +479,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_join_code.add_argument("--expires", type=int, help="Expiry in hours (default: 2)")
     p_join_code.add_argument(
+        "--revoke",
+        action="store_true",
+        help="End every unused join code, and do nothing else",
+    )
+    p_join_code.add_argument(
         "--name",
         help="Bind the code to this examiner name: the join gets that name and "
         "ends its earlier gateway tokens (for re-joining under one's own name)",
@@ -1210,6 +1215,23 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
 
+    remedy = (
+        "This box still uses the old [cases] share, whose group 'sift' this "
+        "process doesn't have until the box reboots. Run 'vhir setup join-code' "
+        "and the Windows installer with the new code: vhir's own share needs no "
+        "group, re-login or restart."
+    )
+    if (
+        not own_share
+        and os.geteuid() != 0
+        and sift_gid != os.getegid()
+        and sift_gid not in os.getgroups()
+    ):
+        # the group step can't succeed here: make nothing rather than half
+        wintools_dir = case_dir / "extractions" / "wintools"
+        missing = f"Group permissions not applied to {wintools_dir}: {remedy}"
+        return "; ".join(w for w in (opened, missing) if w)
+
     root = os.path.realpath(case_dir)
 
     def inside(path: Path) -> bool:
@@ -1263,7 +1285,7 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
         except OSError as e:
             return (
                 f"Group permissions not applied to {e.filename or case_dir}: "
-                f"{e.strerror or e}. Log out and back in, then activate the case again."
+                f"{e.strerror or e}." + ("" if own_share else f" {remedy}")
             )
 
     return "; ".join(w for w in (opened, group_step()) if w) or None

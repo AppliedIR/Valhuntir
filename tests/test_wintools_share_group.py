@@ -111,9 +111,10 @@ def test_cli_activate_and_reopen_prepare_the_case_for_wintools(
         main._case_activate(args, {"examiner": "tester"})
     assert shared == [("repoint", case_dir), ("notify", "CASE-D")]
     out = capsys.readouterr().out
-    # the group step ran: the warning's "activate the case again" re-runs it
-    assert "Group permissions not applied" in out
-    assert (case_dir / "extractions" / "wintools").is_dir()
+    # the group step can't run in this process: nothing is half made, and the
+    # warning names the step that works without a reboot
+    assert "Group permissions not applied" in out and "vhir setup join-code" in out
+    assert not (case_dir / "extractions" / "wintools").exists()
 
 
 @pytest.mark.parametrize(

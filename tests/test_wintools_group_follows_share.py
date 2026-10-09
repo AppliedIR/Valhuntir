@@ -36,6 +36,7 @@ def box(tmp_path, monkeypatch):
         given[os.readlink(f"/proc/self/fd/{fd}")] = gid
 
     monkeypatch.setattr(os, "fchown", fchown)
+    monkeypatch.setattr(os, "getgroups", lambda: list(GIDS.values()))  # a member
 
     def make(samba: dict, case=None):
         (tmp_path / ".vhir" / "samba.yaml").write_text(yaml.safe_dump(samba))

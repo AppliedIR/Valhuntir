@@ -170,6 +170,10 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         print("Check ~/.vhir/gateway.yaml for api_keys", file=sys.stderr)
         sys.exit(1)
 
+    if getattr(args, "revoke", False) is True:
+        _revoke_join_codes(_get_local_gateway_url(), token)
+        return
+
     # Configure static IP before remote binding
     static_ip = _ensure_static_ip()
 
@@ -254,6 +258,32 @@ def _join_urllib(sift_url, join_body, verify, args):
         sys.exit(1)
 
     _joined(data, args)
+
+
+def _revoke_join_codes(gateway_url: str, token: str) -> None:
+    """End every unused join code (DELETE /api/v1/setup/join-code)."""
+    import ssl
+    import urllib.request
+
+    ca = _find_ca_cert()
+    ctx = ssl.create_default_context()
+    if not ca:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    else:
+        ctx.load_verify_locations(ca)
+    req = urllib.request.Request(
+        f"{gateway_url}/api/v1/setup/join-code",
+        method="DELETE",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            revoked = json.loads(resp.read()).get("revoked", 0)
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        print(f"Failed to revoke join codes: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Ended {revoked} unused join code{'' if revoked == 1 else 's'}.")
 
 
 def _join_code_urllib(gateway_url, token, args) -> dict:
@@ -1068,6 +1098,11 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     print(
         f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host} -GatewayPort {gw_port}"
     )
+    print("  Unattended: add -NonInteractive -AcknowledgeSecurityHole")
+    print(
+        "\nWhen the installer has finished: run 'vhir setup client' on each "
+        "examiner machine, then /mcp in Claude Code"
+    )
     print("\nOr if the installer is already running, enter when prompted:")
     print(f"  Join code:  {join_code}")
     print(f"  SIFT IP:    {sift_host}")
@@ -1132,16 +1167,30 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
     kwargs: dict = {"timeout": 5}
     if update_url.startswith("https"):
         kwargs["context"] = _wintools_ssl_context()
+    last = "no answer"
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, **kwargs):
                 print("  SMB credentials pushed to wintools-mcp")
                 return
-        except Exception:
-            if attempt < 2:
-                _time.sleep(5)
-    # Best-effort: wintools may not be running yet (normal during first setup).
-    # The Windows installer derives the same password from the join code.
+        except urllib.error.HTTPError as e:  # wintools answered: say what
+            body = e.read().decode("utf-8", errors="replace").strip()[:300]
+            last = f"HTTP {e.code}: {body}"
+            print(
+                f"  wintools-mcp answered the SMB credential push: {last}",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            last = str(e) or type(e).__name__
+        if attempt < 2:
+            _time.sleep(5)
+    # wintools may not be running yet (normal during first setup): the Windows
+    # installer derives the same password from the join code.
+    print(
+        f"  Warning: wintools-mcp didn't confirm the new SMB credentials ({last}). "
+        "Run the Windows installer with this join code to give them to it.",
+        file=sys.stderr,
+    )
 
 
 def notify_wintools_case_activated(case_id: str) -> bool:
