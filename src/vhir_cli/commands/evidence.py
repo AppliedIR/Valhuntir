@@ -670,19 +670,19 @@ def cmd_register_evidence(args, identity: dict) -> None:
         )
         print(f"  Manifest SHA256: {sha256}")
         if data.get("derivation_note"):
-            print(f"  Note: {data['derivation_note']}")
+            print(f"  WARNING: {data['derivation_note']}")
         return
     if data.get("note") == "updated (same path, hash changed)":
         prior = data["previous_hashes"][-1]["sha256"]
         print(f"  WARNING: hash changed since registration (was {prior})")
     print(f"  SHA256: {data['sha256']}")
     if data.get("hash_note"):  # never "recorded" when nothing vouches for it
-        print(f"  Integrity: NOT vouched for: the file {data['hash_note']}; the hash "
-              "is of one read, and no stat fields say it's unchanged")  # fmt: skip
+        print(f"  WARNING: the file {data['hash_note']}: no stat fields vouch for "
+              "this hash, so every check hashes it in full")  # fmt: skip
     else:
         print("  Integrity: SHA-256 hash recorded")
     if data.get("derivation_note"):
-        print(f"  Note: {data['derivation_note']}")
+        print(f"  WARNING: {data['derivation_note']}")
 
 
 def _log_evidence_action(
@@ -940,7 +940,7 @@ def cmd_verify_evidence(args, identity: dict) -> None:
         elif raw["status"] == "ERROR" and raw.get("error"):
             print(f"             Error: {r['error']}")
         for note in r.get("notes") or []:
-            print(f"             Note: {note}")
+            print(f"             WARNING: {note}")
 
     print(
         f"\n{data['verified']} verified, {data['modified']} MODIFIED, {data['missing']} missing, {data['errors']} errors"

@@ -391,10 +391,12 @@ def test_the_cli_prints_a_derivation_note_at_register_and_verify(
     p = case / "evidence" / "mem.raw"
     p.write_bytes(b"M" * 100)
     out = _cli_register(case, p, capsys, monkeypatch)
-    assert "derivation unchecked: audit/sift-mcp.jsonl can't be read" in out, out
+    assert "WARNING: derivation unchecked: audit/sift-mcp.jsonl can't be read" in out, (
+        out
+    )
     with patch("vhir_cli.commands.evidence.get_case_dir", return_value=case):
         cmd_verify_evidence(SimpleNamespace(case=None), {})
-    assert "derivation unchecked" in capsys.readouterr().out
+    assert "WARNING: derivation unchecked" in capsys.readouterr().out
 
 
 def test_the_cli_never_says_hash_recorded_for_a_file_that_kept_changing(
@@ -404,8 +406,8 @@ def test_the_cli_never_says_hash_recorded_for_a_file_that_kept_changing(
     p.write_bytes(b"M" * 100)
     _changing_hasher(monkeypatch, p, times=99)
     out = _cli_register(case, p, capsys, monkeypatch)
-    assert "Integrity: SHA-256 hash recorded" not in out, out
-    assert "changed while hashing" in out
+    assert "Integrity" not in out, out  # no integrity line at all
+    assert "WARNING: the file changed while hashing" in out
 
 
 def test_an_acquisition_registered_while_a_log_cant_be_read_says_so(
