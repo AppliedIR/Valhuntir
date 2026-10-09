@@ -345,3 +345,17 @@ def test_a_folder_registered_while_a_log_cant_be_read_says_derivation_unchecked(
     (k / "a.evtx").write_bytes(b"A" * 64)
     r = register_evidence_data(case, str(k), "tester")
     assert r.get("derivation_note", "").startswith("derivation unchecked: "), r
+
+
+def test_registering_a_legacy_entry_again_adds_its_stat_fields(case):
+    """An entry from before stat fields: the same file again fills them in, so
+    the approval check's fast path can vouch for it."""
+    p = case / "evidence" / "old.bin"
+    p.write_bytes(b"OLD")
+    legacy = {"path": str(p.resolve()), "sha256": _sha(b"OLD"), "description": "",
+              "registered_at": "2026-09-01T00:00:00+00:00", "registered_by": "tester"}  # fmt: skip
+    (case / "evidence.json").write_text(json.dumps({"files": [legacy]}))
+    register_evidence_data(case, str(p), "tester")
+    (entry,) = _files(case)
+    assert entry["size"] == 3 and entry["st_ino"] == os.stat(p).st_ino, entry
+    assert entry["registered_at"] == legacy["registered_at"]  # the same registration

@@ -228,6 +228,12 @@ def register_evidence_data(
     for existing in registry.get("files", []):
         if existing.get("path") == str(resolved):
             if existing.get("sha256") == file_hash:
+                if "size" in entry_fields and not any(
+                    k in existing for k in _STAT_FIELDS
+                ):
+                    # an entry from before stat fields: these bytes' fill them in
+                    existing.update({k: entry_fields[k] for k in _STAT_FIELDS})
+                    _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
                 return {
                     **existing,
                     "note": "already registered (same path and hash)",
