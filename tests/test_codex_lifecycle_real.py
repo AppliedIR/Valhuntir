@@ -82,3 +82,36 @@ def test_add_remnux_with_the_gateway_down_says_it_wasnt_added(box, monkeypatch, 
     assert "remnux-mcp was NOT added to Codex's profile (kept)" in out
     assert "Added remnux-mcp" not in out and "Restart Codex" not in out
     assert "remnux-mcp" not in _profile(box)["mcp_servers"]
+
+
+def _opt_out(box):  # noqa: F811
+    _setup()
+    cc.REQUIREMENTS.rename(cc.REQUIREMENTS.with_name("requirements.toml.off"))
+    assert cc.HOOKS_DIR.is_dir()
+
+
+def test_after_the_opt_out_uninstall_offers_the_hooks_and_lists_the_moved_file(
+    box,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    _opt_out(box)
+    moved = cc.REQUIREMENTS.with_name("requirements.toml.off")
+    asked = []
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda q: asked.append(q) or True)
+    capsys.readouterr()
+    cc.uninstall_codex_step(cs._prompt_yn_strict)
+    out = capsys.readouterr().out
+    assert asked == ["  Remove them?", "      Remove?"]  # the Codex files, the hooks
+    assert not cc.HOOKS_DIR.exists()
+    assert ["sudo", "rm", "-rf", str(cc.HOOKS_DIR)] in box.sudo
+    assert moved.exists()  # the examiner's file: listed, never removed
+    assert f"{moved}: the opt-out's file" in out and f"sudo rm {moved}" in out
+    assert not any(str(moved) in " ".join(c) for c in box.sudo)
+
+
+def test_after_the_opt_out_declined_the_hooks_stay(box, monkeypatch):  # noqa: F811
+    _opt_out(box)
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda q: q == "  Remove them?")
+    cc.uninstall_codex_step(cs._prompt_yn_strict)
+    assert cc.HOOKS_DIR.is_dir() and box.sudo[-1][1] == "install"

@@ -307,6 +307,9 @@ def uninstall_codex_step(ask) -> None:
     from vhir_cli.commands.client_setup import _uninstall_codex
 
     _uninstall_codex()  # ~/.codex/config.toml and the user's own skills stay
+    if not (REQUIREMENTS.exists() or REQUIREMENTS.is_symlink()):
+        _uninstall_opted_out(ask)
+        return
     if codex_controls_state() != "on":
         return
     print(f"  [Codex] Managed requirements ({REQUIREMENTS}, {HOOKS_DIR}/)")
@@ -314,6 +317,27 @@ def uninstall_codex_step(ask) -> None:
         remove_codex_controls(consent=True)
     else:
         print("      Skipped.")
+    print()
+
+
+def _uninstall_opted_out(ask) -> None:
+    """After the opt-out (the managed requirements moved away): the hooks
+    setup installed are offered for removal. The moved file is the
+    examiner's, so it is listed, never removed."""
+    moved = REQUIREMENTS.with_name(REQUIREMENTS.name + ".off")
+    if not (HOOKS_DIR.is_dir() or moved.exists()):
+        return
+    if HOOKS_DIR.is_dir():
+        print(f"  [Codex] Valhuntir's hooks ({HOOKS_DIR}/), left by the opt-out")
+        if not ask("      Remove?"):
+            print("      Skipped.")
+        elif _run([["sudo", "rm", "-rf", str(HOOKS_DIR)]]):
+            print("      Removed.")
+        else:
+            print(f"      Not removed. To remove them, run: sudo rm -rf {HOOKS_DIR}")
+    if moved.exists():
+        print(f"  [Codex] {moved}: the opt-out's file, yours; it stays.")
+        print(f"      To remove it: sudo rm {moved}")
     print()
 
 
