@@ -132,6 +132,14 @@ def link_line(link: dict) -> str:
             f" reference: {_s(ref.get('source') or '?')}, "
             f"{_s(ref.get('source_version') or 'version not recorded')}"
         )
+    src = link.get("from")
+    if isinstance(ref, dict) and not (isinstance(src, dict) and src.get("path")):
+        # a reference link starts at its source (a lookup), not at a file
+        start = (
+            f"{_s(ref.get('source') or '?')} "
+            f"({_s(ref.get('source_version') or 'version not recorded')})"
+        )
+        return f"{head}: {start} -> {_file(link.get('to'))}"
     if "from" in link:
         return f"{head}: {_file(link.get('from'))} -> {_file(link.get('to'))}"
     return f"{head}: -> {_file(link.get('to'))}" if "to" in link else head

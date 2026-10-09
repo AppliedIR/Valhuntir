@@ -227,7 +227,26 @@ def test_a_reference_link_names_its_source_and_version_and_full_keeps_its_reason
         "Provenance: FULL: reference: lookup_ioc, opencti 6.4, op opencti-steve-001"
         in s
     )
-    assert "[reference] opencti-steve-001 reference: lookup_ioc, opencti 6.4: ->" in s
+    assert (
+        "[reference] opencti-steve-001 reference: lookup_ioc, opencti 6.4: "
+        "lookup_ioc (opencti 6.4) ->" in s
+    )
+
+
+def test_a_reference_link_as_the_resolver_stores_it_starts_at_its_source():
+    """The resolver writes a reference link's `from` empty: the line names the
+    lookup it came from, never "?" (a "?" in a chain reads as missing evidence)."""
+    from vhir_cli.provenance_view import link_line
+
+    stored = {"method": "reference", "audit_id": "opencti-steve-001",
+              "entry_sha256": "e" * 64, "from": {"path": "", "sha256": ""},
+              "to": {"path": f"{X}/r/response.json", "sha256": "7" * 64},
+              "reference": {"source": "lookup_ioc", "source_version": ""}}  # fmt: skip
+    line = link_line(stored)
+    assert line.endswith(
+        f": lookup_ioc (version not recorded) -> {X}/r/response.json sha256={'7' * 16}"
+    )
+    assert "?" not in line
 
 
 def test_the_mount_route_shows_the_recorded_mount_and_an_examiner_registered_root(
