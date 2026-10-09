@@ -104,8 +104,11 @@ def _file(d) -> str:
 
 def candidate_line(c: dict) -> str:
     """One of an AMBIGUOUS artifact's candidates, by the fields it has: its
-    audit id, then its tool, path, mounted image and hash when recorded."""
+    audit id and the start of its audit line's hash (two candidates can share
+    an id), then its tool, path, mounted image and hash when recorded."""
     parts = [_s(c.get("audit_id") or "?")]
+    if c.get("entry_sha256"):
+        parts.append(f"entry={_s(c['entry_sha256'])[:16]}")
     parts += [f"{k}={_s(c[k])}" for k in ("tool", "path", "image") if c.get(k)]
     if "sha256" in c:
         parts.append(_hash(c["sha256"]) if c["sha256"] else "no hash")

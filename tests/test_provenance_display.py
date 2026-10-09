@@ -340,6 +340,7 @@ def test_every_root_of_an_artifact_is_listed():
 
 
 JOB = "hash-0123456789abcdef"
+E16 = "e" * 16
 
 
 def test_a_hash_still_being_computed_names_its_job_never_reads_as_a_hash():
@@ -359,7 +360,8 @@ def test_each_candidate_of_an_ambiguous_artifact_is_listed_by_the_fields_it_has(
          "sha256": HCSV},
         {"audit_id": "sift-steve-041", "entry_sha256": "e" * 64, "path": f"{X}/4/a.csv",
          "sha256": ""},
-        {"audit_id": "sift-steve-042", "entry_sha256": "e" * 64, "tool": "run_command"},
+        {"audit_id": "sift-steve-042", "entry_sha256": "1" * 64, "tool": "run_command"},
+        {"audit_id": "sift-steve-042", "entry_sha256": "2" * 64, "tool": "run_command"},
         {"audit_id": "sift-steve-043", "entry_sha256": "e" * 64, "path": "/mnt/case/disk",
          "image": IMG["path"]},
     ]  # fmt: skip
@@ -367,10 +369,17 @@ def test_each_candidate_of_an_ambiguous_artifact_is_listed_by_the_fields_it_has(
         "AMBIGUOUS", "two operations wrote a.csv", root=None,
         provenance_candidates=cands))  # fmt: skip
     text = "\n".join(finding_lines(f))
-    assert f"candidate: sift-steve-040 path={X}/4/a.csv sha256={HCSV[:16]}" in text
-    assert f"candidate: sift-steve-041 path={X}/4/a.csv no hash" in text
-    assert "candidate: sift-steve-042 tool=run_command\n" in text + "\n"
     assert (
-        f"candidate: sift-steve-043 path=/mnt/case/disk image={IMG['path']}\n"
+        f"candidate: sift-steve-040 entry={E16} path={X}/4/a.csv sha256={HCSV[:16]}"
+        in text
+    )
+    assert f"candidate: sift-steve-041 entry={E16} path={X}/4/a.csv no hash" in text
+    for n in "12":  # one id on two entries: told apart by the entry's hash
+        assert (
+            f"candidate: sift-steve-042 entry={n * 16} tool=run_command\n"
+            in text + "\n"
+        )
+    assert (
+        f"candidate: sift-steve-043 entry={E16} path=/mnt/case/disk image={IMG['path']}\n"
         in text + "\n"
     )
