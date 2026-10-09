@@ -214,6 +214,21 @@ def test_an_acquisitions_output_registers_as_an_acquired_root(case):
     assert _files(case)[0]["acquired_by"] == "wt-tester-20261009-004"
 
 
+def test_a_forced_reregister_of_other_bytes_drops_the_acquisition_label(case):
+    """The label is re-derived: the new bytes aren't the acquisition's output.
+    (An acquisition written outside extractions/, where other bytes register.)"""
+    mem = case / "evidence" / "HOST1.raw"
+    mem.write_bytes(b"\x00" * 4096 + b"MEM")
+    _record(case, "wintools-mcp", audit_id="wt-tester-20261009-004", tool="winpmem",
+            acquisition=True, outputs=[{"sift_path": "evidence/HOST1.raw",
+                                        "sha256": _sha(mem.read_bytes())}])  # fmt: skip
+    assert register_evidence_data(case, str(mem), "tester")["acquired_by"]
+    mem.write_bytes(b"not what winpmem wrote")
+    r = register_evidence_data(case, str(mem), "tester", force_reregister=True)
+    assert not {"acquired_by", "acquisition_tool"} & set(r), r
+    assert not {"acquired_by", "acquisition_tool"} & set(_files(case)[0])
+
+
 def test_an_output_of_an_acquisition_and_another_operation_is_refused(case):
     mem = _winpmem(case, acquisition=True, acquisition_tool="winpmem_mini_x64.exe")
     _record(case, "sift-mcp", audit_id="sift-tester-20261009-011", tool="run_command",

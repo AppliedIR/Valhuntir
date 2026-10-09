@@ -260,8 +260,14 @@ def register_evidence_data(
                     }
                 )
                 existing["sha256"] = file_hash
-                # the new bytes' own fields: their stat, or the note
-                for k in (*_STAT_FIELDS, "hash_note"):
+                # the new bytes' own fields: their stat, or the note; and an
+                # acquisition's labels only when the new bytes are one
+                for k in (
+                    *_STAT_FIELDS,
+                    "hash_note",
+                    "acquired_by",
+                    "acquisition_tool",
+                ):
                     existing.pop(k, None)
                 existing.update(entry_fields)
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
