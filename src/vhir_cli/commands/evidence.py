@@ -396,13 +396,12 @@ def _register_folder(
                      "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                      "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev,
                      "st_ino": st.st_ino})  # fmt: skip
-    manifest = json.dumps(
-        {"folder": str(folder), "files": rows,
-         "skipped": sorted(os.path.relpath(p, base) for p in skipped),
-         "unreadable": [{"path": os.path.relpath(p, base), "error": why}
-                        for p, why in sorted(unreadable.items())]},
-        indent=2, sort_keys=True,
-    ).encode()  # fmt: skip
+    doc = {"folder": str(folder), "files": rows,
+           "skipped": sorted(os.path.relpath(p, base) for p in skipped)}  # fmt: skip
+    if unreadable:  # only then, so a manifest written before the key is unchanged
+        doc["unreadable"] = [{"path": os.path.relpath(p, base), "error": why}
+                             for p, why in sorted(unreadable.items())]  # fmt: skip
+    manifest = json.dumps(doc, indent=2, sort_keys=True).encode()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
 
     reg_file = case_dir / "evidence.json"

@@ -281,3 +281,10 @@ def test_lookup_checks_every_registered_folder_and_file_whatever_their_order(cas
         case, str(inner), "tester"
     )  # a folder inside, after the outer one
     assert registered_entry_for(case, inner / "x.evtx")["sha256"] == _sha(b"X")
+
+
+def test_a_folder_with_nothing_unreadable_has_the_manifest_it_had_before(case):
+    """The `unreadable` key is written only when something couldn't be read, so
+    a folder registered before that key existed re-registers unchanged."""
+    r = register_evidence_data(case, str(case / "evidence" / "kape"), "tester")
+    assert "unreadable" not in json.loads((case / r["manifest_path"]).read_text())
