@@ -2168,7 +2168,7 @@ OPENWEBUI_ENV = """\
 # Open WebUI settings for Valhuntir. Start Open WebUI with them, e.g.:
 #   docker run --env-file openwebui-vhir.env ... ghcr.io/open-webui/open-webui
 # They keep tool code off the Open WebUI server: no Python Tools or Functions,
-# no workspace tools for users, no direct connections, and a code interpreter
+# no workspace tools or Integrations tab for users, and a code interpreter
 # that runs in the browser (Pyodide) or not at all. Never point the code
 # interpreter at Jupyter or Open Terminal.
 # On an instance that has started before, only ENABLE_PLUGINS applies: Open
@@ -2188,7 +2188,8 @@ CODE_EXECUTION_ENGINE=pyodide
 OPENWEBUI_ADMIN_PANEL = (
     ("USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False",
      "Users > Groups > Default permissions > Edit: Tools Access off"),
-    ("ENABLE_DIRECT_INTEGRATIONS=False", "Settings > Connections: Direct Connections off"),
+    ("ENABLE_DIRECT_INTEGRATIONS=False",
+     "Settings > Integrations > User Connections: Direct Integrations off"),
     ("ENABLE_CODE_INTERPRETER=False",
      "Settings > Code Execution > Code Interpreter: Enable Code Interpreter off"),
     ("CODE_INTERPRETER_ENGINE=pyodide",

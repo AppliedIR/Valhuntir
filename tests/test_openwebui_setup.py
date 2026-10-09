@@ -174,3 +174,14 @@ def test_setup_says_an_existing_instance_takes_only_enable_plugins_and_where_the
     assert sorted(listed) == sorted(k for k in keys if k != "ENABLE_PLUGINS")
     for key, where in cs.OPENWEBUI_ADMIN_PANEL:
         assert f"{key}: {where}" in out
+
+
+def test_each_admin_panel_location_is_the_switch_for_its_key():
+    """Open WebUI 0.11.4: the Direct Integrations switch, on the Integrations
+    page, sets ENABLE_DIRECT_INTEGRATIONS; the Connections page's Direct
+    Connections switch sets another key."""
+    where = dict(cs.OPENWEBUI_ADMIN_PANEL)
+    assert where["ENABLE_DIRECT_INTEGRATIONS=False"] == (
+        "Settings > Integrations > User Connections: Direct Integrations off"
+    )
+    assert not any("Direct Connections" in w for w in where.values())
