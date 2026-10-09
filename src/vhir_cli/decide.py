@@ -119,7 +119,7 @@ def confirm_plan(
 
 def _prompt_text(direct, planned, new_passphrase: bool) -> str:
     n, k = len(direct), len(planned)
-    lead = "Your new passphrase" if new_passphrase else "Password"
+    lead = "Your new passphrase" if new_passphrase else "Passphrase"
     return f"{lead} to sign {n + k} decisions ({n} direct, {k} cascaded): "
 
 

@@ -128,5 +128,5 @@ def cmd_config(args, identity: dict) -> None:
         return
 
     print(
-        "Use --examiner <name> to set identity, --show to view config, --setup-password to configure password."
+        "Use --examiner <name> to set identity, --show to view config, --setup-password to set the signing passphrase."
     )

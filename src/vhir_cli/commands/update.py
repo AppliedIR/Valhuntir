@@ -166,7 +166,9 @@ def _ensure_password_dir() -> None:
     # Migrate pins/ → passwords/ (requires sudo because parent is root-owned)
     if pins_dir.is_dir():
         print(
-            "  Migrating password storage (pins/ → passwords/)... ", end="", flush=True
+            "  Migrating passphrase storage (pins/ → passwords/)... ",
+            end="",
+            flush=True,
         )
         result = subprocess.run(
             ["sudo", "mv", str(pins_dir), str(passwords_dir)],
@@ -184,7 +186,7 @@ def _ensure_password_dir() -> None:
     import getpass
 
     user = getpass.getuser()
-    print("  Creating password storage directory... ", end="", flush=True)
+    print("  Creating passphrase storage directory... ", end="", flush=True)
     result = subprocess.run(
         [
             "sudo",
@@ -241,7 +243,7 @@ def _offer_signing_key(identity: dict) -> None:
             f"  No signing passphrase for {examiner}: set one with `vhir config --setup-password`."
         )
         return
-    print(f"  {examiner} has a 0.6 password: approvals now need a signing key.")
+    print(f"  {examiner} has a 0.6 passphrase: approvals now need a signing key.")
     answer = ""
     if sys.stdin.isatty():
         try:

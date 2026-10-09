@@ -72,3 +72,44 @@ def test_a_passphrase_that_is_only_the_name_gets_the_name_warning():
     assert error is None and warnings == [
         "Most of it is your name or product words (vhir, valhuntir, sift)."
     ]
+
+
+def test_every_prompt_and_message_says_passphrase():
+    """The examiner's secret is a passphrase in every prompt, message and help
+    text. Exempt: the flag names (--setup-password, ...), the SMB and sudo
+    passwords, and the rule's own list of weak passphrases."""
+    import ast
+    import re
+    from pathlib import Path
+
+    import vhir_cli
+
+    root = Path(vhir_cli.__file__).parent
+    said = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "passphrase.py":
+            continue
+        tree = ast.parse(path.read_text())
+        docs = {
+            id(n.body[0].value)
+            for n in ast.walk(tree)
+            if isinstance(
+                n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            )
+            and n.body
+            and isinstance(n.body[0], ast.Expr)
+        }
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Constant) and isinstance(n.value, str)):
+                continue
+            text = re.sub(r"--[\w-]+", "", n.value)  # flag names
+            text = re.sub(r"(?i)(smb|sudo) password", "", text)
+            if (
+                id(n) not in docs
+                and re.search(r"(?i)\bpassword\b", text)
+                and not re.fullmatch(
+                    r"[\w*()~-]*[/_.][\w./*()~-]*", n.value
+                )  # paths, names
+            ):
+                said.append(f"{path.relative_to(root)}:{n.lineno}: {n.value!r}")
+    assert said == []

@@ -294,7 +294,7 @@ def _check_lockout(analyst: str) -> None:
         else:
             remaining = _LOCKOUT_SECONDS
         print(
-            f"Password locked. Too many failed attempts. Try again in {remaining} seconds.",
+            f"Passphrase locked. Too many failed attempts. Try again in {remaining} seconds.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -322,15 +322,15 @@ def getpass_prompt(prompt: str) -> str:
     """
     if not _HAS_TERMIOS:
         raise RuntimeError(
-            "Password entry requires a terminal with termios support. "
-            "Cannot read password without /dev/tty."
+            "Passphrase entry requires a terminal with termios support. "
+            "Cannot read the passphrase without /dev/tty."
         )
 
     try:
         tty_in = open("/dev/tty")
     except OSError as err:
         raise RuntimeError(
-            "Password entry requires /dev/tty. Cannot read password in this environment. "
+            "Passphrase entry requires /dev/tty. Cannot read the passphrase in this environment. "
             "Ensure you are running from an interactive terminal."
         ) from err
     try:

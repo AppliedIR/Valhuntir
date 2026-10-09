@@ -499,7 +499,7 @@ def test_update_reports_the_signing_key_and_offers_the_upgrade(
     elif state == "none":
         assert "`vhir config --setup-password`" in out
     else:
-        assert "0.6 password" in out and "`vhir config --upgrade-key`" in out
+        assert "0.6 passphrase" in out and "`vhir config --upgrade-key`" in out
         assert not keys.load("steve")  # offered, not done without a terminal
 
 

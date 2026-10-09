@@ -276,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument(
         "--verify",
         action="store_true",
-        help="Verify every signed decision (with --findings); no password needed",
+        help="Verify every signed decision (with --findings); no passphrase needed",
     )
     p_review.add_argument(
         "--mine",
@@ -526,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument(
         "--upgrade-key",
         action="store_true",
-        help="Make the signing key for a 0.6 password (prints the fingerprint if done)",
+        help="Make the signing key for a 0.6 passphrase (prints the fingerprint if done)",
     )
 
     # enrol
@@ -544,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--forgot", action="store_true", help="Make a new signing key"
     )
     enrol_mode.add_argument(
-        "--upgrade", action="store_true", help="Upgrade a 0.6 password"
+        "--upgrade", action="store_true", help="Upgrade a 0.6 passphrase"
     )
 
     # report

@@ -411,7 +411,7 @@ Requires terminal confirmation. Unlocking evidence allows writes to the evidence
 vhir config --setup-password               # Passphrase and signing key (at least 8 characters; 15+ recommended)
 vhir config --reset-password               # Change the passphrase (the same key, re-encrypted)
 vhir config --forgot-password              # New key under a new passphrase; the old one is kept as retired
-vhir config --upgrade-key                  # Signing key for a 0.6 password
+vhir config --upgrade-key                  # Signing key for a 0.6 passphrase
 vhir enrol --name lab2                     # A LAN examiner enrols at the SIFT terminal (also --reset, --forgot, --upgrade)
 ```
 

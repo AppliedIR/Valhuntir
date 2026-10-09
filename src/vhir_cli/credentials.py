@@ -295,11 +295,11 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         )
     if typed is None:
         approval_auth._check_lockout(examiner)
-        typed = approval_auth.getpass_prompt(f"0.6 password for {examiner}: ")
+        typed = approval_auth.getpass_prompt(f"0.6 passphrase for {examiner}: ")
     reading = approval_auth.verify_password(config_path, examiner, typed)
     if reading is None:
         approval_auth._record_failure(examiner)  # nothing is moved
-        raise CredentialError("Incorrect password.")
+        raise CredentialError("Incorrect passphrase.")
     approval_auth._clear_failures(examiner)
     new_pw = typed
     changed = False
@@ -320,7 +320,7 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         )
     data = keys.new_credential(examiner, new_pw)
     _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
-                        "A signing-key file found beside your 0.6 password")  # fmt: skip
+                        "A signing-key file found beside your 0.6 passphrase")  # fmt: skip
     print(f"Signing key made for {examiner} (Valhuntir 0.7).")
     _print_new_key(data)
     return changed
@@ -339,13 +339,13 @@ def reset(examiner: str, config_path: Path) -> None:
         if approval_auth.verify_password(config_path, examiner, typed) is None:
             approval_auth._record_failure(examiner)
             raise CredentialError(
-                "Incorrect password. If you've forgotten it, run `vhir config --forgot-password`."
+                "Incorrect passphrase. If you've forgotten it, run `vhir config --forgot-password`."
             )
         approval_auth._clear_failures(examiner)
         pw = _new_passphrase(examiner)
         data = keys.new_credential(examiner, pw)
         _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
-                            "A signing-key file found beside your 0.6 password")  # fmt: skip
+                            "A signing-key file found beside your 0.6 passphrase")  # fmt: skip
         print(f"Passphrase changed and signing key made for {examiner}.")
         _print_new_key(data)
         return
@@ -353,7 +353,7 @@ def reset(examiner: str, config_path: Path) -> None:
     if not keys.check_password(data, typed):
         approval_auth._record_failure(examiner)
         raise CredentialError(
-            "Incorrect password. If you've forgotten it, run `vhir config --forgot-password`."
+            "Incorrect passphrase. If you've forgotten it, run `vhir config --forgot-password`."
         )
     approval_auth._clear_failures(examiner)
     pw = _new_passphrase(examiner)
@@ -369,7 +369,7 @@ def _confirm_new_key() -> None:
         tty = open("/dev/tty")
     except OSError as e:
         raise CredentialError(
-            "A forgotten-password reset needs a terminal (/dev/tty)."
+            "A forgotten-passphrase reset needs a terminal (/dev/tty)."
         ) from e
     try:
         sys.stderr.write(
@@ -415,7 +415,7 @@ def forgot(examiner: str, config_path: Path) -> None:
         pw = _new_passphrase(examiner, current_checks=[same_as_0_6] if legacy else [])
         data = keys.new_credential(examiner, pw)
         _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
-                            "A signing-key file found beside your 0.6 password")  # fmt: skip
+                            "A signing-key file found beside your 0.6 passphrase")  # fmt: skip
         print(f"New signing key made for {examiner}.")
         _print_new_key(data)
         return
@@ -424,7 +424,7 @@ def forgot(examiner: str, config_path: Path) -> None:
     pw = _new_passphrase(
         examiner, current_checks=[lambda p: keys.check_password(data, p)]
     )
-    new = keys.replace_key(data, examiner, pw, "forgotten-password reset")
+    new = keys.replace_key(data, examiner, pw, "forgotten-passphrase reset")
     keys.save(examiner, new)
     old_fp, new_fp = keys.key_fingerprint(old), keys.key_fingerprint(keys.active(new))
     print(f"Old signing key (retired): {old_fp}")
@@ -589,7 +589,7 @@ def unlock(examiner: str, prompt: str):
                 - approval_auth._recent_failure_count(examiner)
             )
             print(
-                f"Incorrect password. {max(left, 0)} attempt(s) remaining.",
+                f"Incorrect passphrase. {max(left, 0)} attempt(s) remaining.",
                 file=sys.stderr,
             )
             continue

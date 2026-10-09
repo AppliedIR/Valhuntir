@@ -41,7 +41,7 @@ NOT_ANCHORED = (
 )
 KEY_CHANGED = (
     "Key changed at seq {seq} without the previous key's signature (expected only "
-    "after a forgotten-password reset): compare the fingerprint with an earlier copy."
+    "after a forgotten-passphrase reset): compare the fingerprint with an earlier copy."
 )
 LIMITS_URL = "https://appliedir.github.io/Valhuntir/security/#stated-limits"
 FAILED_FOOTER = (
@@ -184,7 +184,7 @@ RECOVERY = {
         "`vhir approve --reattest`"
     ),
     "KEY_CHANGED": (
-        "If the new key is yours (a forgotten-password reset), pin it with --expect-key "
+        "If the new key is yours (a forgotten-passphrase reset), pin it with --expect-key "
         "after comparing it with your record; otherwise treat the line as KEY_NOT_PINNED"
     ),
     "CASE_FILE_UNREADABLE": "Restore the case file from a backup",

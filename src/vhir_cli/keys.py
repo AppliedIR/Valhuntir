@@ -54,7 +54,7 @@ class KeyUnwrapFailed(Exception):
     (KEY_UNWRAP_FAILED)."""
 
     MESSAGE = (
-        "Your password is correct, but your signing-key file doesn't open with it; "
+        "Your passphrase is correct, but your signing-key file doesn't open with it; "
         "it may have been replaced. Run `vhir config --forgot-password`."
     )
 

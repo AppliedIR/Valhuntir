@@ -184,7 +184,7 @@ def _create_backup(args, identity: dict) -> None:
         for line in lines:
             print(line)
     print()
-    print("The backup carries no password or signing-key file. On a rebuilt box,")
+    print("The backup carries no passphrase or signing-key file. On a rebuilt box,")
     print("enrol with `vhir config --setup-password`; the signed approvals keep")
     print("verifying through the public keys they carry.")
 
@@ -1552,7 +1552,7 @@ def cmd_restore(args, identity: dict) -> None:
     # A 0.6 backup's password files are never installed: enrol instead
     if pw_names or (backup_path / "passwords").is_dir():
         print(
-            "  This backup holds a 0.6 password file; it isn't restored. "
+            "  This backup holds a 0.6 passphrase file; it isn't restored. "
             "Enrol with `vhir config --setup-password`."
         )
 

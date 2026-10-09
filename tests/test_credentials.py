@@ -244,7 +244,7 @@ def test_upgrade_with_a_wrong_0_6_password_moves_nothing(config, monkeypatch):
     keys.save("steve", keys.new_credential("steve", PW))
     before = _sha(keys.keys_path("steve"))
     _typed(monkeypatch, "wrong password")
-    with pytest.raises(credentials.CredentialError, match="Incorrect password"):
+    with pytest.raises(credentials.CredentialError, match="Incorrect passphrase"):
         credentials.upgrade("steve", config)
     assert _sha(keys.keys_path("steve")) == before
     assert approval_auth._recent_failure_count("steve") == 1

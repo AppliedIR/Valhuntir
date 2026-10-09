@@ -121,7 +121,7 @@ def test_the_prompt_comes_last_after_every_cascade_is_listed(case, monkeypatch, 
     monkeypatch.setattr(approval_auth, "getpass_prompt", typed)
     A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
     ((prompt, before),) = prompts
-    assert prompt == "Password to sign 3 decisions (1 direct, 2 cascaded): "
+    assert prompt == "Passphrase to sign 3 decisions (1 direct, 2 cascaded): "
     assert "cascade from F-steve-001: approve" in before
     assert before.rstrip().endswith(
         "To be signed: F-steve-001, T-steve-001, IOC-steve-001"
@@ -381,7 +381,7 @@ def test_a_short_0_6_password_is_replaced_inline_and_the_decision_signed(
                         lambda p="": prompts.append(p) or next(answers))  # fmt: skip
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", note="kept")
     # the 0.6 password and the new passphrase twice, before the item; then the final prompt
-    assert prompts[:3] == ["0.6 password for steve: ", "New passphrase: ",
+    assert prompts[:3] == ["0.6 passphrase for steve: ", "New passphrase: ",
                            "Confirm new passphrase: "]  # fmt: skip
     assert len(prompts) == 4
     assert prompts[-1].startswith("Your new passphrase to sign 1 decisions")

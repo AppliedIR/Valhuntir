@@ -173,7 +173,7 @@ class TestPasswordLockout:
         with pytest.raises(SystemExit):
             _check_lockout("analyst1")
         captured = capsys.readouterr()
-        assert "Password locked" in captured.err
+        assert "Passphrase locked" in captured.err
         assert "seconds" in captured.err
 
     def test_lockout_expires_after_timeout(self, monkeypatch):

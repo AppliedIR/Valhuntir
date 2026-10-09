@@ -85,7 +85,7 @@ def test_a_replaced_wrapped_key_doesn_t_open(cred):
     assert keys.check_password(cred, PW)  # the passphrase is right; the key file isn't
     with pytest.raises(keys.KeyUnwrapFailed) as e:
         keys.open_key(cred, "steve", PW)
-    assert "Your password is correct, but your signing-key file doesn't open" in str(
+    assert "Your passphrase is correct, but your signing-key file doesn't open" in str(
         e.value
     )
 

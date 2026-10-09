@@ -138,7 +138,7 @@ vhir review --findings --verify --mine   # Show only your items
 
 ### `vhir approve`
 
-Approve staged findings and/or timeline events. Every item, and each item decided with it ("cascade from F-…"), is shown first; then your passphrase signs exactly those decisions. A 0.6 password is upgraded to a signing key at the first signed decision.
+Approve staged findings and/or timeline events. Every item, and each item decided with it ("cascade from F-…"), is shown first; then your passphrase signs exactly those decisions. A 0.6 passphrase is upgraded to a signing key at the first signed decision.
 
 ```bash
 vhir approve                                    # Interactive review
@@ -461,7 +461,7 @@ vhir config --examiner alice           # Set examiner identity
 vhir config --setup-password           # Passphrase and signing key (at least 8 characters; 15+ recommended)
 vhir config --reset-password           # Change the passphrase (same key, requires the current one)
 vhir config --forgot-password          # New key under a new passphrase; the old key is kept as retired
-vhir config --upgrade-key              # Signing key for a 0.6 password (prints the fingerprint if you have one)
+vhir config --upgrade-key              # Signing key for a 0.6 passphrase (prints the fingerprint if you have one)
 ```
 
 ## Join (Remote Setup)
@@ -482,5 +482,5 @@ The gateway names the joining examiner after this machine's host name (lower cas
 vhir enrol --name lab2              # Passphrase and signing key for lab2 (at least 8 characters; 15+ recommended)
 vhir enrol --name lab2 --reset      # Change lab2's passphrase
 vhir enrol --name lab2 --forgot     # New key for lab2; the old one is kept as retired
-vhir enrol --name lab2 --upgrade    # Signing key for lab2's 0.6 password
+vhir enrol --name lab2 --upgrade    # Signing key for lab2's 0.6 passphrase
 ```
