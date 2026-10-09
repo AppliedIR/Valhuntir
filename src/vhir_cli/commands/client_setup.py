@@ -2183,9 +2183,9 @@ OPENWEBUI_ENV = """\
 # or not at all. Never point the code interpreter at Jupyter or Open Terminal.
 # On an instance that has started before, only ENABLE_PLUGINS applies: Open
 # WebUI keeps the other seven in its database from its first start. Set those
-# in the Admin Panel (docs/open-webui-setup.md lists where). The two
-# USER_PERMISSIONS keys are defaults only: a group that allows either gives
-# it to its users, so turn them off in every group as well.
+# in the Admin Panel (docs/open-webui-setup.md lists where).
+# USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS is a default only: a group that
+# allows it gives it to its users, so turn it off in every group as well.
 ENABLE_PLUGINS=False
 USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False
 ENABLE_DIRECT_INTEGRATIONS=False
@@ -2199,12 +2199,12 @@ CODE_EXECUTION_ENGINE=pyodide
 
 # Where an existing instance sets each lock-profile key the environment no
 # longer reaches (Open WebUI 0.11.4). A user has a permission if the defaults
-# or any group they're in grants it, so the two permissions are turned off in
+# or any group they're in grants it, so Direct Tool Servers is turned off in
 # every group as well.
 OPENWEBUI_ADMIN_PANEL = (
     ("USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False",
-     "Users > Groups > Default permissions > Edit, and each group's Edit > "
-     "Permissions: Tools Access off"),
+     "with plugins disabled (as this profile sets), the Tools Access switch "
+     "isn't shown and no tool code can load; nothing to set"),
     ("ENABLE_DIRECT_INTEGRATIONS=False",
      "Settings > Integrations > User Connections: Direct Integrations off"),
     ("ENABLE_DIRECT_CONNECTIONS=False",
@@ -2317,8 +2317,10 @@ def _write_openwebui(servers: dict) -> None:
     print("       start. Set them in the Admin Panel (checked on Open WebUI 0.11.4):")
     for key, where in OPENWEBUI_ADMIN_PANEL:
         print(f"         {key}: {where}")
-    print("       A group that allows a permission gives it to its users whatever")
-    print("       the defaults say, so check every group, on a new instance too.")
+    print("       A group that allows Direct Tool Servers gives it to its users")
+    print(
+        "       whatever the defaults say, so check every group, on a new instance too."
+    )
     print("    2. Admin Panel > Settings > External Tools: add each backend as")
     print("       MCP (Streamable HTTP), auth Bearer, with the gateway's token:")
     for name, entry in backends.items():

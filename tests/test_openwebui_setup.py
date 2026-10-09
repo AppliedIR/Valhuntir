@@ -196,15 +196,25 @@ def test_each_admin_panel_location_is_the_switch_for_its_key():
     )
 
 
-def test_the_two_permissions_are_turned_off_in_every_group_too(owui, capsys):
+def test_direct_tool_servers_is_turned_off_in_every_group_too(owui, capsys):
     """Open WebUI 0.11.4 gives a permission when the defaults or any of the
     user's groups allows it, so the defaults alone don't take it away."""
     where = dict(cs.OPENWEBUI_ADMIN_PANEL)
-    for key in (
-        "USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False",
-        "USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False",
-    ):
-        assert "each group's Edit > Permissions" in where[key], key
-    assert "turn them off in every group" in cs.OPENWEBUI_ENV
+    key = "USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False"
+    assert "each group's Edit > Permissions" in where[key]
+    assert "turn it off in every group" in cs.OPENWEBUI_ENV
     cs._write_openwebui(_servers())
     assert "so check every group" in capsys.readouterr().out
+
+
+def test_tools_access_has_nothing_to_set_with_plugins_disabled():
+    """0.11.4 shows the Tools Access switch only when plugins are enabled, and
+    loads no tool code when they aren't: the profile disables them."""
+    where = dict(cs.OPENWEBUI_ADMIN_PANEL)[
+        "USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False"
+    ]
+    assert where == (
+        "with plugins disabled (as this profile sets), the Tools Access switch "
+        "isn't shown and no tool code can load; nothing to set"
+    )
+    assert "ENABLE_PLUGINS=False" in cs.OPENWEBUI_ENV
