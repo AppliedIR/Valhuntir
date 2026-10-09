@@ -20,7 +20,7 @@ from vhir_cli.case_identity import _paths_file, copy_text, new_identity
 from vhir_cli.commands import approve as A
 from vhir_cli.ledger_verify import verify_case
 
-from .signing import PASSPHRASE, enrol
+from .signing import NOT_CHECKED, PASSPHRASE, enrol
 from .test_backup_case_identity import _identity, _meta, box, pytestmark
 
 IDENT = {"examiner": "tester", "os_user": "tester", "analyst": "tester"}
@@ -246,7 +246,7 @@ def test_the_folder_is_recorded_only_once_the_signatures_verify(fresh):
     case = fresh.case
     priv, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     pub = keys.b64(keys.public_raw(priv))
-    decision = [{"item_id": "F-tester-001", "type": "finding", "decision": "approve",
+    decision = [{"item_id": "F-tester-001", "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
                  "status_after": "APPROVED", "content_snapshot": "{}"}]  # fmt: skip
     called = []
     with ledger.case_lock("C-1") as lock:

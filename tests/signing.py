@@ -68,13 +68,31 @@ def sign_approved(case_dir: Path, examiner: str = "tester") -> None:
             continue
         by = {i["approved_by"] for i in approved}
         assert len(by) == 1, "one examiner per file in this helper"
-        bodies = ledger.prepare(case_id, decisions, by.pop(), pub, "cli", AT)
+        bodies = ledger.prepare(
+            case_id, [with_checks(d) for d in decisions], by.pop(), pub, "cli", AT
+        )
         with ledger.case_lock(case_id) as lock:
             ledger.commit(lock, bodies, [ledger.sign_body(b, key) for b in bodies], pub)
         mode = path.stat().st_mode
         path.chmod(0o644)
         path.write_text(json.dumps(items, indent=2))
         path.chmod(mode)
+
+
+# What the approving paths sign for an item that records no chain (one made
+# before chains, as every test item here): the approval checks don't apply
+NOT_CHECKED = {"result": "not-applicable", "items": []}
+
+
+def with_checks(decision: dict) -> dict:
+    """`decision` as the approving paths hand it to ledger.prepare: a direct
+    approval of a finding or event carries the approval checks' result."""
+    direct = (
+        decision["decision"] == "approve"
+        and decision["type"] in ("finding", "timeline")
+        and not decision.get("coupled_from")
+    )
+    return {**decision, "checks": NOT_CHECKED} if direct else decision
 
 
 def approve_under_0_6(

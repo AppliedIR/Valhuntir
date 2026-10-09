@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from vhir_cli import approval_auth, credentials, keys, ledger
 from vhir_cli.case_io import signed_text
 
+from .signing import NOT_CHECKED
+
 PW = "plum orbit lantern 2026"
 NEW = "quiet river copper 1987"
 OLD_06 = "lab-pass-0.6"  # a 0.6 password of 12 characters
@@ -54,7 +56,7 @@ def _sign_line(case_id: str, examiner: str, key: Ed25519PrivateKey) -> None:
     """One signed line in the box chain for `case_id`, by `examiner` with `key`."""
     pub = keys.b64(keys.public_raw(key))
     item = {"id": f"F-{examiner}-001", "title": "t", "status": "DRAFT"}
-    d = {"item_id": item["id"], "type": "finding", "decision": "approve",
+    d = {"item_id": item["id"], "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
          "status_after": "APPROVED", "coupled_from": None,
          "content_snapshot": signed_text(item, "finding")}  # fmt: skip
     bodies = ledger.prepare(

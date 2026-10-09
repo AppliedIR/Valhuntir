@@ -21,6 +21,8 @@ from vhir_cli import approval_auth, keys, ledger
 from vhir_cli.case_io import signed_text
 from vhir_cli.commands.review import cmd_review
 
+from .signing import NOT_CHECKED
+
 AT = "2026-10-08T10:00:00+00:00"
 
 
@@ -45,7 +47,7 @@ def _approve(case, examiner, n):
     key = Ed25519PrivateKey.generate()
     pub = keys.b64(keys.public_raw(key))
     item = {"id": f"F-{examiner}-{n:03d}", "title": "t", "status": "DRAFT"}
-    decision = {"item_id": item["id"], "type": "finding", "decision": "approve",
+    decision = {"item_id": item["id"], "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
                 "status_after": "APPROVED", "coupled_from": None,
                 "content_snapshot": signed_text(item, "finding")}  # fmt: skip
     bodies = ledger.prepare("C-1", [decision], examiner, pub, "cli", AT)

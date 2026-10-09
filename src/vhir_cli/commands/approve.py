@@ -28,7 +28,7 @@ from pathlib import Path
 
 import yaml
 
-from vhir_cli import credentials, decide, ledger
+from vhir_cli import approval_auth, approval_checks, credentials, decide, ledger
 from vhir_cli.case_io import (
     case_id_of,
     check_case_file_integrity,
@@ -270,12 +270,16 @@ def _approve_specific(
                 True  # a direct decision; no longer a cascade target
             )
         _show_as_signed(item, loaded, decision, show_signed)
-        direct.append(
-            decide.Decision(
-                item, kind, decision, _STATUS_AFTER[decision], loaded=loaded,
-                reason=reason, note=note or "", modifications=_modifications(loaded, item),
-            )
+        chosen = decide.Decision(
+            item, kind, decision, _STATUS_AFTER[decision], loaded=loaded,
+            reason=reason, note=note or "", modifications=_modifications(loaded, item),
         )  # fmt: skip
+        if not _approval_checked(case_dir, chosen):
+            continue
+        direct.append(chosen)
+    if not direct:
+        print("Nothing to sign.")
+        return
     planned = decide.cascades(direct, findings, timeline, iocs)
     print(f"\n{len(direct)} item(s) to {decision}.")
     decide.confirm_plan(direct, planned, _display_item)
@@ -351,10 +355,12 @@ def _interactive_review(
                 if note_text:
                     _apply_note(item, note_text, identity)
             _show_as_signed(item, loaded, "approve", False)
-            direct.append(
-                decide.Decision(item, kind, "approve", "APPROVED", loaded=loaded,
-                                note=note_text, modifications=_modifications(loaded, item))
-            )  # fmt: skip
+            chosen = decide.Decision(item, kind, "approve", "APPROVED", loaded=loaded,
+                                     note=note_text, modifications=_modifications(loaded, item))  # fmt: skip
+            if not _approval_checked(case_dir, chosen):
+                skipped.add(item["id"])
+                continue
+            direct.append(chosen)
             print(f"  -> APPROVE{' (with edits)' if choice == 'edit' else ''}")
         elif choice == "reject":
             try:
@@ -503,6 +509,68 @@ def _reattest(
     decide.sign_and_commit(
         case_dir, identity, direct, [], new_passphrase=new_passphrase
     )
+
+
+def _approval_checked(case_dir: Path, d: decide.Decision) -> bool:
+    """Run the approval checks on a direct approval and show, before the
+    passphrase, its roots, its grade and any failed check. A failed check
+    needs a reason typed at the terminal; with none, the item stays DRAFT
+    (False). Other decisions pass through."""
+    if d.decision != "approve" or d.type not in ("finding", "timeline"):
+        return True
+    d.checks = approval_checks.check_item(case_dir, d.item, d.type)
+    for line in _approval_lines(d.item, d.checks):
+        print(line)
+    if d.checks["result"] != "failed":
+        return True
+    reason = approval_auth.read_tty_line(
+        "  A check failed. Type why you approve it anyway (empty: leave it DRAFT): "
+    )
+    if not reason:
+        print(
+            f"  -> {_one_line(d.id)} left DRAFT: a check failed and no reason was typed"
+        )
+        return False
+    d.approval_override_reason = reason
+    return True
+
+
+def _approval_lines(item: dict, checks: dict) -> list[str]:
+    """What an approval shows before the passphrase: each root (path, SHA-256,
+    label), the grade with its reason when it isn't FULL, and each failed
+    check."""
+    lines = []
+    if checks.get("detail"):
+        lines.append(f"  Checks: not applicable: {_safe(checks['detail'])}")
+    if "title" in item and not item.get("imported_from"):
+        if item.get("provenance_schema") != 2:
+            lines.append("  Provenance: recorded before 0.6.4")
+        else:
+            arts = [a for a in item.get("artifacts") or [] if isinstance(a, dict)]
+            roots = {}
+            for a in arts:
+                r = a.get("provenance_root")
+                if isinstance(r, dict) and r.get("path"):
+                    roots[(str(r["path"]), str(r.get("sha256") or ""))] = r
+            for (path, sha), r in sorted(roots.items()):
+                lines.append(
+                    f"  Root: {_safe(path)} {_safe(sha)} ({_safe(r.get('label', ''))})"
+                )
+            grade = item.get("provenance_grade")
+            if grade:
+                lines.append(f"  Provenance: {_safe(grade)}")
+            for a in arts:
+                if a.get("provenance_grade") not in (None, "FULL"):
+                    lines.append(
+                        f"    {_safe(a['provenance_grade'])}: {_safe(a.get('provenance_reason', ''))}"
+                    )
+    for i in checks.get("items", []):
+        if i.get("status") == "failed":
+            lines.append(
+                f"  Check failed: {_safe(i.get('code', ''))} {_safe(i.get('subject', ''))}: "
+                f"{_safe(i.get('detail', ''))}"
+            )
+    return lines
 
 
 def _prompt_choice(choices: tuple[str, ...] = _APPROVE_CHOICES) -> str:
@@ -1326,11 +1394,15 @@ def _review_mode(
         if after is None:
             skipped.append((item_id, f"unknown action {action!r}"))
             continue
-        direct.append(
-            decide.Decision(item, kind, action, after, loaded=loaded,
-                            reason=entry.get("rejection_reason", "") or entry.get("reason", ""),
-                            note=entry.get("note", ""), modifications=mods, delta_entry=entry)
-        )  # fmt: skip
+        chosen = decide.Decision(item, kind, action, after, loaded=loaded,
+                                 reason=entry.get("rejection_reason", "") or entry.get("reason", ""),
+                                 note=entry.get("note", ""), modifications=mods, delta_entry=entry)  # fmt: skip
+        if not _approval_checked(case_dir, chosen):
+            skipped.append(
+                (item_id, "a check failed and no reason was typed; left DRAFT")
+            )
+            continue
+        direct.append(chosen)
     if skipped:
         print(f"\n  {_YELLOW}Skipped {len(skipped)} item(s), not signed:")
         for sid, why in skipped:

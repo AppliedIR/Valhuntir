@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from vhir_cli import keys, ledger, verification
 
+from .signing import NOT_CHECKED
+
 AT = "2026-10-08T10:00:00+00:00"
 
 
@@ -39,6 +41,7 @@ def _decision(
         "decision": decision,
         "status_after": status,
         "coupled_from": None,
+        **({"checks": NOT_CHECKED} if decision == "approve" else {}),
         "content_snapshot": text,
     }
 
@@ -68,7 +71,7 @@ def test_the_first_line_names_the_case_and_freezes_the_legacy_ledger(steve):
         "legacy_sha256": hashlib.sha256(legacy).hexdigest(),
         "legacy_bytes": len(legacy),
     }
-    assert body["v"] == 3 and body["view"] == 1 and body["mode"] == "cli"
+    assert body["v"] == 4 and body["view"] == 2 and body["mode"] == "cli"
     assert body["content_sha256"] == hashlib.sha256(b'{"t":1}').hexdigest()
     assert head == (1, ledger.body_hash(body)) == ledger.current_head("C1")
 

@@ -386,9 +386,10 @@ def compute_content_hash(item: dict) -> str:
 # The signed view of an item (what a ledger line's content_snapshot holds).
 # View 0 is the 0.6 set (hmac_text), for legacy lines. View 1 signs
 # timeline_event_id (the link a timeline cascade follows) and leaves out the
-# re-attestation stamp. An IOC's four derived fields, computed from every
-# citing finding, are left out of both. A change to these sets adds a view;
-# a view is never edited (a test pins view 1).
+# re-attestation stamp. View 2 also signs the finding's provenance, its
+# resolved source evidence and the examiner's edits. An IOC's four derived
+# fields, computed from every citing finding, are left out of all of them. A
+# change to these sets adds a view; a view is never edited (tests pin them).
 REATTEST_KEYS = frozenset({"reattested_at", "reattested_by"})
 IOC_DERIVED_KEYS = frozenset(
     {"source_findings", "sightings", "confidence", "mitre_techniques"}
@@ -397,9 +398,15 @@ VIEW_EXCLUDES = {
     0: frozenset(HASH_EXCLUDE_KEYS),
     1: frozenset(HASH_EXCLUDE_KEYS - {"timeline_event_id"}) | REATTEST_KEYS,
 }
+VIEW_EXCLUDES[2] = VIEW_EXCLUDES[1] - {
+    "source_evidence",
+    "provenance",
+    "provenance_warnings",
+    "examiner_modifications",
+}
 
 
-def signed_text(item: dict, item_type: str, view: int = 1) -> str:
+def signed_text(item: dict, item_type: str, view: int = 2) -> str:
     """The canonical text a ledger line signs for `item` (`item_type`:
     finding, timeline or ioc), in the given view."""
     excluded = VIEW_EXCLUDES[view] | (

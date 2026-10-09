@@ -18,6 +18,7 @@ from vhir_cli import ledger
 from vhir_cli.commands import approve as A
 from vhir_cli.ledger_verify import _malformed, verify_case
 
+from .signing import NOT_CHECKED
 from .test_signed_decisions import IDENT, _run, _signed, _status, case  # noqa: F401
 
 
@@ -109,7 +110,7 @@ def test_the_commit_refuses_a_copy_under_the_lock_too():
     """Two folders racing to begin the chain: the check before the prompt
     passes in both, and prepare (under the lock) refuses the second."""
     ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-    first = [{"item_id": "F-a-001", "type": "finding", "decision": "approve",
+    first = [{"item_id": "F-a-001", "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
               "status_after": "APPROVED", "content_snapshot": "{}"}]  # fmt: skip
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -141,7 +142,7 @@ def test_a_chain_begun_before_folders_were_bound_is_not_checked(
 
     priv = Ed25519PrivateKey.generate()
     pub = keys.b64(keys.public_raw(priv))
-    first = [{"item_id": "F-steve-002", "type": "finding", "decision": "approve",
+    first = [{"item_id": "F-steve-002", "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
               "status_after": "APPROVED", "content_snapshot": "{}"}]  # fmt: skip
     with ledger.case_lock("C-9") as lock:
         bodies = ledger.prepare("C-9", first, "steve", pub, "cli", "t")

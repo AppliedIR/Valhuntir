@@ -195,6 +195,22 @@ def require_tty_confirmation(prompt: str) -> bool:
         tty.close()
 
 
+def read_tty_line(prompt: str) -> str | None:
+    """A line the examiner types at the terminal (/dev/tty), stripped; None
+    when there is no terminal. Never stdin, so a pipe or a file can't supply
+    it."""
+    try:
+        tty = open("/dev/tty")
+    except OSError:
+        return None
+    try:
+        sys.stderr.write(prompt)
+        sys.stderr.flush()
+        return tty.readline().strip()
+    finally:
+        tty.close()
+
+
 def verify_password(
     config_path: Path, analyst: str, password: str, *, passwords_dir: Path | None = None
 ) -> str | None:

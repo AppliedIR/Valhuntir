@@ -16,11 +16,13 @@ from vhir_cli import keys, ledger
 from vhir_cli.case_io import signed_text
 from vhir_cli.ledger_verify import parse_pin, verify_case
 
+from .signing import NOT_CHECKED
+
 
 def _sign(case_id, item, key, examiner="steve"):
     pub = keys.b64(keys.public_raw(key))
     bodies = ledger.prepare(case_id, [{"item_id": item["id"], "type": "finding",
-                                       "decision": "approve", "status_after": "APPROVED",
+                                       "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                        "coupled_from": None,
                                        "content_snapshot": signed_text(item, "finding")}],
                             examiner, pub, "cli", "2026-10-08T10:00:00+00:00")  # fmt: skip

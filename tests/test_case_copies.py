@@ -24,7 +24,7 @@ from vhir_cli.case_io import export_bundle, import_bundle, signed_text
 from vhir_cli.commands import approve as A
 from vhir_cli.ledger_verify import verify_case
 
-from .signing import PASSPHRASE, enrol, sign_approved
+from .signing import NOT_CHECKED, PASSPHRASE, enrol, sign_approved
 
 IDENT = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
 
@@ -190,7 +190,7 @@ def _fork_of_own_chain(d):
     key = Ed25519PrivateKey.generate()
     item = _finding(9, "APPROVED")
     (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
-                                      "decision": "approve", "status_after": "APPROVED",
+                                      "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                       "coupled_from": None,
                                       "content_snapshot": signed_text(item, "finding")}],
                              "steve", keys.b64(keys.public_raw(key)), "cli",
@@ -229,7 +229,7 @@ def test_close_moves_aside_a_longer_copy_with_forged_lines(cases, monkeypatch, c
     key = Ed25519PrivateKey.generate()
     item = _finding(3, "APPROVED")
     (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
-                                      "decision": "approve", "status_after": "APPROVED",
+                                      "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                       "coupled_from": None,
                                       "content_snapshot": signed_text(item, "finding")}],
                              "steve", keys.b64(keys.public_raw(key)), "cli",
@@ -263,7 +263,7 @@ def test_a_longer_fork_diverging_before_the_box_head_supplies_no_anchor(
     for seq, n in ((2, 8), (3, 9)):
         item = _finding(n, "APPROVED")
         (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
-                                          "decision": "approve", "status_after": "APPROVED",
+                                          "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                           "coupled_from": None,
                                           "content_snapshot": signed_text(item, "finding")}],
                                  "steve", pub, "cli", "2026-10-08T11:00:00+00:00",
@@ -299,7 +299,7 @@ def test_another_chain_whose_copies_diverge_gives_no_anchor(cases, monkeypatch, 
     def line(n, head):
         item = _finding(n, "APPROVED")
         (body,) = ledger.prepare("C-5", [{"item_id": item["id"], "type": "finding",
-                                          "decision": "approve", "status_after": "APPROVED",
+                                          "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                           "coupled_from": None,
                                           "content_snapshot": signed_text(item, "finding")}],
                                  "alice", pub, "cli", "2026-10-08T10:00:00+00:00", head=head)  # fmt: skip
@@ -393,7 +393,7 @@ def _another_box_chain(d, case_id="C-5"):
     pub = keys.b64(keys.public_raw(key))
     item = _finding(9)
     body = ledger.prepare(case_id, [{"item_id": item["id"], "type": "finding",
-                                     "decision": "approve", "status_after": "APPROVED",
+                                     "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                      "coupled_from": None,
                                      "content_snapshot": signed_text(item, "finding")}],
                           "alice", pub, "cli", "2026-10-08T10:00:00+00:00",

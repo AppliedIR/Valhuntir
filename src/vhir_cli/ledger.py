@@ -37,8 +37,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 LEDGER_DIR = Path("/var/lib/vhir/ledger")
-VERSION = 3
-VIEW = 1
+VERSION = 4
+VIEW = 2
 DECISIONS = ("approve", "reject", "edit", "reattest")
 TYPES = ("finding", "timeline", "ioc")
 _STATUS_AFTER = ("APPROVED", "REJECTED", "DRAFT")
@@ -306,6 +306,10 @@ def prepare(
 
     Each decision is `{item_id, type, decision, status_after, coupled_from,
     content_snapshot}`; `content_snapshot` is `case_io.signed_text(item, type)`.
+    A direct approval of a finding or a timeline event also carries `checks`
+    (what the approval-time checks found) and, when they failed, the
+    examiner's `approval_override_reason`; both are signed. No other line
+    carries either.
     `retired`: the examiner's retired fingerprints; those that signed lines
     here are named in `supersedes` on this key's first line in the chain.
     `case_uuid`: the identity of the case folder signing (CASE.yaml's). A first
@@ -328,6 +332,7 @@ def prepare(
             raise ValueError(f"decision {d['decision']!r} on a {d['type']!r}")
         if d["status_after"] not in _STATUS_AFTER:
             raise ValueError(f"status_after {d['status_after']!r}")
+        checked = _checked_fields(d)
         snapshot = d["content_snapshot"]
         seq += 1
         body = {
@@ -347,6 +352,7 @@ def prepare(
             "public_key": public_key,
             "content_sha256": hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
             "content_snapshot": snapshot,
+            **checked,
         }
         if seq == 1:
             body["genesis"] = _genesis(case_id)
@@ -360,6 +366,40 @@ def prepare(
         bodies.append(body)
         prev = body_hash(body)
     return bodies
+
+
+def _checked_fields(d: dict) -> dict:
+    """`checks` and `approval_override_reason` for a decision's line, or
+    ValueError naming the field when the combination is wrong."""
+    direct = (
+        d["decision"] == "approve"
+        and d["type"] in ("finding", "timeline")
+        and not d.get("coupled_from")
+    )
+    checks, reason = d.get("checks"), d.get("approval_override_reason")
+    if not direct:
+        if checks is not None:
+            raise ValueError("checks on a line that isn't a direct approval")
+        if reason is not None:
+            raise ValueError(
+                "approval_override_reason on a line that isn't a direct approval"
+            )
+        return {}
+    if not isinstance(checks, dict) or checks.get("result") not in (
+        "ok",
+        "failed",
+        "not-applicable",
+    ):
+        raise ValueError("checks: a direct approval needs the approval checks' result")
+    if checks["result"] == "failed":
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                "approval_override_reason: failed checks need a typed reason"
+            )
+        return {"checks": checks, "approval_override_reason": reason}
+    if reason is not None:
+        raise ValueError("approval_override_reason without a failed check")
+    return {"checks": checks}
 
 
 # --- The case lock --------------------------------------------------------------

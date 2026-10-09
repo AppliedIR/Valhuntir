@@ -25,7 +25,7 @@ import vhir_cli.verification as V
 from vhir_cli import credentials, keys, ledger
 from vhir_cli.ledger_verify import verify_case
 
-from .signing import PASSPHRASE, enrol, sign_approved
+from .signing import NOT_CHECKED, PASSPHRASE, enrol, sign_approved
 
 OLD = "aa" * 16  # the salt in a 0.6 backup
 NEW = "bb" * 16  # the salt on this box
@@ -248,7 +248,7 @@ def _plant_chain(path: Path, case_id: str, key=None, bad_sig=False, examiner="al
     pub = keys.b64(keys.public_raw(key))
     item = {"id": "F-alice-009", "title": "t", "status": "APPROVED"}
     (body,) = ledger.prepare(case_id, [{"item_id": item["id"], "type": "finding",
-                                        "decision": "approve", "status_after": "APPROVED",
+                                        "decision": "approve", "checks": NOT_CHECKED, "status_after": "APPROVED",
                                         "coupled_from": None,
                                         "content_snapshot": signed_text(item, "finding")}],
                              examiner, pub, "cli", "2026-10-08T10:00:00+00:00",

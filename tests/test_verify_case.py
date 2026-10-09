@@ -30,6 +30,8 @@ from vhir_cli.ledger_verify import (
     verify_case,
 )
 
+from .signing import NOT_CHECKED, with_checks
+
 AT = "2026-10-08T10:00:00+00:00"
 AT2 = "2026-10-08T11:00:00+00:00"
 
@@ -83,8 +85,9 @@ def _sign(d, ex: Examiner, decisions, *, at=AT, case_id="C1", retired=None, prio
         for item, t, dec, after, cf in decisions
     ]  # fmt: skip
     bodies = ledger.prepare(
-        case_id, ds, ex.name, ex.pub, "cli", at, retired=retired, prior_chains=prior
-    )
+        case_id, [with_checks(d) for d in ds], ex.name, ex.pub, "cli", at,
+        retired=retired, prior_chains=prior,
+    )  # fmt: skip
     lines = [ledger.sign_body(b, ex.key) for b in bodies]
     with ledger.case_lock(case_id) as lock:
         head = ledger.commit(lock, bodies, lines, ex.pub)
@@ -289,14 +292,17 @@ def test_a_garbage_line_is_unparseable(case, steve):
     )
 
 
-def test_every_body_carries_view_1_and_changing_it_breaks_the_signature(case, steve):
+@pytest.mark.parametrize("view", [0, 1])
+def test_every_body_carries_view_2_and_any_other_view_is_refused(case, steve, view):
     _three(case, steve)
     lines = _chain_lines()
-    assert all(json.loads(x)["view"] == 1 for x in lines)
+    assert all(json.loads(x)["view"] == 2 for x in lines)
     last = json.loads(lines[2])
-    last["view"] = 0
+    last["view"] = view
     _write_chain(lines[:2] + [json.dumps(last)])
-    assert _status(verify_case(case), "F-steve-003") == "TAMPERED"
+    result = verify_case(case)
+    assert any(c == "MALFORMED_LINE" and "'view'" in m for c, m in result.failures)
+    assert _status(result, "F-steve-003") != "APPROVED" and result.exit_code == 2
 
 
 # --- Decisions and status ----------------------------------------------------------
@@ -1079,7 +1085,7 @@ def test_nothing_is_shown_as_approved_while_the_case_fails(case, steve):
 
 def _parallel_chain(case, ex: Examiner, item):
     """A second chain, written by file alone under `ex`'s key, approving `item`."""
-    body = ledger.prepare("C1", [{"item_id": item["id"], "type": "finding", "decision": "approve",
+    body = ledger.prepare("C1", [{"item_id": item["id"], "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
                                   "status_after": "APPROVED", "coupled_from": None,
                                   "content_snapshot": signed_text(item, "finding")}],
                           ex.name, ex.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
@@ -1135,7 +1141,7 @@ def test_a_long_chain_beside_a_second_chain_is_ordered_without_recursion(case, s
     done = [dict(f, status="APPROVED", approved_by="steve", approved_at=AT) for f in fs]
     _save(case, findings=done)
     last = fs[-1]
-    body = ledger.prepare("C1", [{"item_id": last["id"], "type": "finding", "decision": "approve",
+    body = ledger.prepare("C1", [{"item_id": last["id"], "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
                                   "status_after": "APPROVED", "coupled_from": None,
                                   "content_snapshot": signed_text(last, "finding")}],
                           "steve", steve.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip
@@ -1393,7 +1399,7 @@ def _second_chain(case, steve, frozen: bytes):
     """A second chain (another box, same key) whose genesis froze `frozen`,
     with its 0.6 copy in the case."""
     fresh = _finding(8)
-    body = ledger.prepare("C1", [{"item_id": fresh["id"], "type": "finding", "decision": "approve",
+    body = ledger.prepare("C1", [{"item_id": fresh["id"], "type": "finding", "decision": "approve", "checks": NOT_CHECKED,
                                   "status_after": "APPROVED", "coupled_from": None,
                                   "content_snapshot": signed_text(fresh, "finding")}],
                           "steve", steve.pub, "cli", AT, head=(0, ledger.genesis_prev("C1")))  # fmt: skip

@@ -27,7 +27,6 @@ from pathlib import Path
 from vhir_cli import ledger
 from vhir_cli.case_io import (
     IOC_DERIVED_KEYS,
-    VIEW_EXCLUDES,
     ioc_values,
     normalize_ioc,
     signed_text,
@@ -294,6 +293,8 @@ class ItemVerdict:
     examiner: str = ""  # who signed the latest line, when it is VALID
     fingerprint: str = ""  # that line's key
     source: str = ""  # for a cascade line: the finding it was decided through
+    checks: dict | None = None  # the approval-time checks its latest line signed
+    approval_override_reason: str = ""  # the examiner's reason, when they failed
 
 
 @dataclass
@@ -490,14 +491,28 @@ def _int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+# Each line version and the views it may sign: v3 lines (views 0 and 1)
+# still verify, and a chain may mix them with v4 lines (view 2).
+_LINE_FORMS = {3: (0, 1), 4: (2,)}
+
+
 def _malformed(obj: dict) -> str:
     """The field of a parsed line that has the wrong type or form ("" when
     they're fine). An examiner name must meet the enrolment rule, so a
     look-alike name can't pass as a second examiner."""
-    if obj.get("v") != ledger.VERSION or not _int(obj.get("v")):
+    if not _int(obj.get("v")) or obj["v"] not in _LINE_FORMS:
         return "v"
-    if not _int(obj.get("view")) or obj["view"] not in VIEW_EXCLUDES:
+    if not _int(obj.get("view")) or obj["view"] not in _LINE_FORMS[obj["v"]]:
         return "view"
+    checks = obj.get("checks")
+    if checks is not None and not (
+        isinstance(checks, dict)
+        and (checks.get("detail") is None or isinstance(checks["detail"], str))
+    ):
+        return "checks"
+    reason = obj.get("approval_override_reason")
+    if reason is not None and not isinstance(reason, str):
+        return "approval_override_reason"
     if not _int(obj.get("seq")) or obj["seq"] < 1:
         return "seq"
     bad = [f for f in _STR_FIELDS if not isinstance(obj.get(f), str)]
@@ -950,6 +965,13 @@ def verify_case(
             )  # fmt: skip
             line, _ = latest_line(item_id)
             v.view = line.obj.get("view", 1) if line else 1
+            if line is not None and line.obj.get("decision") == "approve":
+                v.checks = line.obj.get("checks")
+                v.approval_override_reason = (
+                    line.obj.get("approval_override_reason") or ""
+                )
+                if v.status == "VALID" and v.approval_override_reason:
+                    v.label = f"approved with override: {v.approval_override_reason}"
             source = line.obj.get("coupled_from") if line else None
             if v.status == "VALID" and source:  # labelled once every verdict is in
                 cascade_sources[item_id] = str(source)
@@ -1516,6 +1538,14 @@ def verification_block(view: dict) -> list[str]:
     lines.append(
         f"Approvals shown as approved: {len(approved)} (approved under 0.6, before signing: {old})"
     )
+    overrides = view.get("overrides") or {}
+    if overrides:
+        from vhir_cli.display import one_line
+
+        lines.append("Approved with an override (an approval check failed):")
+        lines += [
+            f"  {one_line(str(i))}: {one_line(r)}" for i, r in sorted(overrides.items())
+        ]
     if view["not_verified"]:
         lines.append("Not verified, so not shown as approved:")
         lines += [f"  {n['id']} {n['status']}" for n in view["not_verified"]]
@@ -1575,6 +1605,8 @@ def approved_view(case_dir: Path) -> dict:
         "iocs": [],
         "not_verified": [],
         "labels": {},
+        "checks": {},  # item id -> the approval-time checks its line signed
+        "overrides": {},  # item id -> the examiner's approval_override_reason
     }
     for key, item in result.records:
         if not isinstance(item, dict) or item.get("status") != "APPROVED":
@@ -1604,6 +1636,10 @@ def approved_view(case_dir: Path) -> dict:
             and not result.failures  # nothing counts while the case fails
         ):
             view[key].append(item)
+            if v.checks is not None:
+                view["checks"][item["id"]] = v.checks
+            if v.approval_override_reason:
+                view["overrides"][item["id"]] = v.approval_override_reason
             shown = (
                 "approved under 0.6 (before signing)"
                 if v.status == "APPROVED_UNDER_0_6"

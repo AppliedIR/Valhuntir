@@ -626,21 +626,39 @@ def test_a_discarded_review_entry_stays_and_another_examiner_s_is_untouched(
 
 
 def test_fields_written_during_the_prompt_survive_an_approve(case, monkeypatch):
-    def add_provenance_then_type(prompt=""):
+    def add_unsigned_fields_then_type(prompt=""):
         fs = json.loads((case / "findings.json").read_text())
-        fs[1]["provenance"] = {"summary": "MCP"}
         fs[1]["examiner_notes"] = [{"note": "from the portal"}]
         (case / "findings.json").write_text(json.dumps(fs))
         return PASSPHRASE
 
-    monkeypatch.setattr(approval_auth, "getpass_prompt", add_provenance_then_type)
+    monkeypatch.setattr(approval_auth, "getpass_prompt", add_unsigned_fields_then_type)
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", note="mine")
     f = {x["id"]: x for x in json.loads((case / "findings.json").read_text())}[
         "F-steve-002"
     ]
-    assert f["status"] == "APPROVED" and f["provenance"] == {"summary": "MCP"}
+    assert f["status"] == "APPROVED"
     assert [n.get("note") for n in f["examiner_notes"]] == ["from the portal", "mine"]
     assert verify_case(case).exit_code == 0
+
+
+def test_provenance_written_during_the_prompt_is_never_signed_unseen(case, monkeypatch):
+    """Provenance is signed (view 2): a change the examiner didn't see while
+    typing the passphrase isn't approved over."""
+
+    def add_provenance_then_type(prompt=""):
+        fs = json.loads((case / "findings.json").read_text())
+        fs[1]["provenance"] = {"summary": "changed while the prompt was up"}
+        (case / "findings.json").write_text(json.dumps(fs))
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", add_provenance_then_type)
+    with pytest.raises(SystemExit):
+        A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg")
+    f = {x["id"]: x for x in json.loads((case / "findings.json").read_text())}[
+        "F-steve-002"
+    ]
+    assert f["status"] == "DRAFT"
 
 
 def test_an_ioc_s_sightings_added_during_the_prompt_survive_its_reject(

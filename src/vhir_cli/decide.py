@@ -67,6 +67,10 @@ class Decision:
     modifications: dict = field(default_factory=dict)
     fresh_approver: bool = False  # a re-attestation with no earlier record
     delta_entry: dict | None = None  # review mode: the stored entry it signs
+    # A direct approval's checks (approval_checks.check_item) and, when they
+    # failed, the reason the examiner typed: both are signed
+    checks: dict | None = None
+    approval_override_reason: str | None = None
 
     @property
     def id(self) -> str:
@@ -453,7 +457,10 @@ def sign_and_commit(
                 decisions = [
                     {"item_id": d.id, "type": d.type, "decision": d.decision,
                      "status_after": d.status_after, "coupled_from": d.coupled_from,
-                     "content_snapshot": signed_text(item, d.type)}
+                     "content_snapshot": signed_text(item, d.type),
+                     **({"checks": d.checks} if d.checks is not None else {}),
+                     **({"approval_override_reason": d.approval_override_reason}
+                        if d.approval_override_reason is not None else {})}
                     for d, item in zip(every, items, strict=True)
                 ]  # fmt: skip
                 refs, ref_notes = chain_references(case_dir, case_id)
