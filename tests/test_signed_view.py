@@ -71,3 +71,15 @@ def test_an_ioc_s_derived_fields_aren_t_signed():
             "manually_reviewed": False,
         }  # fmt: skip
     assert "confidence" in json.loads(signed_text({"confidence": "LOW"}, "finding"))
+
+
+def test_view_2_signs_the_provenance_fields_and_is_pinned():
+    assert VIEW_EXCLUDES[2] == VIEW_EXCLUDES[1] - {
+        "source_evidence", "provenance", "provenance_warnings", "examiner_modifications",
+    }  # fmt: skip
+    item = {**FINDING, "provenance": "MCP", "source_evidence": "/e/mem.7z",
+            "provenance_warnings": ["w"], "examiner_modifications": {"a": 1}}  # fmt: skip
+    signed = json.loads(signed_text(item, "finding"))
+    assert {"provenance", "source_evidence", "provenance_warnings",
+            "examiner_modifications"} <= set(signed)  # fmt: skip
+    assert signed_text(item, "finding") == signed_text(item, "finding", view=2)

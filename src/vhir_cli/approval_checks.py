@@ -37,9 +37,9 @@ def check_item(case_dir, item: dict, kind: str, *, client=None) -> dict:
         return {
             "result": "not-applicable",
             "detail": (
-                f"chain lives in case {imported.get('case_id', '?')} (imported from "
-                f"{imported.get('examiner', '?')}, exported "
-                f"{imported.get('exported_at', '?')})"
+                f"chain lives in case {imported.get('case_id') or '?'} (imported from "
+                f"{imported.get('examiner') or '?'}, exported "
+                f"{imported.get('exported_at') or '?'})"
             ),
             "items": [],
         }
