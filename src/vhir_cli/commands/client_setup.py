@@ -2657,7 +2657,9 @@ def _uninstall_sift() -> None:
     # [4] Discipline docs
     claude_md = Path.home() / ".claude" / "CLAUDE.md"
     rules_dir = Path.home() / ".claude" / "rules"
-    has_docs = claude_md.is_file() or rules_dir.is_dir()
+    commands_dir = Path.home() / ".claude" / "commands"
+    welcome = commands_dir / "welcome.md"
+    has_docs = claude_md.is_file() or rules_dir.is_dir() or welcome.is_file()
     if has_docs:
         print("  [4] Discipline docs")
         if claude_md.is_file():
@@ -2666,6 +2668,8 @@ def _uninstall_sift() -> None:
             p = rules_dir / name
             if p.is_file():
                 print(f"      {p}")
+        if welcome.is_file():  # everything removed is listed
+            print(f"      {welcome}")
         if _prompt_yn_strict("      Remove?"):
             if claude_md.is_file():
                 _remove_claude_md(claude_md, "      ")
@@ -2673,9 +2677,6 @@ def _uninstall_sift() -> None:
                 p = rules_dir / name
                 if p.is_file():
                     p.unlink()
-            # Also remove commands (welcome.md)
-            commands_dir = Path.home() / ".claude" / "commands"
-            welcome = commands_dir / "welcome.md"
             if welcome.is_file():
                 welcome.unlink()
                 try:

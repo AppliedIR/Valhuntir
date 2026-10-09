@@ -231,3 +231,47 @@ def test_a_declined_change_is_said_once_by_setup_and_once_by_update(
 
     update._redeploy_clients({"clients": ["claude-code"]})
     assert capsys.readouterr().out.count("Forensic controls NOT applied") == 1
+
+
+def _uninstall_sift_in(home, monkeypatch, answer):
+    """Run the SIFT uninstall under `home`, answering every question `answer`;
+    the questions asked are returned."""
+    asked = []
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda q: asked.append(q) or answer)
+    monkeypatch.setattr(
+        cs, "_remove_vhir_mcp_entries", lambda *a, **k: None, raising=False
+    )
+    from vhir_cli.commands import codex_controls as cc
+
+    etc = home / "etc-codex"  # never the host's /etc/codex
+    monkeypatch.setattr(cc, "REQUIREMENTS", etc / "requirements.toml")
+    monkeypatch.setattr(cc, "HOOKS_DIR", etc / "vhir-hooks")
+    try:
+        cs._uninstall_sift()
+    except SystemExit:
+        pass
+    return asked
+
+
+def test_the_discipline_docs_step_lists_the_welcome_command_it_removes(
+    box,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    welcome = box.home / ".claude" / "commands" / "welcome.md"
+    welcome.parent.mkdir(parents=True, exist_ok=True)
+    welcome.write_text("welcome\n")  # with no other discipline doc left
+    capsys.readouterr()
+    _uninstall_sift_in(box.home, monkeypatch, True)
+    out = capsys.readouterr().out
+    step = out[out.index("[4] Discipline docs") :]
+    assert str(welcome) in step.split("Removed discipline docs.")[0]
+    assert not welcome.exists()
+
+
+def test_declined_the_welcome_command_stays(box, monkeypatch):  # noqa: F811
+    welcome = box.home / ".claude" / "commands" / "welcome.md"
+    welcome.parent.mkdir(parents=True, exist_ok=True)
+    welcome.write_text("welcome\n")
+    _uninstall_sift_in(box.home, monkeypatch, False)
+    assert welcome.read_text() == "welcome\n"
