@@ -288,9 +288,11 @@ LITE_TEMPLATE_HOOKS = json.loads(
     '{"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "cat << \'EOF\'\\n<forensic-rules>\\nPLAN before 3+ steps (display numbered checklist BEFORE any tool call) | APPROVAL before conclusions\\nEVIDENCE FORMAT: Source | Extraction | Content | Observation | Interpretation | Confidence | Ask human\\nRECORD actions in ACTIONS.md | NO DELETE without approval\\n</forensic-rules>\\nEOF"}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/hooks/forensic-audit.sh"}]}]}'
 )
 # Other forms our hooks have been written in: setup-client-*.sh's absolute
-# path, a quoted path, a redirect after the script, and arguments
+# path, a quoted path, a redirect after the script, arguments, and a quoted
+# bare name
 OTHER_FORMS = (
     "/home/u/vhir/.claude/hooks/forensic-audit.sh",
+    "bash 'forensic-audit.sh'",
     '"$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"',
     "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh>/dev/null",
     "'$CLAUDE_PROJECT_DIR/hooks/case-dir-check.sh' 2>&1",
