@@ -313,3 +313,35 @@ def test_a_forced_reregister_that_keeps_changing_drops_the_old_stat(case, monkey
     _changing_hasher(monkeypatch, p, times=99)
     r = register_evidence_data(case, str(p), "tester", force_reregister=True)
     assert r["hash_note"] == "changed while hashing" and "size" not in r, r
+
+
+# --- an audit log that can't be read leaves the derivation unchecked, said so ----
+
+
+@pytest.fixture
+def unreadable_log(case):
+    log = case / "audit" / "sift-mcp.jsonl"
+    log.write_text("{}\n")
+    log.chmod(0)
+    yield log
+    log.chmod(0o644)
+
+
+def test_a_file_registered_while_a_log_cant_be_read_says_derivation_unchecked(
+    case, unreadable_log
+):
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    r = register_evidence_data(case, str(p), "tester")
+    note = r.get("derivation_note", "")
+    assert note.startswith("derivation unchecked: ") and "sift-mcp.jsonl" in note, r
+
+
+def test_a_folder_registered_while_a_log_cant_be_read_says_derivation_unchecked(
+    case, unreadable_log
+):
+    k = case / "evidence" / "kape"
+    k.mkdir()
+    (k / "a.evtx").write_bytes(b"A" * 64)
+    r = register_evidence_data(case, str(k), "tester")
+    assert r.get("derivation_note", "").startswith("derivation unchecked: "), r

@@ -260,14 +260,7 @@ def register_evidence_data(
                     }
                 )
                 existing["sha256"] = file_hash
-                # the new bytes' own fields: their stat, or the note; and an
-                # acquisition's labels only when the new bytes are one
-                for k in (
-                    *_STAT_FIELDS,
-                    "hash_note",
-                    "acquired_by",
-                    "acquisition_tool",
-                ):
+                for k in _REDERIVED:  # the new bytes' own, below
                     existing.pop(k, None)
                 existing.update(entry_fields)
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
@@ -306,6 +299,10 @@ def register_evidence_data(
 
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _STAT_FIELDS = ("size", "mtime_ns", "ctime_ns", "st_dev", "st_ino")
+# Fields a file entry takes from its bytes as registered: its stat (or the
+# note that it kept changing), an acquisition's labels, the derivation note
+_REDERIVED = (*_STAT_FIELDS, "hash_note", "acquired_by", "acquisition_tool",
+              "derivation_note")  # fmt: skip
 
 
 def _stat_fields(st) -> dict:
@@ -350,14 +347,22 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
             and isinstance(h, str)]  # fmt: skip
 
 
-def _recorded_outputs(case_dir: Path) -> dict[str, list[tuple[str, dict]]]:
-    """Every output this case's audit records: real path -> (hash, entry). No
-    other case's trail is read."""
+def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
+    """Every output this case's audit records: real path -> (hash, entry); and
+    why any of its audit couldn't be read. No other case's trail is read."""
     index: dict[str, list[tuple[str, dict]]] = {}
-    for log in sorted((case_dir / "audit").glob("*.jsonl")):
+    unread: list[str] = []
+    try:
+        logs = sorted(p for p in (case_dir / "audit").iterdir() if p.suffix == ".jsonl")
+    except FileNotFoundError:
+        logs = []
+    except OSError as e:
+        logs, unread = [], [f"audit/ can't be listed ({type(e).__name__})"]
+    for log in logs:
         try:
             lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
+        except OSError as e:
+            unread.append(f"audit/{log.name} can't be read ({type(e).__name__})")
             continue
         for line in lines:
             try:
@@ -367,7 +372,7 @@ def _recorded_outputs(case_dir: Path) -> dict[str, list[tuple[str, dict]]]:
             if isinstance(entry, dict):
                 for p, h in _outputs_of(case_dir, entry):
                     index.setdefault(p, []).append((h, entry))
-    return index
+    return index, unread
 
 
 def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
@@ -381,16 +386,17 @@ def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
     ]
 
 
-def _not_an_original(case_dir: Path, real: str, sha256: str, index=None) -> tuple:
-    """(Why a file can't be registered as an original, or None; and, for an
-    acquisition's output, its `acquired_by` and `acquisition_tool`). A file
-    this case's tools made is linked to what it was made from, never
-    registered: one this case recorded as an operation's output, or one under
-    its extractions/. A file every recording operation acquired (a live memory
-    or disk collection) is evidence itself: it registers, labelled."""
-    ops = _made_here(
-        _recorded_outputs(case_dir) if index is None else index, real, sha256
-    )
+def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> tuple:
+    """(Why a file can't be registered as an original, or None; and fields for
+    its entry: an acquisition's `acquired_by` and `acquisition_tool`, or a
+    `derivation_note`). A file this case's tools made is linked to what it was
+    made from, never registered: one this case recorded as an operation's
+    output, or one under its extractions/. A file every recording operation
+    acquired (a live memory or disk collection) is evidence itself: it
+    registers, labelled. When part of the audit can't be read, a file that
+    isn't refused registers, saying its derivation is unchecked."""
+    index, unread = _recorded_outputs(case_dir) if recorded is None else recorded
+    ops = _made_here(index, real, sha256)
     if ops and all(e.get("acquisition") is True for e in ops):
         first = ops[0]
         return None, {"acquired_by": first.get("audit_id", ""),
@@ -407,6 +413,8 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, index=None) -> tupl
             f"{real} is under this case's extractions/, made by its tools: register "
             "the original evidence it was made from; this file is linked to it."
         ), None
+    if unread:
+        return None, {"derivation_note": "derivation unchecked: " + "; ".join(unread)}
     return None, None
 
 
@@ -558,6 +566,8 @@ def _register_folder(
     }
     if registered_via:
         entry["registered_via"] = registered_via
+    if recorded[1]:
+        entry["derivation_note"] = "derivation unchecked: " + "; ".join(recorded[1])
     if existing:  # --force-reregister: the earlier manifest stays recoverable
         previous = {k: existing.get(k) for k in
                     ("manifest_path", "manifest_sha256", "registered_at", "registered_by")}  # fmt: skip
