@@ -1038,3 +1038,68 @@ def test_a_root_registered_with_its_stat_fields_is_trusted_without_a_read(
             "ok",
             "unchanged (stat fields equal)",
         )
+
+
+def test_a_background_hash_that_fails_says_so_then_is_asked_for_again(
+    case, monkeypatch
+):
+    _legacy_entry(case)
+    monkeypatch.setattr(approval_checks, "INLINE_LIMIT", 10)
+    real = approval_checks.file_sha256
+
+    def locked(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(approval_checks, "file_sha256", locked)
+    f = _finding(case)
+
+    def root_detail():
+        checks = approval_checks.check_item(case, f, "finding", background=True)
+        (root,) = [i for i in checks["items"] if i["check"] == "ROOT"]
+        return root["status"], root["detail"]
+
+    assert root_detail() == ("failed", "not yet verified (hashing)")
+    _wait_for_hashing()
+    failed = ("failed", "not verified: hashing failed: [Errno 13] Permission denied")
+    assert root_detail() == failed
+    assert root_detail() == failed  # the same while a plan's commit may follow
+    monkeypatch.setattr(approval_checks, "FAILED_HOLD", -1)
+    monkeypatch.setattr(approval_checks, "file_sha256", real)
+    assert root_detail() == ("failed", "not yet verified (hashing)")  # asked again
+    _wait_for_hashing()
+    assert root_detail()[0] == "ok"
+
+
+class _Line:
+    def __init__(self, name, chain, seq):
+        self.name, self.chain, self.seq = name, chain, seq
+
+
+def test_approvals_follow_the_ledger_s_order_in_a_merged_history():
+    """C precedes A (A's chain referenced C's); B is concurrent with both.
+    The latest is one no other approval follows: never C."""
+    from vhir_cli.ledger_verify import in_ledger_order
+
+    a, b, c = _Line("A", "x", 2), _Line("B", "y", 1), _Line("C", "z", 1)
+    before = lambda p, q: (p, q) == (c, a)  # noqa: E731
+    out = in_ledger_order([a, b, c], before)
+    assert out.index(c) < out.index(a) and out[-1] is not c
+    assert [ln.name for ln in in_ledger_order([c, b, a], before)] == [
+        ln.name for ln in out
+    ]  # the same whatever order they arrive in
+
+
+def test_the_json_report_keeps_every_override_reason(case, capsys, monkeypatch):
+    from argparse import Namespace
+
+    from vhir_cli.commands.report import cmd_report
+
+    change_root(case)
+    run("ids", case, capsys, monkeypatch, reason=REASON)
+    args = {"case": None, "full": True, "executive_summary": False,
+            "report_timeline": False, "from_date": None, "to_date": None, "ioc": False,
+            "report_findings": None, "status_brief": False, "save": None}  # fmt: skip
+    cmd_report(Namespace(**args), {"examiner": "analyst1"})
+    out = capsys.readouterr().out
+    report, _ = json.JSONDecoder().raw_decode(out[out.index("{") :])
+    assert report["verification"]["overrides"] == {FID: [REASON]}

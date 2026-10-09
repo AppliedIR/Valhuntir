@@ -18,7 +18,6 @@ Rules that compare a line with its item apply to the item's latest line only.
 from __future__ import annotations
 
 import base64
-import functools
 import hashlib
 import json
 import re
@@ -789,6 +788,19 @@ class _Order:
         return i is not None and self.clocks[b.chain][i].get(a.chain, 0) >= a.seq
 
 
+def in_ledger_order(lines: list, before) -> list:
+    """`lines` in the ledger's own order: each after every line `before` puts
+    ahead of it. Lines of merged chains that neither precedes come lowest
+    seq first, then by chain, so the last is one no other line follows."""
+    left, out = list(lines), []
+    while left:
+        ready = [a for a in left if not any(b is not a and before(b, a) for b in left)]
+        nxt = min(ready or left, key=lambda ln: (ln.seq, ln.chain))
+        out.append(nxt)
+        left.remove(nxt)
+    return out
+
+
 # --- The verdict --------------------------------------------------------------------
 
 
@@ -967,15 +979,13 @@ def verify_case(
             )  # fmt: skip
             line, _ = latest_line(item_id)
             v.view = line.obj.get("view", 1) if line else 1
-            approvals = sorted(
-                (
+            approvals = in_ledger_order(
+                [
                     ln
                     for ln in latest_of[item_id]
                     if ln.obj.get("decision") == "approve"
-                ),
-                key=functools.cmp_to_key(
-                    lambda a, b: -1 if order.before(a, b) else int(order.before(b, a))
-                ),
+                ],
+                order.before,
             )
             v.overrides = [
                 str(ln.obj["approval_override_reason"])
@@ -1597,6 +1607,8 @@ def verification_json(view: dict) -> dict:
         "not_anchored": NOT_ANCHORED,
         "not_verified": view["not_verified"],
         "labels": view["labels"],
+        # item id -> each approval_override_reason its chain holds, oldest first
+        "overrides": view.get("overrides") or {},
         "case_failures": [{"code": c, "message": m} for c, m in result.failures],
         "keys": [
             {

@@ -19,6 +19,7 @@ import json
 import os
 import stat
 import threading
+import time
 from pathlib import Path
 
 from vhir_cli.provenance_view import roots_of
@@ -30,12 +31,20 @@ INLINE_LIMIT = 1_000_000_000
 DOC_TIMEOUT = 5
 UNREACHABLE = "couldn't verify: OpenSearch unreachable"
 NOT_YET_VERIFIED = "not yet verified (hashing)"
+HASH_FAILED = "not verified: hashing failed: "
+# How long a failed background hash is reported (as long as a portal
+# plan's challenge lives, so its commit sees the same result) before the
+# next approval asks for the hash again
+FAILED_HOLD = 120
 # Each root hashed in full at approval, by real path: its SHA-256 then and
 # the stat fields it had, so the next approval needs no read
 VERIFIED = "evidence-verified.json"
 _STAT_KEYS = ("size", "mtime_ns", "ctime_ns", "st_dev", "st_ino")
 _lock = threading.Lock()
 _hashing: set[str] = set()
+_failed_hashes: dict[
+    str, tuple[list[int], str, float]
+] = {}  # real path -> stat, why, when
 
 
 def check_item(
@@ -212,8 +221,9 @@ def _hash_later(case_dir: Path, real: str, key: list[int]) -> None:
     def run():
         try:
             _hash_now(case_dir, real, key)
-        except (OSError, ValueError):
-            pass  # checked again at the next approval
+        except (OSError, ValueError) as e:
+            with _lock:
+                _failed_hashes[real] = (key, str(e), time.monotonic())
         finally:
             with _lock:
                 _hashing.discard(real)
@@ -270,6 +280,16 @@ def _root(case_dir: Path, root: dict, background=False, note=None) -> dict:
     if isinstance(seen, dict) and seen.get("stat") == current:
         now = str(seen.get("sha256"))
     elif background and st.st_size > INLINE_LIMIT:
+        with _lock:
+            failure = _failed_hashes.get(real)
+            stale = failure and (
+                failure[0] != current or time.monotonic() - failure[2] > FAILED_HOLD
+            )
+            if stale:  # the file changed, or long enough: ask for it again
+                del _failed_hashes[real]
+                failure = None
+        if failure:
+            return _failed("ROOT", "ROOT_UNVERIFIED", path, HASH_FAILED + failure[1])
         _hash_later(case_dir, real, current)
         return _failed("ROOT", "ROOT_UNVERIFIED", path, NOT_YET_VERIFIED)
     else:
@@ -278,7 +298,7 @@ def _root(case_dir: Path, root: dict, background=False, note=None) -> dict:
         try:
             now = _hash_now(case_dir, real, current)
         except (OSError, ValueError) as e:
-            return _failed("ROOT", "ROOT_UNVERIFIED", path, f"couldn't be read: {e}")
+            return _failed("ROOT", "ROOT_UNVERIFIED", path, HASH_FAILED + str(e))
     if now != sha:
         return _failed("ROOT", "ROOT_CHANGED", path, f"its SHA-256 is now {now}")
     return _ok("ROOT", path, "unchanged (hashed again)")
