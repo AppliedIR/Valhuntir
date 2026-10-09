@@ -115,3 +115,50 @@ def test_the_cli_registers_a_folder_and_says_so(case, capsys):
     out = capsys.readouterr().out
     assert "Folder: 2 file(s), manifest evidence-manifests/1.json" in out
     assert f"Manifest SHA256: {_registry(case)[1]['manifest_sha256']}" in out
+
+
+def _verify(case, **kw):
+    from vhir_cli.commands.evidence import verify_evidence_data
+
+    v = verify_evidence_data(case, **kw)
+    return v, {x["path"].rsplit("/", 1)[1]: x for x in v["results"]}
+
+
+def test_a_folder_root_verifies_file_by_file(case):
+    kape = case / "evidence" / "kape"
+    register_evidence_data(case, str(kape), "tester")
+    (kape / "C" / "b.evtx").write_bytes(b"edited")
+    v, by = _verify(case)
+    assert by["old.bin"]["status"] == "OK"
+    assert by["a.evtx"]["status"] == "OK" and by["b.evtx"]["status"] == "MODIFIED"
+    assert by["b.evtx"]["actual_hash"] == _sha(b"edited")
+    (kape / "C" / "Windows" / "a.evtx").unlink()
+    v, by = _verify(case)
+    assert by["a.evtx"]["status"] == "MISSING"
+    assert (v["verified"], v["modified"], v["missing"], v["errors"]) == (1, 1, 1, 0)
+
+
+def test_a_folder_whose_manifest_changed_is_an_error(case):
+    r = register_evidence_data(case, str(case / "evidence" / "kape"), "tester")
+    manifest = case / r["manifest_path"]
+    manifest.write_text(manifest.read_text() + "\n")  # any change to its bytes
+    v, by = _verify(case)
+    assert by["kape"]["status"] == "ERROR"
+    assert (
+        by["kape"]["error"] == "its manifest is missing or changed since registration"
+    )
+    assert v["errors"] == 1
+
+
+def test_a_folder_file_still_hashing_is_pending_with_its_job(case):
+    register_evidence_data(case, str(case / "evidence" / "kape"), "tester")
+
+    def later(case_dir, paths):
+        return {
+            p: _sha(open(p, "rb").read()) for p in paths[:1]
+        }, "hash-0123456789abcdef"
+
+    v, by = _verify(case, folder_hasher=later)
+    pending = [x for x in v["results"] if x["status"] == "PENDING"]
+    assert len(pending) == 1 and pending[0]["job_id"] == "hash-0123456789abcdef"
+    assert v["pending"] == 1

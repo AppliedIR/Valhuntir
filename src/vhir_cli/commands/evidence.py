@@ -22,6 +22,7 @@ import json
 import os
 import stat
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -539,11 +540,14 @@ def cmd_list_evidence(args, identity: dict) -> None:
     print(f"\n{len(files)} evidence file(s) registered")
 
 
-def verify_evidence_data(case_dir) -> dict:
+def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
     """Verify evidence integrity and return structured results.
 
     Args:
         case_dir: Path to the active case directory.
+        folder_hasher: as for register_evidence_data. A folder root is verified
+            file by file against its manifest; a file still hashing is PENDING,
+            with its job id.
 
     Returns:
         Dict with "results" list and summary counts (verified, modified,
@@ -566,7 +570,16 @@ def verify_evidence_data(case_dir) -> dict:
     results = []
     verified = modified = missing = errors = 0
 
+    pending = 0
     for entry in files:
+        if entry.get("kind") == "folder":
+            folder = _verify_folder(case_dir, entry, folder_hasher or _hash_each)
+            results.extend(folder)
+            n = Counter(r["status"] for r in folder)
+            verified, modified = verified + n["OK"], modified + n["MODIFIED"]
+            missing, errors = missing + n["MISSING"], errors + n["ERROR"]
+            pending += n["PENDING"]
+            continue
         path = Path(entry.get("path", ""))
         expected_hash = entry.get("sha256", "")
 
@@ -622,13 +635,49 @@ def verify_evidence_data(case_dir) -> dict:
             )
             modified += 1
 
-    return {
+    summary = {
         "results": results,
         "verified": verified,
         "modified": modified,
         "missing": missing,
         "errors": errors,
     }
+    if pending:
+        summary["pending"] = pending
+    return summary
+
+
+def _verify_folder(case_dir: Path, entry: dict, hasher) -> list[dict]:
+    """Each manifest file's status: OK, MODIFIED, MISSING, or PENDING while it
+    hashes. A manifest that's missing or changed makes the root an ERROR."""
+    try:
+        data = (case_dir / entry["manifest_path"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry.get("manifest_sha256"):
+            raise ValueError
+        rows = json.loads(data)["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return [{"path": entry.get("path", ""), "status": "ERROR", "expected_hash": "",
+                 "actual_hash": None,
+                 "error": "its manifest is missing or changed since registration"}]  # fmt: skip
+    base = case_dir.resolve()
+    paths = {r["path"]: str(base / r["path"]) for r in rows}
+    hashes, job_id = hasher(case_dir, [p for p in paths.values() if os.path.exists(p)])
+    results = []
+    for r in rows:
+        p = paths[r["path"]]
+        actual = hashes.get(p)
+        status = ("MISSING" if not os.path.exists(p) else
+                  "PENDING" if actual is None and job_id else
+                  "ERROR" if actual is None else
+                  "OK" if actual == r["sha256"] else "MODIFIED")  # fmt: skip
+        result = {"path": p, "status": status, "expected_hash": r["sha256"],
+                  "actual_hash": actual}  # fmt: skip
+        if status == "PENDING":
+            result["job_id"] = job_id
+        elif status == "ERROR":
+            result["error"] = "not readable as a regular file"
+        results.append(result)
+    return results
 
 
 def cmd_verify_evidence(args, identity: dict) -> None:
