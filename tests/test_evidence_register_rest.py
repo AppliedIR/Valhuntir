@@ -434,3 +434,30 @@ def test_a_warning_never_carries_a_log_names_control_characters(
     finally:
         log.chmod(0o644)
     assert "\x1b" not in out and "x?[2J?[H.jsonl" in out, repr(out)
+
+
+def test_a_file_registered_alone_and_in_a_folder_keeps_both_notes(
+    case, unreadable_log, monkeypatch
+):
+    """Verify gives a folder member its folder's notes and its own entry's, not
+    one over the other."""
+    from vhir_cli.commands.evidence import verify_evidence_data
+
+    k = case / "evidence" / "kape"
+    k.mkdir()
+    (k / "a.evtx").write_bytes(b"A" * 64)
+    register_evidence_data(case, str(k), "tester")  # the folder: derivation unchecked
+    unreadable_log.chmod(0o644)  # readable now: the file's own entry has no such note
+    _changing_hasher(monkeypatch, k / "a.evtx", times=99)
+    register_evidence_data(case, str(k / "a.evtx"), "tester")  # its own: hash note
+    monkeypatch.undo()
+    notes = [
+        r.get("notes", [])
+        for r in verify_evidence_data(case)["results"]
+        if r["path"].endswith("kape/a.evtx")
+    ]
+    assert any(
+        any("derivation unchecked" in n for n in ns)
+        and any("changed while hashing" in n for n in ns)
+        for ns in notes
+    ), notes

@@ -865,9 +865,12 @@ def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
     # a registered file's notes on its result (a folder's are set above)
     file_notes = {str(Path(e.get("path", ""))): [e[k] for k in ("hash_note", "derivation_note")
                   if e.get(k)] for e in files if e.get("kind") != "folder"}  # fmt: skip
-    for r in results:
-        if file_notes.get(r["path"]):
-            r["notes"] = file_notes[r["path"]]
+    for r in results:  # joined to a folder's, never over them
+        for note in file_notes.get(r["path"], []):
+            if note not in r.setdefault("notes", []):
+                r["notes"].append(note)
+        if not r.get("notes"):
+            r.pop("notes", None)
     summary = {
         "results": results,
         "verified": verified,
