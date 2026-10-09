@@ -423,6 +423,44 @@ def _register_folder(
     return entry
 
 
+def registered_entry_for(case_dir, path) -> dict | None:
+    """The registry entry `path` is (by real path), or the manifest row of the
+    folder root holding it; None when it isn't registered or isn't in its
+    folder's manifest (added later, or skipped). The file itself is never
+    read, and a manifest changed since registration isn't trusted."""
+    case_dir = Path(case_dir)
+    try:
+        registry = json.loads((case_dir / "evidence.json").read_text())
+    except (OSError, ValueError):
+        return None
+    real = os.path.realpath(path)
+    entries = registry.get("files", []) if isinstance(registry, dict) else []
+    for entry in (e for e in entries if isinstance(e, dict)):
+        root = entry.get("path", "")
+        if entry.get("kind") != "folder":
+            if root == real:
+                return entry
+            continue
+        if not real.startswith(root + os.sep):
+            continue
+        rel = os.path.relpath(real, case_dir.resolve())
+        return next((r for r in _manifest_rows(case_dir, entry) or []
+                     if r.get("path") == rel), None)  # fmt: skip
+    return None
+
+
+def _manifest_rows(case_dir: Path, entry: dict) -> list[dict] | None:
+    """A folder root's manifest rows, or None when the manifest is missing or
+    no longer has the hash recorded at registration."""
+    try:
+        data = (case_dir / entry["manifest_path"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry.get("manifest_sha256"):
+            return None
+        return json.loads(data)["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def cmd_register_evidence(args, identity: dict) -> None:
     """CLI wrapper — registers evidence and prints summary."""
     case_dir = get_case_dir(getattr(args, "case", None))
@@ -650,12 +688,8 @@ def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
 def _verify_folder(case_dir: Path, entry: dict, hasher) -> list[dict]:
     """Each manifest file's status: OK, MODIFIED, MISSING, or PENDING while it
     hashes. A manifest that's missing or changed makes the root an ERROR."""
-    try:
-        data = (case_dir / entry["manifest_path"]).read_bytes()
-        if hashlib.sha256(data).hexdigest() != entry.get("manifest_sha256"):
-            raise ValueError
-        rows = json.loads(data)["files"]
-    except (OSError, ValueError, KeyError, TypeError):
+    rows = _manifest_rows(case_dir, entry)
+    if rows is None:
         return [{"path": entry.get("path", ""), "status": "ERROR", "expected_hash": "",
                  "actual_hash": None,
                  "error": "its manifest is missing or changed since registration"}]  # fmt: skip

@@ -162,3 +162,38 @@ def test_a_folder_file_still_hashing_is_pending_with_its_job(case):
     pending = [x for x in v["results"] if x["status"] == "PENDING"]
     assert len(pending) == 1 and pending[0]["job_id"] == "hash-0123456789abcdef"
     assert v["pending"] == 1
+
+
+def test_a_registered_file_or_folder_file_is_found_by_its_path_unread(case, tmp_path):
+    from vhir_cli.commands.evidence import registered_entry_for
+
+    old = case / "evidence" / "old.bin"
+    kape = case / "evidence" / "kape"
+    register_evidence_data(case, str(kape), "tester")
+    a = kape / "C" / "Windows" / "a.evtx"
+    old.chmod(0)
+    a.chmod(0)  # unreadable: found from the registry and the manifest alone
+    try:
+        assert registered_entry_for(case, old) == _registry(case)[0]
+        link = tmp_path / "via-link.bin"
+        link.symlink_to(old)
+        assert registered_entry_for(case, link) == _registry(case)[0]
+        row = registered_entry_for(case, a)
+        assert row["path"] == "evidence/kape/C/Windows/a.evtx"
+        assert row["sha256"] == _sha(b"ElfFile\x00a")
+    finally:
+        old.chmod(0o644)
+        a.chmod(0o644)
+    (kape / "C" / "late.evtx").write_bytes(b"L")  # added after registration
+    assert registered_entry_for(case, kape / "C" / "late.evtx") is None
+    assert registered_entry_for(case, kape / "C" / "pipe") is None  # skipped
+    assert registered_entry_for(case, tmp_path / "elsewhere.bin") is None
+
+
+def test_a_folder_file_isnt_found_through_a_changed_manifest(case):
+    from vhir_cli.commands.evidence import registered_entry_for
+
+    r = register_evidence_data(case, str(case / "evidence" / "kape"), "tester")
+    manifest = case / r["manifest_path"]
+    manifest.write_text(manifest.read_text() + "\n")
+    assert registered_entry_for(case, case / "evidence/kape/C/b.evtx") is None
