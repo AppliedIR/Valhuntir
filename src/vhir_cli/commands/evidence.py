@@ -669,20 +669,20 @@ def cmd_register_evidence(args, identity: dict) -> None:
             f"  Folder: {data['file_count']} file(s), manifest {data['manifest_path']}"
         )
         print(f"  Manifest SHA256: {sha256}")
-        if data.get("derivation_note"):
-            print(f"  WARNING: {data['derivation_note']}")
+        if data.get("derivation_note"):  # names the case's files: printed safe
+            print(f"  WARNING: {display_safe(data['derivation_note'])}")
         return
     if data.get("note") == "updated (same path, hash changed)":
         prior = data["previous_hashes"][-1]["sha256"]
         print(f"  WARNING: hash changed since registration (was {prior})")
     print(f"  SHA256: {data['sha256']}")
     if data.get("hash_note"):  # never "recorded" when nothing vouches for it
-        print(f"  WARNING: the file {data['hash_note']}: no stat fields vouch for "
+        print(f"  WARNING: the file {display_safe(data['hash_note'])}: no stat fields vouch for "
               "this hash, so every check hashes it in full")  # fmt: skip
     else:
         print("  Integrity: SHA-256 hash recorded")
     if data.get("derivation_note"):
-        print(f"  WARNING: {data['derivation_note']}")
+        print(f"  WARNING: {display_safe(data['derivation_note'])}")
 
 
 def _log_evidence_action(

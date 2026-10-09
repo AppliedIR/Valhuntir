@@ -417,3 +417,20 @@ def test_an_acquisition_registered_while_a_log_cant_be_read_says_so(
     r = register_evidence_data(case, str(mem), "tester")
     assert r["acquired_by"] == "wt-tester-20261009-004", r
     assert r.get("derivation_note", "").startswith("derivation unchecked: "), r
+
+
+def test_a_warning_never_carries_a_log_names_control_characters(
+    case, capsys, monkeypatch
+):
+    """A log name is the case's, which the AI's shell can write: printed, its
+    escape sequences can't clear the screen or hide the warning."""
+    log = case / "audit" / "x\x1b[2J\x1b[H.jsonl"
+    log.write_text("{}\n")
+    log.chmod(0)
+    try:
+        p = case / "evidence" / "mem.raw"
+        p.write_bytes(b"M" * 100)
+        out = _cli_register(case, p, capsys, monkeypatch)
+    finally:
+        log.chmod(0o644)
+    assert "\x1b" not in out and "x?[2J?[H.jsonl" in out, repr(out)
