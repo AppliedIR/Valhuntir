@@ -460,17 +460,18 @@ def registered_entry_for(case_dir, path) -> dict | None:
         return None
     real = os.path.realpath(path)
     entries = registry.get("files", []) if isinstance(registry, dict) else []
-    for entry in (e for e in entries if isinstance(e, dict)):
+    entries = [e for e in entries if isinstance(e, dict)]
+    for entry in entries:  # the file itself first, whatever the order
+        if entry.get("kind") != "folder" and entry.get("path") == real:
+            return entry
+    rel = os.path.relpath(real, case_dir.resolve())
+    for entry in entries:  # then every folder holding it, until one lists it
         root = entry.get("path", "")
-        if entry.get("kind") != "folder":
-            if root == real:
-                return entry
-            continue
-        if not real.startswith(root + os.sep):
-            continue
-        rel = os.path.relpath(real, case_dir.resolve())
-        return next((r for r in _manifest_rows(case_dir, entry) or []
-                     if r.get("path") == rel), None)  # fmt: skip
+        if entry.get("kind") == "folder" and real.startswith(root + os.sep):
+            row = next((r for r in _manifest_rows(case_dir, entry) or []
+                        if r.get("path") == rel), None)  # fmt: skip
+            if row:
+                return row
     return None
 
 

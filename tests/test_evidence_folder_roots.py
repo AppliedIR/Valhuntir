@@ -261,3 +261,23 @@ def test_a_member_that_cant_be_hashed_is_listed_as_unreadable(case):
     m = json.loads((case / r["manifest_path"]).read_text())
     assert [u["path"] for u in m["unreadable"]] == ["evidence/kape/C/Windows/a.evtx"]
     assert r["file_count"] == 1
+
+
+def test_lookup_checks_every_registered_folder_and_file_whatever_their_order(case):
+    from vhir_cli.commands.evidence import registered_entry_for
+
+    kape = case / "evidence" / "kape"
+    register_evidence_data(case, str(kape), "tester")
+    late = kape / "C" / "late.evtx"
+    late.write_bytes(b"L")
+    register_evidence_data(
+        case, str(late), "tester"
+    )  # the file itself, after its folder
+    assert registered_entry_for(case, late)["sha256"] == _sha(b"L")
+    inner = kape / "Later"
+    inner.mkdir()
+    (inner / "x.evtx").write_bytes(b"X")
+    register_evidence_data(
+        case, str(inner), "tester"
+    )  # a folder inside, after the outer one
+    assert registered_entry_for(case, inner / "x.evtx")["sha256"] == _sha(b"X")
