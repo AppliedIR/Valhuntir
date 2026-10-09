@@ -975,7 +975,7 @@ def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
     """`cleaned`, an incoming item as it will be stored, with where it came
     from and its original who, when, edits and grades under `imported_from`;
     the other examiner's edits are only there. It and its artifacts are
-    graded IMPORTED."""
+    graded IMPORTED, and its hash is of it as stored."""
     original = {k: item[k] for k in _ORIGINAL_KEYS if k in item}
     for k in _FOREIGN_EDITS:
         cleaned.pop(k, None)
@@ -995,6 +995,7 @@ def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
         ]
     cleaned["imported_from"] = {**origin, "original": original}
     cleaned.update(imported)
+    cleaned["content_hash"] = compute_content_hash(cleaned)  # of it as stored
     return cleaned
 
 
