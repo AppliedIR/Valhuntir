@@ -525,7 +525,7 @@ def _approval_checked(case_dir: Path, d: decide.Decision) -> bool:
     (False). Other decisions pass through."""
     if d.decision != "approve" or d.type not in ("finding", "timeline"):
         return True
-    d.checks = approval_checks.check_item(case_dir, d.item, d.type)
+    d.checks = approval_checks.check_item(case_dir, d.item, d.type, note=_hashing_note)
     for line in _approval_lines(d.item, d.checks):
         print(line)
     if d.checks["result"] != "failed":
@@ -542,6 +542,13 @@ def _approval_checked(case_dir: Path, d: decide.Decision) -> bool:
     return True
 
 
+def _hashing_note(path: str, size: int) -> None:
+    print(
+        f"  Hashing {_safe(path)} ({size / 1e9:.1f} GB) once to verify it; "
+        "later approvals won't need to read it again..."
+    )
+
+
 def _approval_lines(item: dict, checks: dict) -> list[str]:
     """What an approval shows before the passphrase: each root (path, SHA-256,
     label), the grade with its reason when it isn't FULL, and each failed
@@ -553,8 +560,7 @@ def _approval_lines(item: dict, checks: dict) -> list[str]:
         arts = [a for a in item.get("artifacts") or [] if isinstance(a, dict)]
         roots = {}
         for a in arts if item.get("provenance_schema") == 2 else []:
-            r = a.get("provenance_root")
-            if isinstance(r, dict) and r.get("path"):
+            for r in approval_checks.roots_of(a):
                 roots[(str(r["path"]), str(r.get("sha256") or ""))] = r
         lines += [
             f"  Root: {provenance_view.root_line(r)}" for _, r in sorted(roots.items())

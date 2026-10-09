@@ -376,7 +376,7 @@ def test_the_override_reason_is_printed_in_the_verification_block(
     change_root(case)
     run("ids", case, capsys, monkeypatch, reason=REASON)
     view = approved_view(case)
-    assert view["overrides"] == {FID: REASON}
+    assert view["overrides"] == {FID: [REASON]}
     assert view["checks"][FID]["result"] == "failed"
     text = "\n".join(verification_block(view))
     assert FID in text and REASON in text
@@ -422,12 +422,139 @@ def test_a_root_that_is_gone_holds_the_approval(case, capsys, monkeypatch):
     assert status(case) == "DRAFT" and "ROOT_CHANGED" in out and "missing" in out
 
 
-def test_a_root_too_big_to_hash_again_fails_unread(case, capsys, monkeypatch):
+def _legacy_entry(case) -> None:
+    """The registry as before stat fields were recorded at registration."""
+    reg = json.loads((case / "evidence.json").read_text())
+    for e in reg["files"]:
+        for k in approval_checks._STAT_KEYS:
+            e.pop(k, None)
+    (case / "evidence.json").write_text(json.dumps(reg))
+
+
+def test_an_unchanged_root_over_1_gib_registered_without_stat_fields_is_ok(
+    case, capsys, monkeypatch
+):
+    """The commonest evidence (an image or a memory dump) registered before
+    stat fields were kept: hashed once, before the passphrase, then trusted
+    by its stat fields."""
+    z = case / "evidence" / "mem.7z"
+    with open(z, "r+b") as f:  # sparse: 1 GiB + 4 KiB, cheap to make
+        f.truncate((1 << 30) + 4096)
+    sha = approval_checks.file_sha256(z)
+    reg = json.loads((case / "evidence.json").read_text())
+    reg["files"][0]["sha256"] = sha
+    (case / "evidence.json").write_text(json.dumps(reg))
+    _legacy_entry(case)
+    f = _finding(case)
+    f["artifacts"][0]["provenance_root"]["sha256"] = sha
+    _save(case, f)
+    before, _ = run("ids", case, capsys, monkeypatch, reason=None)
+    root = next(i for i in last_line()["checks"]["items"] if i["check"] == "ROOT")
+    assert status(case) == "APPROVED" and root["status"] == "ok"
+    assert f"Hashing {z} (1.1 GB) once to verify it" in before
+    seen = json.loads((case / approval_checks.VERIFIED).read_text())[str(z)]
+    assert seen["sha256"] == sha and seen["stat"] == approval_checks._stat_key(z.stat())
+    monkeypatch.setattr(approval_checks, "file_sha256", None)  # never read again
+    again = approval_checks.check_item(case, f, "finding")
+    assert [i["status"] for i in again["items"] if i["check"] == "ROOT"] == ["ok"]
+
+
+def _wait_for_hashing():
+    import threading
+
+    for t in threading.enumerate():
+        if t.name == "approval-root-hash":
+            t.join(timeout=30)
+
+
+def test_in_the_background_a_large_root_is_not_yet_verified_then_ok(case, monkeypatch):
+    _legacy_entry(case)
+    monkeypatch.setattr(approval_checks, "INLINE_LIMIT", 10)
+    f = _finding(case)
+    first = approval_checks.check_item(case, f, "finding", background=True)
+    (root,) = [i for i in first["items"] if i["check"] == "ROOT"]
+    assert (root["code"], root["detail"]) == (
+        "ROOT_UNVERIFIED",
+        "not yet verified (hashing)",
+    )
+    assert first["result"] == "failed"
+    _wait_for_hashing()
+    monkeypatch.setattr(approval_checks, "file_sha256", None)  # trusted now
+    then = approval_checks.check_item(case, f, "finding", background=True)
+    assert then["result"] == "ok"
+
+
+def test_in_the_background_a_changed_large_root_is_then_changed(case, monkeypatch):
+    _legacy_entry(case)
     change_root(case)
     monkeypatch.setattr(approval_checks, "INLINE_LIMIT", 10)
-    monkeypatch.setattr(approval_checks, "file_sha256", None)  # never called
-    _, out = run("ids", case, capsys, monkeypatch)
-    assert status(case) == "DRAFT" and "stat changed; not re-hashed" in out
+    f = _finding(case)
+    first = approval_checks.check_item(case, f, "finding", background=True)
+    assert approval_checks.failed_codes(first) == ["ROOT_UNVERIFIED"]
+    _wait_for_hashing()
+    monkeypatch.setattr(approval_checks, "file_sha256", None)  # hashed once only
+    then = approval_checks.check_item(case, f, "finding", background=True)
+    assert approval_checks.failed_codes(then) == ["ROOT_CHANGED"]
+
+
+def test_a_root_without_stat_fields_unchanged_is_ok_not_changed(
+    case, capsys, monkeypatch
+):
+    _legacy_entry(case)
+    run("ids", case, capsys, monkeypatch, reason=None)
+    root = next(i for i in last_line()["checks"]["items"] if i["check"] == "ROOT")
+    assert status(case) == "APPROVED" and root["detail"] == "unchanged (hashed again)"
+
+
+def test_a_root_that_changes_while_it_is_read_is_not_verified(case, monkeypatch):
+    _legacy_entry(case)
+    real = approval_checks.file_sha256
+
+    def touched(path):
+        out = real(path)
+        os.utime(path, ns=(5, 5))
+        return out
+
+    monkeypatch.setattr(approval_checks, "file_sha256", touched)
+    checks = approval_checks.check_item(case, _finding(case), "finding")
+    (root,) = [i for i in checks["items"] if i["check"] == "ROOT"]
+    assert (
+        root["code"] == "ROOT_UNVERIFIED"
+        and "changed while it was read" in root["detail"]
+    )
+    assert not (case / approval_checks.VERIFIED).exists()
+
+
+def test_a_recorded_hash_vouches_only_for_the_stat_fields_it_was_taken_with(
+    case, monkeypatch
+):
+    _legacy_entry(case)
+    approval_checks.check_item(case, _finding(case), "finding")  # hashed and kept
+    change_root(case)
+    checks = approval_checks.check_item(case, _finding(case), "finding")
+    assert approval_checks.failed_codes(checks) == ["ROOT_CHANGED"]
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_every_root_of_an_artifact_is_checked_and_shown(
+    case, capsys, monkeypatch, route
+):
+    other = case / "evidence" / "second.raw"
+    other.write_bytes(b"a second input " * 40)
+    osha = register_evidence_data(case, str(other), "analyst1")["sha256"]
+    f = _finding(case)
+    a = f["artifacts"][0]
+    a["provenance_roots"] = [
+        a["provenance_root"],
+        {"path": str(other), "sha256": osha, "label": "examiner-registered"},
+    ]
+    _save(case, f)
+    with open(other, "ab") as fh:
+        fh.write(b"changed")
+    _, out = run(route, case, capsys, monkeypatch, reason="")
+    assert status(case) == "DRAFT"
+    assert f"Check failed: ROOT_CHANGED {other}" in out
+    assert f"Root: {other} " in out and f"Root: {case / 'evidence' / 'mem.7z'} " in out
 
 
 def test_a_root_that_isn_t_a_regular_file_is_refused_unread(case):
@@ -811,3 +938,77 @@ def test_a_query_logged_before_0_6_4_is_shown_so_before_the_passphrase(
     assert "Provenance: BROKEN" not in before
     assert "[1] recorded before 0.6.4: q-1 records no results to follow" in before
     assert status(case) == "APPROVED"
+
+
+def test_an_edit_after_an_override_keeps_it_and_every_reason_is_listed(
+    case, capsys, monkeypatch
+):
+    change_root(case)
+    run("ids", case, capsys, monkeypatch, reason=REASON)
+    f = _finding(case)
+    (case / "pending-reviews.json").write_text(json.dumps({"case_id": CASE_ID, "items": [
+        {"id": FID, "type": "finding", "action": "edit", "staged_by": "analyst1",
+         "modifications": {"interpretation": {"original": f["interpretation"],
+                                              "modified": "edited after approval"}}}
+    ]}))  # fmt: skip
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    A._review_mode(case, IDENT, case.parent / "config.yaml")
+    assert last_line()["decision"] == "edit"
+    v, r = verdict(case)
+    item = next(i for i in r.items if i.item_id == FID)
+    assert v == "VALID" and item.label == f"approved with override: {REASON}"
+    view = approved_view(case)
+    assert view["overrides"] == {FID: [REASON]}
+    assert view["checks"][FID]["result"] == "failed"
+    assert f"  {FID}: {REASON}" in verification_block(view)
+
+
+def test_every_override_reason_is_kept_oldest_first(case, capsys, monkeypatch):
+    change_root(case)
+    run("ids", case, capsys, monkeypatch, reason=REASON)
+    # a second approval of the same item, with another failed check and reason
+    data = keys.load("analyst1")
+    entry = keys.active(data)
+    kek = keys.derive_kek(PASSPHRASE, data["salt_ledger"])
+    private = keys.unwrap(
+        {
+            "wrapped_private": entry["wrapped_private"],
+            "public_key": entry["public_key"],
+        },
+        kek,
+        "analyst1",
+    )
+    second = {"result": "failed", "items": [{"check": "ENTRY", "status": "failed",
+              "subject": "sift-analyst1-002", "detail": "x", "code": "ENTRY_CHANGED"}]}  # fmt: skip
+    d0 = {"item_id": FID, "type": "finding", "decision": "approve",
+          "status_after": "APPROVED", "coupled_from": None,
+          "content_snapshot": signed_text(_finding(case), "finding"),
+          "checks": second, "approval_override_reason": "the second reason"}  # fmt: skip
+    from vhir_cli.case_io import load_case_meta
+
+    uuid = load_case_meta(case).get("case_uuid")
+    (body,) = ledger.prepare(
+        CASE_ID,
+        [d0],
+        "analyst1",
+        entry["public_key"],
+        "cli",
+        signing.AT,
+        case_uuid=uuid,
+    )
+    with ledger.case_lock(CASE_ID) as lock:
+        ledger.commit(
+            lock, [body], [ledger.sign_body(body, private)], entry["public_key"]
+        )
+    f = _finding(case)
+    f.update(approved_at=signing.AT, approved_by="analyst1")  # as the save stamps it
+    _save(case, f)
+    v, _ = verdict(case)
+    assert v == "VALID"
+    view = approved_view(case)
+    assert view["overrides"] == {FID: [REASON, "the second reason"]}
+    assert view["labels"][FID] == "approved with override: the second reason"
+    block = verification_block(view)
+    assert block.index(f"  {FID}: {REASON}") < block.index(
+        f"  {FID}: the second reason"
+    )

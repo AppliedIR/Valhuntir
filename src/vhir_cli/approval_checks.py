@@ -18,19 +18,35 @@ import hashlib
 import json
 import os
 import stat
+import threading
 from pathlib import Path
 
-# A changed root bigger than this isn't re-hashed at approval: it fails
+from vhir_cli.provenance_view import roots_of
+
+# A root bigger than this whose stat fields don't vouch for it is hashed in
+# the background where the caller can't wait (the portal): until then it is
+# "not yet verified", a failed check
 INLINE_LIMIT = 1_000_000_000
 DOC_TIMEOUT = 5
 UNREACHABLE = "couldn't verify: OpenSearch unreachable"
+NOT_YET_VERIFIED = "not yet verified (hashing)"
+# Each root hashed in full at approval, by real path: its SHA-256 then and
+# the stat fields it had, so the next approval needs no read
+VERIFIED = "evidence-verified.json"
 _STAT_KEYS = ("size", "mtime_ns", "ctime_ns", "st_dev", "st_ino")
+_lock = threading.Lock()
+_hashing: set[str] = set()
 
 
-def check_item(case_dir, item: dict, kind: str, *, client=None) -> dict:
+def check_item(
+    case_dir, item: dict, kind: str, *, client=None, background=False, note=None
+) -> dict:
     """``{result, items}`` (and ``detail`` when nothing applies) for approving
     ``item`` (``kind``: finding, timeline or ioc). ``client``: an OpenSearch
-    client for DOC, else the installed one, if any."""
+    client for DOC, else the installed one, if any. ``background``: a root
+    over the inline limit is hashed in a background thread (and is not yet
+    verified meanwhile) rather than now; ``note(path, size)`` is called
+    before a root that size is hashed now."""
     case_dir = Path(case_dir)
     imported = item.get("imported_from")
     if isinstance(imported, dict):
@@ -50,11 +66,10 @@ def check_item(case_dir, item: dict, kind: str, *, client=None) -> dict:
     found: list[dict] = []
     roots: dict[tuple[str, str], dict] = {}
     for a in artifacts:
-        root = a.get("provenance_root")
-        if isinstance(root, dict) and root.get("path"):
+        for root in roots_of(a):
             roots[(str(root["path"]), str(root.get("sha256") or ""))] = root
     for key in sorted(roots):
-        found.append(_root(case_dir, roots[key]))
+        found.append(_root(case_dir, roots[key], background, note))
 
     links = [
         link
@@ -88,6 +103,19 @@ def check_item(case_dir, item: dict, kind: str, *, client=None) -> dict:
     found.sort(key=lambda i: (i["check"], i["subject"], i["status"], i["detail"]))
     failed = any(i["status"] == "failed" for i in found)
     return {"result": "failed" if failed else "ok", "items": found}
+
+
+def failed_items(checks: dict | None) -> list[dict]:
+    return [i for i in (checks or {}).get("items", []) if i.get("status") == "failed"]
+
+
+def failed_sha256(checks: dict | None) -> str:
+    """The SHA-256 of a result's failed items, as canonical JSON: what an
+    override reason is given for. The portal page computes the same."""
+    text = json.dumps(
+        failed_items(checks), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def failed_codes(checks: dict | None) -> list[str]:
@@ -138,10 +166,67 @@ def _registry(case_dir: Path) -> list[dict]:
     return [e for e in files or [] if isinstance(e, dict)]
 
 
-def _root(case_dir: Path, root: dict) -> dict:
+def _stat_key(st) -> list[int]:
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino]
+
+
+def _verified(case_dir: Path) -> dict:
+    try:
+        seen = json.loads((case_dir / VERIFIED).read_text())
+    except (OSError, ValueError):
+        return {}
+    return seen if isinstance(seen, dict) else {}
+
+
+def _record(case_dir: Path, real: str, sha: str, key: list[int]) -> None:
+    """Keep a full hash with the stat fields the file had while it was read."""
+    from vhir_cli.case_io import _atomic_write
+
+    with _lock:
+        seen = _verified(case_dir)
+        seen[real] = {"sha256": sha, "stat": key}
+        try:
+            _atomic_write(
+                case_dir / VERIFIED, json.dumps(seen, indent=1, sort_keys=True)
+            )
+        except OSError:
+            pass  # hashed again next time
+
+
+def _hash_now(case_dir: Path, real: str, key: list[int]) -> str:
+    """The file's SHA-256, kept with its stat fields when they didn't change
+    while it was read; ValueError when they did."""
+    now = file_sha256(real)
+    if _stat_key(os.stat(real)) != key:
+        raise ValueError("it changed while it was read")
+    _record(case_dir, real, now, key)
+    return now
+
+
+def _hash_later(case_dir: Path, real: str, key: list[int]) -> None:
+    with _lock:
+        if real in _hashing:
+            return
+        _hashing.add(real)
+
+    def run():
+        try:
+            _hash_now(case_dir, real, key)
+        except (OSError, ValueError):
+            pass  # checked again at the next approval
+        finally:
+            with _lock:
+                _hashing.discard(real)
+
+    threading.Thread(target=run, name="approval-root-hash", daemon=True).start()
+
+
+def _root(case_dir: Path, root: dict, background=False, note=None) -> dict:
     """ROOT for one root: still registered with the root's hash, and the file
-    unchanged: by its stat fields when they're recorded and equal, else by
-    hashing it again (up to the size limit)."""
+    unchanged. Its registered stat fields, or those of its last full hash
+    here, vouch for it when they're equal; else it is hashed in full, once:
+    in the background above the inline limit when ``background``. Only a
+    hash that differs is a change."""
     from vhir_cli.commands.evidence import registered_entry_for
 
     path, sha = str(root["path"]), str(root.get("sha256") or "")
@@ -178,16 +263,22 @@ def _root(case_dir: Path, root: dict) -> dict:
         st = os.stat(real)
     except OSError:
         return _failed("ROOT", "ROOT_CHANGED", path, "missing")
-    recorded = [entry.get(k) for k in _STAT_KEYS]
-    current = [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino]
-    if None not in recorded and recorded == current:
+    current = _stat_key(st)
+    if [entry.get(k) for k in _STAT_KEYS] == current:
         return _ok("ROOT", path, "unchanged (stat fields equal)")
-    if st.st_size > INLINE_LIMIT:
-        return _failed("ROOT", "ROOT_CHANGED", path, "stat changed; not re-hashed")
-    try:
-        now = file_sha256(real)
-    except (OSError, ValueError) as e:
-        return _failed("ROOT", "ROOT_CHANGED", path, f"unreadable: {e}")
+    seen = _verified(case_dir).get(real)
+    if isinstance(seen, dict) and seen.get("stat") == current:
+        now = str(seen.get("sha256"))
+    elif background and st.st_size > INLINE_LIMIT:
+        _hash_later(case_dir, real, current)
+        return _failed("ROOT", "ROOT_UNVERIFIED", path, NOT_YET_VERIFIED)
+    else:
+        if note is not None and st.st_size > INLINE_LIMIT:
+            note(path, st.st_size)
+        try:
+            now = _hash_now(case_dir, real, current)
+        except (OSError, ValueError) as e:
+            return _failed("ROOT", "ROOT_UNVERIFIED", path, f"couldn't be read: {e}")
     if now != sha:
         return _failed("ROOT", "ROOT_CHANGED", path, f"its SHA-256 is now {now}")
     return _ok("ROOT", path, "unchanged (hashed again)")

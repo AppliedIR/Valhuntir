@@ -46,6 +46,15 @@ def _before_064(art: dict) -> bool:
     return isinstance(brk, dict) and brk.get("kind") == _BEFORE_064
 
 
+def roots_of(artifact: dict) -> list[dict]:
+    """Every root an artifact's chain resolved to: ``provenance_roots``, else
+    its one ``provenance_root``."""
+    roots = artifact.get("provenance_roots")
+    if not isinstance(roots, list) or not roots:
+        roots = [artifact.get("provenance_root")]
+    return [r for r in roots if isinstance(r, dict) and r.get("path")]
+
+
 def _artifacts(finding: dict) -> list[dict]:
     return [a for a in finding.get("artifacts") or [] if isinstance(a, dict)]
 
@@ -117,8 +126,8 @@ def finding_lines(finding: dict, indent: str = "  ") -> list[str]:
         return lines
     for n, art in enumerate(_artifacts(finding), 1):
         lines.append(f"{indent}  [{n}] {_s(grade_label(finding, art))}")
-        if isinstance(art.get("provenance_root"), dict):
-            lines.append(f"{indent}      root: {root_line(art['provenance_root'])}")
+        for root in roots_of(art):
+            lines.append(f"{indent}      root: {root_line(root)}")
         links = [x for x in art.get("provenance_chain") or [] if isinstance(x, dict)]
         for k, link in enumerate(links, 1):
             lines.append(f"{indent}      {k}. {link_line(link)}")

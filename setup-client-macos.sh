@@ -592,6 +592,7 @@ SETTINGS_CONTENT=$(cat << SETTINGS
       "Edit(**/actions.jsonl)",
       "Edit(**/audit/*.jsonl)",
       "Edit(**/evidence.json)",
+      "Edit(**/evidence-verified.json)",
       "Read(//var/lib/vhir/**)",
       "Edit(//var/lib/vhir/**)",
       "Bash(vhir approve*)",

@@ -18,6 +18,7 @@ Rules that compare a line with its item apply to the item's latest line only.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import re
@@ -293,8 +294,9 @@ class ItemVerdict:
     examiner: str = ""  # who signed the latest line, when it is VALID
     fingerprint: str = ""  # that line's key
     source: str = ""  # for a cascade line: the finding it was decided through
-    checks: dict | None = None  # the approval-time checks its latest line signed
+    checks: dict | None = None  # the approval-time checks its latest approval signed
     approval_override_reason: str = ""  # the examiner's reason, when they failed
+    overrides: list[str] = field(default_factory=list)  # every one, oldest first
 
 
 @dataclass
@@ -965,11 +967,31 @@ def verify_case(
             )  # fmt: skip
             line, _ = latest_line(item_id)
             v.view = line.obj.get("view", 1) if line else 1
-            if line is not None and line.obj.get("decision") == "approve":
-                v.checks = line.obj.get("checks")
-                v.approval_override_reason = (
-                    line.obj.get("approval_override_reason") or ""
-                )
+            approvals = sorted(
+                (
+                    ln
+                    for ln in latest_of[item_id]
+                    if ln.obj.get("decision") == "approve"
+                ),
+                key=functools.cmp_to_key(
+                    lambda a, b: -1 if order.before(a, b) else int(order.before(b, a))
+                ),
+            )
+            v.overrides = [
+                str(ln.obj["approval_override_reason"])
+                for ln in approvals
+                if ln.obj.get("approval_override_reason")
+            ]
+            # A later line that keeps it approved (an edit) re-runs no check:
+            # the latest approval's checks and reason still stand
+            if (
+                approvals
+                and line is not None
+                and line.obj.get("status_after") == "APPROVED"
+            ):
+                last = approvals[-1].obj
+                v.checks = last.get("checks")
+                v.approval_override_reason = last.get("approval_override_reason") or ""
                 if v.status == "VALID" and v.approval_override_reason:
                     v.label = f"approved with override: {v.approval_override_reason}"
             source = line.obj.get("coupled_from") if line else None
@@ -1544,7 +1566,9 @@ def verification_block(view: dict) -> list[str]:
 
         lines.append("Approved with an override (an approval check failed):")
         lines += [
-            f"  {one_line(str(i))}: {one_line(r)}" for i, r in sorted(overrides.items())
+            f"  {one_line(str(i))}: {one_line(r)}"
+            for i, reasons in sorted(overrides.items())
+            for r in reasons
         ]
     if view["not_verified"]:
         lines.append("Not verified, so not shown as approved:")
@@ -1606,7 +1630,7 @@ def approved_view(case_dir: Path) -> dict:
         "not_verified": [],
         "labels": {},
         "checks": {},  # item id -> the approval-time checks its line signed
-        "overrides": {},  # item id -> the examiner's approval_override_reason
+        "overrides": {},  # item id -> each approval_override_reason, oldest first
     }
     for key, item in result.records:
         if not isinstance(item, dict) or item.get("status") != "APPROVED":
@@ -1638,8 +1662,8 @@ def approved_view(case_dir: Path) -> dict:
             view[key].append(item)
             if v.checks is not None:
                 view["checks"][item["id"]] = v.checks
-            if v.approval_override_reason:
-                view["overrides"][item["id"]] = v.approval_override_reason
+            if v.overrides:
+                view["overrides"][item["id"]] = list(v.overrides)
             shown = (
                 "approved under 0.6 (before signing)"
                 if v.status == "APPROVED_UNDER_0_6"

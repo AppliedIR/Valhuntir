@@ -324,3 +324,11 @@ def test_the_report_ends_with_provenance_after_verification(case, capsys):
     assert [f["id"] for f in approved_view(case)["findings"]] == [
         "F-steve-001", "F-steve-009",
     ]  # fmt: skip
+
+
+def test_every_root_of_an_artifact_is_listed():
+    f = json.loads(json.dumps(BY_ID["F-steve-001"]))
+    f["artifacts"][0]["provenance_roots"] = [ROOT, IMG]
+    text = "\n".join(finding_lines(f))
+    assert f"root: {ROOT['path']} sha256={H7Z[:16]} (AI-registered)" in text
+    assert f"root: {IMG['path']} sha256={HIMG[:16]} (examiner-registered)" in text

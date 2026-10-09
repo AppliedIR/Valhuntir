@@ -749,6 +749,7 @@ if [[ "$CLIENT" == "claude-code" ]]; then
       "Edit(**/actions.jsonl)",
       "Edit(**/audit/*.jsonl)",
       "Edit(**/evidence.json)",
+      "Edit(**/evidence-verified.json)",
       "Read(//var/lib/vhir/**)",
       "Edit(//var/lib/vhir/**)",
       "Bash(vhir approve*)",
