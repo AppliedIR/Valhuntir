@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -943,6 +944,14 @@ def _find_claude_code_assets() -> Path | None:
 
 
 _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
+# One of them named as a whole word in a hook's command: after the start, a
+# slash, a quote or a space, and before the end, a quote, a space, a redirect
+# or a separator.
+_OUR_HOOK_SCRIPT = re.compile(
+    r"(?:^|[/\s\"'])(?:"
+    + "|".join(re.escape(h) for h in _PRODUCT_HOOKS)
+    + r")(?=$|[\s\"'<>|;&)])"
+)
 # read by the audit hooks: the shell commands with an MCP route, and the
 # sidecar that looks a command up
 _HOOK_DATA = ("mcp-route.py", "mcp-routes.tsv")
@@ -2858,9 +2867,11 @@ def _remove_forensic_settings(path: Path) -> None:
         return
 
     # Remove forensic hooks: under every event, each hook that runs a script
-    # from ~/.vhir/hooks/ (all of that folder is ours), a product hook in a
-    # project's .claude/hooks/, or the forensic-rules prompt. A user's own
-    # hooks stay, even beside ours in one entry.
+    # from ~/.vhir/hooks/ (all of that folder is ours), runs one of our hook
+    # scripts from anywhere (however its path is written: quoted, with a
+    # redirect after it, from $CLAUDE_PROJECT_DIR/hooks/ or .claude/hooks/),
+    # or is the forensic-rules prompt. A user's own hooks stay, even beside
+    # ours in one entry.
     global_hooks = str(Path.home() / ".vhir" / "hooks") + "/"
 
     def ours(hook) -> bool:
@@ -2871,12 +2882,7 @@ def _remove_forensic_settings(path: Path) -> None:
             or "$HOME/.vhir/hooks/" in cmd
         ):
             return True
-        if (
-            "/.claude/hooks/" in cmd
-            and cmd.rsplit("/", 1)[-1].split()[0] in _PRODUCT_HOOKS
-        ):
-            return True
-        return "forensic-rules" in cmd
+        return bool(_OUR_HOOK_SCRIPT.search(cmd)) or "forensic-rules" in cmd
 
     hooks = data.get("hooks", {})
     if isinstance(hooks, dict):

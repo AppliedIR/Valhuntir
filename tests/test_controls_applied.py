@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from vhir_cli import controls
 from vhir_cli.commands import client_setup as cs
 
@@ -275,3 +277,71 @@ def test_declined_the_welcome_command_stays(box, monkeypatch):  # noqa: F811
     welcome.write_text("welcome\n")
     _uninstall_sift_in(box.home, monkeypatch, False)
     assert welcome.read_text() == "welcome\n"
+
+
+# The hooks of sift-mcp's shipped templates, as they are in
+# claude-code/full/settings.json and claude-code/lite/settings.json
+FULL_TEMPLATE_HOOKS = json.loads(
+    '{"SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/case-dir-check.sh"}]}], "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "cat << \'EOF\'\\n<forensic-rules>\\nPLAN before 3+ steps | EVIDENCE for claims | APPROVAL before conclusions\\nRECORD actions via forensic-mcp | NO DELETE without approval\\n</forensic-rules>\\nEOF"}]}], "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/case-data-guard.sh"}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"}]}], "PostToolUseFailure": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"}]}], "PermissionDenied": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"}]}]}'
+)
+LITE_TEMPLATE_HOOKS = json.loads(
+    '{"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "cat << \'EOF\'\\n<forensic-rules>\\nPLAN before 3+ steps (display numbered checklist BEFORE any tool call) | APPROVAL before conclusions\\nEVIDENCE FORMAT: Source | Extraction | Content | Observation | Interpretation | Confidence | Ask human\\nRECORD actions in ACTIONS.md | NO DELETE without approval\\n</forensic-rules>\\nEOF"}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/hooks/forensic-audit.sh"}]}]}'
+)
+# Other forms our hooks have been written in: setup-client-*.sh's absolute
+# path, a quoted path, a redirect after the script, and arguments
+OTHER_FORMS = (
+    "/home/u/vhir/.claude/hooks/forensic-audit.sh",
+    '"$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"',
+    "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh>/dev/null",
+    "'$CLAUDE_PROJECT_DIR/hooks/case-dir-check.sh' 2>&1",
+    "bash $CLAUDE_PROJECT_DIR/.claude/hooks/case-data-guard.sh --strict",
+)
+USERS_OWN = (
+    "/opt/notify.sh",
+    "python3 /p/.claude/hooks/run.py --dir /tmp/",
+    "/opt/my-forensic-audit.sh",
+    "/opt/forensic-audit.sh.bak",
+)
+
+
+def _with_users_own(hooks):
+    """`hooks` with each of the user's own commands beside ours, and alone."""
+    hooks = json.loads(json.dumps(hooks))
+    mine = [{"type": "command", "command": c} for c in USERS_OWN]
+    hooks["PostToolUse"][0]["hooks"] += mine
+    hooks.setdefault("Stop", []).append({"hooks": list(mine)})
+    return hooks
+
+
+@pytest.mark.parametrize(
+    "template", [FULL_TEMPLATE_HOOKS, LITE_TEMPLATE_HOOKS], ids=["full", "lite"]
+)
+def test_uninstall_removes_every_hook_of_a_shipped_template(box, template):  # noqa: F811
+    box.settings.write_text(json.dumps({"hooks": _with_users_own(template)}))
+    cs._remove_forensic_settings(box.settings)
+    left = json.loads(box.settings.read_text())["hooks"]
+    mine = [{"type": "command", "command": c} for c in USERS_OWN]
+    assert left == {
+        "PostToolUse": [{"matcher": "Bash", "hooks": mine}],
+        "Stop": [{"hooks": mine}],
+    }
+
+
+@pytest.mark.parametrize("command", OTHER_FORMS)
+def test_uninstall_removes_our_hook_however_its_path_is_written(box, command):  # noqa: F811
+    hooks = {"PostToolUse": [{"hooks": [{"type": "command", "command": command}]}]}
+    box.settings.write_text(json.dumps({"hooks": _with_users_own(hooks), "x": 1}))
+    cs._remove_forensic_settings(box.settings)
+    left = json.loads(box.settings.read_text())
+    assert command not in json.dumps(left) and left["x"] == 1
+    assert [h["command"] for h in left["hooks"]["PostToolUse"][0]["hooks"]] == list(
+        USERS_OWN
+    )
+
+
+def test_a_users_hook_ending_in_a_slash_is_kept_and_the_uninstall_goes_on(box):  # noqa: F811
+    mine = {"type": "command", "command": "python3 /p/.claude/hooks/run.py --dir /tmp/"}
+    settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [mine]}]}}
+    box.settings.write_text(json.dumps(settings))
+    cs._remove_forensic_settings(box.settings)
+    assert json.loads(box.settings.read_text()) == settings
