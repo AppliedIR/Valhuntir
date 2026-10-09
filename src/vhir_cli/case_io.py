@@ -966,12 +966,18 @@ _ORIGINAL_KEYS = (
     "provenance_detail", "provenance_grade", "provenance_reason",
     "examiner_notes", "examiner_modifications", "imported_from",
 )  # fmt: skip
+# The other examiner's edits: kept only under imported_from, so an approval
+# here never signs them as this case's own
+_FOREIGN_EDITS = ("examiner_notes", "examiner_modifications", "provenance_detail")
 
 
 def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
     """`cleaned`, an incoming item as it will be stored, with where it came
-    from and its original who, when, edits and grades under `imported_from`."""
+    from and its original who, when, edits and grades under `imported_from`;
+    the other examiner's edits are only there."""
     original = {k: item[k] for k in _ORIGINAL_KEYS if k in item}
+    for k in _FOREIGN_EDITS:
+        cleaned.pop(k, None)
     arts = cleaned.get("artifacts")
     if isinstance(arts, list):
         for key in ("grade", "reason"):
