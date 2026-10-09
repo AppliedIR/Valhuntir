@@ -801,7 +801,7 @@ def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
             folder = _verify_folder(case_dir, entry, folder_hasher or _hash_each)
             results.extend(folder)
             for r in results[mark:] if notes else []:
-                r["notes"] = notes
+                r["notes"] = list(notes)  # its own: a member's notes may grow
             n = Counter(r["status"] for r in folder)
             verified, modified = verified + n["OK"], modified + n["MODIFIED"]
             missing, errors = missing + n["MISSING"], errors + n["ERROR"]

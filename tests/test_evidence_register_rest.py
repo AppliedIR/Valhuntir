@@ -461,3 +461,27 @@ def test_a_file_registered_alone_and_in_a_folder_keeps_both_notes(
         and any("changed while hashing" in n for n in ns)
         for ns in notes
     ), notes
+
+
+def test_a_members_own_note_stays_on_that_member(case, unreadable_log, monkeypatch):
+    """Each folder member's notes are its own list: one member registered alone
+    with a note never lends it to its siblings."""
+    from vhir_cli.commands.evidence import verify_evidence_data
+
+    k = case / "evidence" / "kape"
+    k.mkdir()
+    (k / "a.evtx").write_bytes(b"A" * 64)
+    (k / "b.evtx").write_bytes(b"B" * 64)
+    register_evidence_data(case, str(k), "tester")  # both: derivation unchecked
+    unreadable_log.chmod(0o644)
+    _changing_hasher(monkeypatch, k / "a.evtx", times=99)
+    register_evidence_data(case, str(k / "a.evtx"), "tester")  # a alone: hash note
+    monkeypatch.undo()
+    b_notes = [
+        r.get("notes", [])
+        for r in verify_evidence_data(case)["results"]
+        if r["path"].endswith("kape/b.evtx")
+    ]
+    assert b_notes and not any(
+        "changed while hashing" in n for ns in b_notes for n in ns
+    ), b_notes
