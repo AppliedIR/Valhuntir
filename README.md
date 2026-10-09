@@ -28,7 +28,7 @@ Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compa
 
 With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
 
-15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, and Prefetch/SRUM (via Plaso or wintools-mcp).
+15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, Prefetch/SRUM (via Plaso or wintools-mcp), and Linux and macOS volumes, folders and disk images (via Plaso).
 
 Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`), and proper `@timestamp` with timezone handling. Hayabusa auto-detection runs after EVTX ingest, applying 3,700+ Sigma rules and indexing alerts for structured querying.
 
@@ -186,7 +186,7 @@ Valhuntir reinforces forensic discipline through multiple layers built into the 
 - **Forensic Knowledge (FK) package** — When a forensic tool is executed, the response is enriched with tool-specific caveats, corroboration suggestions, and field interpretation guidance. Delivered at the MCP response level, not in the system prompt, so it arrives exactly when the LLM needs it.
 - **Discipline reminders** — Each tool response includes a rotating forensic methodology reminder. Finding validation checks submissions against methodology standards and returns actionable feedback.
 - **MCP server instructions** — Each backend provides structured instructions during session initialization. The gateway aggregates them into a single coherent briefing.
-- **Client configuration** — For Claude Code, `vhir setup client` deploys forensic discipline docs, investigation rules, and tool reference guides as persistent context. Other clients receive guidance through MCP server instructions.
+- **Client configuration** — For Claude Code, `vhir setup client` deploys forensic discipline docs, investigation rules, and tool reference guides as persistent context, and Valhuntir's workflows as Agent Skills. Other clients receive guidance through MCP server instructions.
 - **Forensic RAG** — Semantic search across 22,000+ records from 23 authoritative sources (Sigma, MITRE ATT&CK, LOLBAS, Atomic Red Team, and more). Grounds LLM analysis in authoritative references rather than training data.
 - **Windows triage baseline** — Offline validation against 2.6 million known-good records. No network calls required.
 
@@ -348,7 +348,7 @@ All Valhuntir components are assumed to run on a private forensic network, prote
 
 Any data loaded into the system or its component VMs, computers, or instances runs the risk of being exposed to the underlying AI. Only place data on these systems that you are willing to send to your AI provider.
 
-Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
+Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI, MISP) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
 
 Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) get additional forensic controls deployed by `vhir setup client` — sandbox, deny rules, audit hooks, and provenance enforcement. Signed approval (each examiner's key, unlocked by their passphrase) is the primary security control and applies to all clients; what it does and doesn't prove is in the stated limits. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy. See the [Security Model](https://appliedir.github.io/Valhuntir/security/) for details.
 
@@ -505,7 +505,7 @@ vhir todo update TODO-alice-002 --note "Waiting on third party" --priority low
 #### evidence
 
 ```
-vhir evidence register /path/to/image.E01 --description "Disk image"
+vhir evidence register /path/to/image.E01 --description "Disk image"   # Asks you to confirm at the terminal
 vhir evidence list
 vhir evidence verify
 vhir evidence log [--path <filter>]
@@ -646,9 +646,9 @@ Every approval, rejection, and command execution is logged with examiner identit
 |---|---|---|
 | `HAYABUSA_RULES_DIR` | *(autodetect)* | Path to hayabusa-rules directory (must contain a `config/` subdirectory). Set when hayabusa rules are installed outside the default locations (`/usr/local/share/hayabusa-rules`, `/usr/share/hayabusa-rules`, `/opt/hayabusa*/rules`). Example: `Environment=HAYABUSA_RULES_DIR=/srv/forensics/hayabusa-rules` in the gateway systemd unit file. |
 | `VHIR_SHARD_BREAKER_THRESHOLD` | `3` | Consecutive shard-limit batch failures before the bulk-write circuit breaker halts ingest. |
-| `VHIR_INTEL_BREAKER_THRESHOLD` | `10` | Consecutive non-rate-limit OpenCTI errors before enrichment halts. |
-| `VHIR_INTEL_RATE_LIMIT_RETRIES` | `5` | Per-IOC retry cap when OpenCTI rate-limits. |
-| `VHIR_INTEL_MIN_INTERVAL_MS` | `100` | Minimum milliseconds between OpenCTI requests (default ~10 QPS). Prevents self-inflicted rate limits. Clamped to a 10ms floor. |
+| `VHIR_INTEL_BREAKER_THRESHOLD` | `10` | Consecutive lookup errors, or consecutive unavailable answers from every configured threat-intel provider, before enrichment halts. Rate limits don't count. |
+| `VHIR_INTEL_RATE_LIMIT_RETRIES` | `5` | Per-IOC retry cap when a threat-intel provider rate-limits. |
+| `VHIR_INTEL_MIN_INTERVAL_MS` | `100` | Minimum milliseconds between threat-intel lookups (default ~10 QPS). Prevents self-inflicted rate limits. Clamped to a 10ms floor. |
 
 All thresholds clamp to a sane lower bound (operator typo of `0` won't disable safety).
 
