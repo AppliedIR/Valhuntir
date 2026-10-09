@@ -403,10 +403,16 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
     isn't refused registers, saying its derivation is unchecked."""
     index, unread = _recorded_outputs(case_dir) if recorded is None else recorded
     ops = _made_here(index, real, sha256)
+    note = (
+        {"derivation_note": "derivation unchecked: " + "; ".join(unread)}
+        if unread
+        else {}
+    )
     if ops and all(e.get("acquisition") is True for e in ops):
         first = ops[0]
         return None, {"acquired_by": first.get("audit_id", ""),
-                      "acquisition_tool": first.get("acquisition_tool") or first.get("tool", "")}  # fmt: skip
+                      "acquisition_tool": first.get("acquisition_tool") or first.get("tool", ""),
+                      **note}  # fmt: skip
     if ops:
         ids = ", ".join(str(e.get("audit_id", "?")) for e in ops)
         return (
@@ -419,9 +425,7 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
             f"{real} is under this case's extractions/, made by its tools: register "
             "the original evidence it was made from; this file is linked to it."
         ), None
-    if unread:
-        return None, {"derivation_note": "derivation unchecked: " + "; ".join(unread)}
-    return None, None
+    return None, note or None
 
 
 def _read_registry(reg_file: Path) -> dict:

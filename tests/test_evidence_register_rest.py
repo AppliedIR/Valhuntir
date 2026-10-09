@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,7 +85,6 @@ def test_cli_registration_without_a_terminal_registers_nothing(case):
 
 @pytest.mark.parametrize("answer", [True, False], ids=["confirmed", "declined"])
 def test_cli_registration_asks_the_examiner_first(case, monkeypatch, capsys, answer):
-    from types import SimpleNamespace
 
     from vhir_cli.commands import evidence as ev
 
@@ -359,3 +359,12 @@ def test_registering_a_legacy_entry_again_adds_its_stat_fields(case):
     (entry,) = _files(case)
     assert entry["size"] == 3 and entry["st_ino"] == os.stat(p).st_ino, entry
     assert entry["registered_at"] == legacy["registered_at"]  # the same registration
+
+
+def test_an_acquisition_registered_while_a_log_cant_be_read_says_so(
+    case, unreadable_log
+):
+    mem = _winpmem(case, acquisition=True)
+    r = register_evidence_data(case, str(mem), "tester")
+    assert r["acquired_by"] == "wt-tester-20261009-004", r
+    assert r.get("derivation_note", "").startswith("derivation unchecked: "), r
