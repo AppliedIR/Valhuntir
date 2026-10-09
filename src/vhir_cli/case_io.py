@@ -974,10 +974,15 @@ _FOREIGN_EDITS = ("examiner_notes", "examiner_modifications", "provenance_detail
 def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
     """`cleaned`, an incoming item as it will be stored, with where it came
     from and its original who, when, edits and grades under `imported_from`;
-    the other examiner's edits are only there."""
+    the other examiner's edits are only there. It and its artifacts are
+    graded IMPORTED."""
     original = {k: item[k] for k in _ORIGINAL_KEYS if k in item}
     for k in _FOREIGN_EDITS:
         cleaned.pop(k, None)
+    # Its chain is in the other case: graded IMPORTED here, saying where
+    imported = {"provenance_grade": "IMPORTED", "provenance_reason": (
+        f"chain lives in case {origin['case_id'] or '?'} (imported from "
+        f"{origin['examiner'] or '?'}, exported {origin['exported_at'] or '?'})")}  # fmt: skip
     arts = cleaned.get("artifacts")
     if isinstance(arts, list):
         for key in ("grade", "reason"):
@@ -985,7 +990,11 @@ def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
                 a.get(f"provenance_{key}") if isinstance(a, dict) else None
                 for a in arts
             ]
+        cleaned["artifacts"] = [
+            {**a, **imported} if isinstance(a, dict) else a for a in arts
+        ]
     cleaned["imported_from"] = {**origin, "original": original}
+    cleaned.update(imported)
     return cleaned
 
 
