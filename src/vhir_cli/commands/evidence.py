@@ -17,6 +17,7 @@ Legacy aliases (backward compat):
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -131,8 +132,10 @@ def register_evidence_data(
     description: str = "",
     force_reregister: bool = False,
     registered_via: str | None = None,
+    folder_hasher=None,
 ) -> dict:
-    """Register an evidence file and return structured data.
+    """Register an evidence file, or a folder as one root with a manifest of
+    its files, and return structured data.
 
     Validates path, computes SHA-256, writes registry.
 
@@ -144,6 +147,10 @@ def register_evidence_data(
         force_reregister: Allow re-registering a file whose hash changed.
         registered_via: "mcp" when the AI registered it (case-mcp passes it);
             host names from such a file are the AI's, never artifact evidence.
+        folder_hasher: for a folder, (case_dir, paths) -> (hashes, job_id).
+            Defaults to hashing every file now; case-mcp passes one that hashes
+            large files in the background, and a job id means nothing is
+            registered yet (`{"status": "hashing", "job_id": …}`).
 
     Returns:
         Dict with path, sha256, description, registered_at, registered_by.
@@ -166,13 +173,6 @@ def register_evidence_data(
 
     if not evidence_path.exists():
         raise FileNotFoundError(f"File not found: {path}")
-
-    if evidence_path.is_dir():
-        raise ValueError(
-            f"'{path}' is a directory. evidence_register works on individual "
-            "files. Register key files individually, or use a container "
-            "file (VHDX, E01, 7z) for directory-based evidence."
-        )
 
     # Validate path is within case directory
     resolved = evidence_path.resolve()
@@ -203,6 +203,12 @@ def register_evidence_data(
                 f"  ln -s {resolved} {case_dir / 'evidence' / evidence_path.name}"
             )
 
+    if evidence_path.is_dir():
+        return _register_folder(
+            case_dir, resolved, examiner, description, force_reregister,
+            registered_via, folder_hasher or _hash_each,
+        )  # fmt: skip
+
     # Compute SHA256
     sha = hashlib.sha256()
     with open(evidence_path, "rb") as f:
@@ -215,16 +221,7 @@ def register_evidence_data(
     # that can't be read or parsed is refused before writing: starting a new
     # registry over it would throw away every earlier registration.
     reg_file = case_dir / "evidence.json"
-    registry = {"files": []}
-    try:
-        text = reg_file.read_text() if reg_file.exists() else ""
-        if text.strip():
-            registry = json.loads(text)
-    except (OSError, ValueError) as e:
-        raise ValueError(
-            f"{reg_file} can't be read as JSON ({e}); nothing was registered. "
-            "Fix or restore it, then register again."
-        ) from e
+    registry = _read_registry(reg_file)
 
     # Dedup check — match by resolved path
     for existing in registry.get("files", []):
@@ -295,6 +292,136 @@ def register_evidence_data(
     return entry
 
 
+def _read_registry(reg_file: Path) -> dict:
+    registry = {"files": []}
+    try:
+        text = reg_file.read_text() if reg_file.exists() else ""
+        if text.strip():
+            registry = json.loads(text)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"{reg_file} can't be read as JSON ({e}); nothing was registered. "
+            "Fix or restore it, then register again."
+        ) from e
+    return registry
+
+
+def _file_identity():
+    """sift-common's file identity module, or None without the sift stack."""
+    if importlib.util.find_spec("sift_common") is None:
+        return None
+    try:
+        from sift_common import file_identity
+    except ImportError:
+        return None
+    return file_identity
+
+
+def _sha256_of(path: str) -> str:
+    fi = _file_identity()
+    if fi is not None:
+        return fi.hash_file(path).sha256
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _hash_each(case_dir, paths: list[str]) -> tuple[dict[str, str], str]:
+    """Hash every file now (the CLI has no time limit); no job."""
+    return {p: _sha256_of(p) for p in paths}, ""
+
+
+def _walk_folder(folder: Path) -> tuple[list[str], list[str]]:
+    """(regular files, everything else) under folder, in a stable order. Links
+    aren't followed: a link, FIFO or device is listed, never read."""
+    regular, skipped = [], []
+    for root, dirs, files in os.walk(folder):
+        dirs.sort()
+        links = sorted(d for d in dirs if os.path.islink(os.path.join(root, d)))
+        for name in sorted(files) + links:
+            p = os.path.join(root, name)
+            is_reg = stat.S_ISREG(os.lstat(p).st_mode)
+            (regular if is_reg else skipped).append(p)
+    return regular, skipped
+
+
+def _register_folder(
+    case_dir: Path, folder: Path, examiner: str, description: str,
+    force_reregister: bool, registered_via: str | None, hasher,
+) -> dict:  # fmt: skip
+    """A folder is one root: its manifest lists each regular file (case path,
+    SHA-256, stat fields) and what was skipped. Nothing is written while any
+    file is still hashing."""
+    from vhir_cli.case_io import _atomic_write
+
+    regular, skipped = _walk_folder(folder)
+    hashes, job_id = hasher(case_dir, regular)
+    if job_id:
+        return {"status": "hashing", "job_id": job_id, "path": str(folder),
+                "files_hashing": sum(p not in hashes for p in regular)}  # fmt: skip
+    base = case_dir.resolve()
+    rows = []
+    for p in regular:
+        if p not in hashes:  # not readable as a regular file when hashed
+            skipped.append(p)
+            continue
+        st = os.lstat(p)
+        rows.append({"path": os.path.relpath(p, base), "sha256": hashes[p],
+                     "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                     "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev,
+                     "st_ino": st.st_ino})  # fmt: skip
+    manifest = json.dumps(
+        {"folder": str(folder), "files": rows,
+         "skipped": sorted(os.path.relpath(p, base) for p in skipped)},
+        indent=2, sort_keys=True,
+    ).encode()  # fmt: skip
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+
+    reg_file = case_dir / "evidence.json"
+    registry = _read_registry(reg_file)
+    existing = next((e for e in registry.get("files", [])
+                     if e.get("path") == str(folder)), None)  # fmt: skip
+    if existing and existing.get("manifest_sha256") == manifest_sha:
+        return {**existing, "note": "already registered (same path and manifest)"}
+    if existing and not force_reregister:
+        raise ValueError(
+            f"Folder already registered with a different manifest: its files "
+            f"changed since registration.\n  Path: {folder}\nRun 'vhir evidence "
+            f"verify' to review the case, then re-register with --force-reregister "
+            f"if the new content is the intended evidence."
+        )
+    manifests = case_dir / "evidence-manifests"
+    manifests.mkdir(exist_ok=True)
+    taken = [int(m.stem) for m in manifests.glob("*.json") if m.stem.isdigit()]
+    manifest_file = manifests / f"{max(taken, default=0) + 1}.json"
+    _atomic_write(manifest_file, manifest.decode())
+    entry = {
+        "kind": "folder",
+        "path": str(folder),
+        "manifest_path": str(manifest_file.relative_to(case_dir)),
+        "manifest_sha256": manifest_sha,
+        "file_count": len(rows),
+        "description": description,
+        "registered_at": datetime.now(timezone.utc).isoformat(),
+        "registered_by": examiner,
+    }
+    if registered_via:
+        entry["registered_via"] = registered_via
+    if existing:  # --force-reregister: the earlier manifest stays recoverable
+        previous = {k: existing.get(k) for k in
+                    ("manifest_path", "manifest_sha256", "registered_at", "registered_by")}  # fmt: skip
+        entry["previous_manifests"] = existing.get("previous_manifests", []) + [
+            previous
+        ]
+        registry["files"][registry["files"].index(existing)] = entry
+    else:
+        registry.setdefault("files", []).append(entry)
+    _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
+    return entry
+
+
 def cmd_register_evidence(args, identity: dict) -> None:
     """CLI wrapper — registers evidence and prints summary."""
     case_dir = get_case_dir(getattr(args, "case", None))
@@ -318,11 +445,16 @@ def cmd_register_evidence(args, identity: dict) -> None:
         sys.exit(1)
 
     # Log access
-    _log_evidence_action(
-        case_dir, "register", data["path"], identity, sha256=data["sha256"]
-    )
+    sha256 = data.get("sha256") or data.get("manifest_sha256", "")
+    _log_evidence_action(case_dir, "register", data["path"], identity, sha256=sha256)
 
     print(f"Registered: {data['path']}")
+    if data.get("kind") == "folder":
+        print(
+            f"  Folder: {data['file_count']} file(s), manifest {data['manifest_path']}"
+        )
+        print(f"  Manifest SHA256: {sha256}")
+        return
     if data.get("note") == "updated (same path, hash changed)":
         prior = data["previous_hashes"][-1]["sha256"]
         print(f"  WARNING: hash changed since registration (was {prior})")
