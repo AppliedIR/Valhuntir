@@ -191,3 +191,32 @@ def test_a_folder_holding_a_recorded_output_is_refused(case):
             result_summary={"output_files": [str(made)], "output_sha256s": [_sha(b"parsed")]})  # fmt: skip
     with pytest.raises(ValueError, match="sift-tester-20261009-010"):
         register_evidence_data(case, str(kape), "tester")
+
+
+def _winpmem(case, **entry):
+    mem = case / "extractions" / "wt-acq-001" / "HOST1.raw"
+    mem.parent.mkdir(parents=True)
+    mem.write_bytes(b"\x00" * 4096 + b"MEM")
+    _record(case, "wintools-mcp", audit_id="wt-tester-20261009-004", tool="winpmem",
+            outputs=[{"path": "extractions\\wt-acq-001\\HOST1.raw",
+                      "sift_path": "extractions/wt-acq-001/HOST1.raw",
+                      "sha256": _sha(mem.read_bytes())}], **entry)  # fmt: skip
+    return mem
+
+
+def test_an_acquisitions_output_registers_as_an_acquired_root(case):
+    mem = _winpmem(case, acquisition=True)
+    r = register_evidence_data(case, str(mem), "tester", registered_via="mcp")
+    assert (
+        r["acquired_by"] == "wt-tester-20261009-004"
+        and r["acquisition_tool"] == "winpmem"
+    )
+    assert _files(case)[0]["acquired_by"] == "wt-tester-20261009-004"
+
+
+def test_an_output_of_an_acquisition_and_another_operation_is_refused(case):
+    mem = _winpmem(case, acquisition=True, acquisition_tool="winpmem_mini_x64.exe")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-011", tool="run_command",
+            result_summary={"output_file": str(mem), "output_sha256": _sha(mem.read_bytes())})  # fmt: skip
+    with pytest.raises(ValueError, match="sift-tester-20261009-011"):
+        register_evidence_data(case, str(mem), "tester")

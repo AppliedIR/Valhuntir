@@ -216,12 +216,13 @@ def register_evidence_data(
         for chunk in iter(lambda: f.read(8192), b""):
             sha.update(chunk)
     file_hash = sha.hexdigest()
-    why = _not_an_original(case_dir, str(resolved), file_hash)
+    why, acquired = _not_an_original(case_dir, str(resolved), file_hash)
     if why:
         raise ValueError(why)
     st = os.stat(evidence_path)  # the approval check compares these
-    stat_fields = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+    entry_fields = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
                    "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev, "st_ino": st.st_ino}  # fmt: skip
+    entry_fields.update(acquired or {})  # an acquisition's output says so
 
     # Record in evidence registry
     # Absent, 0-byte or whitespace-only means an empty registry. Anything else
@@ -266,7 +267,7 @@ def register_evidence_data(
                     }
                 )
                 existing["sha256"] = file_hash
-                existing.update(stat_fields)
+                existing.update(entry_fields)
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
                 existing["registered_by"] = examiner
                 if registered_via:
@@ -290,7 +291,7 @@ def register_evidence_data(
         "description": description,
         "registered_at": datetime.now(timezone.utc).isoformat(),
         "registered_by": examiner,
-        **stat_fields,
+        **entry_fields,
     }
     if registered_via:
         entry["registered_via"] = registered_via
@@ -354,27 +355,33 @@ def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
     ]
 
 
-def _not_an_original(case_dir: Path, real: str, sha256: str, index=None) -> str | None:
-    """Why a file can't be registered as an original, or None. A file this
-    case's tools made is linked to what it was made from, never registered:
-    one this case recorded as an operation's output, or one under its
-    extractions/."""
+def _not_an_original(case_dir: Path, real: str, sha256: str, index=None) -> tuple:
+    """(Why a file can't be registered as an original, or None; and, for an
+    acquisition's output, its `acquired_by` and `acquisition_tool`). A file
+    this case's tools made is linked to what it was made from, never
+    registered: one this case recorded as an operation's output, or one under
+    its extractions/. A file every recording operation acquired (a live memory
+    or disk collection) is evidence itself: it registers, labelled."""
     ops = _made_here(
         _recorded_outputs(case_dir) if index is None else index, real, sha256
     )
+    if ops and all(e.get("acquisition") is True for e in ops):
+        first = ops[0]
+        return None, {"acquired_by": first.get("audit_id", ""),
+                      "acquisition_tool": first.get("acquisition_tool") or first.get("tool", "")}  # fmt: skip
     if ops:
         ids = ", ".join(str(e.get("audit_id", "?")) for e in ops)
         return (
             f"{real} is an output this case recorded ({ids}): register the original "
             "evidence it was made from; this file is linked to it."
-        )
+        ), None
     extractions = os.path.realpath(case_dir / "extractions") + os.sep
     if real.startswith(extractions):
         return (
             f"{real} is under this case's extractions/, made by its tools: register "
             "the original evidence it was made from; this file is linked to it."
-        )
-    return None
+        ), None
+    return None, None
 
 
 def _read_registry(reg_file: Path) -> dict:
@@ -476,7 +483,9 @@ def _register_folder(
         if p not in hashes:  # not readable as a regular file when hashed
             unreadable.setdefault(p, "not readable as a regular file")
             continue
-        why = _not_an_original(case_dir, os.path.realpath(p), hashes[p], recorded)
+        why, acquired = _not_an_original(
+            case_dir, os.path.realpath(p), hashes[p], recorded
+        )
         if why:
             raise ValueError(f"{folder} holds a file that isn't an original: {why}")
         st = os.lstat(p)
@@ -484,6 +493,7 @@ def _register_folder(
                      "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                      "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev,
                      "st_ino": st.st_ino})  # fmt: skip
+        rows[-1].update(acquired or {})
     doc = {"folder": str(folder), "files": rows,
            "skipped": sorted(os.path.relpath(p, base) for p in skipped)}  # fmt: skip
     if unreadable:  # only then, so a manifest written before the key is unchanged
