@@ -669,8 +669,10 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
         raise RuntimeError(f"claude mcp add {name} failed: {stderr}")
 
 
-def _duplicate_backends(servers: dict) -> list[str]:
-    """Per-backend ~/.claude.json entries that duplicate gateway routing."""
+def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
+    """Per-backend entries in `path` (~/.claude.json) that duplicate gateway
+    routing, and an `opencti-mcp` entry for the same gateway once its current
+    name `threatintel-mcp` is written: one threat-intel entry."""
     _BACKEND_NAMES = {
         "forensic-mcp",
         "case-mcp",
@@ -685,12 +687,19 @@ def _duplicate_backends(servers: dict) -> list[str]:
         "forensic-rag",
         "windows-triage",
     }
-    gw_url = servers.get("vhir", {}).get("url", "")
+    gw_url = (servers.get("vhir") or servers.get("threatintel-mcp") or {}).get(
+        "url", ""
+    )
     if not gw_url:
         return []
+    names = _BACKEND_NAMES if "vhir" in servers else set()
+    if "threatintel-mcp" in servers:
+        names = names | {"opencti-mcp"}
     gw_base = gw_url.rsplit("/mcp/", 1)[0]
     try:
-        existing = json.loads((Path.home() / ".claude.json").read_text())["mcpServers"]
+        existing = json.loads((path or Path.home() / ".claude.json").read_text())[
+            "mcpServers"
+        ]
     except (OSError, ValueError, KeyError, TypeError):
         return []
     if not isinstance(existing, dict):
@@ -698,16 +707,17 @@ def _duplicate_backends(servers: dict) -> list[str]:
     return [
         name
         for name, entry in existing.items()
-        if name in _BACKEND_NAMES
+        if name in names
+        and name not in servers
         and isinstance(entry, dict)
         and entry.get("url", "").startswith(gw_base)
     ]
 
 
-def _cleanup_duplicate_backends(servers: dict) -> None:
+def _cleanup_duplicate_backends(servers: dict, path: Path | None = None) -> None:
     """Remove per-backend entries that duplicate gateway routing."""
-    claude_json = Path.home() / ".claude.json"
-    removed = _duplicate_backends(servers)
+    claude_json = path or Path.home() / ".claude.json"
+    removed = _duplicate_backends(servers, claude_json)
     if not removed:
         return
     try:
@@ -850,7 +860,11 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             _cleanup_duplicate_backends(servers)
         else:
             output = Path.cwd() / ".mcp.json"
+            stale = _duplicate_backends(servers, output)
+            if stale:  # backed up and announced, as ~/.claude.json is
+                _announce_claude_json(output, ([], []), stale)
             _merge_and_write(output, {"mcpServers": servers})
+            _cleanup_duplicate_backends(servers, output)
             print(f"  Generated: {output}")
 
         settings = _deploy_claude_code_assets(Path.cwd())
