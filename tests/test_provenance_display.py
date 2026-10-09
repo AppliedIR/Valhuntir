@@ -337,3 +337,40 @@ def test_every_root_of_an_artifact_is_listed():
     text = "\n".join(finding_lines(f))
     assert f"root: {ROOT['path']} sha256={H7Z[:16]} (AI-registered)" in text
     assert f"root: {IMG['path']} sha256={HIMG[:16]} (examiner-registered)" in text
+
+
+JOB = "hash-0123456789abcdef"
+
+
+def test_a_hash_still_being_computed_names_its_job_never_reads_as_a_hash():
+    f = finding("F-steve-020", "output hashed in the background", "FULL", art(
+        "FULL", chain=[*RUN, link("recorded-id", "sift-steve-030", f"{X}/3/big.bin",
+                                  f"pending:{JOB}", f"{X}/3/big.bin", HOUT)]))  # fmt: skip
+    text = "\n".join(provenance_block({"findings": [f]}))
+    assert (
+        f"{X}/3/big.bin pending (job {JOB}) -> {X}/3/big.bin sha256={HOUT[:16]}" in text
+    )
+    assert "sha256=pending" not in text
+
+
+def test_each_candidate_of_an_ambiguous_artifact_is_listed_by_the_fields_it_has():
+    cands = [
+        {"audit_id": "sift-steve-040", "entry_sha256": "e" * 64, "path": f"{X}/4/a.csv",
+         "sha256": HCSV},
+        {"audit_id": "sift-steve-041", "entry_sha256": "e" * 64, "path": f"{X}/4/a.csv",
+         "sha256": ""},
+        {"audit_id": "sift-steve-042", "entry_sha256": "e" * 64, "tool": "run_command"},
+        {"audit_id": "sift-steve-043", "entry_sha256": "e" * 64, "path": "/mnt/case/disk",
+         "image": IMG["path"]},
+    ]  # fmt: skip
+    f = finding("F-steve-021", "two producers", "AMBIGUOUS", art(
+        "AMBIGUOUS", "two operations wrote a.csv", root=None,
+        provenance_candidates=cands))  # fmt: skip
+    text = "\n".join(finding_lines(f))
+    assert f"candidate: sift-steve-040 path={X}/4/a.csv sha256={HCSV[:16]}" in text
+    assert f"candidate: sift-steve-041 path={X}/4/a.csv no hash" in text
+    assert "candidate: sift-steve-042 tool=run_command\n" in text + "\n"
+    assert (
+        f"candidate: sift-steve-043 path=/mnt/case/disk image={IMG['path']}\n"
+        in text + "\n"
+    )

@@ -89,9 +89,27 @@ def grade_label(finding: dict, art: dict | None = None, reason: bool = True) -> 
     return f"{label}: {why}" if reason and why else label
 
 
+def _hash(sha) -> str:
+    """The start of a SHA-256; a hash still being computed names its job."""
+    sha = str(sha or "?")
+    if sha.startswith("pending:"):
+        return f"pending (job {_s(sha.split(':', 1)[1])})"
+    return f"sha256={_s(sha)[:16]}"
+
+
 def _file(d) -> str:
     d = d if isinstance(d, dict) else {}
-    return f"{_s(d.get('path', '?'))} sha256={_s(d.get('sha256') or '?')[:16]}"
+    return f"{_s(d.get('path', '?'))} {_hash(d.get('sha256'))}"
+
+
+def candidate_line(c: dict) -> str:
+    """One of an AMBIGUOUS artifact's candidates, by the fields it has: its
+    audit id, then its tool, path, mounted image and hash when recorded."""
+    parts = [_s(c.get("audit_id") or "?")]
+    parts += [f"{k}={_s(c[k])}" for k in ("tool", "path", "image") if c.get(k)]
+    if "sha256" in c:
+        parts.append(_hash(c["sha256"]) if c["sha256"] else "no hash")
+    return " ".join(parts)
 
 
 def root_line(root) -> str:
@@ -131,6 +149,9 @@ def finding_lines(finding: dict, indent: str = "  ") -> list[str]:
         links = [x for x in art.get("provenance_chain") or [] if isinstance(x, dict)]
         for k, link in enumerate(links, 1):
             lines.append(f"{indent}      {k}. {link_line(link)}")
+        for c in art.get("provenance_candidates") or []:  # what made it AMBIGUOUS
+            if isinstance(c, dict):
+                lines.append(f"{indent}      candidate: {candidate_line(c)}")
     return lines
 
 
