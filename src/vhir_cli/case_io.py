@@ -1048,6 +1048,9 @@ def _merge_items(
         "rejected_by",
         "rejection_reason",
         "verification",
+        # A read-time annotation (get_findings, export_bundle: whether the
+        # source case's approval verifies), never stored content
+        "approval_verification",
         # The challenge cites this case's audit trail; the incoming case's
         # skeptic ids don't resolve here.
         "challenged",
