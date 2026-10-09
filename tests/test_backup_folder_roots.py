@@ -100,3 +100,23 @@ def test_a_folder_whose_manifest_was_changed_is_not_counted_as_backed_up(
     m.write_text(m.read_text().replace("b.evtx", "c.evtx"))
     with pytest.raises(OSError, match="kape"):
         _copied(case, tmp_path / "out", include_evidence=True)
+
+
+def test_a_registered_file_at_a_credential_path_is_reported_not_counted(case, tmp_path):
+    """passwords/<name>.json is never copied: registered there, it's named."""
+    k = case / "passwords"
+    k.mkdir()
+    (k / "alice.json").write_text('{"note": "evidence, as it happens"}')
+    (k / "notes.txt").write_text("copied as usual")
+    register_evidence_data(case, str(k), "tester")
+    with pytest.raises(OSError, match=r"passwords/alice\.json: .*never copies"):
+        _copied(case, tmp_path / "out", include_evidence=True)
+
+
+def test_a_registered_file_itself_at_a_credential_path_says_why(case, tmp_path):
+    k = case / "passwords"
+    k.mkdir()
+    (k / "bob.json").write_text("{}")
+    register_evidence_data(case, str(k / "bob.json"), "tester")
+    with pytest.raises(OSError, match=r"passwords/bob\.json: .*never copies"):
+        _copied(case, tmp_path / "out", include_evidence=True)

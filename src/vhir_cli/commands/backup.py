@@ -283,7 +283,9 @@ def _create_backup_data(
     # is: one that is there sits behind a link or folder the scan won't
     # follow, and any other can't be found where it was registered.
     if include_evidence:
-        reached = {os.path.realpath(a) for _r, a, _s in scan["evidence"]}
+        # a credential's path is never copied, so it isn't reached
+        reached = {os.path.realpath(a) for r, a, _s in scan["evidence"]
+                   if not _is_credential_copy(r)}  # fmt: skip
         reached |= {os.path.realpath(e.filename) for e in problems}
         # A registered folder is reached when every file its manifest lists
         # is; each one that isn't is reported by name. One whose manifest is
@@ -299,6 +301,9 @@ def _create_backup_data(
                     f"registered evidence the backup leaves out by name ({name}); "
                     "back it up separately"
                     if (name := os.path.basename(m)) in _SKIP_NAMES
+                    else "registered evidence the backup never copies (a credential "
+                    "file's path, passwords/<name>.json); back it up separately"
+                    if _is_credential_copy(os.path.relpath(m, case_dir))
                     else "registered evidence the backup can't reach (behind a link "
                     "it won't follow)"
                     if os.path.isfile(m)
@@ -312,7 +317,10 @@ def _create_backup_data(
         problems += [
             FileNotFoundError(
                 errno.ENOENT,
-                "registered evidence the backup can't reach (behind a link it "
+                "registered evidence the backup never copies (a credential file's "
+                "path, passwords/<name>.json); back it up separately"
+                if _is_credential_copy(os.path.relpath(r, case_dir))
+                else "registered evidence the backup can't reach (behind a link it "
                 "won't follow; link the storage at the top of the case or of "
                 "evidence/)"
                 if os.path.isfile(r)
