@@ -128,7 +128,7 @@ def test_without_a_terminal_nothing_changes_and_it_says_so(box, capsys):
     out = capsys.readouterr().out
     assert box.settings.read_bytes() == before and same() and not asked
     assert "would change" in out and '"enabled"' in out and "vhir update" in out
-    assert "Merged:" not in out and "NOT applied" in out
+    assert "Merged:" not in out  # setup and update then say NOT applied, once
     assert result == (box.settings, "kept")
 
 
@@ -572,10 +572,8 @@ def test_ask_user_files_without_a_terminal_keeps_the_file(box, setup):
 
 def test_anchor_vhir_update_without_a_terminal_still_keeps(box, capsys):
     before = _write_user(box.settings)
-    box.run()  # _deploy_claude_code_assets alone, as `vhir update` calls it
-    assert (
-        box.settings.read_bytes() == before and "NOT applied" in capsys.readouterr().out
-    )
+    result, _ = box.run()  # _deploy_claude_code_assets alone, as `vhir update` calls it
+    assert box.settings.read_bytes() == before and result[1] == "kept"
 
 
 def test_anchor_a_fresh_file_is_created_with_no_undo_line(box, setup, capsys):

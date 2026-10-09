@@ -108,7 +108,7 @@ Forensic tool execution on Windows. 10 tools with catalog-gated execution — on
 
 ### opensearch-mcp
 
-Evidence indexing, structured querying, and programmatic enrichment. 17 tools. Connects to a local or remote OpenSearch instance. 15 parsers cover the forensic evidence spectrum. Can run as a stdio MCP server (via gateway), HTTP server (standalone), CLI (`opensearch-ingest`), or vhir plugin (`vhir ingest`).
+Evidence indexing, structured querying, and programmatic enrichment. 21 tools. Connects to a local or remote OpenSearch instance. 15 parsers cover the forensic evidence spectrum. Can run as a stdio MCP server (via gateway), HTTP server (standalone), CLI (`opensearch-ingest`), or vhir plugin (`vhir ingest`).
 
 Hayabusa auto-detection runs after EVTX ingest, applying 3,700+ Sigma rules and indexing alerts. Two post-ingest enrichment pipelines (triage baseline and threat intelligence) run programmatically with zero LLM token cost.
 

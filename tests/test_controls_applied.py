@@ -212,3 +212,22 @@ def test_the_sift_uninstall_offers_claude_codes_copies(box, monkeypatch):  # noq
         pass
     assert sorted(p.name for p in skills.iterdir()) == ["my-own"]
     assert not (agents / "finding-skeptic.md").exists()
+
+
+def test_a_declined_change_is_said_once_by_setup_and_once_by_update(
+    box,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    full = _deployed(box)
+    full["permissions"]["deny"].pop()  # a change the examiner then declines
+    box.settings.write_text(json.dumps(full))
+    monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: False)
+    monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: None)
+    capsys.readouterr()
+    cs._generate_config("claude-code", {}, "steve")  # no terminal: kept
+    assert capsys.readouterr().out.count("Forensic controls NOT applied") == 1
+    from vhir_cli.commands import update
+
+    update._redeploy_clients({"clients": ["claude-code"]})
+    assert capsys.readouterr().out.count("Forensic controls NOT applied") == 1

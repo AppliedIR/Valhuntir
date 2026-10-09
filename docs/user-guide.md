@@ -132,7 +132,7 @@ Restore asks where to put the case, offering the folder it was backed up from (E
 
 ## Evidence Indexing with OpenSearch
 
-When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 17 purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
+When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
 
 ### Ingesting Evidence
 
@@ -195,7 +195,7 @@ The LLM queries indexed evidence through opensearch-mcp's 8 query tools. Start b
 - **"What unique source IPs appear in the event logs?"** — field value enumeration
 - **"How many logon events are there?"** — fast document counts
 
-All indices follow the naming convention: `case-{case_id}-{artifact_type}-{hostname}`. The LLM can query across an entire case or target specific artifact types and hosts. See the [MCP Reference](mcp-reference.md#opensearch-mcp-17-tools) for the full list of query tools and parameters.
+Every write goes to `case-<c12>-<artifact_type>-0`, named from the case's identity; index names carry no host, and each record carries its machine in `host.id`. The LLM can query across an entire case, or target specific artifact types and machines (by `host.id`). See the [MCP Reference](mcp-reference.md#opensearch-mcp-21-tools) for the full list of query tools and parameters.
 
 ### Programmatic Enrichment
 

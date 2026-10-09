@@ -302,7 +302,7 @@ Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenC
 | 50-79 | Medium confidence, corroborate with other sources |
 | < 50 | Low confidence, note uncertainty |
 
-## opensearch-mcp (17 tools)
+## opensearch-mcp (21 tools)
 
 Evidence indexing, structured querying, and programmatic enrichment. Connects to a local or remote OpenSearch instance. Optional but recommended for investigations at scale.
 
@@ -343,18 +343,30 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 |------|-----------|-------------|---------------------|
 | `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | List Hayabusa/Sigma detection alerts | To review automated detections |
 
+### Host Tools (2)
+
+| Tool | Parameters | Description | When the LLM uses it |
+|------|-----------|-------------|---------------------|
+| `idx_host_inventory` | `case_id`, `offset` (0), `limit` (50) | The case's machines (`host.id`) with their state, the raw names their records carry, the evidence they came from and document counts; names no machine holds yet; ingest runs awaiting host confirmation. Read only | To see which machines the case holds and what the examiner still has to confirm |
+| `case_host_fix` | `raw`, `new_canonical` | Suggest that a host name belongs to another machine. Records the suggestion for the examiner and changes no document | When a host name looks like another machine's; the examiner renames or merges in the Hosts tab |
+
+### Maintenance Tools (2)
+
+| Tool | Parameters | Description | When the LLM uses it |
+|------|-----------|-------------|---------------------|
+| `idx_shard_status` | — | Shard usage and capacity headroom | Before large ingests |
+| `idx_install_pipelines` | — | Install or verify the event-log ingest pipeline and index templates (idempotent) | When an ingest reports a missing pipeline or template |
+
 ### Index Naming Convention
 
-All indices follow: `case-{case_id}-{artifact_type}-{hostname}`
+Every write goes to `case-<c12>-<artifact_type>-0`, where `<c12>` is the case's identity (from its `CASE.yaml`). Index names carry no host: each record carries its machine in `host.id` (and the name as found in `host.name`), so filter by `host.id`.
 
 Examples:
-- `case-incident-001-evtx-server01`
-- `case-incident-001-shimcache-dc01`
-- `case-incident-001-zeek-conn-fw01`
-- `case-incident-001-vol-pslist-dc01`
-- `case-incident-001-hayabusa-server01`
+- `case-3f2a9c1b7d04-evtx-0`
+- `case-3f2a9c1b7d04-shimcache-0`
+- `case-3f2a9c1b7d04-zeek-conn-0`
 
-Wildcard queries across a case: `index="case-incident-001-*"`
+Searches without an index read the active case's own indices. A case from before 0.7 keeps its per-host indices (`case-{case_id}-{artifact_type}-{hostname}`), and they are read too.
 
 ### How opensearch-mcp Guides the LLM
 

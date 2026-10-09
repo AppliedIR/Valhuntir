@@ -2323,8 +2323,7 @@ def _report_settings(path: Path, status: str) -> None:
     """Say what happened to a settings file, truthfully."""
     if status in ("created", "written"):
         print(f"  Merged:    settings.json -> {path}")
-    elif status == "kept":
-        print(f"  Forensic controls NOT applied to {path}; see above.")
+    # "kept": setup and update each say so once, beside the controls block
 
 
 def _merge_and_write(path: Path, config: dict) -> None:
