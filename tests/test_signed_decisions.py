@@ -757,6 +757,41 @@ def test_a_corrupt_pending_file_is_set_aside_not_overwritten(case, monkeypatch, 
     assert "set aside, unchanged" in capsys.readouterr().err
 
 
+class _OneSecond:
+    """datetime as decide.py sees it, with the clock stopped on one second."""
+
+    @staticmethod
+    def now(tz=None):
+        import datetime as dt
+
+        return dt.datetime(2026, 10, 9, 12, 0, 0, tzinfo=tz)
+
+
+@pytest.mark.parametrize("links", [True, False], ids=["hard links", "no hard links"])
+def test_two_unreadable_reads_in_one_second_keep_both_set_aside_copies(
+    tmp_path, monkeypatch, links
+):
+    from vhir_cli import decide
+
+    monkeypatch.setattr(decide, "datetime", _OneSecond)
+    if not links:  # a filesystem without hard links: the copy is made new
+        monkeypatch.setattr(
+            decide.os, "link", lambda *a: (_ for _ in ()).throw(PermissionError())
+        )
+    path = tmp_path / "pending-reviews.json"
+    path.write_text('{"items": "first"}')
+    assert decide.read_delta(path) == {}
+    path.write_text('["second"]')
+    assert decide.read_delta(path) == {}
+    copies = sorted(tmp_path.glob("pending-reviews.json.corrupt-*"))
+    assert [c.name for c in copies] == [
+        "pending-reviews.json.corrupt-20261009T120000Z",
+        "pending-reviews.json.corrupt-20261009T120000Z-1",
+    ]
+    assert [c.read_text() for c in copies] == ['{"items": "first"}', '["second"]']
+    assert not path.exists()
+
+
 def test_an_id_named_twice_is_signed_once(case):
     A._approve_specific(case, ["F-steve-002", "F-steve-002"], IDENT, case / "cfg")
     assert _signed() == [("F-steve-002", "approve")]

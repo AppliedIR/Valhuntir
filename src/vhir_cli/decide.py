@@ -140,15 +140,36 @@ def read_delta(path: Path) -> dict | None:
         data = None
     if isinstance(data, dict) and isinstance(data.get("items", []), list):
         return data
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    aside = path.with_name(f"{path.name}.corrupt-{stamp}")
-    os.replace(path, aside)
+    aside = _set_aside(path, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     print(
         f"WARNING: {path.name} couldn't be read; it was set aside, unchanged, as "
         f"{aside.name}. Its staged entries are in that file.",
         file=sys.stderr,
     )
     return {}
+
+
+def _set_aside(path: Path, stamp: str) -> Path:
+    """Move `path` to `<name>.corrupt-<stamp>`, or `-<n>` after it when that
+    name is taken: a copy set aside earlier is never replaced."""
+    for n in range(10000):
+        aside = path.with_name(f"{path.name}.corrupt-{stamp}" + (f"-{n}" if n else ""))
+        try:
+            os.link(path, aside)  # fails on an existing name, never replaces it
+        except FileExistsError:
+            continue
+        except OSError:  # no hard links here: copy into a name made new
+            try:
+                fd = os.open(aside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            with os.fdopen(fd, "wb") as f:
+                f.write(path.read_bytes())
+                f.flush()
+                os.fsync(f.fileno())
+        path.unlink()
+        return aside
+    raise OSError(f"no free name to set {path.name} aside")
 
 
 def _write_delta(path: Path, delta: dict) -> None:
