@@ -2113,26 +2113,23 @@ def _setup_codex_remote(servers: dict) -> None:
     print(f"  {CODEX_REMOTE_LIMITS}")
 
 
-def _uninstall_codex() -> None:
-    """Remove Valhuntir's Codex profile, its skills and the skeptic's agent;
-    ~/.codex/config.toml and the user's own skills are left alone."""
-    profile = codex_profile_path()
-    agent = Path.home() / ".codex" / "agents" / "finding-skeptic.toml"
-    skills_root = Path.home() / ".agents" / "skills"
-    skills = (
-        sorted(
-            d
-            for d in skills_root.iterdir()
-            if d.is_dir()
-            and (d.name.startswith("vhir-") or d.name == "finding-skeptic")
-        )
-        if skills_root.is_dir()
-        else []
+def _our_skills(root: Path) -> list[Path]:
+    """Valhuntir's skills under `root` (vhir-*, finding-skeptic); a user's own
+    are never listed."""
+    if not root.is_dir():
+        return []
+    return sorted(
+        d
+        for d in root.iterdir()
+        if d.is_dir() and (d.name.startswith("vhir-") or d.name == "finding-skeptic")
     )
-    found = [p for p in (profile, agent) if p.is_file()] + skills
+
+
+def _remove_listed(heading: str, found: list[Path]) -> None:
+    """List `found`, ask once, and remove them (a link, never its target)."""
     if not found:
         return
-    print("  Codex files to remove:")
+    print(f"  {heading}:")
     for p in found:
         print(f"    {p}")
     if not _prompt_yn_strict("  Remove them?"):
@@ -2144,6 +2141,27 @@ def _uninstall_codex() -> None:
         else:
             p.unlink()  # a file, or a link (never its target)
     print("  Removed.")
+
+
+def _uninstall_codex() -> None:
+    """Remove Valhuntir's Codex profile, its skills and the skeptic's agent;
+    ~/.codex/config.toml and the user's own skills are left alone."""
+    profile = codex_profile_path()
+    agent = Path.home() / ".codex" / "agents" / "finding-skeptic.toml"
+    found = [p for p in (profile, agent) if p.is_file()]
+    _remove_listed(
+        "Codex files to remove", found + _our_skills(Path.home() / ".agents" / "skills")
+    )
+
+
+def _uninstall_claude_copies() -> None:
+    """Remove the skills and the skeptic's agent setup gave Claude Code; the
+    user's own skills and agents are left alone."""
+    agent = Path.home() / ".claude" / "agents" / "finding-skeptic.md"
+    found = _our_skills(Path.home() / ".claude" / "skills") + (
+        [agent] if agent.is_file() or agent.is_symlink() else []
+    )
+    _remove_listed("Claude Code skills and agent to remove", found)
 
 
 OPENWEBUI_ENV = """\
@@ -2605,6 +2623,9 @@ def _uninstall_sift() -> None:
             print("      Removed.")
         else:
             print("      Skipped.")
+    print()
+
+    _uninstall_claude_copies()
     print()
 
     from vhir_cli.commands.codex_controls import uninstall_codex_step

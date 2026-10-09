@@ -158,3 +158,57 @@ def test_uninstall_leaves_no_hook_pointing_into_vhir_hooks(box):  # noqa: F811
         "PostToolUse": [{"matcher": "Write", "hooks": [mine]}],
         "PermissionDenied": [{"matcher": "Bash", "hooks": [mine]}],
     }
+
+
+def _claude_copies(home):
+    skills, agents = home / ".claude" / "skills", home / ".claude" / "agents"
+    for name in ("vhir-welcome", "vhir-playbooks", "finding-skeptic", "my-own"):
+        (skills / name).mkdir(parents=True, exist_ok=True)
+        (skills / name / "SKILL.md").write_text(f"# {name}\n")
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "finding-skeptic.md").write_text("skeptic\n")
+    (agents / "my-agent.md").write_text("mine\n")
+    return skills, agents
+
+
+def test_uninstall_offers_claude_codes_skills_and_agent_and_keeps_the_users(
+    box,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    skills, agents = _claude_copies(box.home)
+    asked = []
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda q: asked.append(q) or True)
+    cs._uninstall_claude_copies()
+    out = capsys.readouterr().out
+    assert (
+        asked == ["  Remove them?"] and "Claude Code skills and agent to remove" in out
+    )
+    assert sorted(p.name for p in skills.iterdir()) == ["my-own"]
+    assert sorted(p.name for p in agents.iterdir()) == ["my-agent.md"]
+
+
+def test_declined_the_claude_code_copies_stay(box, monkeypatch):  # noqa: F811
+    skills, agents = _claude_copies(box.home)
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda q: False)
+    cs._uninstall_claude_copies()
+    assert len(list(skills.iterdir())) == 4 and (agents / "finding-skeptic.md").exists()
+
+
+def test_the_sift_uninstall_offers_claude_codes_copies(box, monkeypatch):  # noqa: F811
+    skills, agents = _claude_copies(box.home)
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda q: True)
+    monkeypatch.setattr(
+        cs, "_remove_vhir_mcp_entries", lambda *a, **k: None, raising=False
+    )
+    from vhir_cli.commands import codex_controls as cc
+
+    etc = box.home / "etc-codex"  # never the host's /etc/codex
+    monkeypatch.setattr(cc, "REQUIREMENTS", etc / "requirements.toml")
+    monkeypatch.setattr(cc, "HOOKS_DIR", etc / "vhir-hooks")
+    try:
+        cs._uninstall_sift()
+    except SystemExit:
+        pass
+    assert sorted(p.name for p in skills.iterdir()) == ["my-own"]
+    assert not (agents / "finding-skeptic.md").exists()
