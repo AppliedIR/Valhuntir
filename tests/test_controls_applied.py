@@ -288,11 +288,11 @@ LITE_TEMPLATE_HOOKS = json.loads(
     '{"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "cat << \'EOF\'\\n<forensic-rules>\\nPLAN before 3+ steps (display numbered checklist BEFORE any tool call) | APPROVAL before conclusions\\nEVIDENCE FORMAT: Source | Extraction | Content | Observation | Interpretation | Confidence | Ask human\\nRECORD actions in ACTIONS.md | NO DELETE without approval\\n</forensic-rules>\\nEOF"}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$CLAUDE_PROJECT_DIR/hooks/forensic-audit.sh"}]}]}'
 )
 # Other forms our hooks have been written in: setup-client-*.sh's absolute
-# path, a quoted path, a redirect after the script, arguments, and a quoted
-# bare name
+# path, a quoted path, a redirect after the script, arguments, and the braced
+# variable
 OTHER_FORMS = (
     "/home/u/vhir/.claude/hooks/forensic-audit.sh",
-    "bash 'forensic-audit.sh'",
+    "${CLAUDE_PROJECT_DIR}/.claude/hooks/forensic-audit.sh",
     '"$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"',
     "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh>/dev/null",
     "'$CLAUDE_PROJECT_DIR/hooks/case-dir-check.sh' 2>&1",
@@ -303,6 +303,11 @@ USERS_OWN = (
     "python3 /p/.claude/hooks/run.py --dir /tmp/",
     "/opt/my-forensic-audit.sh",
     "/opt/forensic-audit.sh.bak",
+    # a script with one of our names, outside the places setup puts ours
+    "/opt/team/case-data-guard.sh",
+    "/opt/team/hooks/forensic-audit.sh",
+    "bash 'case-dir-check.sh'",
+    '"/home/u/scripts/forensic-audit.sh" >/dev/null',
 )
 
 
@@ -343,6 +348,15 @@ def test_uninstall_removes_our_hook_however_its_path_is_written(box, command):  
 
 def test_a_users_hook_ending_in_a_slash_is_kept_and_the_uninstall_goes_on(box):  # noqa: F811
     mine = {"type": "command", "command": "python3 /p/.claude/hooks/run.py --dir /tmp/"}
+    settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [mine]}]}}
+    box.settings.write_text(json.dumps(settings))
+    cs._remove_forensic_settings(box.settings)
+    assert json.loads(box.settings.read_text()) == settings
+
+
+@pytest.mark.parametrize("command", USERS_OWN[-4:])
+def test_a_users_script_with_one_of_our_names_elsewhere_is_kept(box, command):  # noqa: F811
+    mine = {"type": "command", "command": command}
     settings = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [mine]}]}}
     box.settings.write_text(json.dumps(settings))
     cs._remove_forensic_settings(box.settings)

@@ -944,11 +944,12 @@ def _find_claude_code_assets() -> Path | None:
 
 
 _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
-# One of them named as a whole word in a hook's command: after the start, a
-# slash, a quote or a space, and before the end, a quote, a space, a redirect
-# or a separator.
+# One of them, at a place setup puts it, in a hook's command: a project's
+# `$CLAUDE_PROJECT_DIR/.claude/hooks/` or (Lite) `$CLAUDE_PROJECT_DIR/hooks/`,
+# or a `.claude/hooks/` folder by its path; then the end, a quote, a space, a
+# redirect or a separator. A script of the same name elsewhere is the user's.
 _OUR_HOOK_SCRIPT = re.compile(
-    r"(?:^|[/\s\"'])(?:"
+    r"(?:\$\{?CLAUDE_PROJECT_DIR\}?/(?:\.claude/)?hooks/|/\.claude/hooks/)(?:"
     + "|".join(re.escape(h) for h in _PRODUCT_HOOKS)
     + r")(?=$|[\s\"'<>|;&)])"
 )
@@ -2882,10 +2883,10 @@ def _remove_forensic_settings(path: Path) -> None:
 
     # Remove forensic hooks: under every event, each hook that runs a script
     # from ~/.vhir/hooks/ (all of that folder is ours), runs one of our hook
-    # scripts from anywhere (however its path is written: quoted, with a
-    # redirect after it, from $CLAUDE_PROJECT_DIR/hooks/ or .claude/hooks/),
-    # or is the forensic-rules prompt. A user's own hooks stay, even beside
-    # ours in one entry.
+    # scripts from a place setup puts it (however its path is written:
+    # quoted, with a redirect after it, from $CLAUDE_PROJECT_DIR/hooks/ or a
+    # .claude/hooks/ folder), or is the forensic-rules prompt. A user's own
+    # hooks stay, even beside ours in one entry.
     global_hooks = str(Path.home() / ".vhir" / "hooks") + "/"
 
     def ours(hook) -> bool:
