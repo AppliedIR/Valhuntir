@@ -319,19 +319,34 @@ def _file_identity():
 
 
 def _sha256_of(path: str) -> str:
+    """The SHA-256 of a regular file. Opened non-blocking and checked before
+    any read, so a FIFO is refused (ValueError) instead of blocking."""
     fi = _file_identity()
     if fi is not None:
         return fi.hash_file(path).sha256
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ValueError(f"{path} is not a regular file")
     sha = hashlib.sha256()
-    with open(path, "rb") as f:
+    with os.fdopen(fd, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             sha.update(chunk)
     return sha.hexdigest()
 
 
-def _hash_each(case_dir, paths: list[str]) -> tuple[dict[str, str], str]:
-    """Hash every file now (the CLI has no time limit); no job."""
-    return {p: _sha256_of(p) for p in paths}, ""
+def _hash_each(
+    case_dir, paths: list[str]
+) -> tuple[dict[str, str], str, dict[str, str]]:
+    """Hash every file now (the CLI has no time limit); no job. A file that
+    can't be hashed is an error of its own, never the whole folder's."""
+    hashes, errors = {}, {}
+    for p in paths:
+        try:
+            hashes[p] = _sha256_of(p)
+        except (OSError, ValueError) as e:
+            errors[p] = str(e)
+    return hashes, "", errors
 
 
 def _walk_folder(folder: Path) -> tuple[list[str], list[str], dict[str, str]]:
@@ -365,7 +380,8 @@ def _register_folder(
     from vhir_cli.case_io import _atomic_write
 
     regular, skipped, unreadable = _walk_folder(folder)
-    hashes, job_id = hasher(case_dir, regular)
+    hashes, job_id, *more = hasher(case_dir, regular)
+    unreadable.update(more[0] if more else {})
     if job_id:
         return {"status": "hashing", "job_id": job_id, "path": str(folder),
                 "files_hashing": sum(p not in hashes for p in regular)}  # fmt: skip
@@ -373,7 +389,7 @@ def _register_folder(
     rows = []
     for p in regular:
         if p not in hashes:  # not readable as a regular file when hashed
-            skipped.append(p)
+            unreadable.setdefault(p, "not readable as a regular file")
             continue
         st = os.lstat(p)
         rows.append({"path": os.path.relpath(p, base), "sha256": hashes[p],
@@ -704,12 +720,16 @@ def _verify_folder(case_dir: Path, entry: dict, hasher) -> list[dict]:
                  "error": "its manifest is missing or changed since registration"}]  # fmt: skip
     base = case_dir.resolve()
     paths = {r["path"]: str(base / r["path"]) for r in rows}
-    hashes, job_id = hasher(case_dir, [p for p in paths.values() if os.path.exists(p)])
+    hashes, job_id, *more = hasher(
+        case_dir, [p for p in paths.values() if os.path.exists(p)]
+    )
+    errors = more[0] if more else {}
     results = []
     for r in rows:
         p = paths[r["path"]]
         actual = hashes.get(p)
         status = ("MISSING" if not os.path.exists(p) else
+                  "ERROR" if p in errors else
                   "PENDING" if actual is None and job_id else
                   "ERROR" if actual is None else
                   "OK" if actual == r["sha256"] else "MODIFIED")  # fmt: skip
@@ -718,7 +738,7 @@ def _verify_folder(case_dir: Path, entry: dict, hasher) -> list[dict]:
         if status == "PENDING":
             result["job_id"] = job_id
         elif status == "ERROR":
-            result["error"] = "not readable as a regular file"
+            result["error"] = errors.get(p, "not readable as a regular file")
         results.append(result)
     return results
 

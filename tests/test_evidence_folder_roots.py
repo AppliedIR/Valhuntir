@@ -213,3 +213,51 @@ def test_an_unreadable_subfolder_is_listed_never_dropped(case):
     (unreadable,) = m["unreadable"]
     assert unreadable["path"] == "evidence/kape/C/Locked" and unreadable["error"]
     assert r["file_count"] == 2
+
+
+def _bounded(fn, *args):
+    """fn(*args) in a thread, so a read that blocks fails the test, not hangs it."""
+    import threading
+
+    out = {}
+    t = threading.Thread(target=lambda: out.update(v=fn(*args)), daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive(), f"{fn.__name__} blocked"
+    return out["v"]
+
+
+@pytest.mark.parametrize("bad", ["unreadable", "fifo"])
+def test_one_bad_member_is_an_error_and_the_rest_are_still_verified(case, bad):
+    from vhir_cli.commands.evidence import verify_evidence_data
+
+    kape = case / "evidence" / "kape"
+    register_evidence_data(case, str(kape), "tester")
+    a = kape / "C" / "Windows" / "a.evtx"
+    if bad == "unreadable":
+        a.chmod(0)
+    else:
+        a.unlink()
+        os.mkfifo(a)
+    try:
+        v = _bounded(verify_evidence_data, case)
+    finally:
+        if bad == "unreadable":
+            a.chmod(0o644)
+    by = {x["path"].rsplit("/", 1)[1]: x for x in v["results"]}
+    assert by["a.evtx"]["status"] == "ERROR" and by["a.evtx"]["error"], by["a.evtx"]
+    assert by["b.evtx"]["status"] == "OK" and by["old.bin"]["status"] == "OK"
+    assert v["errors"] == 1
+
+
+def test_a_member_that_cant_be_hashed_is_listed_as_unreadable(case):
+    kape = case / "evidence" / "kape"
+    a = kape / "C" / "Windows" / "a.evtx"
+    a.chmod(0)
+    try:
+        r = register_evidence_data(case, str(kape), "tester")
+    finally:
+        a.chmod(0o644)
+    m = json.loads((case / r["manifest_path"]).read_text())
+    assert [u["path"] for u in m["unreadable"]] == ["evidence/kape/C/Windows/a.evtx"]
+    assert r["file_count"] == 1
