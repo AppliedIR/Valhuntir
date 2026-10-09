@@ -179,3 +179,29 @@ def test_an_item_decided_here_is_left_as_it_is(tmp_path):
         b, {"case_id": "INC-A", "examiner": "alice", "findings": [_finding()]}
     )
     assert json.loads((b / "findings.json").read_text()) == [mine]
+
+
+def test_the_same_bundle_imported_twice_keeps_the_same_hash(tmp_path, monkeypatch):
+    """When it was imported isn't content: re-importing leaves a staged
+    review's hash valid."""
+    import vhir_cli.case_io as cio
+
+    b = _case(tmp_path / "INC-B", "INC-B")
+    bundle = {"case_id": "INC-A", "examiner": "alice",
+              "exported_at": "2026-10-01T00:00:00+00:00", "findings": [_finding()]}  # fmt: skip
+    import_bundle(b, bundle)
+    first = json.loads((b / "findings.json").read_text())[0]
+
+    class Later(cio.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cio.datetime(2027, 1, 1, tzinfo=tz)
+
+    monkeypatch.setattr(cio, "datetime", Later)
+    import_bundle(b, bundle)
+    again = json.loads((b / "findings.json").read_text())[0]
+    assert (
+        again["imported_from"]["imported_at"] != first["imported_from"]["imported_at"]
+    )
+    assert again["content_hash"] == first["content_hash"]
+    assert again["content_hash"] == compute_content_hash(again)
