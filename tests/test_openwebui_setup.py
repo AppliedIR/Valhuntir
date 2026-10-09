@@ -191,6 +191,20 @@ def test_each_admin_panel_location_is_the_switch_for_its_key():
         "Settings > Connections > User Connections: Direct Connections off"
     )
     assert where["USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False"] == (
-        "Users > Groups > Default permissions > Edit, Features Permissions: "
-        "Direct Tool Servers off"
+        "Users > Groups > Default permissions > Edit, and each group's Edit > "
+        "Permissions; Features Permissions: Direct Tool Servers off"
     )
+
+
+def test_the_two_permissions_are_turned_off_in_every_group_too(owui, capsys):
+    """Open WebUI 0.11.4 gives a permission when the defaults or any of the
+    user's groups allows it, so the defaults alone don't take it away."""
+    where = dict(cs.OPENWEBUI_ADMIN_PANEL)
+    for key in (
+        "USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False",
+        "USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False",
+    ):
+        assert "each group's Edit > Permissions" in where[key], key
+    assert "turn them off in every group" in cs.OPENWEBUI_ENV
+    cs._write_openwebui(_servers())
+    assert "so check every group" in capsys.readouterr().out
