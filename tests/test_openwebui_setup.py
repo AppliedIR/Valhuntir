@@ -61,6 +61,8 @@ def test_the_env_file_is_the_lock_profile(owui):
         "ENABLE_PLUGINS": "False",
         "USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS": "False",
         "ENABLE_DIRECT_INTEGRATIONS": "False",
+        "ENABLE_DIRECT_CONNECTIONS": "False",
+        "USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS": "False",
         "ENABLE_CODE_INTERPRETER": "False",
         "CODE_INTERPRETER_ENGINE": "pyodide",
         "CODE_EXECUTION_ENGINE": "pyodide",
@@ -159,12 +161,12 @@ def test_initialize_against_nothing_is_none():
 def test_setup_says_an_existing_instance_takes_only_enable_plugins_and_where_the_rest_are(
     owui, capsys
 ):
-    """Open WebUI keeps five of the six lock-profile keys in its database from
+    """Open WebUI keeps seven of the eight lock-profile keys in its database from
     its first start: setup says so and names where each is set."""
     cs._write_openwebui(_servers())
     out = capsys.readouterr().out
     assert "On an instance that has started before, that sets only" in out
-    assert "ENABLE_PLUGINS: its database keeps the other five" in out
+    assert "ENABLE_PLUGINS: its database keeps the other seven" in out
     keys = [
         ln.split("=")[0]
         for ln in cs.OPENWEBUI_ENV.splitlines()
@@ -177,11 +179,18 @@ def test_setup_says_an_existing_instance_takes_only_enable_plugins_and_where_the
 
 
 def test_each_admin_panel_location_is_the_switch_for_its_key():
-    """Open WebUI 0.11.4: the Direct Integrations switch, on the Integrations
-    page, sets ENABLE_DIRECT_INTEGRATIONS; the Connections page's Direct
-    Connections switch sets another key."""
+    """Open WebUI 0.11.4: the Integrations page's Direct Integrations switch
+    sets ENABLE_DIRECT_INTEGRATIONS, the Connections page's Direct Connections
+    switch ENABLE_DIRECT_CONNECTIONS, and the group permissions' Direct Tool
+    Servers switch USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS."""
     where = dict(cs.OPENWEBUI_ADMIN_PANEL)
     assert where["ENABLE_DIRECT_INTEGRATIONS=False"] == (
         "Settings > Integrations > User Connections: Direct Integrations off"
     )
-    assert not any("Direct Connections" in w for w in where.values())
+    assert where["ENABLE_DIRECT_CONNECTIONS=False"] == (
+        "Settings > Connections > User Connections: Direct Connections off"
+    )
+    assert where["USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False"] == (
+        "Users > Groups > Default permissions > Edit, Features Permissions: "
+        "Direct Tool Servers off"
+    )

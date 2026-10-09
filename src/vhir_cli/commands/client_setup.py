@@ -2177,15 +2177,17 @@ OPENWEBUI_ENV = """\
 # Open WebUI settings for Valhuntir. Start Open WebUI with them, e.g.:
 #   docker run --env-file openwebui-vhir.env ... ghcr.io/open-webui/open-webui
 # They keep tool code off the Open WebUI server: no Python Tools or Functions,
-# no workspace tools or Integrations tab for users, and a code interpreter
-# that runs in the browser (Pyodide) or not at all. Never point the code
-# interpreter at Jupyter or Open Terminal.
+# no workspace tools, Integrations tab, direct connections or direct tool
+# servers for users, and a code interpreter that runs in the browser (Pyodide)
+# or not at all. Never point the code interpreter at Jupyter or Open Terminal.
 # On an instance that has started before, only ENABLE_PLUGINS applies: Open
-# WebUI keeps the other five in its database from its first start. Set those
+# WebUI keeps the other seven in its database from its first start. Set those
 # in the Admin Panel (docs/open-webui-setup.md lists where).
 ENABLE_PLUGINS=False
 USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False
 ENABLE_DIRECT_INTEGRATIONS=False
+ENABLE_DIRECT_CONNECTIONS=False
+USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False
 ENABLE_CODE_INTERPRETER=False
 CODE_INTERPRETER_ENGINE=pyodide
 CODE_EXECUTION_ENGINE=pyodide
@@ -2199,6 +2201,11 @@ OPENWEBUI_ADMIN_PANEL = (
      "Users > Groups > Default permissions > Edit: Tools Access off"),
     ("ENABLE_DIRECT_INTEGRATIONS=False",
      "Settings > Integrations > User Connections: Direct Integrations off"),
+    ("ENABLE_DIRECT_CONNECTIONS=False",
+     "Settings > Connections > User Connections: Direct Connections off"),
+    ("USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False",
+     "Users > Groups > Default permissions > Edit, Features Permissions: "
+     "Direct Tool Servers off"),
     ("ENABLE_CODE_INTERPRETER=False",
      "Settings > Code Execution > Code Interpreter: Enable Code Interpreter off"),
     ("CODE_INTERPRETER_ENGINE=pyodide",
@@ -2300,7 +2307,7 @@ def _write_openwebui(servers: dict) -> None:
     print("  In Open WebUI, as an admin:")
     print("    1. Start it with --env-file openwebui-vhir.env (the lock profile).")
     print("       On an instance that has started before, that sets only")
-    print("       ENABLE_PLUGINS: its database keeps the other five from its first")
+    print("       ENABLE_PLUGINS: its database keeps the other seven from its first")
     print("       start. Set them in the Admin Panel (checked on Open WebUI 0.11.4):")
     for key, where in OPENWEBUI_ADMIN_PANEL:
         print(f"         {key}: {where}")
