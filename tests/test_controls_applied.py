@@ -293,6 +293,7 @@ LITE_TEMPLATE_HOOKS = json.loads(
 OTHER_FORMS = (
     "/home/u/vhir/.claude/hooks/forensic-audit.sh",
     "${CLAUDE_PROJECT_DIR}/.claude/hooks/forensic-audit.sh",
+    "${CLAUDE_PROJECT_DIR}/hooks/forensic-audit.sh",
     '"$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh"',
     "$CLAUDE_PROJECT_DIR/.claude/hooks/forensic-audit.sh>/dev/null",
     "'$CLAUDE_PROJECT_DIR/hooks/case-dir-check.sh' 2>&1",
