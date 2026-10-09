@@ -210,18 +210,11 @@ def register_evidence_data(
             registered_via, folder_hasher or _hash_each,
         )  # fmt: skip
 
-    # Compute SHA256
-    sha = hashlib.sha256()
-    with open(evidence_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha.update(chunk)
-    file_hash = sha.hexdigest()
+    # The hash, and the stat fields the approval check compares, of the same bytes
+    file_hash, entry_fields = _hash_stable(evidence_path)
     why, acquired = _not_an_original(case_dir, str(resolved), file_hash)
     if why:
         raise ValueError(why)
-    st = os.stat(evidence_path)  # the approval check compares these
-    entry_fields = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
-                   "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev, "st_ino": st.st_ino}  # fmt: skip
     entry_fields.update(acquired or {})  # an acquisition's output says so
 
     # Record in evidence registry
@@ -267,6 +260,9 @@ def register_evidence_data(
                     }
                 )
                 existing["sha256"] = file_hash
+                # the new bytes' own fields: their stat, or the note
+                for k in (*_STAT_FIELDS, "hash_note"):
+                    existing.pop(k, None)
                 existing.update(entry_fields)
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
                 existing["registered_by"] = examiner
@@ -303,6 +299,30 @@ def register_evidence_data(
 
 
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+_STAT_FIELDS = ("size", "mtime_ns", "ctime_ns", "st_dev", "st_ino")
+
+
+def _stat_fields(st) -> dict:
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+            "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev, "st_ino": st.st_ino}  # fmt: skip
+
+
+def _hash_stable(path, tries: int = 3) -> tuple[str, dict]:
+    """A file's SHA-256 and the stat fields of those bytes, both from one open
+    file: stat before and after hashing, hashed again when they differ. A file
+    that kept changing gets no stat fields, so nothing vouches for it as
+    unchanged, and is noted as such."""
+    for _ in range(tries):
+        with open(path, "rb") as f:
+            before = os.fstat(f.fileno())
+            sha = hashlib.sha256()
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                sha.update(chunk)
+            after = os.fstat(f.fileno())
+        fields = _stat_fields(before)
+        if fields == _stat_fields(after):
+            return sha.hexdigest(), fields
+    return sha.hexdigest(), {"hash_note": "changed while hashing"}
 
 
 def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:

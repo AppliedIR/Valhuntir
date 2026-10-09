@@ -220,3 +220,81 @@ def test_an_output_of_an_acquisition_and_another_operation_is_refused(case):
             result_summary={"output_file": str(mem), "output_sha256": _sha(mem.read_bytes())})  # fmt: skip
     with pytest.raises(ValueError, match="sift-tester-20261009-011"):
         register_evidence_data(case, str(mem), "tester")
+
+
+# --- stat fields come from the hashed bytes' own fd ----------------------------
+
+
+def _changing_hasher(monkeypatch, path, times):
+    """sha256() whose first update appends to `path`, for `times` hashes."""
+    from vhir_cli.commands import evidence
+
+    real, left = hashlib.sha256, [times]
+
+    class Changing:
+        def __init__(self, data=b""):
+            self._h, self._first = real(data), True
+
+        def update(self, chunk):
+            if self._first and left[0] > 0:
+                left[0] -= 1
+                with open(path, "ab") as f:
+                    f.write(b"+")
+            self._first = False
+            self._h.update(chunk)
+
+        def hexdigest(self):
+            return self._h.hexdigest()
+
+    monkeypatch.setattr(evidence.hashlib, "sha256", Changing)
+
+
+def test_a_file_changed_after_it_was_hashed_keeps_the_hashed_bytes_stat(
+    case, monkeypatch
+):
+    """The stat fields vouch for the bytes hashed, so a later change is seen."""
+    from vhir_cli.commands import evidence
+
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    check = evidence._not_an_original
+
+    def change_then_check(*a, **k):  # runs between the hash and the old stat
+        with open(p, "ab") as f:
+            f.write(b"later")
+        return check(*a, **k)
+
+    monkeypatch.setattr(evidence, "_not_an_original", change_then_check)
+    r = register_evidence_data(case, str(p), "tester")
+    assert r["sha256"] == _sha(b"M" * 100) and r["size"] == 100, r
+
+
+def test_a_file_changed_while_hashed_is_hashed_again(case, monkeypatch):
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    _changing_hasher(monkeypatch, p, times=1)
+    r = register_evidence_data(case, str(p), "tester")
+    assert r["sha256"] == _sha(b"M" * 100 + b"+") and r["size"] == 101, r
+    assert "hash_note" not in r
+
+
+def test_a_file_that_keeps_changing_is_registered_as_such_with_no_stat(
+    case, monkeypatch
+):
+    """Never as stable: no stat fields vouch for it, so it's always re-hashed."""
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    _changing_hasher(monkeypatch, p, times=99)
+    r = register_evidence_data(case, str(p), "tester")
+    assert r["hash_note"] == "changed while hashing", r
+    assert not {"size", "mtime_ns", "ctime_ns", "st_dev", "st_ino"} & set(r)
+
+
+def test_a_forced_reregister_that_keeps_changing_drops_the_old_stat(case, monkeypatch):
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    assert register_evidence_data(case, str(p), "tester")["size"] == 100
+    p.write_bytes(b"N" * 100)
+    _changing_hasher(monkeypatch, p, times=99)
+    r = register_evidence_data(case, str(p), "tester", force_reregister=True)
+    assert r["hash_note"] == "changed while hashing" and "size" not in r, r
