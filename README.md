@@ -123,7 +123,7 @@ graph LR
     SM["sift-mcp<br/>5 tools · Linux forensic<br/>tool execution"]
     RAG["forensic-rag<br/>3 tools · semantic search<br/>22K records"]
     WT["windows-triage<br/>13 tools · offline baseline<br/>validation"]
-    OC["opencti<br/>8 tools · threat<br/>intelligence"]
+    OC["threatintel-mcp<br/>8 tools · threat<br/>intelligence"]
     OS["opensearch-mcp<br/>21 tools · evidence indexing,<br/>query, enrichment"]
     CD["Examiner Portal<br/>browser review + commit"]
     FK["forensic-knowledge<br/>shared YAML data"]
@@ -204,7 +204,7 @@ These layers reinforce each other through consistent, contextual repetition acro
 | opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (21 tools). Optional. |
 | forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more (3 tools) |
 | windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation (13 tools) |
-| threatintel-mcp | SIFT | (via gateway) | Threat intelligence: `lookup_ioc` returns each configured platform's records (OpenCTI, MISP), with no verdict; the other tools search OpenCTI. `opencti-mcp` in configurations from before (8 tools) |
+| threatintel-mcp | SIFT | (via gateway) | Threat intelligence: `lookup_ioc` returns each configured platform's records (OpenCTI, MISP), with no verdict; the other tools search OpenCTI. Also answers to `opencti-mcp` (8 tools) |
 | OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
 | Examiner Portal | SIFT | (via gateway) | Browser-based review and approval. Primary review UI. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (10 tools) |
@@ -376,7 +376,7 @@ vhir approve --review                                    # Sign reviews staged i
 vhir approve --reattest F-alice-005                      # Fresh signed approval of an item approved under 0.6
 ```
 
-Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Commit button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
+Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. A finding's evidence chain and grade are shown too, and its approval checks run first: the evidence it starts from is still registered and unchanged, its audit lines are unchanged, and each cited OpenSearch document still has its recorded hash. A failed check needs a reason typed at the terminal, signed with the approval; with none, the item stays DRAFT. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Commit button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
 
 #### reject
 
