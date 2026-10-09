@@ -106,3 +106,25 @@ def test_cli_registration_asks_the_examiner_first(case, monkeypatch, capsys, ans
             ev.cmd_register_evidence(args, {"os_user": "t", "examiner": "tester"})
         assert e.value.code != 0 and _files(case) == []
     assert len(asked) == 1 and str(p) in asked[0]
+
+
+def test_a_file_under_the_cases_extractions_is_refused(case):
+    s2 = case / "extractions" / "op-7z-001" / "sample2.raw"
+    s2.parent.mkdir()
+    s2.write_bytes(b"MEMORY-SAMPLE-2")
+    with pytest.raises(ValueError, match="under this case's extractions/"):
+        register_evidence_data(case, str(s2), "tester", registered_via="mcp")
+    with pytest.raises(ValueError, match="under this case's extractions/"):
+        register_evidence_data(case, str(s2.parent), "tester")  # a folder of them
+    assert _files(case) == []
+
+
+def test_a_bash_made_file_elsewhere_with_no_record_registers_as_the_ais(case):
+    """No record to refuse it by: it registers, labelled as the AI's."""
+    made = case / "work" / "sample2.raw"
+    made.parent.mkdir()
+    made.write_bytes(b"MEMORY-SAMPLE-2-from-bash")
+    r = register_evidence_data(case, str(made), "tester", registered_via="mcp")
+    assert r["registered_via"] == "mcp" and _files(case)[0]["path"] == str(
+        made.resolve()
+    )

@@ -216,6 +216,9 @@ def register_evidence_data(
         for chunk in iter(lambda: f.read(8192), b""):
             sha.update(chunk)
     file_hash = sha.hexdigest()
+    why = _not_an_original(case_dir, str(resolved), file_hash)
+    if why:
+        raise ValueError(why)
     st = os.stat(evidence_path)  # the approval check compares these
     stat_fields = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
                    "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev, "st_ino": st.st_ino}  # fmt: skip
@@ -296,6 +299,19 @@ def register_evidence_data(
     _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
 
     return entry
+
+
+def _not_an_original(case_dir: Path, real: str, sha256: str) -> str | None:
+    """Why a file can't be registered as an original, or None. A file this
+    case's tools made is linked to what it was made from, never registered:
+    one under the case's extractions/."""
+    extractions = os.path.realpath(case_dir / "extractions") + os.sep
+    if real.startswith(extractions):
+        return (
+            f"{real} is under this case's extractions/, made by its tools: register "
+            "the original evidence it was made from; this file is linked to it."
+        )
+    return None
 
 
 def _read_registry(reg_file: Path) -> dict:
@@ -396,6 +412,9 @@ def _register_folder(
         if p not in hashes:  # not readable as a regular file when hashed
             unreadable.setdefault(p, "not readable as a regular file")
             continue
+        why = _not_an_original(case_dir, os.path.realpath(p), hashes[p])
+        if why:
+            raise ValueError(f"{folder} holds a file that isn't an original: {why}")
         st = os.lstat(p)
         rows.append({"path": os.path.relpath(p, base), "sha256": hashes[p],
                      "size": st.st_size, "mtime_ns": st.st_mtime_ns,
