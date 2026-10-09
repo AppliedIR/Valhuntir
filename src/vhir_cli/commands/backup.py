@@ -268,8 +268,11 @@ def _create_backup_data(
     problems = []
     for err in scan["unreadable"]:
         top = Path(err.filename).relative_to(case_dir).parts[:1]
+        real = os.path.realpath(err.filename)
         evidence = (
-            top == ("evidence",) or os.path.realpath(err.filename) in scan["registered"]
+            top == ("evidence",)
+            or real in scan["registered"]
+            or _in_folder(real, scan.get("registered_folders", set()))
         )
         if evidence and not include_evidence:
             continue
@@ -282,6 +285,13 @@ def _create_backup_data(
     if include_evidence:
         reached = {os.path.realpath(a) for _r, a, _s in scan["evidence"]}
         reached |= {os.path.realpath(e.filename) for e in problems}
+        # a registered folder is reached when its files are (or it holds none)
+        reached |= {
+            f
+            for f in scan.get("registered_folders", set())
+            if any(r.startswith(f + os.sep) for r in reached)
+            or (os.path.isdir(f) and not any(files for _d, _s, files in os.walk(f)))
+        }
         problems += [
             FileNotFoundError(
                 errno.ENOENT,
@@ -600,9 +610,10 @@ def human_size(nbytes: int) -> str:
     return f"{nbytes} B"
 
 
-def _registered_paths(case_dir: Path) -> set[str]:
+def _registered_paths(case_dir: Path, folders: set | None = None) -> set[str]:
     """Resolved paths of the case's registered evidence (evidence.json);
-    a relative entry is relative to the case directory."""
+    a relative entry is relative to the case directory. Folder roots (a KAPE
+    collection) are also added to `folders` when it's given."""
     registry = case_dir / "evidence.json"
     if not registry.exists():
         return set()
@@ -623,7 +634,14 @@ def _registered_paths(case_dir: Path) -> set[str]:
                 paths.add(str((case_dir / p).resolve()))  # an absolute p stands
             except (OSError, RuntimeError, ValueError):  # ValueError: a NUL in p
                 continue
+            if folders is not None and f.get("kind") == "folder":
+                folders.add(str((case_dir / p).resolve()))
     return paths
+
+
+def _in_folder(real: str, folders: set) -> bool:
+    """Whether `real` lies inside one of the registered folder roots."""
+    return any(real.startswith(f.rstrip(os.sep) + os.sep) for f in folders)
 
 
 # The in-progress marker's body, so only vhir's own marker counts as one.
@@ -681,8 +699,10 @@ def scan_case_dir(case_dir: Path) -> dict:
     symlinks = []
     pruned_backups: list[str] = []  # Valhuntir backups made into the case
     unreadable: list[OSError] = []
-    # Registered evidence is evidence wherever it sits (the case root, work/).
-    registered = _registered_paths(case_dir)
+    # Registered evidence is evidence wherever it sits (the case root, work/);
+    # a registered folder's files are evidence too.
+    registered_folders: set[str] = set()
+    registered = _registered_paths(case_dir, registered_folders)
     # A symlink may lead out of the case only where the examiner links storage
     # in: at the top of the case or of evidence/, or as registered evidence.
     # Any other link must stay inside the case or the storage linked in on its
@@ -788,8 +808,10 @@ def scan_case_dir(case_dir: Path) -> dict:
             entry = (str(rel_path), str(abs_path), size)
             parts = rel_path.parts
 
+            real = str(abs_path.resolve()) if registered else ""
             if (parts and parts[0] == "evidence") or (
-                registered and str(abs_path.resolve()) in registered
+                registered
+                and (real in registered or _in_folder(real, registered_folders))
             ):
                 evidence.append(entry)
             elif parts and parts[0] == "extractions":
@@ -804,6 +826,7 @@ def scan_case_dir(case_dir: Path) -> dict:
         "symlinks": symlinks,
         "unreadable": unreadable,
         "registered": registered,
+        "registered_folders": registered_folders,
         "pruned_backups": pruned_backups,
     }
 
