@@ -654,7 +654,7 @@ def _grade(case, grade: str) -> dict:
         a["provenance_reason"] = {
             "DECLARED": "input named by the AI, not found in the command",
             "AMBIGUOUS": "two registered files have this hash",
-            "BROKEN": "recorded before 0.6.4: the query recorded no results",
+            "BROKEN": "no recorded origin: made outside recorded tools",
             "CITED-UNVERIFIED": "no audit entry is cited",
         }[grade]
         if grade == "DECLARED":
@@ -667,7 +667,7 @@ def _grade(case, grade: str) -> dict:
             if grade == "AMBIGUOUS":
                 a["provenance_candidates"] = [{"path": "/a", "sha256": "1" * 64}]
             if grade == "BROKEN":
-                a["provenance_break"] = {"kind": "recorded-before-0.6.4"}
+                a["provenance_break"] = {"kind": "no-recorded-origin"}
     _save(case, f)
     return f
 
@@ -789,3 +789,25 @@ def test_the_security_doc_states_view_2_and_the_override():
     text = doc.read_text()
     assert "view 2" in text and "override reason" in text.lower()
     assert "pseudo-terminal" in text
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_query_logged_before_0_6_4_is_shown_so_before_the_passphrase(
+    case, capsys, monkeypatch, route
+):
+    f = _finding(case)
+    f["provenance_grade"] = "BROKEN"
+    f["artifacts"][0].update(
+        provenance_grade="BROKEN",
+        provenance_root=None,
+        provenance_chain=[],
+        provenance_reason="recorded before 0.6.4: q-1 records no results to follow",
+        provenance_break={"kind": "recorded-before-0.6.4"},
+    )
+    _save(case, f)
+    before, _ = run(route, case, capsys, monkeypatch, reason=None)
+    # (the review path also lists every stored field as written)
+    assert "Provenance: recorded before 0.6.4" in before
+    assert "Provenance: BROKEN" not in before
+    assert "[1] recorded before 0.6.4: q-1 records no results to follow" in before
+    assert status(case) == "APPROVED"

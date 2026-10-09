@@ -28,7 +28,14 @@ from pathlib import Path
 
 import yaml
 
-from vhir_cli import approval_auth, approval_checks, credentials, decide, ledger
+from vhir_cli import (
+    approval_auth,
+    approval_checks,
+    credentials,
+    decide,
+    ledger,
+    provenance_view,
+)
 from vhir_cli.case_io import (
     case_id_of,
     check_case_file_integrity,
@@ -543,27 +550,22 @@ def _approval_lines(item: dict, checks: dict) -> list[str]:
     if checks.get("detail"):
         lines.append(f"  Checks: not applicable: {_safe(checks['detail'])}")
     if "title" in item and not item.get("imported_from"):
-        if item.get("provenance_schema") != 2:
-            lines.append("  Provenance: recorded before 0.6.4")
-        else:
-            arts = [a for a in item.get("artifacts") or [] if isinstance(a, dict)]
-            roots = {}
-            for a in arts:
-                r = a.get("provenance_root")
-                if isinstance(r, dict) and r.get("path"):
-                    roots[(str(r["path"]), str(r.get("sha256") or ""))] = r
-            for (path, sha), r in sorted(roots.items()):
-                lines.append(
-                    f"  Root: {_safe(path)} {_safe(sha)} ({_safe(r.get('label', ''))})"
-                )
-            grade = item.get("provenance_grade")
-            if grade:
-                lines.append(f"  Provenance: {_safe(grade)}")
-            for a in arts:
-                if a.get("provenance_grade") not in (None, "FULL"):
-                    lines.append(
-                        f"    {_safe(a['provenance_grade'])}: {_safe(a.get('provenance_reason', ''))}"
-                    )
+        arts = [a for a in item.get("artifacts") or [] if isinstance(a, dict)]
+        roots = {}
+        for a in arts if item.get("provenance_schema") == 2 else []:
+            r = a.get("provenance_root")
+            if isinstance(r, dict) and r.get("path"):
+                roots[(str(r["path"]), str(r.get("sha256") or ""))] = r
+        lines += [
+            f"  Root: {provenance_view.root_line(r)}" for _, r in sorted(roots.items())
+        ]
+        lines.append(
+            f"  Provenance: {_safe(provenance_view.grade_label(item, reason=False))}"
+        )
+        for n, a in enumerate(arts if item.get("provenance_schema") == 2 else [], 1):
+            label, why = provenance_view.grade(item, a)
+            if label != "FULL" or why:
+                lines.append(f"    [{n}] {_safe(provenance_view.grade_label(item, a))}")
     for i in checks.get("items", []):
         if i.get("status") == "failed":
             lines.append(

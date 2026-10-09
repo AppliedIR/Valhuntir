@@ -33,6 +33,7 @@ from vhir_cli.case_io import (
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.display import one_line
 from vhir_cli.ledger_verify import approved_view, verification_block, verification_json
+from vhir_cli.provenance_view import provenance_block
 
 
 def cmd_report(args, identity: dict) -> None:
@@ -94,7 +95,8 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
     output = report(case_dir, args, safe=True)
     if output is None:
         return
-    block = verification_block(approved_view(case_dir))
+    view = approved_view(case_dir)
+    block = verification_block(view) + [""] + provenance_block(view)
     print(output + "\n\n" + "\n".join(_d(x, True) for x in block))
     save = getattr(args, "save", None)
     if save:

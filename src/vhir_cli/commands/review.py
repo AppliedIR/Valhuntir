@@ -34,6 +34,7 @@ from vhir_cli.case_io import (
 )
 from vhir_cli.display import display_safe, one_line
 from vhir_cli.display import lines as indent_lines
+from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
 
@@ -154,7 +155,7 @@ def _show_findings_table(case_dir: Path) -> None:
         if len(title) > 37:
             title = title[:37] + "..."
         confidence = f.get("confidence", "?")
-        provenance = f.get("provenance", _EM_DASH)
+        provenance = grade_label(f, reason=False)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
 
@@ -235,7 +236,7 @@ def _show_findings_detail(case_dir: Path) -> None:
         print(f"  Confidence:   {f.get('confidence', '?')}")
         if f.get("confidence_justification"):
             print(f"  Justification: {f['confidence_justification']}")
-        print(f"  Provenance:   {f.get('provenance', _EM_DASH)}")
+        print("\n".join(finding_lines(f)))
         print(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
         print(f"  Observation:  {indent_lines(raw.get('observation', ''), ' ' * 16)}")
         print(
