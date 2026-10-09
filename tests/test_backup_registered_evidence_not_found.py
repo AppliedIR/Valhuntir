@@ -141,8 +141,8 @@ def test_skipping_records_the_missing_file_and_verify_and_restore_list_it(
 
 def test_a_registered_file_in_a_folder_that_cant_be_read_stops_the_backup(tmp_path):
     case = _case(tmp_path / "cases")
-    locked = case / "extractions" / "locked"
-    locked.mkdir()
+    locked = case / "work" / "locked"  # registered: not a tool's output
+    locked.mkdir(parents=True)
     (locked / "f.bin").write_bytes(b"hidden\n")
     _register(case, locked / "f.bin")
     locked.chmod(0o000)
