@@ -301,10 +301,73 @@ def register_evidence_data(
     return entry
 
 
-def _not_an_original(case_dir: Path, real: str, sha256: str) -> str | None:
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
+    """(real path, SHA-256) of each output an audit entry records: its output
+    records (a wintools one by its SIFT path, relative to the case), and its
+    output files and saved stdout."""
+    out = [(str(case_dir / o["sift_path"]) if o.get("sift_path") else o.get("path"),
+            o.get("sha256")) for o in entry.get("outputs") or [] if isinstance(o, dict)]  # fmt: skip
+    rs = (
+        entry.get("result_summary")
+        if isinstance(entry.get("result_summary"), dict)
+        else {}
+    )
+    out += zip(
+        rs.get("output_files") or [], rs.get("output_sha256s") or [], strict=False
+    )
+    out.append((rs.get("output_file"), rs.get("output_sha256")))
+    return [(os.path.realpath(p), h) for p, h in out if isinstance(p, str) and p
+            and isinstance(h, str)]  # fmt: skip
+
+
+def _recorded_outputs(case_dir: Path) -> dict[str, list[tuple[str, dict]]]:
+    """Every output this case's audit records: real path -> (hash, entry). No
+    other case's trail is read."""
+    index: dict[str, list[tuple[str, dict]]] = {}
+    for log in sorted((case_dir / "audit").glob("*.jsonl")):
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                for p, h in _outputs_of(case_dir, entry):
+                    index.setdefault(p, []).append((h, entry))
+    return index
+
+
+def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
+    """The entries that recorded the file as an output, at this path with this
+    hash (a hash still pending matches on the path alone). The empty file's
+    hash never matches."""
+    if sha256 == _EMPTY_SHA256:
+        return []
+    return [
+        e for h, e in index.get(real, []) if h == sha256 or h.startswith("pending:")
+    ]
+
+
+def _not_an_original(case_dir: Path, real: str, sha256: str, index=None) -> str | None:
     """Why a file can't be registered as an original, or None. A file this
     case's tools made is linked to what it was made from, never registered:
-    one under the case's extractions/."""
+    one this case recorded as an operation's output, or one under its
+    extractions/."""
+    ops = _made_here(
+        _recorded_outputs(case_dir) if index is None else index, real, sha256
+    )
+    if ops:
+        ids = ", ".join(str(e.get("audit_id", "?")) for e in ops)
+        return (
+            f"{real} is an output this case recorded ({ids}): register the original "
+            "evidence it was made from; this file is linked to it."
+        )
     extractions = os.path.realpath(case_dir / "extractions") + os.sep
     if real.startswith(extractions):
         return (
@@ -408,11 +471,12 @@ def _register_folder(
                 "files_hashing": sum(p not in hashes for p in regular)}  # fmt: skip
     base = case_dir.resolve()
     rows = []
+    recorded = _recorded_outputs(case_dir)  # read once for the whole folder
     for p in regular:
         if p not in hashes:  # not readable as a regular file when hashed
             unreadable.setdefault(p, "not readable as a regular file")
             continue
-        why = _not_an_original(case_dir, os.path.realpath(p), hashes[p])
+        why = _not_an_original(case_dir, os.path.realpath(p), hashes[p], recorded)
         if why:
             raise ValueError(f"{folder} holds a file that isn't an original: {why}")
         st = os.lstat(p)

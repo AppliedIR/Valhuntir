@@ -128,3 +128,66 @@ def test_a_bash_made_file_elsewhere_with_no_record_registers_as_the_ais(case):
     assert r["registered_via"] == "mcp" and _files(case)[0]["path"] == str(
         made.resolve()
     )
+
+
+def _record(case, log, **entry):
+    with open(case / "audit" / f"{log}.jsonl", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def test_this_cases_recorded_output_is_refused_naming_its_operation(case, tmp_path):
+    out = case / "work" / "vol-pslist-sample2.txt"
+    out.parent.mkdir()
+    out.write_text("PID PPID ImageFileName\n4 0 System\n")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-007", tool="run_command",
+            result_summary={"output_file": str(out), "output_sha256": _sha(out.read_bytes())})  # fmt: skip
+    with pytest.raises(ValueError, match="sift-tester-20261009-007"):
+        register_evidence_data(case, str(out), "tester")
+    # the same record in another case's trail is never consulted
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "audit").mkdir(parents=True)
+    other = case / "work" / "same.txt"
+    other.write_text("PID PPID ImageFileName\n4 0 System\n")
+    _record(elsewhere, "sift-mcp", audit_id="sift-x-1", tool="run_command",
+            result_summary={"output_file": str(other), "output_sha256": _sha(other.read_bytes())})  # fmt: skip
+    register_evidence_data(case, str(other), "tester")
+
+
+@pytest.mark.parametrize("relative", [True, False], ids=["case-relative", "absolute"])
+def test_a_wintools_output_is_refused_by_its_sift_path(case, relative):
+    csv = case / "work" / "evtx" / "20261009_EvtxECmd_Output.csv"
+    csv.parent.mkdir(parents=True)
+    csv.write_text("TimeCreated,EventId\n2026-10-01,4624\n")
+    sift_path = "work/evtx/20261009_EvtxECmd_Output.csv" if relative else str(csv)
+    _record(case, "wintools-mcp", audit_id="wt-tester-20261009-003", tool="EvtxECmd",
+            outputs=[{"path": "work\\evtx\\20261009_EvtxECmd_Output.csv",
+                      "sift_path": sift_path, "sha256": _sha(csv.read_bytes())}])  # fmt: skip
+    with pytest.raises(ValueError, match="wt-tester-20261009-003"):
+        register_evidence_data(case, str(csv), "tester")
+
+
+def test_a_pending_output_matches_by_path_and_an_empty_file_never_matches(case):
+    out = case / "work" / "big.raw"
+    out.parent.mkdir()
+    out.write_bytes(b"big")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-008", tool="run_command",
+            outputs=[{"path": str(out), "sha256": "pending:hash-0123456789abcdef"}])  # fmt: skip
+    with pytest.raises(ValueError, match="sift-tester-20261009-008"):
+        register_evidence_data(case, str(out), "tester")
+    empty = case / "work" / "empty.txt"
+    empty.write_bytes(b"")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-009", tool="run_command",
+            result_summary={"output_file": str(empty), "output_sha256": _sha(b"")})  # fmt: skip
+    register_evidence_data(case, str(empty), "tester")
+
+
+def test_a_folder_holding_a_recorded_output_is_refused(case):
+    kape = case / "evidence" / "kape"
+    kape.mkdir()
+    (kape / "a.evtx").write_bytes(b"A")
+    made = kape / "parsed.csv"
+    made.write_bytes(b"parsed")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-010", tool="run_command",
+            result_summary={"output_files": [str(made)], "output_sha256s": [_sha(b"parsed")]})  # fmt: skip
+    with pytest.raises(ValueError, match="sift-tester-20261009-010"):
+        register_evidence_data(case, str(kape), "tester")
