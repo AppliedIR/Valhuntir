@@ -286,3 +286,41 @@ def test_the_revoke_option_is_on_the_join_code_command():
     assert args.revoke is True
     args = main.build_parser().parse_args(["setup", "join-code"])
     assert args.revoke is False
+
+
+def test_an_error_body_that_cannot_be_read_still_retries_and_warns(
+    home, monkeypatch, capsys
+):
+    import io
+    import urllib.error
+    import urllib.request
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    (home / ".vhir" / "gateway.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "backends": {
+                    "wintools-mcp": {
+                        "url": "http://192.0.2.9:4624/mcp",
+                        "bearer_token": "vhir_wt_" + "c" * 24,
+                    }
+                }
+            }
+        )  # fmt: skip
+    )
+    tries = []
+
+    class Stalled(io.BytesIO):
+        def read(self, *a):
+            raise TimeoutError("timed out")
+
+    def refuse(req, **kw):
+        tries.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, Stalled())
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    join._push_smb_credentials("pw")
+    assert len(tries) == 3
+    err = capsys.readouterr().err
+    assert "HTTP 503: (its body couldn't be read: timed out)" in err
+    assert "didn't confirm the new SMB credentials" in err

@@ -1174,7 +1174,10 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
                 print("  SMB credentials pushed to wintools-mcp")
                 return
         except urllib.error.HTTPError as e:  # wintools answered: say what
-            body = e.read().decode("utf-8", errors="replace").strip()[:300]
+            try:
+                body = e.read().decode("utf-8", errors="replace").strip()[:300]
+            except Exception as read_error:  # a body that never comes
+                body = f"(its body couldn't be read: {read_error})"
             last = f"HTTP {e.code}: {body}"
             print(
                 f"  wintools-mcp answered the SMB credential push: {last}",
