@@ -836,6 +836,13 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
+    # Where each item comes from (a bare array names no case or examiner)
+    origin = {
+        "case_id": str(bundle.get("case_id") or ""),
+        "examiner": str(bundle.get("examiner") or ""),
+        "exported_at": str(bundle.get("exported_at") or ""),
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+    }
     # Host identity is this case's own: another case's machine ids and keys
     # never come in with its findings and timeline items.
     bundle = {
@@ -882,11 +889,11 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                 }
         if "findings" in bundle:
             findings_result = _merge_items(
-                case_dir, "findings.json", bundle["findings"], "id"
+                case_dir, "findings.json", bundle["findings"], "id", origin
             )
         if "timeline" in bundle:
             timeline_result = _merge_items(
-                case_dir, "timeline.json", bundle["timeline"], "id"
+                case_dir, "timeline.json", bundle["timeline"], "id", origin
             )
 
     return {
@@ -952,10 +959,39 @@ def _parse_ts(ts: str) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+# What an imported item kept from the case it came from: its who, when, edits
+# and grades, under imported_from.original
+_ORIGINAL_KEYS = (
+    "examiner", "created_by", "staged", "modified_at", "provenance",
+    "provenance_detail", "provenance_grade", "provenance_reason",
+    "examiner_notes", "examiner_modifications", "imported_from",
+)  # fmt: skip
+
+
+def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
+    """`cleaned`, an incoming item as it will be stored, with where it came
+    from and its original who, when, edits and grades under `imported_from`."""
+    original = {k: item[k] for k in _ORIGINAL_KEYS if k in item}
+    arts = cleaned.get("artifacts")
+    if isinstance(arts, list):
+        for key in ("grade", "reason"):
+            original[f"artifact_{key}s"] = [
+                a.get(f"provenance_{key}") if isinstance(a, dict) else None
+                for a in arts
+            ]
+    cleaned["imported_from"] = {**origin, "original": original}
+    return cleaned
+
+
 def _merge_items(
-    case_dir: Path, filename: str, incoming: list[dict], id_field: str
+    case_dir: Path,
+    filename: str,
+    incoming: list[dict],
+    id_field: str,
+    origin: dict | None = None,
 ) -> dict:
-    """Merge incoming items into a local JSON file using last-write-wins."""
+    """Merge incoming items into a local JSON file using last-write-wins.
+    With `origin` (an import), each item added or updated is stamped with it."""
     local_file = case_dir / filename
     local: list[dict] = []
     if local_file.exists():
@@ -1005,6 +1041,8 @@ def _merge_items(
         cleaned = {k: v for k, v in item.items() if k not in _MERGE_PROTECTED_FIELDS}
         cleaned["status"] = "DRAFT"
         cleaned[id_field] = item_id  # Restore id after stripping
+        if origin is not None:
+            cleaned = _stamp_import(item, cleaned, origin)
 
         if item_id not in local_by_id:
             local.append(cleaned)
