@@ -10,6 +10,7 @@ reached when they are.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -60,3 +61,42 @@ def test_a_folder_registered_outside_evidence_is_evidence_not_case_data(case, tm
     copied = _copied(case, tmp_path / "out")  # evidence left out by default
     assert not any(c.startswith("work/kape/") for c in copied)
     assert "work/notes.txt" in copied
+
+
+def test_a_deleted_member_of_a_registered_folder_is_reported_by_name(case, tmp_path):
+    """The folder isn't complete because another of its files was reached."""
+    k = _kape(case, "evidence")
+    (k / "C" / "b.evtx").unlink()
+    with pytest.raises(OSError) as e:
+        _copied(case, tmp_path / "out", include_evidence=True)
+    assert f"{k / 'C' / 'b.evtx'}: " in str(e.value) and "a.evtx" not in str(e.value)
+
+
+def test_a_member_the_backup_skips_by_name_is_reported_by_name(case, tmp_path):
+    """.DS_Store is left out of every backup, but in a macOS collection it is
+    registered evidence."""
+    k = case / "evidence" / "kape"
+    k.mkdir()
+    (k / "a.evtx").write_bytes(b"A" * 64)
+    (k / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    register_evidence_data(case, str(k), "tester")
+    with pytest.raises(OSError, match=r"\.DS_Store: .*leaves out by name"):
+        _copied(case, tmp_path / "out", include_evidence=True)
+    backup = Path(
+        create_backup_data(
+            case, str(tmp_path / "out2"), "tester", include_evidence=True,
+            skip_unreadable=True,
+        )["backup_path"]
+    )  # fmt: skip
+    manifest = json.loads((backup / "backup-manifest.json").read_text())
+    assert [s["path"] for s in manifest["skipped"]] == ["evidence/kape/.DS_Store"]
+
+
+def test_a_folder_whose_manifest_was_changed_is_not_counted_as_backed_up(
+    case, tmp_path
+):
+    _kape(case, "evidence")
+    m = case / "evidence-manifests" / "1.json"
+    m.write_text(m.read_text().replace("b.evtx", "c.evtx"))
+    with pytest.raises(OSError, match="kape"):
+        _copied(case, tmp_path / "out", include_evidence=True)

@@ -285,13 +285,30 @@ def _create_backup_data(
     if include_evidence:
         reached = {os.path.realpath(a) for _r, a, _s in scan["evidence"]}
         reached |= {os.path.realpath(e.filename) for e in problems}
-        # a registered folder is reached when its files are (or it holds none)
-        reached |= {
-            f
-            for f in scan.get("registered_folders", set())
-            if any(r.startswith(f + os.sep) for r in reached)
-            or (os.path.isdir(f) and not any(files for _d, _s, files in os.walk(f)))
-        }
+        # A registered folder is reached when every file its manifest lists
+        # is; each one that isn't is reported by name. One whose manifest is
+        # missing or changed isn't reached, and is reported as the folder.
+        members = _folder_members(case_dir, scan.get("registered_folders", set()))
+        for folder, files in members.items():
+            if files is None:
+                continue
+            reached.add(folder)
+            problems += [
+                FileNotFoundError(
+                    errno.ENOENT,
+                    f"registered evidence the backup leaves out by name ({name}); "
+                    "back it up separately"
+                    if (name := os.path.basename(m)) in _SKIP_NAMES
+                    else "registered evidence the backup can't reach (behind a link "
+                    "it won't follow)"
+                    if os.path.isfile(m)
+                    else "registered evidence the backup can't find (deleted, moved, "
+                    "or in a folder that can't be read or isn't mounted)",
+                    m,
+                )
+                for m in files
+                if m not in reached
+            ]
         problems += [
             FileNotFoundError(
                 errno.ENOENT,
@@ -637,6 +654,31 @@ def _registered_paths(case_dir: Path, folders: set | None = None) -> set[str]:
             if folders is not None and f.get("kind") == "folder":
                 folders.add(str((case_dir / p).resolve()))
     return paths
+
+
+def _folder_members(case_dir: Path, folders: set) -> dict[str, list[str] | None]:
+    """Each registered folder root's members as its manifest lists them,
+    resolved; None when the manifest is missing or no longer has the hash
+    recorded at registration."""
+    from vhir_cli.commands.evidence import _manifest_rows
+
+    try:
+        files = json.loads((case_dir / "evidence.json").read_text()).get("files", [])
+    except (OSError, ValueError, AttributeError):
+        return {}
+    out: dict[str, list[str] | None] = {}
+    for e in files if isinstance(files, list) else []:
+        if not (isinstance(e, dict) and e.get("kind") == "folder"):
+            continue
+        try:
+            real = str((case_dir / e["path"]).resolve())
+            rows = _manifest_rows(case_dir, e)
+            out[real] = None if rows is None else [
+                str((case_dir / r["path"]).resolve()) for r in rows
+            ]  # fmt: skip
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+            continue
+    return {f: m for f, m in out.items() if f in folders}
 
 
 def _in_folder(real: str, folders: set) -> bool:
