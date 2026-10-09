@@ -492,8 +492,15 @@ def _manifest_rows(case_dir: Path, entry: dict) -> list[dict] | None:
 
 
 def cmd_register_evidence(args, identity: dict) -> None:
-    """CLI wrapper — registers evidence and prints summary."""
+    """CLI wrapper — registers evidence and prints summary. Only with the
+    examiner's confirmation at the terminal: a shell the AI runs has none, so
+    it can't register as the examiner."""
     case_dir = get_case_dir(getattr(args, "case", None))
+    force = getattr(args, "force_reregister", False)
+    verb = "Re-register (replacing its baseline hash)" if force else "Register"
+    if not require_tty_confirmation(f"{verb} {args.path} as evidence? [y/N]: "):
+        print("Not registered.", file=sys.stderr)
+        sys.exit(1)
 
     try:
         data = register_evidence_data(
@@ -501,7 +508,7 @@ def cmd_register_evidence(args, identity: dict) -> None:
             path=args.path,
             examiner=identity.get("examiner", identity.get("analyst", "")),
             description=args.description,
-            force_reregister=getattr(args, "force_reregister", False),
+            force_reregister=force,
         )
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)

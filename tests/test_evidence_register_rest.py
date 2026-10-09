@@ -51,3 +51,58 @@ def test_a_file_entry_records_its_stat_fields(case):
         json.loads((case / "evidence.json").read_text())["files"][0]["size"]
         == r["size"]
     )
+
+
+def _cli(case, *args):
+    """`vhir evidence register …` in a new session: no controlling terminal."""
+    import subprocess
+    import sys
+
+    code = "import sys; from vhir_cli.main import main; sys.argv = ['vhir', *sys.argv[1:]]; main()"
+    env = {**os.environ, "VHIR_CASE_DIR": str(case), "VHIR_EXAMINER": "tester"}
+    return subprocess.run([sys.executable, "-c", code, "evidence", "register", *args],
+                          env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          start_new_session=True, timeout=60)  # fmt: skip
+
+
+def _files(case):
+    return json.loads((case / "evidence.json").read_text())["files"]
+
+
+def test_cli_registration_without_a_terminal_registers_nothing(case):
+    (case / "CASE.yaml").write_text("case_id: case\n")
+    p = case / "evidence" / "samples.7z"
+    p.write_bytes(b"IMG1")
+    r = _cli(case, str(p))
+    assert r.returncode != 0 and _files(case) == [], r.stderr
+    register_evidence_data(case, str(p), "tester")  # registered with a terminal
+    p.write_bytes(b"IMG2")
+    r = _cli(case, "--force-reregister", str(p))
+    assert r.returncode != 0 and "previous_hashes" not in _files(case)[0], r.stderr
+    assert _files(case)[0]["sha256"] == _sha(b"IMG1")  # the baseline stays
+
+
+@pytest.mark.parametrize("answer", [True, False], ids=["confirmed", "declined"])
+def test_cli_registration_asks_the_examiner_first(case, monkeypatch, capsys, answer):
+    from types import SimpleNamespace
+
+    from vhir_cli.commands import evidence as ev
+
+    asked = []
+    monkeypatch.setattr(
+        ev, "require_tty_confirmation", lambda q: asked.append(q) or answer
+    )
+    monkeypatch.setattr(ev, "get_case_dir", lambda c: case)
+    p = case / "evidence" / "samples.7z"
+    p.write_bytes(b"IMG1")
+    args = SimpleNamespace(
+        path=str(p), description="", force_reregister=False, case=None
+    )
+    if answer:
+        ev.cmd_register_evidence(args, {"os_user": "t", "examiner": "tester"})
+        assert len(_files(case)) == 1
+    else:
+        with pytest.raises(SystemExit) as e:
+            ev.cmd_register_evidence(args, {"os_user": "t", "examiner": "tester"})
+        assert e.value.code != 0 and _files(case) == []
+    assert len(asked) == 1 and str(p) in asked[0]

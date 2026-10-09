@@ -26,6 +26,14 @@ TWO = json.dumps(
 IDENTITY = {"examiner": "analyst1", "os_user": "testuser"}
 
 
+@pytest.fixture(autouse=True)
+def _examiner_confirms(monkeypatch):
+    """CLI registration asks at the terminal; here the examiner says yes."""
+    monkeypatch.setattr(
+        "vhir_cli.commands.evidence.require_tty_confirmation", lambda prompt: True
+    )
+
+
 class Args:
     def __init__(self, path: str):
         self.case = None

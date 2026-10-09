@@ -107,7 +107,10 @@ def test_a_folder_outside_the_case_is_refused(case, tmp_path):
         register_evidence_data(case, str(outside), "tester")
 
 
-def test_the_cli_registers_a_folder_and_says_so(case, capsys):
+def test_the_cli_registers_a_folder_and_says_so(case, capsys, monkeypatch):
+    monkeypatch.setattr(
+        "vhir_cli.commands.evidence.require_tty_confirmation", lambda prompt: True
+    )
     args = SimpleNamespace(path=str(case / "evidence" / "kape"), description="",
                            force_reregister=False, case=None)  # fmt: skip
     with patch("vhir_cli.commands.evidence.get_case_dir", return_value=case):
