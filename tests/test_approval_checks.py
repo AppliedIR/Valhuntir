@@ -1012,3 +1012,29 @@ def test_every_override_reason_is_kept_oldest_first(case, capsys, monkeypatch):
     assert block.index(f"  {FID}: {REASON}") < block.index(
         f"  {FID}: the second reason"
     )
+
+
+def test_a_root_registered_with_its_stat_fields_is_trusted_without_a_read(
+    case, capsys, monkeypatch
+):
+    """Registration records size, times, device and inode: an unchanged root
+    over 1 GiB is ok with no read, and no "not yet verified"."""
+    big = case / "evidence" / "disk.raw"
+    with open(big, "wb") as f:
+        f.truncate((1 << 30) + 4096)
+    entry = register_evidence_data(case, str(big), "analyst1")
+    if "st_ino" not in entry:
+        pytest.skip("this vhir's registration records no stat fields")
+    f = _finding(case)
+    f["artifacts"][0]["provenance_root"] = {
+        "path": str(big), "sha256": entry["sha256"], "label": "examiner-registered"
+    }  # fmt: skip
+    _save(case, f)
+    monkeypatch.setattr(approval_checks, "file_sha256", None)  # never read
+    for background in (False, True):
+        checks = approval_checks.check_item(case, f, "finding", background=background)
+        (root,) = [i for i in checks["items"] if i["subject"] == str(big)]
+        assert (root["status"], root["detail"]) == (
+            "ok",
+            "unchanged (stat fields equal)",
+        )
