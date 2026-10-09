@@ -131,3 +131,30 @@ def test_no_settings_file_is_not_applied(box, capsys):  # noqa: F811
     box.settings.unlink(missing_ok=True)
     assert cs.settings_applied(box.settings) == (False, False)
     assert "aren't fully applied" in _block(box, capsys)
+
+
+def test_uninstall_leaves_no_hook_pointing_into_vhir_hooks(box):  # noqa: F811
+    """Every forensic hook of the shipped settings, under every event, is
+    removed: none may call a script the uninstall then deletes. A user's own
+    hook stays, even in an entry beside ours."""
+    full = _deployed(box)
+    full.setdefault("hooks", {}).setdefault("UserPromptSubmit", []).append(
+        {
+            "hooks": [
+                {"type": "command", "command": "cat << 'EOF'\n<forensic-rules>\nEOF"}
+            ]
+        }
+    )
+    mine = {"type": "command", "command": "/opt/notify.sh"}
+    full["hooks"]["PostToolUse"].append({"matcher": "Write", "hooks": [mine]})
+    full["hooks"]["PermissionDenied"][0]["hooks"].append(dict(mine))  # beside ours
+    box.settings.write_text(json.dumps(full))
+    assert str(box.home / ".vhir" / "hooks") in box.settings.read_text()  # deployed so
+    cs._remove_forensic_settings(box.settings)
+    text = box.settings.read_text()
+    assert ".vhir/hooks" not in text and "forensic-rules" not in text
+    left = json.loads(text)["hooks"]
+    assert left == {
+        "PostToolUse": [{"matcher": "Write", "hooks": [mine]}],
+        "PermissionDenied": [{"matcher": "Bash", "hooks": [mine]}],
+    }

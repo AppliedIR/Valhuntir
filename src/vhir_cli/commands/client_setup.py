@@ -2812,32 +2812,44 @@ def _remove_forensic_settings(path: Path) -> None:
     except (json.JSONDecodeError, OSError):
         return
 
-    # Remove forensic hooks
+    # Remove forensic hooks: under every event, each hook that runs a script
+    # from ~/.vhir/hooks/ (all of that folder is ours), a product hook in a
+    # project's .claude/hooks/, or the forensic-rules prompt. A user's own
+    # hooks stay, even beside ours in one entry.
+    global_hooks = str(Path.home() / ".vhir" / "hooks") + "/"
+
+    def ours(hook) -> bool:
+        cmd = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+        if (
+            global_hooks in cmd
+            or "~/.vhir/hooks/" in cmd
+            or "$HOME/.vhir/hooks/" in cmd
+        ):
+            return True
+        if (
+            "/.claude/hooks/" in cmd
+            and cmd.rsplit("/", 1)[-1].split()[0] in _PRODUCT_HOOKS
+        ):
+            return True
+        return "forensic-rules" in cmd
+
     hooks = data.get("hooks", {})
-    for hook_type in (
-        "SessionStart",
-        "PreToolUse",
-        "PostToolUse",
-        "UserPromptSubmit",
-    ):
-        entries = hooks.get(hook_type, [])
-        hooks[hook_type] = [
-            e
-            for e in entries
-            if not any(
-                "forensic-audit" in h.get("command", "") for h in e.get("hooks", [])
-            )
-            and not any(
-                "case-dir-check" in h.get("command", "") for h in e.get("hooks", [])
-            )
-            and not any(
-                "forensic-rules" in h.get("command", "") for h in e.get("hooks", [])
-            )
-        ]
-        if not hooks[hook_type]:
-            del hooks[hook_type]
-    if not hooks:
-        data.pop("hooks", None)
+    if isinstance(hooks, dict):
+        for hook_type in list(hooks):
+            entries = []
+            for e in hooks[hook_type] if isinstance(hooks[hook_type], list) else []:
+                if not isinstance(e, dict):
+                    entries.append(e)
+                    continue
+                kept = [h for h in e.get("hooks", []) if not ours(h)]
+                if kept:
+                    entries.append({**e, "hooks": kept})
+            if entries:
+                hooks[hook_type] = entries
+            else:
+                del hooks[hook_type]
+        if not hooks:
+            data.pop("hooks", None)
 
     # Remove forensic allow and deny rules (both current and old/migrated)
     perms = data.get("permissions", {})

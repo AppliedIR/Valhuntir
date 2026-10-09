@@ -772,7 +772,10 @@ class TestUninstallHelpers:
                     {
                         "matcher": "Bash",
                         "hooks": [
-                            {"type": "command", "command": "/path/forensic-audit.sh"}
+                            {
+                                "type": "command",
+                                "command": f"{Path.home()}/.vhir/hooks/forensic-audit.sh",
+                            }
                         ],
                     },
                     {
