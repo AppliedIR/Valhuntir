@@ -2171,6 +2171,9 @@ OPENWEBUI_ENV = """\
 # no workspace tools for users, no direct connections, and a code interpreter
 # that runs in the browser (Pyodide) or not at all. Never point the code
 # interpreter at Jupyter or Open Terminal.
+# On an instance that has started before, only ENABLE_PLUGINS applies: Open
+# WebUI keeps the other five in its database from its first start. Set those
+# in the Admin Panel (docs/open-webui-setup.md lists where).
 ENABLE_PLUGINS=False
 USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False
 ENABLE_DIRECT_INTEGRATIONS=False
@@ -2178,6 +2181,21 @@ ENABLE_CODE_INTERPRETER=False
 CODE_INTERPRETER_ENGINE=pyodide
 CODE_EXECUTION_ENGINE=pyodide
 """
+
+
+# Where an existing instance sets each lock-profile key the environment no
+# longer reaches (Open WebUI 0.11.4)
+OPENWEBUI_ADMIN_PANEL = (
+    ("USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False",
+     "Users > Groups > Default permissions > Edit: Tools Access off"),
+    ("ENABLE_DIRECT_INTEGRATIONS=False", "Settings > Connections: Direct Connections off"),
+    ("ENABLE_CODE_INTERPRETER=False",
+     "Settings > Code Execution > Code Interpreter: Enable Code Interpreter off"),
+    ("CODE_INTERPRETER_ENGINE=pyodide",
+     "Settings > Code Execution > Code Interpreter: Code Interpreter Engine Pyodide"),
+    ("CODE_EXECUTION_ENGINE=pyodide",
+     "Settings > Code Execution: Code Execution Engine Pyodide"),
+)  # fmt: skip
 
 
 def _initialize_instructions(url: str, token: str | None) -> str | None:
@@ -2271,6 +2289,11 @@ def _write_openwebui(servers: dict) -> None:
     print("")
     print("  In Open WebUI, as an admin:")
     print("    1. Start it with --env-file openwebui-vhir.env (the lock profile).")
+    print("       On an instance that has started before, that sets only")
+    print("       ENABLE_PLUGINS: its database keeps the other five from its first")
+    print("       start. Set them in the Admin Panel (checked on Open WebUI 0.11.4):")
+    for key, where in OPENWEBUI_ADMIN_PANEL:
+        print(f"         {key}: {where}")
     print("    2. Admin Panel > Settings > External Tools: add each backend as")
     print("       MCP (Streamable HTTP), auth Bearer, with the gateway's token:")
     for name, entry in backends.items():

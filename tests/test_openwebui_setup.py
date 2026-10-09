@@ -154,3 +154,23 @@ def test_initialize_reads_the_instructions_the_endpoint_returns(stream):
 
 def test_initialize_against_nothing_is_none():
     assert cs._initialize_instructions("http://127.0.0.1:9/mcp/x", None) is None
+
+
+def test_setup_says_an_existing_instance_takes_only_enable_plugins_and_where_the_rest_are(
+    owui, capsys
+):
+    """Open WebUI keeps five of the six lock-profile keys in its database from
+    its first start: setup says so and names where each is set."""
+    cs._write_openwebui(_servers())
+    out = capsys.readouterr().out
+    assert "On an instance that has started before, that sets only" in out
+    assert "ENABLE_PLUGINS: its database keeps the other five" in out
+    keys = [
+        ln.split("=")[0]
+        for ln in cs.OPENWEBUI_ENV.splitlines()
+        if "=" in ln and not ln.startswith("#")
+    ]
+    listed = [k.split("=")[0] for k, _ in cs.OPENWEBUI_ADMIN_PANEL]
+    assert sorted(listed) == sorted(k for k in keys if k != "ENABLE_PLUGINS")
+    for key, where in cs.OPENWEBUI_ADMIN_PANEL:
+        assert f"{key}: {where}" in out
