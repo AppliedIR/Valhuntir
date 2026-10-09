@@ -85,6 +85,7 @@ def test_cli_registration_without_a_terminal_registers_nothing(case):
 
 @pytest.mark.parametrize("answer", [True, False], ids=["confirmed", "declined"])
 def test_cli_registration_asks_the_examiner_first(case, monkeypatch, capsys, answer):
+    from types import SimpleNamespace
 
     from vhir_cli.commands import evidence as ev
 
@@ -359,6 +360,52 @@ def test_registering_a_legacy_entry_again_adds_its_stat_fields(case):
     (entry,) = _files(case)
     assert entry["size"] == 3 and entry["st_ino"] == os.stat(p).st_ino, entry
     assert entry["registered_at"] == legacy["registered_at"]  # the same registration
+
+
+# --- the CLI says what a registration's notes say ------------------------------
+
+
+def _cli_register(case, path, capsys, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from vhir_cli.commands.evidence import cmd_register_evidence
+
+    monkeypatch.setattr(
+        "vhir_cli.commands.evidence.require_tty_confirmation", lambda prompt: True
+    )
+    args = SimpleNamespace(path=str(path), description="", force_reregister=False,
+                           case=None)  # fmt: skip
+    with patch("vhir_cli.commands.evidence.get_case_dir", return_value=case):
+        cmd_register_evidence(args, {"os_user": "tester", "examiner": "tester"})
+    return capsys.readouterr().out
+
+
+def test_the_cli_prints_a_derivation_note_at_register_and_verify(
+    case, unreadable_log, capsys, monkeypatch
+):
+    from unittest.mock import patch
+
+    from vhir_cli.commands.evidence import cmd_verify_evidence
+
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    out = _cli_register(case, p, capsys, monkeypatch)
+    assert "derivation unchecked: audit/sift-mcp.jsonl can't be read" in out, out
+    with patch("vhir_cli.commands.evidence.get_case_dir", return_value=case):
+        cmd_verify_evidence(SimpleNamespace(case=None), {})
+    assert "derivation unchecked" in capsys.readouterr().out
+
+
+def test_the_cli_never_says_hash_recorded_for_a_file_that_kept_changing(
+    case, capsys, monkeypatch
+):
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    _changing_hasher(monkeypatch, p, times=99)
+    out = _cli_register(case, p, capsys, monkeypatch)
+    assert "Integrity: SHA-256 hash recorded" not in out, out
+    assert "changed while hashing" in out
 
 
 def test_an_acquisition_registered_while_a_log_cant_be_read_says_so(

@@ -669,12 +669,20 @@ def cmd_register_evidence(args, identity: dict) -> None:
             f"  Folder: {data['file_count']} file(s), manifest {data['manifest_path']}"
         )
         print(f"  Manifest SHA256: {sha256}")
+        if data.get("derivation_note"):
+            print(f"  Note: {data['derivation_note']}")
         return
     if data.get("note") == "updated (same path, hash changed)":
         prior = data["previous_hashes"][-1]["sha256"]
         print(f"  WARNING: hash changed since registration (was {prior})")
     print(f"  SHA256: {data['sha256']}")
-    print("  Integrity: SHA-256 hash recorded")
+    if data.get("hash_note"):  # never "recorded" when nothing vouches for it
+        print(f"  Integrity: NOT vouched for: the file {data['hash_note']}; the hash "
+              "is of one read, and no stat fields say it's unchanged")  # fmt: skip
+    else:
+        print("  Integrity: SHA-256 hash recorded")
+    if data.get("derivation_note"):
+        print(f"  Note: {data['derivation_note']}")
 
 
 def _log_evidence_action(
@@ -786,9 +794,14 @@ def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
 
     pending = 0
     for entry in files:
+        notes = [entry[k] for k in ("hash_note", "derivation_note") if entry.get(k)]
+        if notes:  # this entry's results, appended below, carry its notes
+            mark = len(results)
         if entry.get("kind") == "folder":
             folder = _verify_folder(case_dir, entry, folder_hasher or _hash_each)
             results.extend(folder)
+            for r in results[mark:] if notes else []:
+                r["notes"] = notes
             n = Counter(r["status"] for r in folder)
             verified, modified = verified + n["OK"], modified + n["MODIFIED"]
             missing, errors = missing + n["MISSING"], errors + n["ERROR"]
@@ -849,6 +862,12 @@ def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
             )
             modified += 1
 
+    # a registered file's notes on its result (a folder's are set above)
+    file_notes = {str(Path(e.get("path", ""))): [e[k] for k in ("hash_note", "derivation_note")
+                  if e.get(k)] for e in files if e.get("kind") != "folder"}  # fmt: skip
+    for r in results:
+        if file_notes.get(r["path"]):
+            r["notes"] = file_notes[r["path"]]
     summary = {
         "results": results,
         "verified": verified,
@@ -920,6 +939,8 @@ def cmd_verify_evidence(args, identity: dict) -> None:
             print(f"             Actual:   {r['actual_hash']}")
         elif raw["status"] == "ERROR" and raw.get("error"):
             print(f"             Error: {r['error']}")
+        for note in r.get("notes") or []:
+            print(f"             Note: {note}")
 
     print(
         f"\n{data['verified']} verified, {data['modified']} MODIFIED, {data['missing']} missing, {data['errors']} errors"
