@@ -216,6 +216,9 @@ def register_evidence_data(
         for chunk in iter(lambda: f.read(8192), b""):
             sha.update(chunk)
     file_hash = sha.hexdigest()
+    st = os.stat(evidence_path)  # the approval check compares these
+    stat_fields = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                   "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev, "st_ino": st.st_ino}  # fmt: skip
 
     # Record in evidence registry
     # Absent, 0-byte or whitespace-only means an empty registry. Anything else
@@ -260,6 +263,7 @@ def register_evidence_data(
                     }
                 )
                 existing["sha256"] = file_hash
+                existing.update(stat_fields)
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
                 existing["registered_by"] = examiner
                 if registered_via:
@@ -283,6 +287,7 @@ def register_evidence_data(
         "description": description,
         "registered_at": datetime.now(timezone.utc).isoformat(),
         "registered_by": examiner,
+        **stat_fields,
     }
     if registered_via:
         entry["registered_via"] = registered_via
