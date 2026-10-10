@@ -27,7 +27,7 @@ SHIPPED = (
 LIMITS = [
     "What a pass shows.", "Offline guessing.", "Code and memory on this machine.",
     "Key changes.", "Truncation and restore.", "What a VALID line covers.", "Anchors.",
-    "Verification code.", "Approvals made under 0.6", "Clocks.",
+    "Verification code.", "Approvals made before 0.6.4", "Clocks.",
     "Status counters and labels.", "Collaboration.", "Uninstall", "Shared OS account.",
     "What file writes can do to the result.", "Approval checks.",
 ]  # fmt: skip

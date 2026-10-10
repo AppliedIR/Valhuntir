@@ -123,7 +123,7 @@ vhir review --findings --verify --mine   # Show only your items
 | `--audit` | Show audit log |
 | `--evidence` | Show evidence integrity |
 | `--iocs` | Extract IOCs from findings grouped by status |
-| `--verify` | Verify every signed decision against the case (with `--findings`). No passphrase or terminal needed. Exit 0: every approved item verifies (or was approved under 0.6), with no failure; 2: a failure; 5: a usage error. Prints every signing key with its full fingerprint and each chain's head, and "anchored" or "Not anchored" |
+| `--verify` | Verify every signed decision against the case (with `--findings`). No passphrase or terminal needed. Exit 0: every approved item verifies (or was approved before 0.6.4), with no failure; 2: a failure; 5: a usage error. Prints every signing key with its full fingerprint and each chain's head, and "anchored" or "Not anchored" |
 | `--expect-key` | `NAME=SHA256:<fingerprint>[:FROM-TO]`: a fingerprint you kept off this machine (repeatable) |
 | `--expect-head` | `[CHAIN@]SEQ:HASH`: a head you kept off this machine (repeatable) |
 | `--ledger` | Verify against this chain copy instead of the box's ledger and the case's copies (repeatable) |
@@ -149,7 +149,7 @@ vhir approve --findings-only                    # Review only findings
 vhir approve --timeline-only                    # Review only timeline
 vhir approve --by bob                           # Review items by examiner
 vhir approve --review                           # Sign reviews staged in the portal
-vhir approve --reattest F-alice-005             # Sign a fresh approval of an item approved under 0.6
+vhir approve --reattest F-alice-005             # Sign a fresh approval of an item approved before 0.6.4
 vhir approve F-alice-006 --show-signed          # Also print the full signed view
 ```
 
@@ -163,7 +163,7 @@ vhir approve F-alice-006 --show-signed          # Also print the full signed vie
 | `--findings-only` | Review only findings |
 | `--timeline-only` | Review only timeline events |
 | `--review` | Sign the reviews staged in the Examiner Portal (`pending-reviews.json`). Your own entries are selected; another examiner's are shown and included only if you say so |
-| `--reattest` | Sign a fresh approval of APPROVED items with no signed line (approved under 0.6), dated now; the original record is unchanged |
+| `--reattest` | Sign a fresh approval of APPROVED items with no signed line (approved before 0.6.4), dated now; the original record is unchanged |
 | `--show-signed` | Also print each item's full signed view |
 
 ### `vhir reject`

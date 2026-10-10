@@ -431,7 +431,7 @@ def _interactive_review(
     )
 
 
-# An approval with no signed line of its own: under 0.6, or none that counts
+# An approval with no signed line of its own: before 0.6.4, or none that counts
 # (a 0.6 line outside the history signing froze, or no line at all).
 _REATTESTABLE = {"APPROVED_UNDER_0_6", "APPROVED_NO_LINE"}
 
@@ -496,7 +496,7 @@ def _reattest(
             )
         else:
             print(
-                f"  approved under 0.6 by {by} on {at} (unverified); {_one_line(v.status)}"
+                f"  approved before 0.6.4 by {by} on {at} (unverified); {_one_line(v.status)}"
             )
         try:
             answer = (

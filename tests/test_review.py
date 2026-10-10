@@ -662,8 +662,8 @@ def test_a_corrupt_findings_file_fails(ledger_case, capsys):
 def test_intact_0_6_approvals_verify_with_no_password(ledger_case, capsys):
     case, prompts = ledger_case
     out, code = _approve_and_verify(case, prompts, capsys, findings="intact")
-    assert re.search(r"F-steve-001\s+approved under 0.6", out), out
-    assert re.search(r"T-steve-001\s+approved under 0.6", out), out
+    assert re.search(r"F-steve-001\s+approved before 0.6.4", out), out
+    assert re.search(r"T-steve-001\s+approved before 0.6.4", out), out
     assert code == 0 and not prompts
 
 

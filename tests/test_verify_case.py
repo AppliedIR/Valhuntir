@@ -27,6 +27,8 @@ from vhir_cli.ledger_verify import (
     parse_head,
     parse_pin,
     render,
+    verification_block,
+    verification_json,
     verify_case,
 )
 
@@ -429,7 +431,7 @@ def test_a_0_6_approval_is_approved_under_0_6_and_exits_0(case):
     assert (
         _status(result, "F-steve-001") == "APPROVED_UNDER_0_6" and result.exit_code == 0
     )
-    assert "approved under 0.6 (before signing)" in render(result)
+    assert "approved before 0.6.4 (before signing)" in render(result)
 
 
 def test_a_0_6_item_changed_since_is_altered(case):
@@ -761,6 +763,13 @@ def test_the_report_view_shows_only_verified_approvals(case, steve):
     assert [f["id"] for f in view["findings"]] == ["F-steve-001", "F-steve-002"]
     assert view["labels"]["F-steve-002"] == "approved under 0.6 (before signing)"
     assert view["not_verified"] == [{"id": "F-steve-003", "status": "APPROVED_NO_LINE"}]
+    # people read the release it came before; machine readers keep the token
+    block = "\n".join(verification_block(view))
+    assert "(approved before 0.6.4, before signing: 1)" in block
+    assert "under 0.6" not in block
+    assert verification_json(view)["labels"]["F-steve-002"] == (
+        "approved under 0.6 (before signing)"
+    )
 
 
 def test_case_text_is_printed_through_the_display_rule(case, steve):
@@ -1535,3 +1544,19 @@ def test_an_unreadable_chain_is_a_named_failure_not_a_traceback(case, steve, how
     assert "Recovery: " + RECOVERY["CHAIN_UNREADABLE"] in text and text.endswith(
         "Exit 2"
     )
+
+
+def test_a_0_6_approval_reads_before_0_6_4_in_a_report_and_keeps_its_token_in_json(
+    case, steve, monkeypatch, capsys
+):
+    old = _finding(2, status="APPROVED", approved_by="steve", approved_at=AT)
+    _save(case, findings=[old])
+    _legacy([_legacy_line(old)])
+    out = _report(case, monkeypatch, capsys, report_findings="F-steve-002")
+    assert "Verification: approved before 0.6.4 (before signing)" in out
+    assert "(approved before 0.6.4, before signing: 1)" in out
+    assert "under 0.6" not in out
+    data = json.loads(_report(case, monkeypatch, capsys, full=True))
+    assert data["verification"]["labels"] == {
+        "F-steve-002": "approved under 0.6 (before signing)"
+    }  # the token machine readers match

@@ -204,7 +204,9 @@ def test_a_failing_activity_log_never_stops_a_signed_decision(
 # --- Re-attest ---------------------------------------------------------------------------
 
 
-def test_reattest_signs_a_0_6_approval_and_one_with_no_record(case, monkeypatch):
+def test_reattest_signs_a_0_6_approval_and_one_with_no_record(
+    case, monkeypatch, capsys
+):
     approve_under_0_6(case, {"F-steve-002"}, "steve", NOW)
     findings = json.loads((case / "findings.json").read_text())
     findings[0].update(
@@ -220,6 +222,9 @@ def test_reattest_signs_a_0_6_approval_and_one_with_no_record(case, monkeypatch)
     A.cmd_approve(
         Namespace(case=None, ids=[], review=False, reattest=True, all=True), IDENT
     )
+    shown = capsys.readouterr().out  # the release it came before, as people read it
+    assert f"approved before 0.6.4 by steve on {NOW} (unverified)" in shown
+    assert "under 0.6" not in shown
     result = verify_case(case)
     assert {v.item_id: v.status for v in result.items} == {
         "F-steve-001": "VALID", "F-steve-002": "VALID"

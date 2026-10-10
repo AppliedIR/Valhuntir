@@ -32,7 +32,12 @@ from vhir_cli.case_io import (
 )
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.display import one_line
-from vhir_cli.ledger_verify import approved_view, verification_block, verification_json
+from vhir_cli.ledger_verify import (
+    approved_view,
+    shown_label,
+    verification_block,
+    verification_json,
+)
 from vhir_cli.provenance_view import provenance_block
 
 
@@ -397,7 +402,8 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         if f["id"] in unverified:
             lines.append(f"  Verification: NOT VERIFIED ({unverified[f['id']]})")
         elif f["id"] in view["labels"]:
-            lines.append(f"  Verification: {_d(view['labels'][f['id']], safe)}")
+            shown = shown_label(view["labels"][f["id"]])
+            lines.append(f"  Verification: {_d(shown, safe)}")
         lines.append(f"  Confidence:   {_d(f.get('confidence', '?'), safe)}")
         if f.get("confidence_justification"):
             lines.append(f"  Justification: {_d(f['confidence_justification'], safe)}")

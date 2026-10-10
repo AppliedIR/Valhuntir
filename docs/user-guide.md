@@ -494,7 +494,7 @@ vhir review --findings --verify --mine   # Show only your items
 vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored
 ```
 
-Verification needs no passphrase. It checks every line's signature and link in the case's ledger, and each approved item against its latest signed line, and prints every signing key with its full fingerprint and each chain's head. Without anchors it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup). Exit 0: every approved item verifies (or was approved under 0.6, labelled so) with no failure; 2: a failure, each with how to recover. See the [stated limits](security.md#stated-limits).
+Verification needs no passphrase. It checks every line's signature and link in the case's ledger, and each approved item against its latest signed line, and prints every signing key with its full fingerprint and each chain's head. Without anchors it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup). Exit 0: every approved item verifies (or was approved before 0.6.4, labelled so) with no failure; 2: a failure, each with how to recover. See the [stated limits](security.md#stated-limits).
 
 ## Report Generation
 

@@ -6,7 +6,7 @@ key it carries; trust in a key comes only from `--expect-key` pins, or from
 comparing the printed fingerprints with a copy kept off this machine.
 
 Exit codes: 0 when every APPROVED item is VALID, VALID (re-attested),
-VALID (cascade) or approved under 0.6, and there is no case-level failure;
+VALID (cascade) or approved before 0.6.4, and there is no case-level failure;
 2 on any failure; 5 for a usage error (raised by the parser, never here).
 
 Rules that apply to every line (they block exit 0 wherever the line is):
@@ -1488,11 +1488,7 @@ def render(result: Result) -> str:
     out.append("Items:")
     for v in result.items:
         label = f" ({s(v.label)})" if v.label else ""
-        shown = (
-            "approved under 0.6 (before signing)"
-            if v.status == "APPROVED_UNDER_0_6"
-            else v.status
-        )
+        shown = LEGACY_SHOWN if v.status == "APPROVED_UNDER_0_6" else v.status
         out.append(f"  {s(v.item_id):<24} {shown}{label}")
         for d in v.detail:
             out.append(f"      {s(d)}")
@@ -1554,6 +1550,18 @@ def _heads(result: Result) -> list[str]:
     return out
 
 
+# An approval from before signing, as approved_view labels it: the token
+# machine readers (the JSON, exports, the portal) match, kept as it is.
+LEGACY_LABEL = "approved under 0.6 (before signing)"
+# ...and as people read it: 0.6.4 is itself a 0.6 release, the first to sign.
+LEGACY_SHOWN = "approved before 0.6.4 (before signing)"
+
+
+def shown_label(label: str) -> str:
+    """A label as a person reads it."""
+    return LEGACY_SHOWN if label == LEGACY_LABEL else label
+
+
 def verification_block(view: dict) -> list[str]:
     """The block every report and export ends with : what verified,
     what didn't, the "Not anchored" sentence, every signing key with its full
@@ -1561,14 +1569,10 @@ def verification_block(view: dict) -> list[str]:
     anchor for the keys as they were then."""
     result: Result = view["result"]
     approved = [i for key in ("findings", "timeline", "iocs") for i in view[key]]
-    old = sum(
-        1
-        for i in approved
-        if view["labels"].get(i.get("id")) == "approved under 0.6 (before signing)"
-    )
+    old = sum(1 for i in approved if view["labels"].get(i.get("id")) == LEGACY_LABEL)
     lines = ["VERIFICATION", "=" * 50]
     lines.append(
-        f"Approvals shown as approved: {len(approved)} (approved under 0.6, before signing: {old})"
+        f"Approvals shown as approved: {len(approved)} (approved before 0.6.4, before signing: {old})"
     )
     overrides = view.get("overrides") or {}
     if overrides:
@@ -1629,7 +1633,7 @@ def verification_json(view: dict) -> dict:
 
 def approved_view(case_dir: Path) -> dict:
     """The items a report may show as approved: VALID (in any form) and
-    approved under 0.6, each with its label. Every other APPROVED item is in
+    approved before 0.6.4, each with its label. Every other APPROVED item is in
     `not_verified` with its status. It judges the records verify read, not a
     second read of the files."""
     result = verify_case(case_dir)
@@ -1676,11 +1680,7 @@ def approved_view(case_dir: Path) -> dict:
                 view["checks"][item["id"]] = v.checks
             if v.overrides:
                 view["overrides"][item["id"]] = list(v.overrides)
-            shown = (
-                "approved under 0.6 (before signing)"
-                if v.status == "APPROVED_UNDER_0_6"
-                else v.label
-            )
+            shown = LEGACY_LABEL if v.status == "APPROVED_UNDER_0_6" else v.label
             if shown:
                 view["labels"][item["id"]] = shown
             continue

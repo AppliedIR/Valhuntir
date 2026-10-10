@@ -373,7 +373,7 @@ vhir approve --by jane                                   # Filter to IDs with ja
 vhir approve --findings-only                             # Skip timeline events
 vhir approve --timeline-only                             # Skip findings
 vhir approve --review                                    # Sign reviews staged in the portal
-vhir approve --reattest F-alice-005                      # Fresh signed approval of an item approved under 0.6
+vhir approve --reattest F-alice-005                      # Fresh signed approval of an item approved before 0.6.4
 ```
 
 Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. A finding's evidence chain and grade are shown too, and its approval checks run first: the evidence it starts from is still registered and unchanged, its audit lines are unchanged, and each cited OpenSearch document still has its recorded hash (imported findings and findings from before 0.6.4 aren't checked again; a registered folder is checked by its manifest; a cited document is checked again only if its hash was recorded). A failed check needs a reason typed at the terminal, signed with the approval; with none, the item stays DRAFT. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Commit button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
@@ -424,7 +424,7 @@ vhir review --findings --verify                                      # Verify ev
 vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored to your records
 ```
 
-No passphrase or terminal needed. Exit 0 means every approved item verifies (or was approved under 0.6, labelled so) with no failure. Verify prints every signing key with its full fingerprint and each chain's head. Without `--expect-key` and `--expect-head` it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup).
+No passphrase or terminal needed. Exit 0 means every approved item verifies (or was approved before 0.6.4, labelled so) with no failure. Verify prints every signing key with its full fingerprint and each chain's head. Without `--expect-key` and `--expect-head` it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup).
 
 ### All Commands
 
