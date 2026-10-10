@@ -307,7 +307,7 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         new_pw = _new_passphrase(
             examiner,
             lead=(
-                f"Valhuntir 0.7 needs a passphrase of at least {passphrase.MIN_LENGTH} "
+                f"Valhuntir 0.6.4 needs a passphrase of at least {passphrase.MIN_LENGTH} "
                 f"characters (yours is {len(typed)}); 15 or more is recommended. "
                 "Choose a new one now; nothing you've done in this command is lost."
             ),
@@ -321,7 +321,7 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
     data = keys.new_credential(examiner, new_pw)
     _replace_credential(examiner, data, _found_keys(examiner), "set aside at upgrade",
                         "A signing-key file found beside your 0.6 passphrase")  # fmt: skip
-    print(f"Signing key made for {examiner} (Valhuntir 0.7).")
+    print(f"Signing key made for {examiner} (Valhuntir 0.6.4).")
     _print_new_key(data)
     return changed
 

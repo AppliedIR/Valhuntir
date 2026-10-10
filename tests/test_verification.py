@@ -1,6 +1,6 @@
 """The 0.6 verification file: read only, as 0.6's history.
 
-0.7 never writes, re-signs or checks the HMAC of a 0.6 line (approvals are
+0.6.4 never writes, re-signs or checks the HMAC of a 0.6 line (approvals are
 signed ledger lines, and 0.6 lines are judged by `verify_case` against the
 history signing froze). What remains is reading the file; close copies
 it into the case with the chain (`case_copies`).

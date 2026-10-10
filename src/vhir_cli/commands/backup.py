@@ -973,7 +973,7 @@ def _parse_size(size_str: str) -> int:
 # --- The case's identity and index scope --------------------------------
 #
 # A case's indices are named from its identity (case_uuid in CASE.yaml),
-# `case-<c12>-…`; a case from before 0.7 also has `case-<case id>-…` ones.
+# `case-<c12>-…`; a case from before 0.6.4 also has `case-<case id>-…` ones.
 # sift-common (the identity, the case lock) and opensearch-mcp (the scope)
 # are used when installed, as on a SIFT workstation.
 
@@ -1015,7 +1015,7 @@ def _case_uuid(case_dir: Path) -> str:
 
 def _index_scope(case_dir: Path, case_id: str) -> str:
     """The index expression of the case's indices: `case-<c12>-*`, plus its
-    pre-0.7 ones; `case-<case id>-*` with an opensearch-mcp from before case
+    pre-0.6.4 ones; `case-<case id>-*` with an opensearch-mcp from before case
     identities. "" when it has none."""
     from opensearch_mcp.paths import sanitize_index_component
 
@@ -1867,8 +1867,8 @@ def _own_prefixes(case_uuid: str, case_id: str) -> str:
 def _own_indices(
     names, case_uuid: str, case_id: str, target: Path
 ) -> tuple[list[str], list[str]]:
-    """The case's own indices among `names`, by name: its 0.7 ones
-    (`case-<c12>-…`, from its identity) and its pre-0.7 ones (`case-<case
+    """The case's own indices among `names`, by name: its 0.6.4 ones
+    (`case-<c12>-…`, from its identity) and its pre-0.6.4 ones (`case-<case
     id>-…`, less those of another local case whose id is longer,
     `case-<id>-2-…`). The restore's own folder (`target`) is never one of
     those others, whatever it's called."""
@@ -2060,14 +2060,14 @@ def _restore_opensearch_snapshot(
         else:
             new = f"case-{rename['new_c12']}-"
             renames = []
-            if current and rename["old_c12"]:  # 0.7 indices: the new identity
+            if current and rename["old_c12"]:  # 0.6.4 indices: the new identity
                 old = f"case-{rename['old_c12']}-"
                 renames.append((",".join(current), f"{re.escape(old)}(.+)", f"{new}$1"))
-            # pre-0.7 indices, kept apart under v1-
+            # pre-0.6.4 indices, kept apart under v1-
             if legacy:
                 # case-<id>-<type>-<host> -> case-<new>-<type>-v1-<host>:
                 # typed reads (case-<c12>-<type>-*) find them, and they stay
-                # apart from the 0.7 indices (case-<c12>-<type>-0)
+                # apart from the 0.6.4 indices (case-<c12>-<type>-0)
                 renames.append(
                     (
                         ",".join(legacy),

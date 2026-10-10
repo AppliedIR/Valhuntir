@@ -1,11 +1,11 @@
 """Backup and restore follow a case's identity.
 
 A backup holds the case lock shared, and snapshots the case's own indices:
-`case-<c12>-*` from its identity, plus its pre-0.7 `case-<case id>-*` ones.
+`case-<c12>-*` from its identity, plus its pre-0.6.4 `case-<case id>-*` ones.
 A restore in the case's own place keeps its identity and index names. A
 restore beside the case it was backed up from (another folder, or the
 original's indices still there) gives the copy its own identity, renames its
-indices into it (pre-0.7 ones under `v1-`) without carrying any alias, and
+indices into it (pre-0.6.4 ones under `v1-`) without carrying any alias, and
 re-attaches each index template's own aliases. Before, a restore beside the
 original was refused while its indices existed.
 

@@ -366,7 +366,7 @@ Examples:
 - `case-3f2a9c1b7d04-shimcache-0`
 - `case-3f2a9c1b7d04-zeek-conn-0`
 
-Searches without an index read the active case's own indices. A case from before 0.7 keeps its per-host indices (`case-{case_id}-{artifact_type}-{hostname}`), and they are read too.
+Searches without an index read the active case's own indices. A case from before 0.6.4 keeps its per-host indices (`case-{case_id}-{artifact_type}-{hostname}`), and they are read too.
 
 ### How opensearch-mcp Guides the LLM
 

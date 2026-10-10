@@ -10,7 +10,7 @@ examiner (limit 2).
 
 A 0.6 password (a PBKDF2 hash in /var/lib/vhir/passwords/{examiner}.json, or
 the older config.yaml location) is read here only to upgrade it to a signing
-key; the credential since 0.7 is the keys file (vhir_cli.keys), and
+key; the credential since 0.6.4 is the keys file (vhir_cli.keys), and
 passwords/{examiner}.json then holds a pointer to it. The failed-attempt
 lockout is kept here, shared by the CLI and the portal.
 """

@@ -224,11 +224,19 @@ def test_upgrade_sets_aside_a_keys_file_found_beside_a_0_6_credential(
     assert credentials.state("steve", config) == "schema3"
 
 
-def test_upgrade_of_a_short_0_6_password_asks_for_a_new_passphrase(config, monkeypatch):
+def test_upgrade_of_a_short_0_6_password_asks_for_a_new_passphrase(
+    config, monkeypatch, capsys
+):
     _legacy("abc12")
     _typed(monkeypatch, "abc12", PW, PW)
     assert credentials.upgrade("steve", config) is True
     assert keys.check_password(keys.load("steve"), PW)
+    # the release that brought signing is named as it shipped
+    shown = capsys.readouterr()
+    out = shown.out + shown.err
+    assert "Valhuntir 0.6.4 needs a passphrase of at least" in out
+    assert "Signing key made for steve (Valhuntir 0.6.4)." in out
+    assert "0.7" not in out
 
 
 def test_upgrade_of_a_0_6_password_under_15_keeps_it_and_recommends_more(

@@ -1,7 +1,7 @@
 """The 0.6 approval records: /var/lib/vhir/verification/{case-id}.jsonl.
 
 0.6 wrote one HMAC line per approval here, keyed by the stored password hash,
-so anyone who could read that file could make lines it accepted. 0.7 never
+so anyone who could read that file could make lines it accepted. 0.6.4 never
 writes this file: every decision is a signed line in the case's ledger
 (vhir_cli.ledger). Verify reads these records only to show 0.6 approvals as
 "approved under 0.6 (before signing)"; once a case has its first signed line,

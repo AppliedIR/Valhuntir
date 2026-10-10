@@ -599,7 +599,7 @@ def set_status(
 def hmac_text(item: dict) -> str:
     """The text a 0.6 approval line signed: every field outside the
     content-hash exclusions (view 0 of `signed_text`). Read only to judge
-    0.6 lines; no 0.7 code signs it."""
+    0.6 lines; no 0.6.4 code signs it."""
     hashable = {k: v for k, v in item.items() if k not in HASH_EXCLUDE_KEYS}
     return json.dumps(hashable, sort_keys=True, default=str)
 

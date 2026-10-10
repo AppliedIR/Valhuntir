@@ -51,7 +51,7 @@ VERBATIM = [
     # anchors
     "An anchor is a fingerprint (or head) held somewhere this machine can't change",
     # approvals made under 0.6
-    "They carry no signature that 0.7 can check. They record that an approval was "
+    "They carry no signature that 0.6.4 can check. They record that an approval was "
     "made, not who made it.",
     # a folder copied by hand
     "Sign only in the case's original folder. On this box, the first folder to sign "

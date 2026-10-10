@@ -3,7 +3,7 @@
 The case is left as 0.6's approve left it: the finding and the IOC it
 approved with it, each with its 0.6 line (VERIFICATION_DIR redirected), then
 the real --verify reads it. Those lines carry no signature
-0.7 can check: an unchanged item is "approved under 0.6 (before signing)"
+0.6.4 can check: an unchanged item is "approved under 0.6 (before signing)"
 (informational, exit 0), and a changed one fails.
 """
 
