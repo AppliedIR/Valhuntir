@@ -526,6 +526,46 @@ def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
         )
 
 
+def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    """After --final passed: offer to remove pycti, OpenCTI's old client, and
+    what only it brought in (check-lock's list). Asks first; the default is No.
+    Nothing here stops the update."""
+    try:
+        out = subprocess.run(
+            [venv_python, str(checker), "--opencti-leftovers", "--lock", str(lock)],
+            capture_output=True, text=True, timeout=120,
+        )  # fmt: skip
+        names = out.stdout.split() if out.returncode == 0 else []
+        if not names:
+            return
+        remove = f"uv pip uninstall --python {venv_python} {' '.join(names)}"
+        print("\n  " + "=" * 66)
+        print("  Left by an earlier OpenCTI install; Valhuntir no longer uses them:")
+        print(f"    {' '.join(names)}\n  Removing them runs:\n    {remove}")
+        print(
+            "  This changes only Valhuntir's environment. The optional standalone\n"
+            "  opencti_query.py script (sift-mcp packages/opencti) needs pycti; to\n"
+            f"  use it again: uv pip install --python {venv_python} pycti"
+        )
+        print("  " + "=" * 66)
+        if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("  Kept. The command above removes them later.")
+            return
+        py = ["--python", venv_python]
+        subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
+        check = subprocess.run(
+            ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
+        )
+        if check.returncode == 0:
+            print("  Removed; the dependency check is clean.")
+        else:
+            print(
+                f"  Removed; the check reports: {(check.stdout + check.stderr).strip()}"
+            )
+    except (EOFError, OSError, subprocess.SubprocessError):
+        print("\n  Clean-up not finished; the command above completes it.")
+
+
 def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
     """True when the opensearch-mcp package is installed in the venv
     but no git repo was found on disk — a silent-staleness condition
@@ -937,6 +977,8 @@ def cmd_update(args, identity: dict) -> None:
     _check_lock(args, venv_python, checker, lock, "--final")
     if variant == "cpu" and sys.stdin.isatty():
         _offer_cuda_cleanup(venv_python, checker, lock)
+    if sys.stdin.isatty():  # with no terminal, --final's note names them
+        _offer_opencti_cleanup(venv_python, checker, lock)
 
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()

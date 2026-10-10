@@ -82,6 +82,7 @@ def _update(
     answers=(),
     platform="linux",
     leftovers="",
+    opencti_leftovers="",
     install_rc=0,
     hangs=(),
     after_check_rc=0,
@@ -145,6 +146,8 @@ def _update(
             result.stdout = {"--installed": "setuptools starlette"}.get(cmd[2], "")
             if cmd[2] == "--cuda-leftovers":
                 result.stdout = leftovers
+            if cmd[2] == "--opencti-leftovers":
+                result.stdout = opencti_leftovers
         return result
 
     def ask(prompt=""):
@@ -553,6 +556,51 @@ def test_an_uninstall_that_fails_skips_the_cache_clean(box, capsys, uninstall):
     _finished(box, calls, exited)
     assert "Clean-up not finished" in capsys.readouterr().out
     assert not any(c[:3] == ["uv", "cache", "clean"] for c in calls)
+
+
+# --- OpenCTI's leftovers: offered for removal, default No -------------------
+
+OPENCTI = ["pycti", "fastapi", "stix2"]
+
+
+def _opencti(box, **kw):
+    kw.setdefault("tty", True)
+    kw.setdefault("gpu", True)  # the build is chosen: no PyTorch question
+    return _update(box, opencti_leftovers="\n".join(OPENCTI) + "\n", **kw)
+
+
+def test_yes_removes_the_opencti_leftovers_and_the_check_is_clean(box, capsys):
+    calls, exited = _opencti(box, answers=["y"])
+    _finished(box, calls, exited)
+    out = capsys.readouterr().out
+    final = next(i for i, c in enumerate(calls) if c[2:3] == ["--final"])
+    uninstall = _index(calls, ["uv", "pip", "uninstall"])
+    assert final < uninstall and calls[uninstall][-3:] == OPENCTI
+    assert not any(c[:3] == ["uv", "cache", "clean"] for c in calls)
+    assert any(c[:3] == ["uv", "pip", "check"] for c in calls[uninstall:])
+    assert "only Valhuntir's environment" in out and "opencti_query.py" in out
+    assert "Removed; the dependency check is clean." in out
+
+
+@pytest.mark.parametrize("answer", ["", "n", EOFError])
+def test_no_or_no_answer_keeps_the_opencti_leftovers(box, capsys, answer):
+    calls, exited = _opencti(box, answers=[answer])
+    _finished(box, calls, exited)
+    assert any("Remove them now? [y/N]" in p for p in _asked(calls))
+    assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
+
+
+def test_no_terminal_or_no_leftovers_never_offers(box):
+    for kw in ({"tty": False}, {"opencti_leftovers": ""}):
+        calls, _ = _update(box, **{"tty": True, "gpu": True, "answers": ["y"], **kw})
+        assert not _asked(calls)
+        assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
+
+
+def test_a_failed_opencti_removal_never_stops_the_update(box, capsys):
+    calls, exited = _opencti(box, answers=["y"], uninstall="failed")
+    _finished(box, calls, exited)
+    assert "Clean-up not finished" in capsys.readouterr().out
 
 
 # --- An update that stops after the pull says so and how to finish ------------
