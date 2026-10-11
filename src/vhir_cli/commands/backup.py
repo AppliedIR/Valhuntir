@@ -1921,20 +1921,31 @@ def _partial(target_dir: Path) -> dict | None:
     return m if isinstance(m, dict) and isinstance(m.get("partial"), list) else None
 
 
-def _way_out(case_id: str, done) -> str:
+def _way_out(target_dir: Path, case_id: str, done) -> str:
     """How to finish a PARTIAL restore by hand."""
     ledger = VERIFICATION_DIR / f"{case_id}.jsonl"
     extra = []
-    if "indices" in done:
-        extra.append("--skip-opensearch (its indices were restored)")
     if ledger.exists():
         user = os.environ.get("USER") or "$USER"
         extra.append(
             f"--skip-ledger (or fix the installed 0.6 file: sudo chown {user}:{user} {ledger})"
         )
+    adding = f", adding {' and '.join(extra)}" if extra else ""
+    if "identity" in done and "indices" in done:
+        # a copy with its own identity: restored again, it gets another one,
+        # and the indices restored under this one are no longer its own
+        c12 = _case_uuid(target_dir).replace("-", "")[:12] or "?"
+        return (
+            f"  Restore to another folder with --target{adding}. Restoring this folder "
+            f"again would give it a new identity, leaving its indices (case-{c12}-*) "
+            f"orphaned; delete case-{c12}-* by hand if you don't want them."
+        )
+    if "indices" in done:
+        extra.insert(0, "--skip-opensearch (its indices were restored)")
+        adding = f", adding {' and '.join(extra)}"
     return (
         "  Restore to another folder with --target, or remove this folder and "
-        f"restore again{', adding ' + ' and '.join(extra) if extra else ''}."
+        f"restore again{adding}."
     )
 
 
@@ -1943,7 +1954,7 @@ def _partial_exit(target_dir: Path, case_id: str, failed: dict, done) -> None:
     print(
         f"\nError: PARTIAL restore: the case files verified, but these steps failed: "
         f"{steps}.\n  {target_dir} keeps its .restore-in-progress marker, and a "
-        f"restore into it is refused.\n{_way_out(case_id, done)}",
+        f"restore into it is refused.\n{_way_out(target_dir, case_id, done)}",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -1965,7 +1976,7 @@ def _refuse_partial(target_dir: Path, case_id: str, partial: dict) -> None:
     )
     print(
         f"Error: {target_dir} holds a PARTIAL restore of case {case_id} (missing: "
-        f"{missing}); nothing was changed.\n{_way_out(case_id, done)}",
+        f"{missing}); nothing was changed.\n{_way_out(target_dir, case_id, done)}",
         file=sys.stderr,
     )
     sys.exit(1)

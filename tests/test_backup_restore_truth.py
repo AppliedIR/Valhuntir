@@ -494,6 +494,33 @@ def test_a_ledger_only_partial_in_place_is_told_it_is_partial(box, capsys):
     assert _folder(target) == before
 
 
+def test_a_partial_copy_with_its_own_indices_is_never_told_to_restore_again_in_place(
+    box, monkeypatch, capsys
+):
+    """Beside the original, the copy got its own identity and its indices were
+    restored under it, then the 0.6 install failed. Removing the folder and
+    restoring again would mint another identity and orphan those indices, so
+    the advice is a new --target, naming the copy's index prefix."""
+    module, _ = beside(box)
+
+    def update_case_meta(d, fields):  # writes the copy's identity, as sift-common does
+        meta = (Path(d) / "CASE.yaml").read_text().replace(UUID, fields["case_uuid"])
+        (Path(d) / "CASE.yaml").write_text(meta)
+
+    module.update_case_meta = update_case_meta
+    monkeypatch.setattr(B, "_host_identity", lambda: module)
+    box.sudo_fails = {"cp"}
+    target = box.tmp / "elsewhere" / CASE
+    assert restore(make_backup(box), target) == 1
+    c12 = B._case_uuid(target).replace("-", "")[:12]
+    assert c12 and c12 != UUID.replace("-", "")[:12]
+    first = capsys.readouterr().err
+    assert restore(make_backup(box), target) == 1  # the re-run's refusal says the same
+    for err in (first, capsys.readouterr().err):
+        assert "--skip-opensearch" not in err and "--target" in err
+        assert f"case-{c12}-*" in err
+
+
 def test_work_done_in_a_partial_restore_survives_a_rerun(box):
     box.restore_fails = 1
     bk, target = make_backup(box, ledger=False), box.tmp / "cases" / CASE
