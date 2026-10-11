@@ -216,6 +216,9 @@ def _create_backup(args, identity: dict) -> None:
 
 
 _COPY_CHUNK = 1024 * 1024
+# The files the case's writers change together, copied in one hold of their lock
+_WRITER_SET = ("findings.json", "timeline.json", "iocs.json", "todos.json",
+               "pending-reviews.json", "approvals.jsonl", "verification.jsonl")  # fmt: skip
 
 
 def _copy_file_hashing(src: Path, dst: Path) -> tuple[Path, str]:
@@ -293,10 +296,7 @@ def _create_backup_data(
     meta = load_case_meta(case_dir)
     case_id = meta.get("case_id", case_dir.name)
     dest = Path(destination)
-    # The case's copies of its signed history (this box's chain, its 0.6
-    # copy and the signing keys) are written into the case first, so the
-    # backup carries them; CopyFailed stops the backup
-    copied = case_copies.write_case_copies(case_id, case_dir)
+    case_copies.refuse_hidden_store()  # before anything is created
 
     # Build under an ".incomplete" name; only a finished backup takes the
     # case-date name, so a failed or interrupted one can't pass for a backup.
@@ -421,20 +421,54 @@ def _create_backup_data(
         except OSError:
             ledger_failed = True
             ledger_note = "Warning: could not copy the case's 0.6 approval records"
-    else:
-        # a case signed from the start has none; its signed history is in ledger/
-        ledger_note = (
-            ""
-            if copied.get("chain_id")
-            else "Note: this case has no 0.6 approval records and no signed decisions yet"
-        )
 
     # No credential file is ever backed up: a key's private half stays on its
     # box, and the case's signed lines carry the public keys that check them
 
     # Copy files — hash each stream in flight so the manifest needs no second
-    # pass over the payload, and so the recorded hash is the source's.
+    # pass over the payload, and so the recorded hash is the bytes read.
     copied_hashes: dict[str, str] = {}
+    refused = {e["path"] for e in skipped}
+    accepted = {rel: Path(abs_path) for rel, abs_path, _s in scan["case_data"]}
+    point_in_time: list[str] = []
+
+    def copy_one(src: Path, rel: str) -> None:
+        dst = backup_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        written_to, fhash = _copy_file_hashing(Path(src), dst)
+        copied_hashes[str(written_to.relative_to(backup_dir))] = fhash
+
+    def writer_set() -> None:
+        """Under the writers' lock: the files they change together, listed
+        now from the case (one created since the scan too), never a path the
+        scan refused or a link it didn't accept."""
+        names = [n for n in _WRITER_SET if (case_dir / n).is_file()]
+        for root, _dirs, files in os.walk(case_dir / "ledger"):
+            names += sorted(os.path.relpath(Path(root, f), case_dir) for f in files)
+        for rel in names:
+            path = case_dir / rel
+            if rel in refused or (path.is_symlink() and rel not in accepted):
+                continue
+            copy_one(accepted.get(rel, path), rel)
+
+    # The writer set and this box's copies of the signed history (its chain,
+    # 0.6 copy and the signing keys) in one hold of the writers' lock: the
+    # copies go into the backup, never the case. CopyFailed stops the backup.
+    copied = case_copies.write_case_copies(
+        case_id, case_dir, into=backup_dir, inside_lock=writer_set
+    )
+    for root, _dirs, files in os.walk(backup_dir / "ledger"):
+        point_in_time += [os.path.relpath(Path(root, f), backup_dir) for f in files]
+    point_in_time += [n for n in _WRITER_SET if (backup_dir / n).is_file()]
+    # the copies may have rewritten or moved any of these: hashed from disk
+    for rel in [r for r in copied_hashes if r.startswith("ledger/")]:
+        del copied_hashes[rel]
+    copied_hashes.pop("verification.jsonl", None)
+    if not ledger_path.is_file() and not copied.get("chain_id"):
+        ledger_note = (
+            "Note: this case has no 0.6 approval records and no signed decisions yet"
+        )
+
     total_files = len(files_to_copy)
     # A case file at a control path this backup just wrote (e.g. a copy left
     # in the case dir by an older restore) must not replace the live copy.
@@ -444,10 +478,9 @@ def _create_backup_data(
     for i, (rel_path, abs_path, _size) in enumerate(files_to_copy, 1):
         if rel_path in written or _is_credential_copy(rel_path):
             continue
-        dst = backup_dir / rel_path
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        written_to, fhash = _copy_file_hashing(Path(abs_path), dst)
-        copied_hashes[str(written_to.relative_to(backup_dir))] = fhash
+        if rel_path in _WRITER_SET or rel_path.startswith("ledger/"):
+            continue  # the locked section's, never copied again
+        copy_one(Path(abs_path), rel_path)
         if progress_fn:
             progress_fn("Copying", i, total_files)
     # The chain copies were written before the case files were copied; a
@@ -483,7 +516,7 @@ def _create_backup_data(
     for i, (rel, fpath) in enumerate(sorted(all_backup_files), 1):
         fsize = fpath.stat().st_size
         # Copied payload was already hashed in flight; everything else here
-        # (ledger, password hashes, OpenSearch snapshot) is hashed from disk.
+        # (the signed-history copies, the 0.6 file, the snapshot) from disk.
         fhash = copied_hashes.get(rel)
         if fhash is None:
             fhash = sha256_file(fpath)
@@ -506,6 +539,9 @@ def _create_backup_data(
             opensearch_snapshot_info and not opensearch_snapshot_info.get("error")
         ),
         "notes": ["approvals.jsonl is an archival copy, not used for verification"],
+        # copied or written in one hold of the writers' lock: the case's state
+        # at one moment; every other file was copied after it
+        "point_in_time": {"files": sorted(point_in_time)},
         "files": manifest_files,
         "total_bytes": total_bytes,
         "file_count": len(manifest_files),
