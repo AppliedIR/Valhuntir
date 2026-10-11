@@ -415,6 +415,110 @@ def test_a_closing_entry_that_cant_be_read_leaves_its_job_open(case, shape):
     assert [os.path.basename(f["path"]) for f in _files(case)] == ["other.txt"]
 
 
+@pytest.mark.parametrize(
+    "rows",
+    [
+        {"files": {"path": "P", "error": "read"}},  # files as an object
+        {"files": "P"},  # files as a string
+        {"files": []},  # no rows, and no top-level path
+        {"files": ["P"]},  # a row that isn't an object
+        {"files": [{"error": "read"}]},  # a row without a path
+        {"files": [{"path": 5, "error": "read"}]},  # a path that isn't a string
+        {"files": [{"path": "", "error": "read"}]},  # an empty path
+        {"files": [{"path": "P", "sha256": "a" * 64, "error": "read"}]},  # guard: both
+        {"files": [{"path": "P"}]},  # guard: neither a hash nor an error
+    ],
+    ids=["files_object", "files_string", "files_empty", "row_not_object", "row_no_path",
+         "path_not_string", "path_empty", "guard_both", "guard_neither"],
+)  # fmt: skip
+def test_a_failure_entry_that_cant_be_read_is_never_skipped(case, rows):
+    """A job that hashed the file, then closed it again with an entry whose rows
+    can't all be read: the second entry isn't skipped, so the file stays open."""
+    mem = _open_acquisition(case)
+    _closing(
+        case, 1, "hash_complete", [{"path": str(mem), "sha256": _sha(mem.read_bytes())}]
+    )
+    real = json.loads(json.dumps(rows).replace('"P"', json.dumps(str(mem))))
+    _record(case, "file-identity", audit_id="file-identity-20261009-032", tool="hash_failed",
+            job_id="job-20261009-020", **real)  # fmt: skip
+    other = case / "evidence" / "other.txt"
+    other.write_bytes(b"an original")
+    assert register_evidence_data(case, str(other), "tester")["sha256"] == _sha(
+        b"an original"
+    )
+    with pytest.raises(
+        ValueError, match="sift-tester-20261009-020.*hasn't recorded one hash"
+    ):
+        register_evidence_data(case, str(mem), "tester")
+
+
+def _writer_job(case, monkeypatch, paths):
+    """The hash job file_identity runs, closing `paths` as the writer does."""
+    fi = pytest.importorskip("sift_common.file_identity")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
+    fi._job(("k",), "job-20261009-020", paths, str(case), "test")
+
+
+def _pending(case, mem):
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-020", tool="run_command",
+            acquisition=True, acquisition_tool="winpmem",
+            outputs=[{"path": str(mem), "sha256": "pending:job-20261009-020"}])  # fmt: skip
+
+
+def _labelled(case, mem):
+    r = register_evidence_data(case, str(mem), "tester")
+    assert (r.get("acquired_by"), r.get("acquisition_tool")) == (
+        "sift-tester-20261009-020", "winpmem")  # fmt: skip
+
+
+def test_a_writer_made_one_file_closing_keeps_the_acquisitions_identity(
+    case, monkeypatch
+):
+    mem = case / "evidence" / "HOST1.raw"
+    mem.write_bytes(b"MEM")
+    _pending(case, mem)
+    _writer_job(case, monkeypatch, str(mem))
+    _labelled(case, mem)
+
+
+def test_a_writer_made_list_closing_keeps_the_acquisitions_identity(case, monkeypatch):
+    mem, page = case / "evidence" / "HOST1.raw", case / "evidence" / "HOST1.pagefile"
+    mem.write_bytes(b"MEM")
+    page.write_bytes(b"PAGE")
+    _pending(case, mem)
+    _writer_job(case, monkeypatch, [str(mem), str(page)])
+    _labelled(case, mem)
+
+
+def test_a_writer_made_partial_list_keeps_the_hashed_files_identity(case, monkeypatch):
+    mem = case / "evidence" / "HOST1.raw"
+    mem.write_bytes(b"MEM")
+    _pending(case, mem)
+    _writer_job(case, monkeypatch, [str(mem), str(case / "evidence" / "gone.pagefile")])
+    _labelled(case, mem)
+
+
+def test_a_writer_made_closing_of_a_non_utf8_name_keeps_its_identity(case, monkeypatch):
+    raw = os.path.join(os.fsencode(case / "evidence"), b"HOST\xff.raw")
+    with open(raw, "wb") as f:
+        f.write(b"MEM")
+    mem = case / "evidence" / os.fsdecode(b"HOST\xff.raw")  # a surrogate-escaped name
+    _pending(case, mem)
+    _writer_job(case, monkeypatch, str(mem))
+    _labelled(case, mem)
+
+
+def test_a_writer_made_failure_is_refused(case, monkeypatch):
+    mem = case / "evidence" / "HOST1.raw"
+    _pending(case, mem)
+    _writer_job(case, monkeypatch, str(mem))  # nothing there yet: the job fails
+    mem.write_bytes(b"MEM")
+    with pytest.raises(
+        ValueError, match="sift-tester-20261009-020.*hasn't recorded one hash"
+    ):
+        register_evidence_data(case, str(mem), "tester")
+
+
 # --- stat fields come from the hashed bytes' own fd ----------------------------
 
 

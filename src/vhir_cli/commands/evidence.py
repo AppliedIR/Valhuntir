@@ -353,6 +353,10 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
             and isinstance(h, str)]  # fmt: skip
 
 
+def _no_path():
+    raise ValueError("a closing row with an empty path")  # realpath("") is the cwd
+
+
 def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
     """(job id, real path) -> one item per row that closed the file, success or
     failure: a one-file job's at the top level, a list job's in files[]. An
@@ -365,10 +369,9 @@ def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
         if e.get("tool") not in ("hash_complete", "hash_failed"):
             continue
         job = str(e.get("job_id", ""))
-        try:
-            rows = [(os.path.realpath(str(row["path"])), row.get("sha256"))
-                    for row in e.get("files") or [e]
-                    if isinstance(row, dict) and row.get("path")]  # fmt: skip
+        try:  # every row must be read: one skipped could hide a failure
+            rows = [(os.path.realpath(row["path"] or _no_path()), row.get("sha256"))
+                    for row in e.get("files") or [e]]  # fmt: skip
         except Exception:  # noqa: BLE001 -- any malformed value leaves its job open
             unread.add(job)
             continue
