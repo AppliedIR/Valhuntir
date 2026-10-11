@@ -874,17 +874,22 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     with ledger.case_lock(case_id_of(case_dir)):
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
+        # So is an id held twice, in a local file or the bundle: the merge would
+        # compare against one copy and write over the other (an APPROVED one too).
         for key, filename in (
             ("findings", "findings.json"),
             ("timeline", "timeline.json"),
         ):
             local_file = case_dir / filename
-            if key not in bundle or not local_file.exists():
+            if key not in bundle:
+                continue
+            if duplicated := _duplicate_ids(bundle[key]):
+                return _duplicates_refused(f"The bundle's {key}", duplicated)
+            if not local_file.exists():
                 continue
             try:
                 text = local_file.read_text()
-                if text.strip():
-                    json.loads(text)
+                local = json.loads(text) if text.strip() else []
             except (OSError, ValueError) as e:
                 return {
                     "status": "error",
@@ -893,6 +898,8 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                         "Fix or restore it, then merge again."
                     ),
                 }
+            if duplicated := _duplicate_ids(local):
+                return _duplicates_refused(filename, duplicated)
         if "findings" in bundle:
             findings_result = _merge_items(
                 case_dir, "findings.json", bundle["findings"], "id", origin
@@ -907,6 +914,37 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         "findings": findings_result,
         "timeline": timeline_result,
         "ledger": anchors,
+    }
+
+
+def _duplicate_ids(items: object) -> list:
+    """The ids held more than once, keyed as the merge keys them (raw values).
+    Non-dict items and an empty or unhashable id are left to the merge."""
+    seen: set = set()
+    duplicated: list = []
+    for item in items if isinstance(items, list) else []:
+        item_id = item.get("id") if isinstance(item, dict) else None
+        try:
+            if item_id and item_id in seen and item_id not in duplicated:
+                duplicated.append(item_id)
+            seen.add(item_id)
+        except TypeError:  # unhashable
+            continue
+    return duplicated
+
+
+def _duplicates_refused(where: str, duplicated: list) -> dict:
+    # the ids are case or bundle data: one line, their controls shown as "?"
+    from vhir_cli.display import one_line
+
+    named = ", ".join(one_line(i) for i in duplicated[:5])
+    more = f" and {len(duplicated) - 5} more" if len(duplicated) > 5 else ""
+    return {
+        "status": "error",
+        "message": (
+            f"{where} holds an id more than once ({named}{more}); nothing was merged. "
+            "Keep one item per id, then merge again."
+        ),
     }
 
 
