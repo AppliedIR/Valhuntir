@@ -1931,14 +1931,14 @@ def _way_out(target_dir: Path, case_id: str, done) -> str:
             f"--skip-ledger (or fix the installed 0.6 file: sudo chown {user}:{user} {ledger})"
         )
     adding = f", adding {' and '.join(extra)}" if extra else ""
-    if "identity" in done and "indices" in done:
+    if "identity" in done:
         # a copy with its own identity: restored again, it gets another one,
-        # and the indices restored under this one are no longer its own
+        # and any indices restored under this one are no longer its own
         c12 = _case_uuid(target_dir).replace("-", "")[:12] or "?"
         return (
             f"  Restore to another folder with --target{adding}. Restoring this folder "
-            f"again would give it a new identity, leaving its indices (case-{c12}-*) "
-            f"orphaned; delete case-{c12}-* by hand if you don't want them."
+            f"again would give it a new identity: indices named case-{c12}-*, if any "
+            "were restored, are left; delete them by hand if you don't want them."
         )
     if "indices" in done:
         extra.insert(0, "--skip-opensearch (its indices were restored)")

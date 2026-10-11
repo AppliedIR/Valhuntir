@@ -521,6 +521,48 @@ def test_a_partial_copy_with_its_own_indices_is_never_told_to_restore_again_in_p
         assert f"case-{c12}-*" in err
 
 
+def test_a_partial_copy_whose_later_index_group_failed_is_told_the_same(
+    box, monkeypatch, capsys
+):
+    """The first rename group restored under the copy's identity and the next
+    failed, so `indices` failed though some exist: still a new --target,
+    naming the copy's prefix, never "remove this folder and restore again"."""
+    module, _ = beside(box)
+
+    def update_case_meta(d, fields):
+        meta = (Path(d) / "CASE.yaml").read_text().replace(UUID, fields["case_uuid"])
+        (Path(d) / "CASE.yaml").write_text(meta)
+
+    module.update_case_meta = update_case_meta
+    monkeypatch.setattr(B, "_host_identity", lambda: module)
+    monkeypatch.setattr(B, "_restore_opensearch_snapshot", RESTORE)
+    calls = []
+
+    def snap_restore(**k):
+        calls.append(k)
+        if len(calls) == 2:
+            raise RuntimeError("stand-in cluster: second restore refused")
+
+    holds = [
+        f"case-{UUID.replace('-', '')[:12]}-evtx-0",
+        f"case-{CASE.lower()}-evtx-host1",
+    ]
+    client = types.SimpleNamespace(
+        snapshot=types.SimpleNamespace(get=lambda **k: {"snapshots": [{"indices": holds}]},
+                                       restore=snap_restore, create_repository=lambda **k: None,
+                                       delete_repository=lambda **k: None),
+        cat=types.SimpleNamespace(indices=lambda **k: []), info=FakeClient().info,
+        indices=types.SimpleNamespace(get=lambda **k: {}))  # fmt: skip
+    sys.modules["opensearch_mcp.client"].get_client = lambda *a, **k: client
+    target = box.tmp / "elsewhere" / CASE
+    assert restore(make_backup(box, ledger=False), target) == 1
+    assert len(calls) == 2  # the first group restored, the second refused
+    c12 = B._case_uuid(target).replace("-", "")[:12]
+    err = capsys.readouterr().err
+    assert "--target" in err and f"case-{c12}-*" in err
+    assert "remove this folder" not in err and "--skip-opensearch" not in err
+
+
 def test_work_done_in_a_partial_restore_survives_a_rerun(box):
     box.restore_fails = 1
     bk, target = make_backup(box, ledger=False), box.tmp / "cases" / CASE
