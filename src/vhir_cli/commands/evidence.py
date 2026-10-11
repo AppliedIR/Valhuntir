@@ -353,17 +353,18 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
             and isinstance(h, str)]  # fmt: skip
 
 
-def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], set[str]]:
-    """(job id, real path) -> the hashes that job's hash_complete entries recorded
-    for the file: a one-file job's at the top level, a list job's in files[]."""
-    closed: dict[tuple[str, str], set[str]] = {}
+def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
+    """(job id, real path) -> one item per row that closed the file, success or
+    failure: a one-file job's at the top level, a list job's in files[]. An
+    item is the row's sha256 as recorded, or None when it has none."""
+    closed: dict[tuple[str, str], list] = {}
     for e in entries:
-        if e.get("tool") != "hash_complete":
+        if e.get("tool") not in ("hash_complete", "hash_failed"):
             continue
         for row in e.get("files") or [e]:
-            if isinstance(row, dict) and row.get("sha256") and row.get("path"):
+            if isinstance(row, dict) and row.get("path"):
                 key = (str(e.get("job_id", "")), os.path.realpath(str(row["path"])))
-                closed.setdefault(key, set()).add(row["sha256"])
+                closed.setdefault(key, []).append(row.get("sha256"))
     return closed
 
 
@@ -395,9 +396,16 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
     closed = _closed_hashes(entries)
     for entry in entries:
         for p, h in _outputs_of(case_dir, entry):
-            job = h.removeprefix("pending:")
-            if h.startswith("pending:") and len(closed.get((job, p), ())) == 1:
-                h = next(iter(closed[(job, p)]))
+            # a pending hash resolves only when its job closed the file once,
+            # with a hash: a failure, a second closing or a bad value keep it open
+            items = closed.get((h.removeprefix("pending:"), p), [])
+            if (
+                h.startswith("pending:")
+                and len(items) == 1
+                and isinstance(items[0], str)
+                and items[0]
+            ):
+                h = items[0]
             index.setdefault(p, []).append((h, entry))
     return index, unread
 

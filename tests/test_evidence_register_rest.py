@@ -319,6 +319,58 @@ def test_a_folder_holding_an_acquisition_output_still_hashing_is_refused(case):
     assert not list(case.glob("evidence-manifests/*.json"))  # no manifest row written
 
 
+def _closing(case, n, tool, rows, job="job-20261009-020"):
+    """A hash job's closing entry, its rows in files[] as a list job writes them."""
+    _record(case, "file-identity", audit_id=f"file-identity-20261009-03{n}", tool=tool,
+            job_id=job, files=rows)  # fmt: skip
+
+
+def test_a_closing_row_with_a_list_for_its_hash_crashes_no_registration(case):
+    mem = _open_acquisition(case)
+    _closing(case, 1, "hash_complete", [{"path": str(mem), "sha256": ["a", "b"]}])
+    _refused_naming_op_and_job(case, mem)
+    other = case / "evidence" / "other.txt"
+    other.write_bytes(b"an original")
+    assert register_evidence_data(case, str(other), "tester")["sha256"] == _sha(
+        b"an original"
+    )
+
+
+def test_a_closing_row_with_a_number_for_its_hash_is_refused_not_crashed(case):
+    mem = _open_acquisition(case)
+    _closing(case, 1, "hash_complete", [{"path": str(mem), "sha256": 12345}])
+    _refused_naming_op_and_job(case, mem)
+
+
+def test_a_job_that_failed_and_then_completed_for_one_file_is_refused(case):
+    mem = _open_acquisition(case)
+    _closing(case, 1, "hash_failed", [{"path": str(mem), "error": "OSError: read"}])
+    _closing(
+        case, 2, "hash_complete", [{"path": str(mem), "sha256": _sha(mem.read_bytes())}]
+    )
+    _refused_naming_op_and_job(case, mem)
+
+
+def test_a_list_job_that_failed_another_file_keeps_this_files_identity(case):
+    mem = _open_acquisition(case)
+    q = case / "evidence" / "HOST1.pagefile"
+    _closing(case, 1, "hash_complete", [{"path": str(mem), "sha256": _sha(mem.read_bytes())},
+                                        {"path": str(q), "error": "OSError: read"}])  # fmt: skip
+    r = register_evidence_data(case, str(mem), "tester")
+    assert r["acquired_by"] == "sift-tester-20261009-020"
+    assert r["acquisition_tool"] == "winpmem"
+
+
+def test_a_list_job_that_hashed_these_bytes_keeps_the_acquisitions_identity(case):
+    mem = _open_acquisition(case)
+    _closing(
+        case, 1, "hash_complete", [{"path": str(mem), "sha256": _sha(mem.read_bytes())}]
+    )
+    r = register_evidence_data(case, str(mem), "tester")
+    assert r["acquired_by"] == "sift-tester-20261009-020"
+    assert r["acquisition_tool"] == "winpmem"
+
+
 # --- stat fields come from the hashed bytes' own fd ----------------------------
 
 
