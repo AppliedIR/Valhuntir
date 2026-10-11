@@ -1027,6 +1027,7 @@ def _merge_items(
     updated = 0
     skipped = 0
     protected = 0
+    own = 0
 
     # Protected fields that cannot be smuggled via merge
     _MERGE_PROTECTED_FIELDS = {
@@ -1078,6 +1079,9 @@ def _merge_items(
             if existing.get("status") in ("APPROVED", "REJECTED"):  # decided here
                 protected += 1
                 continue
+            if existing.get("created_by"):  # recorded here: a copy never replaces it
+                own += 1
+                continue
             inc_ts = item.get("modified_at", item.get("staged", ""))
             loc_ts = existing.get("modified_at", existing.get("staged", ""))
             if _parse_ts(inc_ts) > _parse_ts(loc_ts):
@@ -1094,4 +1098,5 @@ def _merge_items(
         "updated": updated,
         "skipped": skipped,
         "protected": protected,
+        "own": own,
     }
