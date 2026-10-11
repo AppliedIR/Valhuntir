@@ -72,3 +72,34 @@ def test_a_timeline_that_cant_be_merged_writes_neither_file(case, timeline):
         case, {"case_id": "INC-C", "findings": [new], "timeline": []}
     )
     assert result["findings"]["added"] == 1
+
+
+def test_an_import_that_waits_for_the_case_lock_is_in_export_since(case, monkeypatch):
+    """The cutoff T falls while the import waits for the lock: the items are
+    stored after T, so they're stamped after T."""
+    import contextlib
+
+    from vhir_cli import ledger
+
+    real_lock = ledger.case_lock
+    cutoffs = []
+
+    @contextlib.contextmanager
+    def waited(case_id):
+        time.sleep(0.01)  # another writer holds the lock
+        cutoffs.append(datetime.now(timezone.utc).isoformat())
+        time.sleep(0.01)
+        with real_lock(case_id):
+            yield
+
+    monkeypatch.setattr(ledger, "case_lock", waited)
+    bundle = {
+        "case_id": "INC-A",
+        "findings": [dict(FINDING)],
+        "timeline": [dict(EVENT)],
+    }
+    assert import_bundle(case, bundle)["findings"]["added"] == 1
+    monkeypatch.setattr(ledger, "case_lock", real_lock)
+    exported = export_bundle(case, since=cutoffs[0])
+    assert [f["id"] for f in exported["findings"]] == ["F-alice-001"]
+    assert [t["id"] for t in exported["timeline"]] == ["T-alice-001"]
