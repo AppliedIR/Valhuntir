@@ -1395,6 +1395,10 @@ def cmd_restore(args, identity: dict) -> None:
         )
         sys.exit(1)
     cases_parent = target_dir.parent
+    # A folder a PARTIAL restore left is never resumed or deleted
+    partial = _partial(target_dir)
+    if partial is not None:
+        _refuse_partial(target_dir, case_id, partial)
 
     # Interactive prompts
     restore_opensearch = (
@@ -1515,16 +1519,6 @@ def cmd_restore(args, identity: dict) -> None:
     def progress(label: str, i: int, total: int) -> None:
         if i % 50 == 0 or i == total:
             print(f"  {label}... {i}/{total}", end="\r")
-
-    # A PARTIAL restore (files verified, a later step failed) is finished, not
-    # redone: the examiner may have worked in it since
-    partial = _partial(target_dir)
-    if partial is not None:
-        skipped = {("indices", restore_opensearch), ("ledger", restore_ledger)}
-        want = set(partial["partial"]) - {step for step, on in skipped if not on}
-        _retry_partial(
-            target_dir, backup_path, manifest, partial, want, snap_info, progress
-        )
 
     # Conflict checks, every refusal before anything is removed
     if restore_ledger and (VERIFICATION_DIR / f"{case_id}.jsonl").exists():
@@ -1671,7 +1665,6 @@ def cmd_restore(args, identity: dict) -> None:
     # a copy's own identity (it changes CASE.yaml and the host log), indices
     want: set[str] = set()
     failed: dict[str, str] = {}
-    rename = None
     if integrity_ok:
         want = {"keys"} | {
             step
@@ -1682,7 +1675,7 @@ def cmd_restore(args, identity: dict) -> None:
             )
             if on
         }
-        failed, rename = _finish_restore(
+        failed = _finish_restore(
             target_dir, backup_path, case_id, snap_info, want, ledger_data, progress
         )
     if alongside and ledger_path_of(case_id).exists():
@@ -1724,9 +1717,10 @@ def cmd_restore(args, identity: dict) -> None:
                     print(f"    {path}")
 
     # The marker goes once every step is done; a PARTIAL restore keeps it,
-    # naming the steps a re-run finishes
+    # naming what's missing
+    done = want - set(failed) - {"keys"}
     if integrity_ok and failed:
-        _mark_partial(target_dir, manifest, failed, rename)
+        _mark_partial(target_dir, failed, done)
     elif integrity_ok:
         with contextlib.suppress(OSError):
             restore_marker.unlink()
@@ -1774,7 +1768,7 @@ def cmd_restore(args, identity: dict) -> None:
     else:
         print("  Ledger: not included in backup")
     if failed:
-        _partial_exit(target_dir, failed)
+        _partial_exit(target_dir, case_id, failed, done)
 
     print()
     print("=" * 64)
@@ -1878,18 +1872,11 @@ def _install_ledger(data: bytes, case_id: str, folder: Path) -> str:
 
 
 def _finish_restore(
-    target_dir,
-    backup_path,
-    case_id,
-    snap_info,
-    want,
-    ledger_data,
-    progress,
-    rename=None,
-) -> tuple[dict, dict | None]:
+    target_dir, backup_path, case_id, snap_info, want, ledger_data, progress
+) -> dict:
     """The steps after every file verified, those in `want`: the 0.6 ledger,
     the signing keys, a copy's own identity, the indices. Returns each step
-    that failed with why, and a copy's index renaming."""
+    that failed with why."""
     failed: dict[str, str] = {}
     if "ledger" in want:
         why = _install_ledger(ledger_data, case_id, target_dir)
@@ -1900,6 +1887,7 @@ def _finish_restore(
             failed["ledger"] = why
     if "keys" in want:
         _merge_keys(target_dir)
+    rename = None
     if "identity" in want:
         rename = _new_identity_for_copy(target_dir, case_id, snap_info)
         if rename is None and "indices" in want:  # never under the original's names
@@ -1914,24 +1902,13 @@ def _finish_restore(
         except Exception as e:
             print(f"  OpenSearch restore... FAILED: {e}", file=sys.stderr)
             failed["indices"] = str(e)
-    return failed, rename
+    return failed
 
 
-def _mark_partial(target_dir: Path, manifest: dict, failed: dict, rename) -> None:
-    """Keep the restore marker after a PARTIAL restore, naming the steps still
-    to do and the case files as they are now: a re-run finishes only those
-    steps, and only while the files are unchanged."""
-    files = {
-        e["path"]: sha256_file(target_dir / e["path"])
-        for e in manifest["files"]
-        if not _is_control(manifest, e["path"]) and (target_dir / e["path"]).is_file()
-    }
-    marker = {
-        "partial": sorted(failed),
-        "why": failed,
-        "rename": rename,
-        "files": files,
-    }
+def _mark_partial(target_dir: Path, failed: dict, done: set) -> None:
+    """Keep the restore marker after a PARTIAL restore, naming the steps that
+    failed and those done (read back only to say so)."""
+    marker = {"partial": sorted(failed), "why": failed, "done": sorted(done)}
     (target_dir / ".restore-in-progress").write_text(json.dumps(marker, indent=2))
 
 
@@ -1941,58 +1918,57 @@ def _partial(target_dir: Path) -> dict | None:
         m = json.loads((target_dir / ".restore-in-progress").read_text())
     except (OSError, ValueError):
         return None
-    ok = isinstance(m, dict) and isinstance(m.get("partial"), list)
-    return m if ok and isinstance(m.get("files"), dict) else None
+    return m if isinstance(m, dict) and isinstance(m.get("partial"), list) else None
 
 
-def _partial_exit(target_dir: Path, failed: dict) -> None:
+def _way_out(case_id: str, done) -> str:
+    """How to finish a PARTIAL restore by hand."""
+    ledger = VERIFICATION_DIR / f"{case_id}.jsonl"
+    extra = []
+    if "indices" in done:
+        extra.append("--skip-opensearch (its indices were restored)")
+    if ledger.exists():
+        user = os.environ.get("USER") or "$USER"
+        extra.append(
+            f"--skip-ledger (or fix the installed 0.6 file: sudo chown {user}:{user} {ledger})"
+        )
+    return (
+        "  Restore to another folder with --target, or remove this folder and "
+        f"restore again{', adding ' + ' and '.join(extra) if extra else ''}."
+    )
+
+
+def _partial_exit(target_dir: Path, case_id: str, failed: dict, done) -> None:
     steps = "; ".join(f"{step} ({why})" for step, why in failed.items())
     print(
         f"\nError: PARTIAL restore: the case files verified, but these steps failed: "
-        f"{steps}.\n  {target_dir} keeps its .restore-in-progress marker. Fix the "
-        "cause and run the same `vhir restore` again: it finishes only these steps.",
+        f"{steps}.\n  {target_dir} keeps its .restore-in-progress marker, and a "
+        f"restore into it is refused.\n{_way_out(case_id, done)}",
         file=sys.stderr,
     )
     sys.exit(1)
 
 
-def _retry_partial(
-    target_dir, backup_path, manifest, partial, want, snap_info, progress
-):
-    """Finish a PARTIAL restore: only its missing steps, and only while the
-    case files are as it left them; never deletes anything."""
-    case_id = manifest["case_id"]
-    changed = sorted(
-        rel
-        for rel, sha in partial["files"].items()
-        if not (target_dir / rel).is_file() or sha256_file(target_dir / rel) != sha
+def _refuse_partial(target_dir: Path, case_id: str, partial: dict) -> None:
+    """A restore into a folder a PARTIAL restore left is refused: nothing is
+    deleted or changed (the examiner may have worked in it since). The marker
+    is only read back to say what's missing."""
+
+    def one(x) -> str:
+        return " ".join(str(x).split())[:80]
+
+    missing = ", ".join(one(s) for s in partial["partial"]) or "?"
+    done = (
+        [one(s) for s in partial.get("done") or []]
+        if isinstance(partial.get("done"), list)
+        else []
     )
-    ledger_data, ledger_rel = None, f"verification/{case_id}.jsonl"
-    if "ledger" in want and not changed:
-        sha = next(
-            (e["sha256"] for e in manifest["files"] if e["path"] == ledger_rel), ""
-        )
-        ledger_data = _ledger_bytes(backup_path / ledger_rel, sha)
-        if ledger_data is None or (VERIFICATION_DIR / f"{case_id}.jsonl").exists():
-            changed = [f"{ledger_rel} (in the backup, or already installed)"]
-    if changed:
-        print(
-            f"Error: {target_dir} holds a PARTIAL restore whose files changed since: "
-            f"{', '.join(changed[:5])}{', …' if len(changed) > 5 else ''}. Nothing was "
-            "deleted.\n  Restore to another folder with --target, or finish its steps "
-            f"({', '.join(partial['partial'])}) by hand.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    print(f"Finishing the PARTIAL restore in {target_dir}: {', '.join(sorted(want))}")
-    failed, rename = _finish_restore(target_dir, backup_path, case_id, snap_info,
-                                     want, ledger_data, progress, partial.get("rename"))  # fmt: skip
-    if failed:
-        _mark_partial(target_dir, manifest, failed, rename)
-        _partial_exit(target_dir, failed)
-    (target_dir / ".restore-in-progress").unlink()
-    print(f"\nRestored case {case_id} to {target_dir}")
-    sys.exit(0)
+    print(
+        f"Error: {target_dir} holds a PARTIAL restore of case {case_id} (missing: "
+        f"{missing}); nothing was changed.\n{_way_out(case_id, done)}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _snapshot_uuid(snap_info: dict) -> str | None:

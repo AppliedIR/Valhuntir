@@ -451,16 +451,47 @@ def test_a_copy_that_gets_no_identity_is_partial_not_silent(box, monkeypatch, wh
     )
 
 
-def test_a_partial_restore_run_again_finishes_only_the_missing_step(box):
+def _folder(target: Path) -> dict:
+    """Every file under `target`, the marker included, by its bytes."""
+    return {
+        str(p.relative_to(target)): p.read_bytes()
+        for p in target.rglob("*")
+        if p.is_file()
+    }
+
+
+def test_a_restore_into_a_partial_folder_refuses_and_changes_nothing(box, capsys):
     box.restore_fails = 1
     bk, target = make_backup(box, ledger=False), box.tmp / "cases" / CASE
+    assert restore(bk, target) == 1  # the index restore failed
+    before, calls = (
+        _folder(target),
+        (len(box.sudo), len(box.restores), len(box.keys_merged)),
+    )
+    capsys.readouterr()
+    assert restore(bk, target) == 1  # the cluster works now; still refused
+    err = capsys.readouterr().err
+    assert "PARTIAL" in err and "indices" in err and "--target" in err
+    assert _folder(target) == before
+    assert (len(box.sudo), len(box.restores), len(box.keys_merged)) == calls
+
+
+def test_a_ledger_only_partial_in_place_is_told_it_is_partial(box, capsys):
+    """Its indices were restored, so they exist: the re-run hears PARTIAL and
+    the --skip-opensearch way out, not "indices still exist"."""
+    box.sudo_fails = {"cp"}
+    bk, target = make_backup(box), box.tmp / "cases" / CASE
     assert restore(bk, target) == 1
-    (target / "added-by-hand.txt").write_text(
-        "not the restore's"
-    )  # not a restored file
-    assert restore(bk, target) == 0
-    assert len(box.restores) == 2 and not (target / ".restore-in-progress").exists()
-    assert (target / "added-by-hand.txt").exists()
+    own = f"case-{UUID.replace('-', '')[:12]}-evtx-0"
+    listing = types.SimpleNamespace(indices=lambda **k: [{"index": own}])
+    client = types.SimpleNamespace(cat=listing, info=FakeClient().info)
+    sys.modules["opensearch_mcp.client"].get_client = lambda *a, **k: client
+    box.sudo_fails, before = set(), _folder(target)
+    capsys.readouterr()
+    assert restore(bk, target) == 1
+    err = capsys.readouterr().err
+    assert "PARTIAL" in err and "still exist" not in err and "--skip-opensearch" in err
+    assert _folder(target) == before
 
 
 def test_work_done_in_a_partial_restore_survives_a_rerun(box):

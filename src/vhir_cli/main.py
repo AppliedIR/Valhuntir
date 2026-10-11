@@ -115,7 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Nothing outside the case folder is written until every file has "
         "verified. Exit 1 (PARTIAL) when the files verified but a later step (the 0.6 "
         "records, the indices) failed: the folder keeps its .restore-in-progress "
-        "marker, and the same command run again finishes only those steps.",
+        "marker, and a restore into it is refused; restore to another folder, or "
+        "remove it and restore again.",
     )
     p_restore.add_argument("backup_path", help="Path to backup directory")
     p_restore.add_argument(
