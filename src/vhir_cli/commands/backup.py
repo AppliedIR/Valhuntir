@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -1260,6 +1261,35 @@ def _repoint_evidence(
     return moved, absent, outside
 
 
+def _mark_relocation(
+    target_dir: Path, source: str, manifest_file: Path, examiner: str
+) -> None:
+    """Append one relocation entry to each restored audit log: the folder the
+    case was backed up from and the one it's in now. The lines before it
+    still name the old folder, byte for byte (they're cited by their hashes);
+    provenance maps their paths through this entry."""
+    now = datetime.now(timezone.utc)
+    entry = {
+        "audit_id": f"restore-{examiner}-{now:%Y%m%d}-{secrets.token_hex(8)}",
+        "tool": "restore",
+        "ts": now.isoformat(),
+        "relocated_from": list(dict.fromkeys([source, os.path.realpath(source)])),
+        "to": str(target_dir.resolve()),
+        "manifest_sha256": sha256_file(manifest_file),
+    }
+    line = json.dumps(entry).encode() + b"\n"
+    for log in sorted((target_dir / "audit").glob("*.jsonl")):
+        if log.is_symlink() or not log.is_file():
+            continue
+        with open(log, "r+b") as f:
+            end, gap = f.seek(0, os.SEEK_END), b""
+            if end:  # a last line with no newline keeps its bytes
+                f.seek(end - 1)
+                gap = b"" if f.read(1) == b"\n" else b"\n"
+            f.seek(0, os.SEEK_END)
+            f.write(gap + line)
+
+
 def cmd_restore(args, identity: dict) -> None:
     """Entry point for 'vhir restore'."""
     backup_path = Path(args.backup_path)
@@ -1724,6 +1754,21 @@ def cmd_restore(args, identity: dict) -> None:
                 print("  Evidence still registered outside the restored case:")
                 for path in outside:
                     print(f"    {path}")
+        try:
+            if os.path.isabs(source_path):
+                _mark_relocation(
+                    target_dir,
+                    source_path,
+                    manifest_file,
+                    identity.get("examiner", "unknown"),
+                )
+        except OSError as e:
+            print(
+                f"Error: the audit trail could not record the move to {target_dir}: "
+                f"{e}\n  {target_dir} is marked .restore-in-progress — do not use it.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Remove restore marker — only once every file verified, so a bad restore
     # stays flagged, and a re-run asks before removing it.
