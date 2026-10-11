@@ -18,7 +18,7 @@ from vhir_cli.commands.backup import (
 
 @pytest.fixture(autouse=True)
 def _patch_state_dirs(tmp_path, monkeypatch):
-    """Keep tests off the real /var/lib/vhir ledger and password hashes."""
+    """Keep tests off the real /var/lib/vhir store."""
     monkeypatch.setattr(
         "vhir_cli.commands.backup.VERIFICATION_DIR", tmp_path / "verification-src"
     )
@@ -136,8 +136,8 @@ def test_non_payload_files_still_hashed_from_disk(tmp_path):
 def test_copy_into_existing_directory_matches_copy2(tmp_path):
     """A dst that is already a directory receives src inside it, as with copy2.
 
-    The backup writes passwords/ and verification/ before copying the case, so a
-    case file with one of those names meets a directory at its destination.
+    The backup writes verification/ and ledger/ itself, so a case file with one
+    of those names can meet a directory at its destination.
     """
     src = tmp_path / "passwords"
     src.write_bytes(b"examiner's own file")
