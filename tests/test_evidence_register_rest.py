@@ -520,6 +520,29 @@ def test_a_writer_made_failure_is_refused(case, monkeypatch):
         register_evidence_data(case, str(mem), "tester")
 
 
+def test_the_refusal_for_a_job_still_open_says_to_register_after_it_completes(case):
+    mem = _open_acquisition(case)
+    with pytest.raises(ValueError) as refused:
+        register_evidence_data(case, str(mem), "tester")
+    why = str(refused.value)
+    assert "job-20261009-020" in why and "register it after that job completes" in why
+    assert "failed" not in why
+
+
+def test_the_refusal_for_a_failed_job_quotes_its_error_and_says_to_hash_again(case):
+    """A failed job will never record a hash: waiting for it is the wrong advice."""
+    mem = _open_acquisition(case)
+    _closing(case, 1, "hash_failed",
+             [{"path": str(mem), "error": "PermissionError: [Errno 13] Permission denied"}])  # fmt: skip
+    with pytest.raises(ValueError) as refused:
+        register_evidence_data(case, str(mem), "tester")
+    why = str(refused.value)
+    assert "job-20261009-020 failed" in why
+    assert "PermissionError: [Errno 13] Permission denied" in why
+    assert "hash or acquire the file again" in why
+    assert "after that job completes" not in why
+
+
 # --- stat fields come from the hashed bytes' own fd ----------------------------
 
 

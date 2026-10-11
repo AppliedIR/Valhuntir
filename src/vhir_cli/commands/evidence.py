@@ -361,32 +361,38 @@ def _absolute(path):
     return path
 
 
-def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
+def _closed_hashes(entries: list[dict]) -> tuple[dict, dict]:
     """(job id, real path) -> one item per row that closed the file, success or
     failure: a one-file job's at the top level, a list job's in files[]. An
     item is the row's sha256 as recorded, or None when it has none. A job with
     a closing entry that can't be read in full closes nothing: none of its
-    files resolves, so no failure behind an unreadable row is dropped."""
+    files resolves, so no failure behind an unreadable row is dropped. And
+    (job id, real path) -> the error its first failure closure recorded."""
     closed: dict[tuple[str, str], list] = {}
+    failed: dict[tuple[str, str], str] = {}
     unread: set[str] = set()
     for e in entries:
         if e.get("tool") not in ("hash_complete", "hash_failed"):
             continue
         job = str(e.get("job_id", ""))
         try:  # every row must be read: one skipped could hide a failure
-            rows = [(os.path.realpath(_absolute(row["path"])), row.get("sha256"))
+            rows = [(os.path.realpath(_absolute(row["path"])), row.get("sha256"),
+                     e.get("tool") == "hash_failed" or "error" in row, row.get("error"))
                     for row in e.get("files") or [e]]  # fmt: skip
         except Exception:  # noqa: BLE001 -- any malformed value leaves its job open
             unread.add(job)
             continue
-        for p, h in rows:
+        for p, h, failure, error in rows:
             closed.setdefault((job, p), []).append(h)
-    return {k: v + [None] if k[0] in unread else v for k, v in closed.items()}
+            if failure:
+                failed.setdefault((job, p), str(error or "no error recorded"))
+    return {k: v + [None] if k[0] in unread else v for k, v in closed.items()}, failed
 
 
-def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
-    """Every output this case's audit records: real path -> (hash, entry); and
-    why any of its audit couldn't be read. No other case's trail is read."""
+def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
+    """Every output this case's audit records: real path -> (hash, entry); why
+    any of its audit couldn't be read; and each (job, real path) whose hash job
+    failed, with its error. No other case's trail is read."""
     index: dict[str, list[tuple[str, dict]]] = {}
     unread: list[str] = []
     entries: list[dict] = []
@@ -409,7 +415,7 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
                 continue
             if isinstance(entry, dict):
                 entries.append(entry)
-    closed = _closed_hashes(entries)
+    closed, failed = _closed_hashes(entries)
     for entry in entries:
         for p, h in _outputs_of(case_dir, entry):
             # a pending hash resolves only when its job closed the file once,
@@ -423,7 +429,7 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
             ):
                 h = items[0]
             index.setdefault(p, []).append((h, entry))
-    return index, unread
+    return index, unread, failed
 
 
 def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
@@ -446,7 +452,9 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
     acquired (a live memory or disk collection) is evidence itself: it
     registers, labelled. When part of the audit can't be read, a file that
     isn't refused registers, saying its derivation is unchecked."""
-    index, unread = _recorded_outputs(case_dir) if recorded is None else recorded
+    index, unread, failed = (
+        _recorded_outputs(case_dir) if recorded is None else recorded
+    )
     ops = _made_here(index, real, sha256)
     note = (
         {"derivation_note": "derivation unchecked: " + "; ".join(unread)}
@@ -459,11 +467,14 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
         pending = [(h, e) for h, e in index.get(real, []) if h.startswith("pending:")]
         if pending:
             h, e = pending[0]
-            return (
-                f"{real} is an output of acquisition {e.get('audit_id', '?')}, whose hash "
-                f"job {h.removeprefix('pending:')} hasn't recorded one hash for it: "
-                "register it after that job completes."
-            ), None
+            job = h.removeprefix("pending:")
+            said = f"{real} is an output of acquisition {e.get('audit_id', '?')}, whose hash job"
+            error = failed.get((job, real))
+            if error is not None:  # it will never record one: say so, and what to do
+                return (f"{said} {job} failed and hasn't recorded one hash for it ({error}): "
+                        "hash or acquire the file again, then register it."), None  # fmt: skip
+            return (f"{said} {job} hasn't recorded one hash for it: register it after "
+                    "that job completes."), None  # fmt: skip
         first = ops[0]
         return None, {"acquired_by": first.get("audit_id", ""),
                       "acquisition_tool": first.get("acquisition_tool") or first.get("tool", ""),
