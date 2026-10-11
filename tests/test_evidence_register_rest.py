@@ -425,11 +425,12 @@ def test_a_closing_entry_that_cant_be_read_leaves_its_job_open(case, shape):
         {"files": [{"error": "read"}]},  # a row without a path
         {"files": [{"path": 5, "error": "read"}]},  # a path that isn't a string
         {"files": [{"path": "", "error": "read"}]},  # an empty path
+        {"files": [{"path": "evidence/HOST1.raw", "error": "read"}]},  # a relative path
         {"files": [{"path": "P", "sha256": "a" * 64, "error": "read"}]},  # guard: both
         {"files": [{"path": "P"}]},  # guard: neither a hash nor an error
     ],
     ids=["files_object", "files_string", "files_empty", "row_not_object", "row_no_path",
-         "path_not_string", "path_empty", "guard_both", "guard_neither"],
+         "path_not_string", "path_empty", "path_relative", "guard_both", "guard_neither"],
 )  # fmt: skip
 def test_a_failure_entry_that_cant_be_read_is_never_skipped(case, rows):
     """A job that hashed the file, then closed it again with an entry whose rows

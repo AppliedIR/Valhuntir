@@ -353,8 +353,12 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
             and isinstance(h, str)]  # fmt: skip
 
 
-def _no_path():
-    raise ValueError("a closing row with an empty path")  # realpath("") is the cwd
+def _absolute(path):
+    """`path` when absolute, as the writer records it; a relative or empty one
+    would resolve against the process's folder, not the case."""
+    if not os.path.isabs(path):
+        raise ValueError(f"a closing row with a path that isn't absolute: {path!r}")
+    return path
 
 
 def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
@@ -370,7 +374,7 @@ def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
             continue
         job = str(e.get("job_id", ""))
         try:  # every row must be read: one skipped could hide a failure
-            rows = [(os.path.realpath(row["path"] or _no_path()), row.get("sha256"))
+            rows = [(os.path.realpath(_absolute(row["path"])), row.get("sha256"))
                     for row in e.get("files") or [e]]  # fmt: skip
         except Exception:  # noqa: BLE001 -- any malformed value leaves its job open
             unread.add(job)
