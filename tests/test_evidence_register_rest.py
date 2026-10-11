@@ -529,7 +529,7 @@ def test_the_refusal_for_a_job_still_open_says_to_register_after_it_completes(ca
     assert "failed" not in why
 
 
-def test_the_refusal_for_a_failed_job_quotes_its_error_and_says_to_hash_again(case):
+def test_the_refusal_for_a_failed_job_quotes_its_error_and_says_to_acquire_anew(case):
     """A failed job will never record a hash: waiting for it is the wrong advice."""
     mem = _open_acquisition(case)
     _closing(case, 1, "hash_failed",
@@ -539,8 +539,36 @@ def test_the_refusal_for_a_failed_job_quotes_its_error_and_says_to_hash_again(ca
     why = str(refused.value)
     assert "job-20261009-020 failed" in why
     assert "PermissionError: [Errno 13] Permission denied" in why
-    assert "hash or acquire the file again" in why
+    assert "acquire it again to a new path and register that file" in why
     assert "after that job completes" not in why
+
+
+def test_after_a_failed_job_an_acquisition_to_a_new_path_registers(case):
+    """The advice works: P stays refused for good, the new acquisition's file
+    registers with its identity."""
+    mem = _open_acquisition(case)
+    _closing(
+        case,
+        1,
+        "hash_failed",
+        [{"path": str(mem), "error": "PermissionError: [Errno 13]"}],
+    )
+    again = case / "evidence" / "HOST1-again.raw"
+    again.write_bytes(b"MEM again")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-021", tool="run_command",
+            acquisition=True, acquisition_tool="winpmem",
+            outputs=[{"path": str(again), "sha256": "pending:job-20261009-021"}])  # fmt: skip
+    _closing(case, 2, "hash_complete", [{"path": str(again), "sha256": _sha(b"MEM again")}],
+             job="job-20261009-021")  # fmt: skip
+    r = register_evidence_data(case, str(again), "tester")
+    assert (r["acquired_by"], r["acquisition_tool"]) == (
+        "sift-tester-20261009-021",
+        "winpmem",
+    )
+    with pytest.raises(
+        ValueError, match="job-20261009-020 failed.*acquire it again to a new path"
+    ):
+        register_evidence_data(case, str(mem), "tester")
 
 
 # --- stat fields come from the hashed bytes' own fd ----------------------------

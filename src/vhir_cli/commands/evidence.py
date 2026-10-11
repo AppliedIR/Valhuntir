@@ -472,7 +472,7 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
             error = failed.get((job, real))
             if error is not None:  # it will never record one: say so, and what to do
                 return (f"{said} {job} failed and hasn't recorded one hash for it ({error}): "
-                        "hash or acquire the file again, then register it."), None  # fmt: skip
+                        "acquire it again to a new path and register that file."), None  # fmt: skip
             return (f"{said} {job} hasn't recorded one hash for it: register it after "
                     "that job completes."), None  # fmt: skip
         first = ops[0]
