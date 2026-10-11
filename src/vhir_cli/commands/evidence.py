@@ -471,6 +471,9 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
             said = f"{real} is an output of acquisition {e.get('audit_id', '?')}, whose hash job"
             error = failed.get((job, real))
             if error is not None:  # it will never record one: say so, and what to do
+                # its error can carry a file name, printed raw: one line, capped
+                error = display_safe(error)
+                error = error if len(error) <= 200 else error[:200] + "..."
                 return (f"{said} {job} failed and hasn't recorded one hash for it ({error}): "
                         "acquire it again to a new path and register that file."), None  # fmt: skip
             return (f"{said} {job} hasn't recorded one hash for it: register it after "

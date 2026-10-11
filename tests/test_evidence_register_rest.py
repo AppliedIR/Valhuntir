@@ -543,6 +543,20 @@ def test_the_refusal_for_a_failed_job_quotes_its_error_and_says_to_acquire_anew(
     assert "after that job completes" not in why
 
 
+def test_a_failed_jobs_error_is_quoted_on_one_line_with_its_controls_shown(case):
+    """The recorded error can carry a file name: what reaches the terminal can't
+    colour it, move the cursor or break the line, and it's capped."""
+    mem = _open_acquisition(case)
+    error = "PermissionError: '\x1b[31mevil\nname'" + "x" * 500
+    _closing(case, 1, "hash_failed", [{"path": str(mem), "error": error}])
+    with pytest.raises(ValueError) as refused:
+        register_evidence_data(case, str(mem), "tester")
+    why = str(refused.value)
+    assert "\x1b" not in why and "\n" not in why
+    assert "'?[31mevil?name'" in why
+    assert "x" * 300 not in why
+
+
 def test_after_a_failed_job_an_acquisition_to_a_new_path_registers(case):
     """The advice works: P stays refused for good, the new acquisition's file
     registers with its identity."""
