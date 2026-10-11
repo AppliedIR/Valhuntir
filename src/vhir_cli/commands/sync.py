@@ -51,6 +51,11 @@ def cmd_export(args, identity: dict) -> None:
     print(f"  Examiner: {bundle.get('examiner', '?')}")
     print(f"  Findings: {len(bundle.get('findings', []))}")
     print(f"  Timeline: {len(bundle.get('timeline', []))}")
+    if untimed := bundle.get("untimed"):
+        print(
+            f"  Left out (no time recorded): {untimed['findings']} findings, "
+            f"{untimed['timeline']} timeline events; export without --since to include them"
+        )
     for line in summary_lines(
         str(bundle.get("case_id", "")), bundle.get("ledger") or {}
     ):
