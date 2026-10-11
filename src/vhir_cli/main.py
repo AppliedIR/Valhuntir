@@ -100,8 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-unreadable",
         action="store_true",
         help=(
-            "Leave out paths that can't be read, found or followed; "
-            "list them in the manifest"
+            "Leave out paths that can't be read, found or followed, files that "
+            "aren't regular (a named pipe, socket or device) and a case-root "
+            "backup-manifest.json or .backup-in-progress; list them in the "
+            "manifest. Without it, any of these stops the backup"
         ),
     )
     p_backup.add_argument(
