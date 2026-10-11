@@ -286,3 +286,64 @@ def test_without_sift_common_a_restore_in_place_is_allowed(box, capsys, monkeypa
     _without_sift_common(monkeypatch)
     code, out = vhir(capsys, "restore", bk, "--target", src, "--skip-opensearch")
     assert code == 0, out
+
+
+def _within(seconds, pipe, call):
+    """call() in a thread; a run still blocked after `seconds` is released by
+    opening `pipe`, and fails."""
+    import threading
+
+    result = {}
+    t = threading.Thread(target=lambda: result.update(r=call()), daemon=True)
+    t.start()
+    t.join(seconds)
+    if t.is_alive():
+        with open(pipe, "w"):
+            pass
+        t.join(seconds)
+        pytest.fail(f"hung on the pipe {pipe}")
+    return result["r"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--skip-unreadable"]], ids=["plain", "skip"])
+def test_a_named_pipe_at_case_yaml_is_refused_by_name_instead_of_hanging(
+    box, capsys, extra
+):
+    src = make_case(box)
+    (src / "CASE.yaml").unlink()
+    os.mkfifo(src / "CASE.yaml")
+    code, out = _within(
+        20,
+        src / "CASE.yaml",
+        lambda: vhir(capsys, "backup", "--case", "C-1", box / "out", *extra),
+    )
+    assert code == 1
+    assert f"{src / 'CASE.yaml'} isn't a regular file" in out
+    assert list((box / "out").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "parts", [[], ["--include-evidence"]], ids=["case", "evidence"]
+)
+def test_a_named_pipe_at_evidence_json_stops_the_backup_instead_of_hanging(
+    box, capsys, parts
+):
+    """The registry is read before the scan: a pipe there used to block the
+    read, with or without --skip-unreadable. Each run gets 20 seconds; a hung
+    one is released by opening the pipe, and fails."""
+    src = make_case(box)
+    os.mkfifo(src / "evidence.json")
+
+    def run(*extra):
+        args = ("backup", "--case", "C-1", box / "out", *parts, *extra)
+        return _within(20, src / "evidence.json", lambda: vhir(capsys, *args))
+
+    code, out = run()
+    assert code == 1 and "Backup stopped before copying" in out
+    assert f"{src / 'evidence.json'}: not a regular file (a named pipe" in out
+    assert list((box / "out").iterdir()) == []
+    code, out = run("--skip-unreadable")
+    assert code == 0, out
+    assert [s["path"] for s in _manifest(only_backup(box))["skipped"]] == [
+        "evidence.json"
+    ]

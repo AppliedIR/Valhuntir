@@ -266,6 +266,13 @@ def _create_backup_data(
     """
     from vhir_cli import case_copies
 
+    case_yaml = case_dir / "CASE.yaml"
+    if case_yaml.exists() and not case_yaml.is_file():  # a pipe would block the read
+        raise OSError(
+            f"Backup stopped before copying: {case_yaml} isn't a regular file (a "
+            "named pipe, socket or device). The backup reads the case's id from it; "
+            "put the case's CASE.yaml back, then run the backup again."
+        )
     meta = load_case_meta(case_dir)
     case_id = meta.get("case_id", case_dir.name)
     dest = Path(destination)
@@ -665,6 +672,13 @@ def _registered_paths(case_dir: Path, folders: set | None = None) -> set[str]:
     registry = case_dir / "evidence.json"
     if not registry.exists():
         return set()
+    if not registry.is_file():  # a pipe would block the read; the scan lists it
+        print(
+            f"Warning: {registry} isn't a regular file; registered evidence outside "
+            "evidence/ can't be excluded, so this backup may include it.",
+            file=sys.stderr,
+        )
+        return set()
     try:
         files = json.loads(registry.read_text()).get("files", [])
     except (OSError, ValueError, AttributeError) as e:
@@ -693,6 +707,8 @@ def _folder_members(case_dir: Path, folders: set) -> dict[str, list[str] | None]
     recorded at registration."""
     from vhir_cli.commands.evidence import _manifest_rows
 
+    if not (case_dir / "evidence.json").is_file():  # a pipe would block the read
+        return {}
     try:
         files = json.loads((case_dir / "evidence.json").read_text()).get("files", [])
     except (OSError, ValueError, AttributeError):
