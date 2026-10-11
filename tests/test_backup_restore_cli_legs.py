@@ -322,6 +322,64 @@ def test_a_named_pipe_at_case_yaml_is_refused_by_name_instead_of_hanging(
     assert list((box / "out").iterdir()) == []
 
 
+def _reachable_cluster(box, monkeypatch):
+    """opensearch-mcp as installed, with a cluster that answers: the backup's
+    OpenSearch check then reads the case's CASE.yaml first."""
+    import importlib.machinery
+    import types
+
+    (box / "home" / ".vhir").mkdir(exist_ok=True)
+    (box / "home" / ".vhir" / "opensearch.yaml").write_text(
+        "host: http://127.0.0.1:9200\n"
+    )
+    client = types.SimpleNamespace(
+        cluster=types.SimpleNamespace(health=lambda: {"status": "green"}),
+        cat=types.SimpleNamespace(indices=lambda **k: []),
+    )
+    osm = types.ModuleType("opensearch_mcp")
+    osm.__spec__ = importlib.machinery.ModuleSpec("opensearch_mcp", None)
+    osm.client = types.SimpleNamespace(get_client=lambda *a, **k: client)
+    osm.paths = types.SimpleNamespace(vhir_dir=lambda: box / "home" / ".vhir")
+    for name, mod in (("opensearch_mcp", osm), ("opensearch_mcp.client", osm.client),
+                      ("opensearch_mcp.paths", osm.paths)):  # fmt: skip
+        monkeypatch.setitem(sys.modules, name, mod)
+
+
+def test_a_named_pipe_at_case_yaml_with_a_cluster_up_is_refused_by_name(
+    box, capsys, monkeypatch
+):
+    src = make_case(box)
+    (src / "CASE.yaml").unlink()
+    os.mkfifo(src / "CASE.yaml")
+    _reachable_cluster(box, monkeypatch)
+    code, out = _within(
+        20,
+        src / "CASE.yaml",
+        lambda: vhir(capsys, "backup", "--case", "C-1", box / "out"),
+    )
+    assert code == 1
+    assert f"{src / 'CASE.yaml'} isn't a regular file" in out
+    assert list((box / "out").iterdir()) == []
+
+
+def test_a_restore_beside_an_original_whose_case_yaml_is_a_pipe_is_refused_by_name(
+    box, capsys
+):
+    src = make_case(box)
+    bk = backed_up(box, capsys)
+    (src / "CASE.yaml").unlink()
+    os.mkfifo(src / "CASE.yaml")
+    target = box / "cases" / "C-1-restored"
+    code, out = _within(
+        20,
+        src / "CASE.yaml",
+        lambda: vhir(capsys, "restore", bk, "--target", target, "--skip-opensearch"),
+    )
+    assert code == 1
+    assert f"{src / 'CASE.yaml'} isn't a regular file" in out
+    assert not target.exists()
+
+
 @pytest.mark.parametrize(
     "parts", [[], ["--include-evidence"]], ids=["case", "evidence"]
 )
