@@ -149,6 +149,16 @@ class TestTtyConfirmation:
         with patch("builtins.open", return_value=mock_tty):
             assert require_tty_confirmation("Confirm? ") is False
 
+    @pytest.mark.parametrize(
+        "prompt", ["Unlock evidence directory? [y/N]: ", "Execute? [y/N]: "]
+    )
+    def test_a_plain_prompt_is_written_as_given(self, prompt, capsys):
+        mock_tty = MagicMock()
+        mock_tty.readline.return_value = "n\n"
+        with patch("builtins.open", return_value=mock_tty):
+            require_tty_confirmation(prompt)
+        assert capsys.readouterr().err == prompt
+
     def test_no_tty_exits(self):
         with patch("builtins.open", side_effect=OSError("No tty")):
             with pytest.raises(SystemExit):

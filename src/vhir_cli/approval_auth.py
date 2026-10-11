@@ -40,6 +40,8 @@ from pathlib import Path
 
 import yaml
 
+from vhir_cli.display import display_safe
+
 PBKDF2_ITERATIONS = 600_000
 _MAX_PASSWORD_ATTEMPTS = 3
 _LOCKOUT_SECONDS = 900  # 15 minutes
@@ -187,7 +189,8 @@ def require_tty_confirmation(prompt: str) -> bool:
         )
         sys.exit(1)
     try:
-        sys.stderr.write(prompt)
+        # it can name a file: its controls shown as "?" before the examiner answers
+        sys.stderr.write(display_safe(prompt))
         sys.stderr.flush()
         response = tty.readline().strip().lower()
         return response == "y"

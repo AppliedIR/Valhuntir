@@ -639,6 +639,33 @@ def test_every_error_the_cli_prints_for_a_registration_is_printed_safely(
     assert _drives_nothing(err).endswith("no?[2J?") and err.endswith("\n  X\n")
 
 
+def test_the_register_prompt_shows_a_paths_controls_as_question_marks(
+    case, capsys, monkeypatch
+):
+    """The examiner reads the prompt before answering: a file name in it can't
+    clear the screen, move the cursor or break the line."""
+    from unittest.mock import MagicMock, patch
+
+    from vhir_cli.commands.evidence import cmd_register_evidence
+
+    tty = MagicMock()
+    tty.readline.return_value = "n\n"
+    path = f"{case}/evidence/HOST1\x1b[2J\x1b[1A\x9b\nX.raw"
+    args = SimpleNamespace(path=path, description="", force_reregister=False,
+                           case=None)  # fmt: skip
+    with (
+        patch("vhir_cli.approval_auth.open", create=True, return_value=tty),
+        patch("vhir_cli.commands.evidence.get_case_dir", return_value=case),
+        pytest.raises(SystemExit),
+    ):
+        cmd_register_evidence(args, {"os_user": "tester", "examiner": "tester"})
+    assert capsys.readouterr().err == (
+        f"Register {case}/evidence/HOST1?[2J?[1A??X.raw as evidence? [y/N]: "
+        "Not registered.\n"
+    )
+    assert _files(case) == []
+
+
 def test_the_cli_still_prints_a_multi_line_refusal_as_its_own_lines(
     case, tmp_path, capsys, monkeypatch
 ):
