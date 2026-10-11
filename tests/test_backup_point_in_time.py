@@ -348,3 +348,29 @@ def test_registered_evidence_under_ledger_stays_out_without_evidence(tmp_path):
     (case / "evidence.json").write_text(json.dumps(registry))
     b = _backup(case, tmp_path)
     assert not (b / "ledger" / "image.bin").exists()
+
+
+def test_a_chain_copy_added_between_the_scan_and_the_lock_is_in_the_backup(
+    tmp_path, monkeypatch
+):
+    """A close or export moving a divergent copy aside writes a new chain file
+    after the scan; the locked section reads ledger/ as it is then."""
+    case = _case(tmp_path)
+    real = case_copies.write_case_copies
+
+    def after_the_scan(*a, **k):
+        (case / "ledger" / "chains").mkdir(parents=True, exist_ok=True)
+        (case / "ledger" / "chains" / "0123456789abcdef.x.jsonl").write_text(
+            "moved aside\n"
+        )
+        return real(*a, **k)
+
+    monkeypatch.setattr(case_copies, "write_case_copies", after_the_scan)
+    b = _backup(case, tmp_path)
+    assert (
+        b / "ledger" / "chains" / "0123456789abcdef.x.jsonl"
+    ).read_text() == "moved aside\n"
+    assert (
+        "ledger/chains/0123456789abcdef.x.jsonl"
+        in _manifest(b)["point_in_time"]["files"]
+    )

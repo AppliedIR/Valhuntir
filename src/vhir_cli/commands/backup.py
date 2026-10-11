@@ -429,11 +429,6 @@ def _create_backup_data(
     # pass over the payload, and so the recorded hash is the bytes read.
     copied_hashes: dict[str, str] = {}
     refused = {e["path"] for e in skipped}
-    # The writer set is what the scan accepted of it: a link, a refused path
-    # or left-out evidence follows the scan's one decision
-    in_lock = [(rel, Path(a)) for rel, a, _s in files_to_copy
-               if (rel in _WRITER_SET or rel.startswith("ledger/"))
-               and not _is_credential_copy(rel)]  # fmt: skip
     point_in_time: list[str] = []
 
     def copy_one(src: Path, rel: str) -> None:
@@ -443,13 +438,21 @@ def _create_backup_data(
         copied_hashes[str(written_to.relative_to(backup_dir))] = fhash
 
     def writer_set() -> None:
-        """Under the writers' lock: the scan's writer-set files, and one a
-        writer created at the case root since the scan (named, not a link)."""
-        scanned = {rel for rel, _ in in_lock}
-        late = [(n, case_dir / n) for n in _WRITER_SET if n not in scanned | refused
-                and (case_dir / n).is_file() and not (case_dir / n).is_symlink()]  # fmt: skip
-        for rel, src in in_lock + late:
-            copy_one(src, rel)
+        """Under the writers' lock: the writer set as the scan finds it now
+        (its root names and ledger/), copying exactly what the scan accepts;
+        what it can't read stops the backup, or is skipped and listed."""
+        now = scan_case_dir(case_dir, within={*_WRITER_SET, "ledger"})
+        accepted = now["case_data"] + (now["evidence"] if include_evidence else [])
+        for e in now["unreadable"]:
+            rel = os.path.relpath(e.filename, case_dir)
+            if rel in refused:
+                continue
+            if not skip_unreadable:
+                raise OSError(f"Backup stopped: {e.filename}: {_reason(e)}")
+            skipped.append({"path": rel, "reason": _reason(e)})
+        for rel, src, _size in accepted:
+            if rel not in refused and not _is_credential_copy(rel):
+                copy_one(Path(src), rel)
 
     # The writer set and this box's copies of the signed history (its chain,
     # 0.6 copy and the signing keys) in one hold of the writers' lock: the
@@ -469,7 +472,6 @@ def _create_backup_data(
             "Note: this case has no 0.6 approval records and no signed decisions yet"
         )
 
-    locked = {rel for rel, _ in in_lock}
     total_files = len(files_to_copy)
     # A case file at a control path this backup just wrote (e.g. a copy left
     # in the case dir by an older restore) must not replace the live copy.
@@ -479,7 +481,7 @@ def _create_backup_data(
     for i, (rel_path, abs_path, _size) in enumerate(files_to_copy, 1):
         if rel_path in written or _is_credential_copy(rel_path):
             continue
-        if rel_path in locked:
+        if rel_path in _WRITER_SET or rel_path.startswith("ledger/"):
             continue  # the locked section's, never copied again
         copy_one(Path(abs_path), rel_path)
         if progress_fn:
@@ -824,8 +826,9 @@ def _is_backup(path: Path) -> bool:
     )
 
 
-def scan_case_dir(case_dir: Path) -> dict:
-    """Scan case directory and categorize files.
+def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
+    """Scan case directory and categorize files (only the root names in
+    `within`, and what lies under them, when it's given).
 
     Returns dict with keys: case_data, evidence, extractions, symlinks,
     unreadable (the OSError for each entry the walk could not list, stat,
@@ -899,6 +902,9 @@ def scan_case_dir(case_dir: Path) -> dict:
         backups = [d for d in dirs if _is_backup(root_path / d)]
         pruned_backups += [str((root_path / d).relative_to(case_dir)) for d in backups]
         dirs[:] = [d for d in dirs if d not in backups]
+        if within is not None and root_path == case_dir:
+            dirs[:] = [d for d in dirs if d in within]
+            files = [f for f in files if f in within]
 
         # Drop subdirectories that loop back onto the path we came in by
         chain = chains.pop(str(root), ())
