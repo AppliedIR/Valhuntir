@@ -69,6 +69,20 @@ def test_an_incoming_duplicate_id_is_refused(case_dir, key):
     _refused(case_dir, {key: copies}, f"bundle's {key}", "X-a-001")
 
 
+def test_a_duplicate_in_one_list_writes_neither_file(case_dir):
+    """Refused before any write: valid findings aren't merged when the same
+    bundle's timeline holds a duplicate id."""
+    bundle = {
+        "findings": [{"id": "F-b-001", "title": "valid", "staged": NEW}],
+        "timeline": [
+            {"id": "T-b-001", "staged": OLD},
+            {"id": "T-b-001", "staged": NEW},
+        ],
+    }
+    _refused(case_dir, bundle, "bundle's timeline", "T-b-001")
+    assert json.loads((case_dir / "findings.json").read_text()) == []
+
+
 def test_a_local_duplicate_only_blocks_a_merge_of_that_list(case_dir):
     (case_dir / "timeline.json").write_text(json.dumps([
         {"id": "T-a-001", "description": "e", "staged": OLD},
@@ -112,3 +126,12 @@ def test_the_cli_names_the_duplicate_without_its_controls(case_dir, tmp_path, ca
     err = capsys.readouterr().err
     assert err.startswith("Merge failed: ") and "F-?[2J??X" in err
     assert not CONTROLS.search(err) and err.count("\n") == 1
+
+
+def test_the_refusal_names_at_most_five_ids_each_capped(case_dir):
+    long_ids = [c * 100_000 for c in "ab"]
+    many = long_ids + [f"F-c-{n:03d}" for n in range(6)]
+    message = _refused(case_dir, {"findings": [{"id": i} for i in many * 2]}, "F-c-002")
+    assert "a" * 80 + "…" in message and "a" * 81 not in message
+    assert "F-c-003" not in message and "and 3 more" in message
+    assert len(message) < 600

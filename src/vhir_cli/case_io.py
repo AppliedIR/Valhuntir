@@ -921,23 +921,25 @@ def _duplicate_ids(items: object) -> list:
     """The ids held more than once, keyed as the merge keys them (raw values).
     Non-dict items and an empty or unhashable id are left to the merge."""
     seen: set = set()
-    duplicated: list = []
+    duplicated: dict = {}  # an ordered set: first-seen order, constant-time lookups
     for item in items if isinstance(items, list) else []:
         item_id = item.get("id") if isinstance(item, dict) else None
         try:
-            if item_id and item_id in seen and item_id not in duplicated:
-                duplicated.append(item_id)
+            if item_id and item_id in seen:
+                duplicated[item_id] = None
             seen.add(item_id)
         except TypeError:  # unhashable
             continue
-    return duplicated
+    return list(duplicated)
 
 
 def _duplicates_refused(where: str, duplicated: list) -> dict:
-    # the ids are case or bundle data: one line, their controls shown as "?"
+    # the ids are case or bundle data: one line, their controls shown as "?",
+    # each capped
     from vhir_cli.display import one_line
 
-    named = ", ".join(one_line(i) for i in duplicated[:5])
+    shown = [one_line(i) for i in duplicated[:5]]
+    named = ", ".join(i if len(i) <= 80 else i[:80] + "…" for i in shown)
     more = f" and {len(duplicated) - 5} more" if len(duplicated) > 5 else ""
     return {
         "status": "error",
