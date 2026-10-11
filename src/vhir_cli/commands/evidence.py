@@ -718,14 +718,17 @@ def cmd_register_evidence(args, identity: dict) -> None:
             description=args.description,
             force_reregister=force,
         )
+    # each can carry a path or a record from the case: its controls shown as
+    # "?", a line break in it starts an indented line
     except FileNotFoundError as e:
-        print(str(e), file=sys.stderr)
+        print(indent_lines(str(e), "  "), file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {indent_lines(str(e), '  ')}", file=sys.stderr)
         sys.exit(1)
     except OSError as e:
-        print(f"Failed to write evidence registry: {e}", file=sys.stderr)
+        print(f"Failed to write evidence registry: {indent_lines(str(e), '  ')}",
+              file=sys.stderr)  # fmt: skip
         sys.exit(1)
 
     # Log access

@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -583,6 +584,84 @@ def test_after_a_failed_job_an_acquisition_to_a_new_path_registers(case):
         ValueError, match="job-20261009-020 failed.*acquire it again to a new path"
     ):
         register_evidence_data(case, str(mem), "tester")
+
+
+# --- the CLI prints a refusal so nothing in it drives the terminal -------------
+
+_CONTROLS = "\x1b[2J\x9b\nX"  # ESC, CSI (C1) and a line break
+_SHOWN_RAW = re.compile("[\x00-\x09\x0b-\x1f\x7f-\x9f]")  # any but the line break
+
+
+def _cli_refused(case, path, capsys, monkeypatch):
+    """`vhir evidence register <path>`, confirmed, refused: what reaches stderr."""
+    with pytest.raises(SystemExit):
+        _cli_register(case, path, capsys, monkeypatch)
+    return capsys.readouterr().err
+
+
+def _drives_nothing(err):
+    assert not _SHOWN_RAW.search(err)
+    first, *rest = err.rstrip("\n").split("\n")
+    assert rest and all(line.startswith("  ") for line in rest)
+    return first
+
+
+def test_the_cli_prints_a_refusal_with_controls_in_its_path_job_and_error_safely(
+    case, capsys, monkeypatch
+):
+    """A file name, job id and error are case data: on the terminal their
+    controls show as "?" and a line break in them starts an indented line."""
+    mem = case / "evidence" / f"HOST1{_CONTROLS}.raw"
+    mem.write_bytes(b"not what winpmem wrote")
+    job = f"job-20261009-020{_CONTROLS}"
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-020", tool="run_command",
+            acquisition=True, acquisition_tool="winpmem",
+            outputs=[{"path": str(mem), "sha256": f"pending:{job}"}])  # fmt: skip
+    _closing(case, 1, "hash_failed", [{"path": str(mem), "error": f"OSError{_CONTROLS}"}],
+             job=job)  # fmt: skip
+    err = _cli_refused(case, mem, capsys, monkeypatch)
+    _drives_nothing(err)
+    # the path and the job break the line; the error, quoted on one line, can't
+    assert err.count("?[2J?\n  X") == 2 and "(OSError?[2J??X)" in err
+    assert "acquire it again to a new path and register that file" in err
+    assert _files(case) == []
+
+
+@pytest.mark.parametrize("raised", [FileNotFoundError, ValueError, OSError])
+def test_every_error_the_cli_prints_for_a_registration_is_printed_safely(
+    case, capsys, monkeypatch, raised
+):
+    def refuse(**kw):
+        raise raised(f"no{_CONTROLS}")
+
+    monkeypatch.setattr("vhir_cli.commands.evidence.register_evidence_data", refuse)
+    err = _cli_refused(case, case / "evidence" / "any.raw", capsys, monkeypatch)
+    assert _drives_nothing(err).endswith("no?[2J?") and err.endswith("\n  X\n")
+
+
+def test_the_cli_still_prints_a_multi_line_refusal_as_its_own_lines(
+    case, tmp_path, capsys, monkeypatch
+):
+    outside = tmp_path / "outside.raw"
+    outside.write_bytes(b"S10")
+    err = _cli_refused(case, outside, capsys, monkeypatch)
+    first = _drives_nothing(err)
+    assert first == "Error: Evidence path must be within the case directory."
+    for line in ("    Resolved: ", "    Case dir: ", "  Or create a symlink:"):
+        assert any(got.startswith(line) for got in err.split("\n"))
+
+    p = case / "evidence" / "samples.7z"
+    p.write_bytes(b"S10")
+    register_evidence_data(case, str(p), "tester")
+    p.write_bytes(b"S10 changed")
+    err = _cli_refused(case, p, capsys, monkeypatch)
+    _drives_nothing(err)
+    for line in (
+        "    Registered: ",
+        "    Current:    ",
+        "  Run 'vhir evidence verify'",
+    ):
+        assert any(got.startswith(line) for got in err.split("\n"))
 
 
 # --- stat fields come from the hashed bytes' own fd ----------------------------
