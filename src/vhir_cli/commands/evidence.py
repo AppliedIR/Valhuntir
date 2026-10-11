@@ -353,11 +353,26 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
             and isinstance(h, str)]  # fmt: skip
 
 
+def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], set[str]]:
+    """(job id, real path) -> the hashes that job's hash_complete entries recorded
+    for the file: a one-file job's at the top level, a list job's in files[]."""
+    closed: dict[tuple[str, str], set[str]] = {}
+    for e in entries:
+        if e.get("tool") != "hash_complete":
+            continue
+        for row in e.get("files") or [e]:
+            if isinstance(row, dict) and row.get("sha256") and row.get("path"):
+                key = (str(e.get("job_id", "")), os.path.realpath(str(row["path"])))
+                closed.setdefault(key, set()).add(row["sha256"])
+    return closed
+
+
 def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
     """Every output this case's audit records: real path -> (hash, entry); and
     why any of its audit couldn't be read. No other case's trail is read."""
     index: dict[str, list[tuple[str, dict]]] = {}
     unread: list[str] = []
+    entries: list[dict] = []
     try:
         logs = sorted(p for p in (case_dir / "audit").iterdir() if p.suffix == ".jsonl")
     except FileNotFoundError:
@@ -376,8 +391,14 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:
             except ValueError:
                 continue
             if isinstance(entry, dict):
-                for p, h in _outputs_of(case_dir, entry):
-                    index.setdefault(p, []).append((h, entry))
+                entries.append(entry)
+    closed = _closed_hashes(entries)
+    for entry in entries:
+        for p, h in _outputs_of(case_dir, entry):
+            job = h.removeprefix("pending:")
+            if h.startswith("pending:") and len(closed.get((job, p), ())) == 1:
+                h = next(iter(closed[(job, p)]))
+            index.setdefault(p, []).append((h, entry))
     return index, unread
 
 

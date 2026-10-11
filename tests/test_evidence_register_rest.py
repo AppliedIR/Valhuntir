@@ -238,6 +238,35 @@ def test_an_output_of_an_acquisition_and_another_operation_is_refused(case):
         register_evidence_data(case, str(mem), "tester")
 
 
+def _pending_acquisition(case, job_hashed: bytes):
+    """An acquisition whose output hash is still pending, and whose hash job
+    closed with the hash of `job_hashed`."""
+    mem = case / "evidence" / "HOST1.raw"
+    mem.write_bytes(b"\x00" * 4096 + b"MEM")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-020", tool="run_command",
+            acquisition=True, acquisition_tool="winpmem",
+            outputs=[{"path": str(mem), "sift_path": "evidence/HOST1.raw",
+                      "sha256": "pending:job-20261009-020"}])  # fmt: skip
+    _record(case, "file-identity", audit_id="file-identity-20261009-021", tool="hash_complete",
+            job_id="job-20261009-020", path=str(mem), sha256=_sha(job_hashed))  # fmt: skip
+    return mem
+
+
+def test_a_pending_acquisition_whose_job_hashed_other_bytes_grants_no_identity(case):
+    mem = _pending_acquisition(case, b"\x00" * 4096 + b"MEM")
+    mem.write_bytes(b"not what winpmem wrote")
+    r = register_evidence_data(case, str(mem), "tester")
+    assert not {"acquired_by", "acquisition_tool"} & set(r), r
+    assert not {"acquired_by", "acquisition_tool"} & set(_files(case)[0])
+
+
+def test_a_pending_acquisition_whose_job_hashed_these_bytes_keeps_its_identity(case):
+    mem = _pending_acquisition(case, b"\x00" * 4096 + b"MEM")
+    r = register_evidence_data(case, str(mem), "tester")
+    assert r["acquired_by"] == "sift-tester-20261009-020"
+    assert r["acquisition_tool"] == "winpmem"
+
+
 # --- stat fields come from the hashed bytes' own fd ----------------------------
 
 
