@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -187,6 +190,24 @@ def _create_backup(args, identity: dict) -> None:
     print("The backup carries no passphrase or signing-key file. On a rebuilt box,")
     print("enrol with `vhir config --setup-password`; the signed approvals keep")
     print("verifying through the public keys they carry.")
+
+    # A part that was asked for and didn't happen fails the run; the files
+    # backup is kept, valid without it
+    missing = [
+        part
+        for part, gone in (
+            ("its OpenSearch indices", include_opensearch and snap_info.get("error")),
+            ("its 0.6 approval records", result.get("ledger_copy_failed")),
+        )
+        if gone
+    ]
+    if missing:
+        print(
+            f"Error: PARTIAL backup: {result['backup_path']} is complete without "
+            f"{' and '.join(missing)}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +383,7 @@ def _create_backup_data(
 
     # Copy verification ledger if it exists
     ledger_path = VERIFICATION_DIR / f"{case_id}.jsonl"
-    ledger_included = False
+    ledger_included = ledger_failed = False
     ledger_note = ""
     if ledger_path.is_file():
         try:
@@ -371,6 +392,7 @@ def _create_backup_data(
             shutil.copy2(str(ledger_path), str(vdir / f"{case_id}.jsonl"))
             ledger_included = True
         except OSError:
+            ledger_failed = True
             ledger_note = "Warning: could not copy the case's 0.6 approval records"
     else:
         # a case signed from the start has none; its signed history is in ledger/
@@ -410,6 +432,8 @@ def _create_backup_data(
             opensearch_snapshot_info = _create_opensearch_snapshot(
                 case_id, backup_dir, progress_fn, case_dir=case_dir
             )
+        except _NothingToSnapshot:
+            pass
         except Exception as e:
             opensearch_snapshot_info = {"error": str(e)}
 
@@ -486,6 +510,7 @@ def _create_backup_data(
         ),
         "opensearch_snapshot": opensearch_snapshot_info,
         "ledger_note": ledger_note,
+        "ledger_copy_failed": ledger_failed,
         "ledger_summary": {
             "case_id": case_id,
             "keys": copied["keys"],
@@ -553,18 +578,12 @@ def _verify_backup(backup_path: Path) -> bool:
         print("FAILED: Incomplete backup — copy was interrupted")
         return False
 
-    manifest_file = backup_path / "backup-manifest.json"
-    if not manifest_file.exists():
-        print("FAILED: backup-manifest.json not found", file=sys.stderr)
+    manifest, problem = _read_manifest(backup_path)
+    if problem:
+        print(f"FAILED: {problem}", file=sys.stderr)
         return False
 
-    try:
-        manifest = json.loads(manifest_file.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"FAILED: cannot read manifest: {e}", file=sys.stderr)
-        return False
-
-    files = manifest.get("files", [])
+    files = manifest["files"]
     ok_count = 0
     mismatch_count = 0
     missing_count = 0
@@ -1039,6 +1058,10 @@ def _index_scope(case_dir: Path, case_id: str) -> str:
     return ",".join(parts)
 
 
+class _NothingToSnapshot(RuntimeError):
+    """The case has no indices: nothing to include, which isn't a failure."""
+
+
 def _create_opensearch_snapshot(
     case_id: str, backup_dir: Path, progress_fn=None, case_dir: Path | None = None
 ) -> dict:
@@ -1053,7 +1076,7 @@ def _create_opensearch_snapshot(
     repo_name = f"vhir-backup-{safe_id}"
     pattern = _index_scope(case_dir, case_id) if case_dir else f"case-{safe_id}-*"
     if not pattern:
-        raise RuntimeError("the case has no indices to snapshot")
+        raise _NothingToSnapshot("the case has no indices to snapshot")
     snapshot_name = "snap"
     staging = _SNAPSHOTS_DIR / repo_name
 
@@ -1161,34 +1184,90 @@ def _create_opensearch_snapshot(
         _release_lock(lock_path)
 
 
+@contextlib.contextmanager
+def _lock_guard(lock_path: Path):
+    """Held while the lock file is checked, taken or released, so two
+    processes can't both find it free."""
+    fd = os.open(f"{lock_path}.guard", os.O_RDONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def _acquire_lock(lock_path: Path) -> None:
-    """Acquire a PID-based lock file. Stale lock detection."""
-    if lock_path.exists():
+    """Take the PID lock file, created atomically. A lock whose process is
+    alive, under any user, is held; one whose process is gone is taken over."""
+    with _lock_guard(lock_path):
         try:
             old_pid = int(lock_path.read_text().strip())
-            # Check if PID is still running
             os.kill(old_pid, 0)
+            alive = True
+        except (FileNotFoundError, ValueError, ProcessLookupError):
+            alive = False
+        except PermissionError:  # alive, another user's (a sudo run)
+            alive = True
+        if alive:
             raise RuntimeError(
                 f"Another backup/restore is in progress (PID {old_pid}). "
                 f"If this is stale, remove {lock_path}"
             )
-        except (ValueError, ProcessLookupError, PermissionError):
-            # Stale lock — remove it
-            lock_path.unlink(missing_ok=True)
-    lock_path.write_text(str(os.getpid()))
+        lock_path.unlink(missing_ok=True)
+        fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
 
 
 def _release_lock(lock_path: Path) -> None:
-    """Release the lock file."""
-    try:
-        lock_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    """Release the lock file, only while it is this process's own."""
+    with contextlib.suppress(OSError), _lock_guard(lock_path):
+        if lock_path.read_text().strip() == str(os.getpid()):
+            lock_path.unlink()
 
 
 # ---------------------------------------------------------------------------
 # Restore
 # ---------------------------------------------------------------------------
+
+
+def _read_manifest(backup_path: Path) -> tuple[dict, str]:
+    """The backup's manifest and "", or {} and why it can't be used: the one
+    check `--verify` and restore both make before touching anything."""
+    try:
+        m = json.loads((backup_path / "backup-manifest.json").read_text())
+    except (ValueError, OSError) as e:
+        return {}, f"cannot read backup-manifest.json ({e})."
+    if not isinstance(m, dict) or m.get("version") != 1:
+        v = m.get("version") if isinstance(m, dict) else None
+        return (
+            {},
+            f"Backup manifest version {v} is not supported (vhir reads version 1).",
+        )
+    case_id, files = m.get("case_id"), m.get("files")
+    if not isinstance(case_id, str) or not case_id or not m.get("source"):
+        return {}, "manifest missing case_id or source."
+    try:
+        _validate_case_id(case_id)
+    except CaseError as e:
+        return {}, f"the backup's case_id can't be used: {e}."
+    if not isinstance(files, list) or not files:
+        return {}, "the manifest lists no files."
+    for entry in files:
+        rel = entry.get("path") if isinstance(entry, dict) else None
+        if not _stays_inside(rel):
+            return {}, f"the backup lists a file outside the case folder: {rel!r}."
+        if not isinstance(entry.get("sha256"), str):
+            return {}, f"the manifest gives no sha256 for {rel!r}."
+    ledger = f"verification/{case_id}.jsonl"
+    if m.get("includes_verification_ledger") and ledger not in {
+        e["path"] for e in files
+    }:
+        return (
+            {},
+            f"the backup declares 0.6 approval records but doesn't list {ledger}.",
+        )
+    return m, ""
 
 
 def _stays_inside(rel) -> bool:
@@ -1275,49 +1354,11 @@ def cmd_restore(args, identity: dict) -> None:
         print("Error: Incomplete backup — copy was interrupted.", file=sys.stderr)
         sys.exit(1)
 
-    # Read manifest
-    manifest_file = backup_path / "backup-manifest.json"
-    if not manifest_file.exists():
-        print("Error: backup-manifest.json not found.", file=sys.stderr)
+    manifest, problem = _read_manifest(backup_path)
+    if problem:
+        print(f"Error: {problem} Nothing was restored.", file=sys.stderr)
         sys.exit(1)
-
-    try:
-        manifest = json.loads(manifest_file.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"Error: cannot read manifest: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Version check
-    if manifest.get("version", 0) != 1:
-        print(
-            f"Error: Backup manifest version {manifest.get('version')} "
-            "is not supported. This version of vhir supports manifest version 1.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    case_id = manifest.get("case_id", "")
-    source_path = manifest.get("source", "")
-    if not case_id or not source_path:
-        print("Error: manifest missing case_id or source.", file=sys.stderr)
-        sys.exit(1)
-
-    # The manifest is data from the backup folder: check what it names before
-    # anything is created, prompted for or removed.
-    try:
-        _validate_case_id(case_id)
-    except CaseError as e:
-        print(f"Error: the backup's case_id can't be used: {e}", file=sys.stderr)
-        sys.exit(1)
-    for entry in manifest.get("files", []):
-        rel = entry.get("path") if isinstance(entry, dict) else None
-        if not _stays_inside(rel):
-            print(
-                f"Error: the backup lists a file outside the case folder: {rel!r}. "
-                "Nothing was restored.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    case_id, source_path = manifest["case_id"], manifest["source"]
 
     # Show backup summary
     print(f"\nBackup: {case_id} ({manifest.get('timestamp', '?')})")
@@ -1393,6 +1434,10 @@ def cmd_restore(args, identity: dict) -> None:
     )
     if restore_opensearch:
         problem = _snapshot_identity_problem(snap_info, backup_path)
+        if not problem and (backup_path / "opensearch-snapshot").is_symlink():
+            problem = "the backup's opensearch-snapshot folder is a link"
+        if not problem and not _is_opensearch_available():
+            problem = "OpenSearch isn't available here"
         if problem:
             print(
                 f"Error: {problem}. The snapshot's indices weren't restored and "
@@ -1467,7 +1512,29 @@ def cmd_restore(args, identity: dict) -> None:
         )
         sys.exit(1)
 
-    # Conflict checks
+    def progress(label: str, i: int, total: int) -> None:
+        if i % 50 == 0 or i == total:
+            print(f"  {label}... {i}/{total}", end="\r")
+
+    # A PARTIAL restore (files verified, a later step failed) is finished, not
+    # redone: the examiner may have worked in it since
+    partial = _partial(target_dir)
+    if partial is not None:
+        skipped = {("indices", restore_opensearch), ("ledger", restore_ledger)}
+        want = set(partial["partial"]) - {step for step, on in skipped if not on}
+        _retry_partial(
+            target_dir, backup_path, manifest, partial, want, snap_info, progress
+        )
+
+    # Conflict checks, every refusal before anything is removed
+    if restore_ledger and (VERIFICATION_DIR / f"{case_id}.jsonl").exists():
+        print(
+            f"Error: 0.6 approval records already exist: "
+            f"{VERIFICATION_DIR / f'{case_id}.jsonl'}\n"
+            f"Remove it first or use --skip-ledger.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if target_dir.exists():
         # Check for .restore-in-progress marker
         if (target_dir / ".restore-in-progress").exists():
@@ -1503,16 +1570,6 @@ def cmd_restore(args, identity: dict) -> None:
             )
             sys.exit(1)
 
-    if restore_ledger:
-        ledger_target = VERIFICATION_DIR / f"{case_id}.jsonl"
-        if ledger_target.exists():
-            print(
-                f"Error: 0.6 approval records already exist: {ledger_target}\n"
-                f"Remove it first or use --skip-ledger.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
     # Create target directory
     try:
         cases_parent.mkdir(parents=True, exist_ok=True)
@@ -1532,27 +1589,14 @@ def cmd_restore(args, identity: dict) -> None:
     restore_marker = target_dir / ".restore-in-progress"
     restore_marker.touch()
 
-    def progress(label: str, i: int, total: int) -> None:
-        if i % 50 == 0 or i == total:
-            print(f"  {label}... {i}/{total}", end="\r")
-
     # Copy case files
     print("Restoring...")
-    files = manifest.get("files", [])
+    files = manifest["files"]
     total = len(files)
     # The declared ledger, hashes and snapshot stay out of the case directory
     # (hash material is kept from the LLM); they're installed or used from
     # the backup.
     pw_names = manifest.get("password_examiners") or []
-    control = {f"passwords/{ex}.json" for ex in pw_names}
-    if manifest.get("includes_verification_ledger"):
-        control.add(f"verification/{case_id}.jsonl")
-
-    def _is_control(rel: str) -> bool:
-        return rel in control or (
-            bool(manifest.get("includes_opensearch"))
-            and rel.startswith("opensearch-snapshot/")
-        )
 
     from vhir_cli import case_copies
 
@@ -1567,7 +1611,7 @@ def cmd_restore(args, identity: dict) -> None:
             refused[rel] = "its path leads outside the case directory"
             progress("Copying files", i, total)
             continue
-        if src.exists() and not _is_control(rel):
+        if src.exists() and not _is_control(manifest, rel):
             if dst.parent == chains_dir:  # never another case's chain, by any spelling
                 why = case_copies.restorable_chain(src.read_bytes(), case_id)
                 if why:
@@ -1582,46 +1626,6 @@ def cmd_restore(args, identity: dict) -> None:
     for rel, why in refused.items():
         print(f"  Ledger copy not restored: {rel}: {why}", file=sys.stderr)
 
-    # Restore verification ledger
-    if restore_ledger:
-        ledger_src = backup_path / "verification" / f"{case_id}.jsonl"
-        if ledger_src.exists():
-            try:
-                result = subprocess.run(
-                    [
-                        "sudo",
-                        "cp",
-                        str(ledger_src),
-                        str(VERIFICATION_DIR / f"{case_id}.jsonl"),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if result.returncode == 0:
-                    # Fix ownership — sudo cp creates root-owned files
-                    import getpass
-
-                    user = getpass.getuser()
-                    ledger_dest = VERIFICATION_DIR / f"{case_id}.jsonl"
-                    subprocess.run(
-                        ["sudo", "chown", f"{user}:{user}", str(ledger_dest)],
-                        capture_output=True,
-                        timeout=10,
-                    )
-                    print("  0.6 approval records... restored (sudo)")
-                else:
-                    print(
-                        f"  0.6 approval records... FAILED (sudo)\n"
-                        f"  Manual: sudo cp {ledger_src} "
-                        f"{VERIFICATION_DIR / f'{case_id}.jsonl'}",
-                        file=sys.stderr,
-                    )
-                    restore_ledger = False
-            except Exception as e:
-                print(f"  0.6 approval records... FAILED: {e}", file=sys.stderr)
-                restore_ledger = False
-
     # A 0.6 backup's password files are never installed: enrol instead
     if pw_names or (backup_path / "passwords").is_dir():
         print(
@@ -1629,12 +1633,10 @@ def cmd_restore(args, identity: dict) -> None:
             "Enrol with `vhir config --setup-password`."
         )
 
-    # The case's signing keys: each one this box doesn't hold is added as a
-    # retired key (no private key), so approvals verify here; a live
-    # credential is never replaced
-    _merge_keys(target_dir)
-
-    # Verify restored files
+    # Verify every file before anything outside the case is written; the 0.6
+    # ledger is read once, as this user and not through a link, and those
+    # verified bytes are what gets installed
+    ledger_rel, ledger_data = f"verification/{case_id}.jsonl", None
     ok_count = 0
     mismatch_count = 0
     missing_count = 0
@@ -1644,10 +1646,16 @@ def cmd_restore(args, identity: dict) -> None:
         if rel in refused:  # reported above
             progress("Verifying", i, total)
             continue
-        fpath = (backup_path if _is_control(rel) else target_dir) / rel
-        if not fpath.exists():
+        fpath = (backup_path if _is_control(manifest, rel) else target_dir) / rel
+        if not (fpath.exists() or fpath.is_symlink()):
             print(f"  MISSING: {rel}")
             missing_count += 1
+        elif rel == ledger_rel and _is_control(manifest, rel):
+            ledger_data = _ledger_bytes(fpath, expected)
+            ok_count += ledger_data is not None
+            if ledger_data is None:
+                print(f"  MISMATCH: {rel} (not a regular file with that hash)")
+                mismatch_count += 1
         elif sha256_file(fpath) != expected:
             print(f"  MISMATCH: {rel}")
             mismatch_count += 1
@@ -1659,36 +1667,26 @@ def cmd_restore(args, identity: dict) -> None:
 
     integrity_ok = not (mismatch_count or missing_count)
 
-    # A copy beside the original gets its own identity before its indices
-    # are restored under it
-    # (after the copied files are verified: it changes CASE.yaml and the
-    # host log, as the evidence re-pointing below changes evidence.json)
+    # Only now, the steps outside the case: the 0.6 ledger, the signing keys,
+    # a copy's own identity (it changes CASE.yaml and the host log), indices
+    want: set[str] = set()
+    failed: dict[str, str] = {}
     rename = None
-    if alongside and integrity_ok:
-        rename = _new_identity_for_copy(target_dir, case_id, snap_info)
+    if integrity_ok:
+        want = {"keys"} | {
+            step
+            for step, on in (
+                ("ledger", restore_ledger),
+                ("identity", alongside),
+                ("indices", restore_opensearch),
+            )
+            if on
+        }
+        failed, rename = _finish_restore(
+            target_dir, backup_path, case_id, snap_info, want, ledger_data, progress
+        )
     if alongside and ledger_path_of(case_id).exists():
         print(f"  {cannot_sign_text(case_id, source_path)}")
-
-    # Restore OpenSearch indices
-    os_restored = False
-    # A copy beside the original restores its indices only under its own
-    # identity, never under the original's names
-    if restore_opensearch and (not alongside or rename is not None):
-        snapshot_dir = backup_path / "opensearch-snapshot"
-        if snapshot_dir.is_dir():
-            try:
-                _restore_opensearch_snapshot(
-                    case_id,
-                    snapshot_dir,
-                    progress,
-                    case_uuid=snap_info["case_uuid"],
-                    target=target_dir,
-                    rename=rename,
-                )
-                os_restored = True
-            except Exception as e:
-                print(f"  OpenSearch restore... FAILED: {e}", file=sys.stderr)
-                print("  Re-ingest from evidence if needed.")
 
     # Evidence registered in the backed-up case is re-pointed at the restored
     # copy, so verify checks these files. Before the marker goes: a failed
@@ -1725,16 +1723,18 @@ def cmd_restore(args, identity: dict) -> None:
                 for path in outside:
                     print(f"    {path}")
 
-    # Remove restore marker — only once every file verified, so a bad restore
-    # stays flagged, and a re-run asks before removing it.
-    if integrity_ok:
-        try:
+    # The marker goes once every step is done; a PARTIAL restore keeps it,
+    # naming the steps a re-run finishes
+    if integrity_ok and failed:
+        _mark_partial(target_dir, manifest, failed, rename)
+    elif integrity_ok:
+        with contextlib.suppress(OSError):
             restore_marker.unlink()
-        except OSError:
-            pass
 
     # Summary
-    if integrity_ok:
+    if failed:
+        print(f"\nRestore of case {case_id} to {target_dir} is PARTIAL")
+    elif integrity_ok:
         print(f"\nRestored case {case_id} to {target_dir}")
     else:
         print(f"\nRestore of case {case_id} to {target_dir} FAILED verification")
@@ -1755,7 +1755,7 @@ def cmd_restore(args, identity: dict) -> None:
         )
         sys.exit(1)
 
-    if os_restored:
+    if "indices" in want and "indices" not in failed:
         snap = manifest.get("opensearch_snapshot", {})
         print(
             f"  OpenSearch: {snap.get('index_count', 0)} indices, "
@@ -1765,12 +1765,16 @@ def cmd_restore(args, identity: dict) -> None:
         print("  OpenSearch: not restored (skipped or failed)")
     else:
         print("  OpenSearch: not included in backup")
-    if restore_ledger:
+    if "ledger" in failed:
+        print("  Ledger: NOT installed")
+    elif restore_ledger:
         print("  Ledger: restored")
     elif skip_ledger or ledger_declined:
         print("  Ledger: skipped")
     else:
         print("  Ledger: not included in backup")
+    if failed:
+        _partial_exit(target_dir, failed)
 
     print()
     print("=" * 64)
@@ -1821,6 +1825,174 @@ def _merge_keys(case_dir: Path) -> None:
             continue
         for fp in added:
             print(f"  KEY ADDED {examiner} {fp}")
+
+
+def _is_control(manifest: dict, rel: str) -> bool:
+    """A backup file restore installs or reads from the backup, never copies
+    into the case: the 0.6 ledger, a 0.6 password file, the snapshot."""
+    names = {f"passwords/{ex}.json" for ex in manifest.get("password_examiners") or []}
+    if manifest.get("includes_verification_ledger"):
+        names.add(f"verification/{manifest['case_id']}.jsonl")
+    snapshot = bool(manifest.get("includes_opensearch"))
+    return rel in names or (snapshot and rel.startswith("opensearch-snapshot/"))
+
+
+def _ledger_bytes(path: Path, sha: str) -> bytes | None:
+    """The backup's 0.6 ledger, read once as this user without following a
+    link in its last component; None unless it's a regular file whose bytes
+    hash to `sha`."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        data = f.read() if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else None
+    return (
+        data if data is not None and hashlib.sha256(data).hexdigest() == sha else None
+    )
+
+
+def _install_ledger(data: bytes, case_id: str, folder: Path) -> str:
+    """Install the verified 0.6 ledger bytes as root, from a file this user
+    wrote in `folder` (root never opens the backup); "" or why it failed."""
+    import getpass
+
+    dest, user = str(VERIFICATION_DIR / f"{case_id}.jsonl"), getpass.getuser()
+    fd, tmp = tempfile.mkstemp(prefix=".ledger-", dir=folder)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        for argv in (
+            ["sudo", "cp", tmp, dest],
+            ["sudo", "chown", f"{user}:{user}", dest],
+        ):
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+            if r.returncode:
+                return f"`sudo {argv[1]}` failed: {(r.stderr or '').strip() or r.returncode}"
+    except (OSError, subprocess.SubprocessError) as e:
+        return str(e)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+    return ""
+
+
+def _finish_restore(
+    target_dir,
+    backup_path,
+    case_id,
+    snap_info,
+    want,
+    ledger_data,
+    progress,
+    rename=None,
+) -> tuple[dict, dict | None]:
+    """The steps after every file verified, those in `want`: the 0.6 ledger,
+    the signing keys, a copy's own identity, the indices. Returns each step
+    that failed with why, and a copy's index renaming."""
+    failed: dict[str, str] = {}
+    if "ledger" in want:
+        why = _install_ledger(ledger_data, case_id, target_dir)
+        print(
+            f"  0.6 approval records... {f'FAILED: {why}' if why else 'restored (sudo)'}"
+        )
+        if why:
+            failed["ledger"] = why
+    if "keys" in want:
+        _merge_keys(target_dir)
+    if "identity" in want:
+        rename = _new_identity_for_copy(target_dir, case_id, snap_info)
+        if rename is None and "indices" in want:  # never under the original's names
+            failed["identity"] = failed["indices"] = (
+                "this copy has no identity of its own"
+            )
+    if "indices" in want and "indices" not in failed:
+        try:
+            _restore_opensearch_snapshot(case_id, backup_path / "opensearch-snapshot",
+                                         progress, case_uuid=snap_info["case_uuid"],
+                                         target=target_dir, rename=rename)  # fmt: skip
+        except Exception as e:
+            print(f"  OpenSearch restore... FAILED: {e}", file=sys.stderr)
+            failed["indices"] = str(e)
+    return failed, rename
+
+
+def _mark_partial(target_dir: Path, manifest: dict, failed: dict, rename) -> None:
+    """Keep the restore marker after a PARTIAL restore, naming the steps still
+    to do and the case files as they are now: a re-run finishes only those
+    steps, and only while the files are unchanged."""
+    files = {
+        e["path"]: sha256_file(target_dir / e["path"])
+        for e in manifest["files"]
+        if not _is_control(manifest, e["path"]) and (target_dir / e["path"]).is_file()
+    }
+    marker = {
+        "partial": sorted(failed),
+        "why": failed,
+        "rename": rename,
+        "files": files,
+    }
+    (target_dir / ".restore-in-progress").write_text(json.dumps(marker, indent=2))
+
+
+def _partial(target_dir: Path) -> dict | None:
+    """The kept marker of a PARTIAL restore into `target_dir`, or None."""
+    try:
+        m = json.loads((target_dir / ".restore-in-progress").read_text())
+    except (OSError, ValueError):
+        return None
+    ok = isinstance(m, dict) and isinstance(m.get("partial"), list)
+    return m if ok and isinstance(m.get("files"), dict) else None
+
+
+def _partial_exit(target_dir: Path, failed: dict) -> None:
+    steps = "; ".join(f"{step} ({why})" for step, why in failed.items())
+    print(
+        f"\nError: PARTIAL restore: the case files verified, but these steps failed: "
+        f"{steps}.\n  {target_dir} keeps its .restore-in-progress marker. Fix the "
+        "cause and run the same `vhir restore` again: it finishes only these steps.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _retry_partial(
+    target_dir, backup_path, manifest, partial, want, snap_info, progress
+):
+    """Finish a PARTIAL restore: only its missing steps, and only while the
+    case files are as it left them; never deletes anything."""
+    case_id = manifest["case_id"]
+    changed = sorted(
+        rel
+        for rel, sha in partial["files"].items()
+        if not (target_dir / rel).is_file() or sha256_file(target_dir / rel) != sha
+    )
+    ledger_data, ledger_rel = None, f"verification/{case_id}.jsonl"
+    if "ledger" in want and not changed:
+        sha = next(
+            (e["sha256"] for e in manifest["files"] if e["path"] == ledger_rel), ""
+        )
+        ledger_data = _ledger_bytes(backup_path / ledger_rel, sha)
+        if ledger_data is None or (VERIFICATION_DIR / f"{case_id}.jsonl").exists():
+            changed = [f"{ledger_rel} (in the backup, or already installed)"]
+    if changed:
+        print(
+            f"Error: {target_dir} holds a PARTIAL restore whose files changed since: "
+            f"{', '.join(changed[:5])}{', …' if len(changed) > 5 else ''}. Nothing was "
+            "deleted.\n  Restore to another folder with --target, or finish its steps "
+            f"({', '.join(partial['partial'])}) by hand.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"Finishing the PARTIAL restore in {target_dir}: {', '.join(sorted(want))}")
+    failed, rename = _finish_restore(target_dir, backup_path, case_id, snap_info,
+                                     want, ledger_data, progress, partial.get("rename"))  # fmt: skip
+    if failed:
+        _mark_partial(target_dir, manifest, failed, rename)
+        _partial_exit(target_dir, failed)
+    (target_dir / ".restore-in-progress").unlink()
+    print(f"\nRestored case {case_id} to {target_dir}")
+    sys.exit(0)
 
 
 def _snapshot_uuid(snap_info: dict) -> str | None:
@@ -2013,13 +2185,20 @@ def _restore_opensearch_snapshot(
         if progress_fn:
             progress_fn("Copying snapshot to staging", 0, 1)
         subprocess.run(
-            ["sudo", "cp", "-r", str(snapshot_dir), str(staging)],
+            [
+                "sudo",
+                "cp",
+                "-r",
+                "-P",
+                str(snapshot_dir),
+                str(staging),
+            ],  # no link followed
             capture_output=True,
             timeout=600,
             check=True,
         )
         subprocess.run(
-            ["sudo", "chown", "-R", "1000:1000", str(staging)],
+            ["sudo", "chown", "-R", "-h", "1000:1000", str(staging)],
             capture_output=True,
             timeout=30,
         )
