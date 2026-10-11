@@ -356,16 +356,25 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
 def _closed_hashes(entries: list[dict]) -> dict[tuple[str, str], list]:
     """(job id, real path) -> one item per row that closed the file, success or
     failure: a one-file job's at the top level, a list job's in files[]. An
-    item is the row's sha256 as recorded, or None when it has none."""
+    item is the row's sha256 as recorded, or None when it has none. A job with
+    a closing entry that can't be read in full closes nothing: none of its
+    files resolves, so no failure behind an unreadable row is dropped."""
     closed: dict[tuple[str, str], list] = {}
+    unread: set[str] = set()
     for e in entries:
         if e.get("tool") not in ("hash_complete", "hash_failed"):
             continue
-        for row in e.get("files") or [e]:
-            if isinstance(row, dict) and row.get("path"):
-                key = (str(e.get("job_id", "")), os.path.realpath(str(row["path"])))
-                closed.setdefault(key, []).append(row.get("sha256"))
-    return closed
+        job = str(e.get("job_id", ""))
+        try:
+            rows = [(os.path.realpath(str(row["path"])), row.get("sha256"))
+                    for row in e.get("files") or [e]
+                    if isinstance(row, dict) and row.get("path")]  # fmt: skip
+        except Exception:  # noqa: BLE001 -- any malformed value leaves its job open
+            unread.add(job)
+            continue
+        for p, h in rows:
+            closed.setdefault((job, p), []).append(h)
+    return {k: v + [None] if k[0] in unread else v for k, v in closed.items()}
 
 
 def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str]]:

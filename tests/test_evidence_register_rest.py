@@ -371,6 +371,50 @@ def test_a_list_job_that_hashed_these_bytes_keeps_the_acquisitions_identity(case
     assert r["acquisition_tool"] == "winpmem"
 
 
+def _malformed_closings(mem, shape: str) -> list[dict]:
+    """The job's closing entries for each malformed shape (a hand-edited or
+    corrupted audit line); `mem` is the acquisition's pending output."""
+    job, ok = "job-20261009-020", {"path": str(mem), "sha256": _sha(mem.read_bytes())}
+    complete = {"tool": "hash_complete", "job_id": job}
+    return {
+        "files_number": [{**complete, "files": 1}],
+        "files_bool": [{**complete, "files": True}],
+        "nul_in_files_path": [{**complete, "files": [{"path": "/x\x00y", "sha256": "a" * 64}, ok]}],
+        "nul_in_top_path": [{**complete, "path": "/x\x00y", "sha256": "a" * 64}, {**complete, "files": [ok]}],
+        "lone_surrogate_path": [{**complete, "files": [{"path": "/x\ud800", "sha256": "a" * 64}, ok]}],
+        # a failure for the file hidden behind a row that can't be read: it must
+        # not be dropped, leaving the clean entry to grant the labels
+        "hidden_failure": [{**complete, "files": [ok]},
+                           {"tool": "hash_failed", "job_id": job,
+                            "files": [{"path": "/x\x00y"}, {"path": str(mem), "error": "read"}]}],
+    }[shape]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["files_number", "files_bool", "nul_in_files_path", "nul_in_top_path",
+     "lone_surrogate_path", "hidden_failure"],
+)  # fmt: skip
+def test_a_closing_entry_that_cant_be_read_leaves_its_job_open(case, shape):
+    """Nothing in a malformed closing entry stops the case's registrations; its
+    job's pending files stay refused, others register."""
+    mem = _open_acquisition(case)
+    for n, entry in enumerate(_malformed_closings(mem, shape)):
+        _record(
+            case, "file-identity", audit_id=f"file-identity-20261009-04{n}", **entry
+        )
+    other = case / "evidence" / "other.txt"
+    other.write_bytes(b"an original")
+    assert register_evidence_data(case, str(other), "tester")["sha256"] == _sha(
+        b"an original"
+    )
+    with pytest.raises(
+        ValueError, match="sift-tester-20261009-020.*hasn't recorded one hash"
+    ):
+        register_evidence_data(case, str(mem), "tester")
+    assert [os.path.basename(f["path"]) for f in _files(case)] == ["other.txt"]
+
+
 # --- stat fields come from the hashed bytes' own fd ----------------------------
 
 
