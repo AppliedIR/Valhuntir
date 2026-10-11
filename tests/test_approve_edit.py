@@ -126,3 +126,19 @@ def test_apply_edit_missing_editor_leaves_item_untouched(monkeypatch, identity, 
     assert item == {"title": "Old title"}
     assert "Failed to launch editor" in capsys.readouterr().err
     assert not os.path.exists(seen[0])
+
+
+def test_apply_edit_dump_failure_removes_temp_file(monkeypatch, identity, tmp_path):
+    """The temp file is removed even when writing the item to it fails."""
+    import tempfile
+
+    def dump(*args, **kwargs):
+        raise yaml.representer.RepresenterError("cannot represent an object")
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr("vhir_cli.commands.approve.yaml.dump", dump)
+
+    with pytest.raises(yaml.representer.RepresenterError):
+        _apply_edit({"title": "Old title"}, identity)
+
+    assert list(tmp_path.iterdir()) == []

@@ -625,11 +625,13 @@ def _apply_edit(item: dict, identity: dict) -> None:
             if key in item:
                 editable[key] = item[key]
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
-        tmpfile = f.name
-
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+    tmpfile = f.name
     try:
+        # written in the try, so a failed dump removes it too; closed for the
+        # editor, which reopens it by name
+        with f:
+            yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
         try:
             subprocess.run([editor, tmpfile], check=True, timeout=3600)
         except subprocess.TimeoutExpired:
