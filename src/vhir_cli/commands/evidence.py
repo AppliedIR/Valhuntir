@@ -430,6 +430,16 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
         else {}
     )
     if ops and all(e.get("acquisition") is True for e in ops):
+        # matched on its path alone while a hash is still pending: the bytes
+        # here may not be what the acquisition wrote, so no identity yet
+        pending = [(h, e) for h, e in index.get(real, []) if h.startswith("pending:")]
+        if pending:
+            h, e = pending[0]
+            return (
+                f"{real} is an output of acquisition {e.get('audit_id', '?')}, whose hash "
+                f"job {h.removeprefix('pending:')} hasn't recorded one hash for it: "
+                "register it after that job completes."
+            ), None
         first = ops[0]
         return None, {"acquired_by": first.get("audit_id", ""),
                       "acquisition_tool": first.get("acquisition_tool") or first.get("tool", ""),

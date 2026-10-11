@@ -267,6 +267,58 @@ def test_a_pending_acquisition_whose_job_hashed_these_bytes_keeps_its_identity(c
     assert r["acquisition_tool"] == "winpmem"
 
 
+def _open_acquisition(case, job="job-20261009-020"):
+    """An acquisition whose output's hash is recorded as pending on `job`, with
+    bytes now at its path that the acquisition never wrote."""
+    mem = case / "evidence" / "HOST1.raw"
+    mem.write_bytes(b"not what winpmem wrote")
+    _record(case, "sift-mcp", audit_id="sift-tester-20261009-020", tool="run_command",
+            acquisition=True, acquisition_tool="winpmem",
+            outputs=[{"path": str(mem), "sift_path": "evidence/HOST1.raw",
+                      "sha256": f"pending:{job}"}])  # fmt: skip
+    return mem
+
+
+def _refused_naming_op_and_job(case, path):
+    with pytest.raises(ValueError, match="sift-tester-20261009-020.*job-20261009-020"):
+        register_evidence_data(case, str(path), "tester")
+    assert _files(case) == []
+
+
+def test_an_acquisition_output_whose_hash_job_is_still_open_is_refused(case):
+    mem = _open_acquisition(case)
+    _refused_naming_op_and_job(case, mem)
+
+
+def test_an_acquisition_output_whose_hash_job_failed_is_refused(case):
+    mem = _open_acquisition(case)
+    _record(case, "file-identity", audit_id="file-identity-20261009-021", tool="hash_failed",
+            job_id="job-20261009-020", path=str(mem), error="read error")  # fmt: skip
+    _refused_naming_op_and_job(case, mem)
+
+
+def test_an_acquisition_output_closed_only_by_another_jobs_entry_is_refused(case):
+    mem = _open_acquisition(case)
+    _record(case, "file-identity", audit_id="file-identity-20261009-021", tool="hash_complete",
+            job_id="job-20261009-099", path=str(mem), sha256=_sha(mem.read_bytes()))  # fmt: skip
+    _refused_naming_op_and_job(case, mem)
+
+
+def test_an_acquisition_output_its_job_closed_with_two_hashes_is_refused(case):
+    mem = _open_acquisition(case)
+    for n, data in enumerate((mem.read_bytes(), b"other bytes")):
+        _record(case, "file-identity", audit_id=f"file-identity-20261009-02{n + 1}",
+                tool="hash_complete", job_id="job-20261009-020", path=str(mem),
+                sha256=_sha(data))  # fmt: skip
+    _refused_naming_op_and_job(case, mem)
+
+
+def test_a_folder_holding_an_acquisition_output_still_hashing_is_refused(case):
+    mem = _open_acquisition(case)
+    _refused_naming_op_and_job(case, mem.parent)
+    assert not list(case.glob("evidence-manifests/*.json"))  # no manifest row written
+
+
 # --- stat fields come from the hashed bytes' own fd ----------------------------
 
 
