@@ -313,3 +313,38 @@ def test_a_copy_changed_after_it_was_read_fails_verify(
     b = _backup(case, tmp_path)
     assert {e["path"]: e["sha256"] for e in _manifest(b)["files"]}[name] == read
     assert not B._verify_backup(b) and f"MISMATCH: {name}" in capsys.readouterr().out
+
+
+# --- the writer set follows the scan's one decision ------------------------------
+
+
+def test_a_linked_ledger_folder_the_scan_follows_is_in_the_backup(tmp_path):
+    case = _case(tmp_path, signed=False, files={"store/other.jsonl": "chain copy\n"})
+    (case / "ledger").mkdir()
+    (case / "ledger" / "chains").symlink_to("../store", target_is_directory=True)
+    b = _backup(case, tmp_path)
+    assert (b / "ledger" / "chains" / "other.jsonl").read_text() == "chain copy\n"
+    assert "ledger/chains/other.jsonl" in _manifest(b)["point_in_time"]["files"]
+
+
+def test_an_earlier_backup_under_ledger_stays_out_as_the_scan_says(tmp_path):
+    case = _case(tmp_path, signed=False, files={"ledger/old-backup/payload.txt": "x"})
+    keys = {k: [] if k == "files" else "x" for k in B._MANIFEST_KEYS}
+    (case / "ledger" / "old-backup" / "backup-manifest.json").write_text(
+        json.dumps(keys)
+    )
+    b = _backup(case, tmp_path)
+    assert not (b / "ledger" / "old-backup").exists()
+    assert "ledger/old-backup" in {e["path"] for e in _manifest(b)["skipped"]}
+
+
+def test_registered_evidence_under_ledger_stays_out_without_evidence(tmp_path):
+    case = _case(tmp_path, signed=False, files={"ledger/image.bin": "evidence"})
+    registry = {
+        "files": [
+            {"path": str((case / "ledger" / "image.bin").resolve()), "sha256": ""}
+        ]
+    }
+    (case / "evidence.json").write_text(json.dumps(registry))
+    b = _backup(case, tmp_path)
+    assert not (b / "ledger" / "image.bin").exists()
