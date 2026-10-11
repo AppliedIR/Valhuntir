@@ -196,7 +196,17 @@ def _show_withdrawn(case_dir: Path) -> None:
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
-    audit_index = load_audit_index(case_dir)
+    # Only the skeptic's calls are resolved below: index just those. A list's
+    # unhashable id is left for the chain printer to meet, as before.
+    wanted = set()
+    for raw in withdrawals:
+        ids = raw["result_summary"].get("skeptic_audit_ids")
+        for eid in ids if isinstance(ids, list) else []:
+            try:
+                wanted.add(eid)
+            except TypeError:
+                continue
+    audit_index = load_audit_index(case_dir, wanted)
     print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
     for raw in withdrawals:
         skeptic_ids = raw["result_summary"].get("skeptic_audit_ids") or []
