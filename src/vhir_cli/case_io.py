@@ -801,6 +801,36 @@ def _changed_at(item: dict) -> object:
     )
 
 
+_NO_TIME = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _rev_key(ts: object) -> datetime:
+    """A revision time to compare: a naive one read as UTC; one that isn't a
+    string, or doesn't parse, is no time (the oldest)."""
+    return _utc(ts) or _NO_TIME
+
+
+def _revised_at(item: object) -> object:
+    """When the item's content last changed: its author's modified_at (else
+    staged), found down the imported_from.original chain, or a later edit
+    made on the way (examiner_modifications). A copy's own time is a decision
+    made there, which never travels, so it isn't a revision."""
+    best = ""
+    while isinstance(item, dict):
+        imp = item.get("imported_from")
+        orig = imp.get("original") if isinstance(imp, dict) else None
+        if not isinstance(orig, dict):  # the author's own record
+            own = next((t for t in (item.get("modified_at"), item.get("staged"))
+                        if isinstance(t, str) and t), "")  # fmt: skip
+            return max(best, own, key=_rev_key)
+        mods = item.get("examiner_modifications")
+        for m in mods.values() if isinstance(mods, dict) else ():
+            if isinstance(m, dict) and isinstance(m.get("modified_at"), str):
+                best = max(best, m["modified_at"], key=_rev_key)
+        item = orig
+    return best
+
+
 def export_bundle(case_dir: Path, since: str = "") -> dict:
     """Export findings + timeline as JSON for sharing.
 
@@ -815,7 +845,12 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
 
+    untimed = {}
     if since:
+        # an item with no time at all (imported before 0.6.4) can't be judged:
+        # left out, and counted so the export says so
+        untimed = {k: sum(not _changed_at(i) for i in v)
+                   for k, v in (("findings", findings), ("timeline", timeline))}  # fmt: skip
         findings = [f for f in findings if _at_or_after(_changed_at(f), since)]
         timeline = [t for t in timeline if _at_or_after(_changed_at(t), since)]
 
@@ -824,6 +859,7 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
     # the case's copies first (CopyFailed is an OSError), then carried along
     copied = case_copies.write_case_copies(case_id_of(case_dir), case_dir)
     return {
+        **({"untimed": untimed} if any(untimed.values()) else {}),
         "case_id": meta.get("case_id", ""),
         "examiner": get_examiner(case_dir),
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -1092,9 +1128,8 @@ def _merge_items(
             if existing.get("created_by"):  # recorded here: a copy never replaces it
                 own += 1
                 continue
-            inc_ts = item.get("modified_at", item.get("staged", ""))
-            loc_ts = existing.get("modified_at", existing.get("staged", ""))
-            if _parse_ts(inc_ts) > _parse_ts(loc_ts):
+            inc_ts, loc_ts = _revised_at(item), _revised_at(existing)
+            if _rev_key(inc_ts) > _rev_key(loc_ts):
                 idx = next(i for i, x in enumerate(local) if x.get(id_field) == item_id)
                 local[idx] = cleaned
                 local_by_id[item_id] = cleaned
