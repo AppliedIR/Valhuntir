@@ -310,23 +310,29 @@ def _create_backup_data(
 
     # Scan case directory
     scan = scan_case_dir(case_dir)
+
     # What the scan couldn't read or follow stops the backup before anything
     # is copied, unless it is in a part of the case this backup leaves out;
     # skip_unreadable leaves it out and lists it in the manifest instead.
-    problems = []
-    for err in scan["unreadable"]:
-        top = Path(err.filename).relative_to(case_dir).parts[:1]
-        real = os.path.realpath(err.filename)
-        evidence = (
-            top == ("evidence",)
-            or real in scan["registered"]
-            or _in_folder(real, scan.get("registered_folders", set()))
-        )
-        if evidence and not include_evidence:
-            continue
-        if not evidence and top == ("extractions",) and not include_extractions:
-            continue
-        problems.append(err)
+    def unreadable_here(scan_result) -> list:
+        """What a scan couldn't read or follow in the parts this backup copies."""
+        out = []
+        for err in scan_result["unreadable"]:
+            top = Path(err.filename).relative_to(case_dir).parts[:1]
+            real = os.path.realpath(err.filename)
+            evidence = (
+                top == ("evidence",)
+                or real in scan_result["registered"]
+                or _in_folder(real, scan_result.get("registered_folders", set()))
+            )
+            if evidence and not include_evidence:
+                continue
+            if not evidence and top == ("extractions",) and not include_extractions:
+                continue
+            out.append(err)
+        return out
+
+    problems = unreadable_here(scan)
     # A registered file the scan didn't reach is a problem too, wherever it
     # is: one that is there sits behind a link or folder the scan won't
     # follow, and any other can't be found where it was registered.
@@ -442,8 +448,9 @@ def _create_backup_data(
         (its root names and ledger/), copying exactly what the scan accepts;
         what it can't read stops the backup, or is skipped and listed."""
         now = scan_case_dir(case_dir, within={*_WRITER_SET, "ledger"})
-        accepted = now["case_data"] + (now["evidence"] if include_evidence else [])
-        for e in now["unreadable"]:
+        accepted = [*now["case_data"], *(now["evidence"] if include_evidence else []),
+                    *(now["extractions"] if include_extractions else [])]  # fmt: skip
+        for e in unreadable_here(now):
             rel = os.path.relpath(e.filename, case_dir)
             if rel in refused:
                 continue
@@ -890,6 +897,9 @@ def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
         case_dir, followlinks=True, onerror=unreadable.append
     ):
         root_path = Path(root)
+        if within is not None and root_path == case_dir:  # never visit the rest
+            dirs[:] = [d for d in dirs if d in within]
+            files = [f for f in files if f in within]
         # Filter out skip names, links that lead out of the case, loops, and
         # backups (finished or in progress) made into a folder inside the case
         dirs[:] = [
@@ -902,9 +912,6 @@ def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
         backups = [d for d in dirs if _is_backup(root_path / d)]
         pruned_backups += [str((root_path / d).relative_to(case_dir)) for d in backups]
         dirs[:] = [d for d in dirs if d not in backups]
-        if within is not None and root_path == case_dir:
-            dirs[:] = [d for d in dirs if d in within]
-            files = [f for f in files if f in within]
 
         # Drop subdirectories that loop back onto the path we came in by
         chain = chains.pop(str(root), ())

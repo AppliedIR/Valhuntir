@@ -374,3 +374,27 @@ def test_a_chain_copy_added_between_the_scan_and_the_lock_is_in_the_backup(
         "ledger/chains/0123456789abcdef.x.jsonl"
         in _manifest(b)["point_in_time"]["files"]
     )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_unreadable_registered_evidence_under_ledger_never_stops_a_backup_without_it(
+    tmp_path,
+):
+    case = _case(tmp_path, signed=False, files={"ledger/image.bin": "evidence"})
+    image = case / "ledger" / "image.bin"
+    registry = {"files": [{"path": str(image.resolve()), "sha256": ""}]}
+    (case / "evidence.json").write_text(json.dumps(registry))
+    image.chmod(0)
+    try:
+        b = _backup(case, tmp_path)  # evidence isn't included: the default
+    finally:
+        image.chmod(0o644)
+    assert not (b / "ledger" / "image.bin").exists()
+
+
+def test_a_folder_outside_the_writer_set_is_never_visited_by_the_locked_scan(tmp_path):
+    case = _case(tmp_path, signed=False)
+    (case / "evidence").symlink_to(".", target_is_directory=True)  # a loop, left out
+    assert B.scan_case_dir(case, within={*B._WRITER_SET, "ledger"})["unreadable"] == []
+    b = _backup(case, tmp_path)
+    assert B._verify_backup(b)
