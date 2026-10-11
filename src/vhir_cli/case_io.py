@@ -850,7 +850,6 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         "case_id": str(bundle.get("case_id") or ""),
         "examiner": str(bundle.get("examiner") or ""),
         "exported_at": str(bundle.get("exported_at") or ""),
-        "imported_at": datetime.now(timezone.utc).isoformat(),
     }
     # Host identity is this case's own: another case's machine ids and keys
     # never come in with its findings and timeline items.
@@ -876,6 +875,9 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     # One case-lock span around both merges and their saves, as every writer
     # of the case files: a decision committed meanwhile can't be overwritten.
     with ledger.case_lock(case_id_of(case_dir)):
+        # stamped once the lock is held: an import that waited for it stores
+        # its items after this time, never before it (export --since reads it)
+        origin["imported_at"] = datetime.now(timezone.utc).isoformat()
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
         for key, filename in (
@@ -1016,11 +1018,12 @@ def _merge_items(
     filename: str,
     incoming: list[dict],
     id_field: str,
-    origin: dict | None = None,
-    writes: list | None = None,
+    origin: dict | None,
+    writes: list,
 ) -> dict:
     """Merge incoming items into a local JSON file using last-write-wins.
-    With `origin` (an import), each item added or updated is stamped with it."""
+    With `origin` (an import), each item added or updated is stamped with it.
+    The merged list isn't written: (file, list) is appended to `writes`."""
     local_file = case_dir / filename
     local: list[dict] = []
     if local_file.exists():
