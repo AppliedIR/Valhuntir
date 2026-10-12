@@ -71,7 +71,11 @@ class FakeOpenSearch:
             create=self._create,
             status=lambda **k: {"snapshots": [{"state": "SUCCESS"}]},
             restore=self._restore,
-            get=lambda **k: {"snapshots": [{"indices": list(self.snapshot_holds)}]},
+            get=lambda **k: {
+                "snapshots": [
+                    {"state": "SUCCESS", "indices": list(self.snapshot_holds)}
+                ]
+            },
         )
         self.cat = SimpleNamespace(indices=self._cat)
         self.indices = SimpleNamespace(
@@ -89,14 +93,16 @@ class FakeOpenSearch:
             {"index": n, "docs.count": "1"} for n in self.existing if _matches(n, index)
         ]
 
-    def _create(self, body, **k):
+    def _create(self, body, repository, **k):
         self.created.append(body)
+        (B._SNAPSHOTS_DIR / repository / "index-0").write_bytes(b"")  # its root index
         self.snapshot_holds = sorted(
             n for n in self.existing if _matches(n, body["indices"])
         )
 
     def _restore(self, body, **k):
         self.restored.append(body)
+        count = 0
         for name in self.snapshot_holds:
             if not _matches(name, body["indices"]):
                 continue
@@ -104,6 +110,10 @@ class FakeOpenSearch:
                 java = re.sub(r"\$(\d)", r"\\\1", body["rename_replacement"])
                 name = re.sub(body["rename_pattern"].replace("\\-", "-"), java, name)
             self.existing.add(name)
+            count += 1
+        return {
+            "snapshot": {"shards": {"total": count, "failed": 0, "successful": count}}
+        }
 
     def _template(self, name):
         if "-hayabusa-" in name:

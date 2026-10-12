@@ -296,6 +296,8 @@ def test_a_snapshot_folder_that_is_a_link_is_refused(box):
 
 
 RESTORE = B._restore_opensearch_snapshot  # the real one, for the rows that need it
+# what a cluster answers when every shard came back
+ALL_SHARDS = {"snapshot": {"shards": {"total": 1, "failed": 0, "successful": 1}}}
 
 
 # --- a part asked for that didn't happen exits 1 ------------------------------
@@ -401,6 +403,7 @@ def test_the_second_of_several_renamed_restores_failing_is_partial(box, monkeypa
         calls.append(k)
         if len(calls) == 2:
             raise RuntimeError("stand-in cluster: second restore refused")
+        return ALL_SHARDS
 
     holds = [f"case-{old}-evtx-0", f"case-{CASE.lower()}-evtx-host1"]
     client = types.SimpleNamespace(
@@ -542,6 +545,7 @@ def test_a_partial_copy_whose_later_index_group_failed_is_told_the_same(
         calls.append(k)
         if len(calls) == 2:
             raise RuntimeError("stand-in cluster: second restore refused")
+        return ALL_SHARDS
 
     holds = [
         f"case-{UUID.replace('-', '')[:12]}-evtx-0",
