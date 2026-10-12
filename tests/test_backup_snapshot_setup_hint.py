@@ -18,6 +18,9 @@ import pytest
 pytest.importorskip("opensearch_mcp")
 
 from vhir_cli.commands import backup as B  # noqa: E402
+from vhir_cli.commands.update import (  # noqa: E402
+    _resolve_opensearch_mcp_repo as REAL_RESOLVE,
+)
 
 EMPTY = (
     "[{repo}] location [/usr/share/opensearch/snapshots/{repo}] doesn't match any of the "
@@ -153,3 +156,32 @@ def test_without_the_repo_the_hint_names_the_folder_to_look_in(
         HINT.format(script="<your opensearch-mcp folder>/scripts/setup-opensearch.sh")
         in err
     )
+
+
+def test_an_unreadable_candidate_folder_still_gives_the_hint_and_the_partial(
+    box, monkeypatch, capsys
+):
+    import importlib.util
+
+    from vhir_cli.commands import update
+
+    monkeypatch.setattr(update, "_resolve_opensearch_mcp_repo", REAL_RESOLVE)
+    real_find = importlib.util.find_spec
+    monkeypatch.setattr(  # no editable install to find: the lookup tries the folders
+        importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "opensearch_mcp" else real_find(name, *a),
+    )
+    code_dir = box.tmp / "home" / "code"  # a candidate's parent the examiner can't read
+    code_dir.mkdir()
+    code_dir.chmod(0)
+    try:
+        code, err = _backup(box, monkeypatch, capsys, "path.repo empty")
+    finally:
+        code_dir.chmod(0o755)
+    assert code == 1
+    assert (
+        HINT.format(script="<your opensearch-mcp folder>/scripts/setup-opensearch.sh")
+        in err
+    )
+    assert "Error: PARTIAL backup:" in err

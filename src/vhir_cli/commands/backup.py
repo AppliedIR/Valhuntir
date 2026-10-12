@@ -1122,9 +1122,12 @@ def _snapshot_setup_error(error: str) -> bool:
 
 
 def _snapshot_setup_hint() -> str:
-    from vhir_cli.commands.update import _resolve_opensearch_mcp_repo
+    try:
+        from vhir_cli.commands.update import _resolve_opensearch_mcp_repo
 
-    repo = _resolve_opensearch_mcp_repo(Path.home() / ".vhir" / "src" / "sift-mcp")
+        repo = _resolve_opensearch_mcp_repo(Path.home() / ".vhir" / "src" / "sift-mcp")
+    except Exception:  # an unreadable folder on the way: the hint still prints
+        repo = None
     script = (
         repo / "scripts" / "setup-opensearch.sh"
         if repo
