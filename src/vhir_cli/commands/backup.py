@@ -32,6 +32,9 @@ from vhir_cli.identity import valid_name
 from vhir_cli.verification import VERIFICATION_DIR
 
 _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
+# The backup writes these at its own root: a case-root file under either name
+# would be overwritten in the backup, so it is a problem path
+_BACKUP_OWN_NAMES = ("backup-manifest.json", ".backup-in-progress")
 _PASSWORDS_DIR = Path("/var/lib/vhir/passwords")
 _SNAPSHOTS_DIR = Path(os.environ.get("VHIR_SNAPSHOTS_DIR", "/var/lib/vhir/snapshots"))
 
@@ -275,12 +278,6 @@ def _create_backup_data(
     # case-date name, so a failed or interrupted one can't pass for a backup.
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     backup_name = f"{case_id}-{date_str}"
-    backup_dir = _reserve_dir(dest, f"{backup_name}.incomplete")
-
-    # Write in-progress marker
-    marker = backup_dir / ".backup-in-progress"
-    marker.write_text(json.dumps(_MARKER))
-
     # Scan case directory
     scan = scan_case_dir(case_dir)
     # What the scan couldn't read or follow stops the backup before anything
@@ -361,6 +358,13 @@ def _create_backup_data(
             "then lists each one as skipped.\n"
             + "\n".join(f"  {e.filename}: {_reason(e)}" for e in problems)
         )
+    # Reserved only now: a backup stopped before copying leaves nothing
+    backup_dir = _reserve_dir(dest, f"{backup_name}.incomplete")
+
+    # Write in-progress marker
+    marker = backup_dir / ".backup-in-progress"
+    marker.write_text(json.dumps(_MARKER))
+
     skipped = [
         {"path": os.path.relpath(e.filename, case_dir), "reason": _reason(e)}
         for e in problems
@@ -673,6 +677,13 @@ def _registered_paths(case_dir: Path, folders: set | None = None) -> set[str]:
     registry = case_dir / "evidence.json"
     if not registry.exists():
         return set()
+    if not registry.is_file():  # a pipe would block the read; the scan lists it
+        print(
+            f"Warning: {registry} isn't a regular file; registered evidence outside "
+            "evidence/ can't be excluded, so this backup may include it.",
+            file=sys.stderr,
+        )
+        return set()
     try:
         files = json.loads(registry.read_text()).get("files", [])
     except (OSError, ValueError, AttributeError) as e:
@@ -701,6 +712,8 @@ def _folder_members(case_dir: Path, folders: set) -> dict[str, list[str] | None]
     recorded at registration."""
     from vhir_cli.commands.evidence import _manifest_rows
 
+    if not (case_dir / "evidence.json").is_file():  # a pipe would block the read
+        return {}
     try:
         files = json.loads((case_dir / "evidence.json").read_text()).get("files", [])
     except (OSError, ValueError, AttributeError):
@@ -868,9 +881,20 @@ def scan_case_dir(case_dir: Path) -> dict:
                 continue
 
             try:
-                size = abs_path.stat().st_size
+                st = abs_path.stat()
             except OSError as e:  # e.g. a dangling symlink
                 unreadable.append(e)
+                continue
+            size = st.st_size
+            if not stat.S_ISREG(st.st_mode):  # copying it would block or fail
+                unreadable.append(OSError(
+                    errno.EINVAL, "not a regular file (a named pipe, socket or device)",
+                    str(abs_path)))  # fmt: skip
+                continue
+            if root_path == case_dir and fname in _BACKUP_OWN_NAMES:
+                unreadable.append(OSError(
+                    errno.EEXIST, "the backup writes its own file under this name; "
+                    "rename it", str(abs_path)))  # fmt: skip
                 continue
             if not os.access(abs_path, os.R_OK):
                 unreadable.append(
@@ -1330,6 +1354,9 @@ def _repoint_evidence(
     reg = target_dir / "evidence.json"
     if not reg.exists():
         return 0, 0, []
+    if not reg.is_file():  # a pipe would block the read
+        print("  Note: evidence.json isn't a regular file; it was left as it is.")
+        return None
     try:
         data = json.loads(reg.read_text())
         files = data["files"]
@@ -1369,6 +1396,27 @@ def _repoint_evidence(
         _atomic_write(reg, json.dumps(data, indent=2, default=str))
         os.chmod(reg, mode)
     return moved, absent, outside
+
+
+def _name_identity_left_behind(source_path: str) -> None:
+    """A backup made before the case had an identity, restored where this box
+    recorded one for the folder that is gone now: name that identity, whose
+    indices the restored case won't read. An unreadable record says nothing."""
+    from vhir_cli.case_identity import _read_paths, recorded_folder
+
+    try:
+        recorded = _read_paths()
+    except ValueError:
+        return
+    folder = str(Path(source_path).resolve())
+    for identity, path in recorded.items():
+        if path == folder and recorded_folder(identity) is None:
+            print(
+                f"  Note: {source_path} held case identity {identity} on this box; "
+                "this backup is older than it, so indices named "
+                f"case-{identity.replace('-', '')[:12]}-* won't be read by the "
+                "restored case."
+            )
 
 
 def cmd_restore(args, identity: dict) -> None:
@@ -1464,10 +1512,22 @@ def cmd_restore(args, identity: dict) -> None:
     # its identity (and can sign)
     from vhir_cli.case_identity import _holds
 
-    alongside = target_dir.resolve() != Path(source_path).resolve() and _holds(
-        source_path,
-        _case_uuid(backup_path) if (backup_path / "CASE.yaml").is_file() else "",
+    backup_uuid = (
+        _case_uuid(backup_path) if (backup_path / "CASE.yaml").is_file() else ""
     )
+    # A backup with no identity (made before the case was first activated) is
+    # a copy only beside a folder that still reads as the case: a CASE.yaml
+    # with a case_id, not just any folder with no identity
+    original = load_case_meta(Path(source_path))
+    alongside = (
+        target_dir.resolve() != Path(source_path).resolve()
+        and _holds(source_path, backup_uuid)
+        and bool(
+            backup_uuid or (isinstance(original, dict) and original.get("case_id"))
+        )
+    )
+    if not backup_uuid and not alongside:
+        _name_identity_left_behind(source_path)
     if restore_opensearch:
         problem = _snapshot_identity_problem(snap_info, backup_path)
         if not problem and (backup_path / "opensearch-snapshot").is_symlink():
@@ -1538,12 +1598,13 @@ def cmd_restore(args, identity: dict) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-    if alongside and restore_opensearch and _host_identity() is None:
+    if alongside and (restore_opensearch or backup_uuid) and _host_identity() is None:
         print(
-            "Error: this restore is beside the case it was backed up from, so its "
-            "indices must be renamed into a new case identity, which needs the "
-            "SIFT workstation's sift-common.\n"
-            "Restore in the case's own place, or use --skip-opensearch.",
+            "Error: this restore is beside the case it was backed up from, so the "
+            "copy needs its own case identity, which needs the SIFT workstation's "
+            "sift-common. Nothing was written.\n"
+            "Restore it on the SIFT workstation, or in the case's own place once "
+            "the original is gone.",
             file=sys.stderr,
         )
         sys.exit(1)
