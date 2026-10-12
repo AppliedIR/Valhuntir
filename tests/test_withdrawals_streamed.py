@@ -70,3 +70,25 @@ def test_a_log_that_isnt_a_regular_file_is_named_and_skipped(case, capsys, bad, 
         )
 
     assert _within(run) == ("ok", (1 if reader == "count" else None, True))
+
+
+@POSIX
+@pytest.mark.parametrize("reader", ["count", "withdrawn view"])
+def test_a_log_named_with_terminal_controls_is_named_with_them_shown(case, reader):
+    """The warning names a file the case's trail holds: an escape sequence in
+    its name (or in the error's text) never reaches the terminal."""
+    path = case / "audit" / "wintools-\x1b[2J\x1b[H.jsonl"
+    os.mkfifo(path)
+    fn = (lambda: len(load_withdrawals(case))) if reader == "count" else (
+        lambda: review._show_withdrawn(case))  # fmt: skip
+
+    def run():
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            fn()
+        return err.getvalue()
+
+    status, err = _within(run)
+    assert status == "ok"
+    assert "\x1b" not in err
+    assert f"could not read {case}/audit/wintools-?[2J?[H.jsonl: " in err
