@@ -8,7 +8,6 @@ from __future__ import annotations
 import errno
 import hashlib
 import re
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,15 +59,16 @@ def locked(case):
 
 
 def _fail_on(monkeypatch, nth: int, exc: BaseException):
-    real, seen = shutil.copy2, {"n": 0}
+    """The backup's copy function fails on its nth file."""
+    real, seen = bk._copy_file_hashing, {"n": 0}
 
-    def copy2(src, dst, *a, **k):
+    def copy(src, dst):
         seen["n"] += 1
         if seen["n"] == nth:
             raise exc
-        return real(src, dst, *a, **k)
+        return real(src, dst)
 
-    monkeypatch.setattr(bk.shutil, "copy2", copy2)
+    monkeypatch.setattr(bk, "_copy_file_hashing", copy)
 
 
 def test_a_backup_stopped_before_copying_leaves_nothing(case, locked, tmp_path):
