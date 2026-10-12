@@ -64,6 +64,20 @@ def read_regular(path) -> bytes:
         return f.read()
 
 
+def open_regular(path):
+    """A regular file opened for reading text line by line, checked as
+    `read_regular` checks it, so a FIFO never blocks and a large file is
+    never held whole."""
+    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegularFile(f"{path} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, encoding="utf-8")
+
+
 def _validate_case_id(case_id: str) -> None:
     """Validate case_id to prevent path traversal."""
     if not case_id:
@@ -709,14 +723,16 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     """
     from vhir_cli.commands.audit_cmd import _load_audit_entries
 
+    def withdrawn(entry) -> bool:
+        if not isinstance(entry, dict) or entry.get("tool") != "record_finding":
+            return False
+        result = entry.get("result_summary")
+        return isinstance(result, dict) and result.get("status") == "WITHDRAWN"
+
     seen: set[tuple] = set()
     withdrawals = []
-    for entry in _load_audit_entries(case_dir):
-        if not isinstance(entry, dict) or entry.get("tool") != "record_finding":
-            continue
-        result = entry.get("result_summary")
-        if not isinstance(result, dict) or result.get("status") != "WITHDRAWN":
-            continue
+    # only the withdrawals are kept while the trail is read, never the whole trail
+    for entry in _load_audit_entries(case_dir, keep=withdrawn):
         key = (entry.get("audit_id"), entry.get("ts"))
         if key not in seen:
             seen.add(key)
@@ -737,7 +753,9 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
         return index
     for jsonl_file in sorted(audit_dir.glob("*.jsonl")):
         try:
-            with open(jsonl_file, encoding="utf-8") as f:
+            # a regular file only: a FIFO or a link to a device is refused by
+            # name, never waited on or read without end
+            with open_regular(jsonl_file) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -750,6 +768,8 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
                             index[eid] = entry
                     except json.JSONDecodeError:
                         continue
+        except NotRegularFile as e:
+            print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
         except OSError:
             continue
     return index
@@ -946,6 +966,9 @@ def id_kind(item_id: str) -> str:
     return "timeline" if item_id.startswith("T-") else "finding"
 
 
+# every id a Valhuntir writer makes: printable ASCII, no space
+_PLAIN_ID = re.compile(r"[!-~]+")
+
 _KIND_FAULTS = {
     "timeline": "has a timeline event's id (it starts with T-)",
     "ioc": "has an IOC's id (it starts with IOC-)",
@@ -969,6 +992,11 @@ def _unmergeable(items: object, kind: str) -> str:
             if kind == "timeline":
                 return f"item {n} has an id that doesn't start with T-"
             return f"item {n} {_KIND_FAULTS[id_kind(item_id)]}"
+        if item_id and not _PLAIN_ID.fullmatch(item_id):  # a look-alike of another id
+            return (
+                f"item {n} has an id with a space, a control character or a "
+                "character outside ASCII"
+            )
         if _too_deep(item):
             return f"item {n} nests deeper than {_MAX_ITEM_DEPTH} levels"
     return ""
