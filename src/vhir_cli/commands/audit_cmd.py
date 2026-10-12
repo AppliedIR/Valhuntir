@@ -84,8 +84,11 @@ def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
                             entries.append(entry)
                     except json.JSONDecodeError:
                         corrupt_lines += 1
-        except OSError:
-            pass
+        except OSError as e:  # named, as an audit log is
+            print(
+                f"  Warning: could not read {one_line(f'{approvals_file}: {e}')}",
+                file=sys.stderr,
+            )
 
     if corrupt_lines:
         print(

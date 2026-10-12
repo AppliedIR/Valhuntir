@@ -5,7 +5,9 @@ Local-first: flat case directory. Collaboration via export/merge.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import io
 import json
 import os
 import re
@@ -28,7 +30,11 @@ class CaseError(Exception):
 
 class CaseFileNotRegular(CaseError, OSError):
     """A case file that is there but isn't a regular file: reading a named
-    pipe would block, so it is refused by name."""
+    pipe would block, so it is refused by name. `why` says what it is."""
+
+    def __init__(self, text: str, why: str = "not a regular file"):
+        super().__init__(text)
+        self.why = why
 
 
 class CaseFileNotText(CaseError, ValueError):
@@ -42,6 +48,20 @@ def not_text(path) -> CaseFileNotText:
     )
 
 
+_BACK = "Put the case's own file back, then try again."
+_NOT_REGULAR = {  # what the file is -> what the refusal says it is
+    "not a regular file": "isn't a regular file (a named pipe, socket or device).",
+    "a folder": "is a folder, not a file.",
+    "a symbolic link": "is a symbolic link, so it wasn't read: a case log is read "
+    "only under its own name.",
+    "another name links to it": "has another name linking to it, so it wasn't read.",
+}
+
+
+def _not_regular(path, why: str = "not a regular file") -> CaseFileNotRegular:
+    return CaseFileNotRegular(f"{path} {_NOT_REGULAR[why]} {_BACK}", why)
+
+
 def case_file_there(path: Path) -> bool:
     """Whether a case file is there to read: False when it's absent. One that
     is there but isn't a regular file (a named pipe, socket or device) raises
@@ -49,44 +69,127 @@ def case_file_there(path: Path) -> bool:
     if not path.exists():
         return False
     if not path.is_file():
-        raise CaseFileNotRegular(
-            f"{path} isn't a regular file (a named pipe, socket or device). Put "
-            "the case's own file back, then try again."
-        )
+        raise _not_regular(path)
     return True
 
 
-class NotRegularFile(OSError):
-    """A FIFO, device or socket where a case file should be: refused unread.
-    An OSError, so every handler of a read error handles it."""
+# The longest line, and the most bytes, one case log may hold. A line is
+# parsed whole, and a parse costs up to about 34 times the line.
+LINE_CAP = 16 << 20
+FILE_BUDGET = 256 << 20
+_HOLDS = {  # a case file's name -> what it holds, as the refusal names it
+    "approvals.jsonl": "approval records",
+    "findings.json": "findings",
+    "timeline.json": "timeline events",
+    "iocs.json": "IOCs",
+    "keys.json": "signing-key records",
+    "verification.jsonl": "0.6 approval records",
+}
+
+
+def holds(path) -> str:
+    """What a case file holds, in words: an audit/ log holds audit entries."""
+    p = Path(path)
+    if p.name in _HOLDS:
+        return _HOLDS[p.name]
+    return "audit entries" if p.parent.name == "audit" else "case records"
+
+
+class CaseFileTooLarge(CaseError, OSError):
+    """A case log with a line longer than LINE_CAP, or more than FILE_BUDGET
+    bytes: refused by name, never held whole. `why` says which; `line` is
+    the line's number, or None for the whole file."""
+
+    def __init__(self, path, line: int | None = None):
+        self.why = (f"line {line} is longer than {LINE_CAP >> 20} MiB" if line
+                    else f"larger than {FILE_BUDGET >> 20} MiB")  # fmt: skip
+        what = (f"{path} line {line} is longer than {LINE_CAP >> 20} MiB, so the file "
+                "wasn't read past it." if line else
+                f"{path} is larger than {FILE_BUDGET >> 20} MiB, so it wasn't read.")  # fmt: skip
+        super().__init__(
+            f"{what} It holds the case's {holds(path)}: keep a copy of it before "
+            "you move it out of the case, then try again."
+        )
+        self.line = line
+
+
+def _open_regular_fd(path, log: bool = False) -> int:
+    """Opened non-blocking and checked on the open descriptor before any read,
+    so a FIFO (or a link to one) never blocks and a device is never read. A
+    log (`log`) is also opened only under its own name (no symbolic link, no
+    second name) and only while it is within FILE_BUDGET."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if log else 0)
+    try:
+        fd = os.open(os.fspath(path), flags)
+    except OSError as e:
+        if log and e.errno == errno.ELOOP:
+            raise _not_regular(path, "a symbolic link") from None
+        raise
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            raise _not_regular(path, "a folder")
+        if not stat.S_ISREG(st.st_mode):
+            raise _not_regular(path)
+        if log and st.st_nlink != 1:
+            raise _not_regular(path, "another name links to it")
+        if log and st.st_size > FILE_BUDGET:
+            raise CaseFileTooLarge(path)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def read_regular(path) -> bytes:
-    """A regular file's bytes: opened non-blocking and checked on the open
-    descriptor before any read, so a FIFO (or a link to one) never blocks."""
-    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise NotRegularFile(f"{path} is not a regular file")
-    except BaseException:
-        os.close(fd)
-        raise
-    with os.fdopen(fd, "rb") as f:
+    """A regular file's bytes, for a case file read as one document."""
+    with os.fdopen(_open_regular_fd(path), "rb") as f:
         return f.read()
 
 
-def open_regular(path):
-    """A regular file opened for reading text line by line, checked as
-    `read_regular` checks it, so a FIFO never blocks and a large file is
-    never held whole."""
-    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise NotRegularFile(f"{path} is not a regular file")
-    except BaseException:
-        os.close(fd)
-        raise
-    return os.fdopen(fd, encoding="utf-8")
+def case_lines(path):
+    """Each line of a case log, as bytes with its newline; the file is checked
+    now (`_open_regular_fd`). A line longer than LINE_CAP, or more than
+    FILE_BUDGET bytes in all, raises CaseFileTooLarge naming it: a line is
+    never held whole, and never split into records."""
+    return _capped_lines(os.fdopen(_open_regular_fd(path, log=True), "rb"), path)
+
+
+def read_case_file(path) -> bytes:
+    """A case file's bytes, read as `case_lines` reads a log."""
+    return b"".join(case_lines(path))
+
+
+def _capped_lines(f, path):
+    with f:
+        n = total = 0
+        while raw := f.readline(LINE_CAP + 1):
+            n += 1
+            total += len(raw)
+            if len(raw) > LINE_CAP and not raw.endswith(b"\n"):
+                raise CaseFileTooLarge(path, n)
+            if total > FILE_BUDGET:  # it grew while read
+                raise CaseFileTooLarge(path)
+            yield raw
+
+
+class open_regular:  # noqa: N801 - used as open() is
+    """A case log read as text (UTF-8) line by line, as `case_lines` reads it:
+    `with open_regular(p) as f: for line in f`. Lines end at \\n, \\r\\n or a
+    lone \\r, as a file opened in text mode splits them (each given with \\n)."""
+
+    def __init__(self, path):
+        self._lines = case_lines(path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._lines.close()
+
+    def __iter__(self):
+        for raw in self._lines:
+            yield from io.StringIO(raw.decode("utf-8"), newline=None)
 
 
 def _validate_case_id(case_id: str) -> None:
@@ -383,7 +486,7 @@ def load_approval_log(case_dir: Path) -> list[dict]:
         return []
     entries = []
     corrupt_lines = 0
-    with open(log_file, encoding="utf-8") as f:
+    with open_regular(log_file) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -781,7 +884,7 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
                             index[eid] = entry
                     except json.JSONDecodeError:
                         continue
-        except NotRegularFile as e:
+        except (CaseFileNotRegular, CaseFileTooLarge) as e:
             from vhir_cli.display import one_line  # a file name is the case's data
 
             print(

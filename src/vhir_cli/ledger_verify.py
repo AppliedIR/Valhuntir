@@ -330,8 +330,10 @@ class Result:
 def _copy_label(case_dir: Path) -> str:
     """ "case copy", with when close or export made it (a copy older than the
     box chain is a stale prefix of it after a reopen)."""
+    from vhir_cli.case_io import read_case_file  # never waits on a FIFO
+
     try:
-        at = json.loads((case_dir / "ledger" / "keys.json").read_text()).get(
+        at = json.loads(read_case_file(case_dir / "ledger" / "keys.json")).get(
             "copied_at"
         )
     except (OSError, ValueError, AttributeError):
@@ -352,6 +354,8 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
     """Every item by id, with its type. A case file that doesn't parse, an
     entry that isn't a record and an id used twice fail. Each entry is kept in
     `result.records`, so a report judges exactly what was verified."""
+    from vhir_cli.case_io import read_case_file
+
     items: dict[str, tuple[str, dict]] = {}
     for name, kind, key in (
         ("findings.json", "finding", "findings"),
@@ -361,8 +365,8 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
         path = case_dir / name
         if not path.exists():
             continue
-        try:
-            text = path.read_text()
+        try:  # a regular file only, read as the case logs are
+            text = read_case_file(path).decode("utf-8")
             data = json.loads(text) if text.strip() else []  # as signing reads it
             if not isinstance(data, list):
                 raise ValueError("not a list")
@@ -640,10 +644,12 @@ def _legacy(
         ),
         ("0.6 close copy", case_dir / "verification.jsonl"),
     ]
+    from vhir_cli.case_io import read_case_file
+
     sources: list[bytes] = []
     for label, path in paths:
-        try:
-            sources.append(path.read_bytes())
+        try:  # byte for byte, as read_bytes gave it; a FIFO is never waited on
+            sources.append(read_case_file(path))
         except OSError:
             continue
         result.sources.append(f"{label}: {path}")

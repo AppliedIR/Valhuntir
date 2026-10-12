@@ -63,10 +63,13 @@ def test_a_log_that_isnt_a_regular_file_is_named_and_skipped(case, capsys, bad, 
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             result = fn()
+        what = ("isn't a regular file (a named pipe, socket or device)." if bad == "fifo"
+                else "is a symbolic link, so it wasn't read: a case log is read only "
+                "under its own name.")  # fmt: skip
         return (
             result,
-            f"Warning: could not read {path}: {path} is not a regular file"
-            in err.getvalue(),
+            f"Warning: could not read {path}: {path} {what} Put the case's own file "
+            "back, then try again." in err.getvalue(),
         )
 
     assert _within(run) == ("ok", (1 if reader == "count" else None, True))
