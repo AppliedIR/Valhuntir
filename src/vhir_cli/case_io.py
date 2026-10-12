@@ -888,6 +888,14 @@ def _too_deep(item: object, limit: int = _MAX_ITEM_DEPTH) -> bool:
     return False
 
 
+def bundle_too_deep() -> dict:
+    """The refusal for a bundle json can't decode for its depth (RecursionError,
+    from about 1000 levels): what each reader of a bundle file returns."""
+    return {"status": "error", "message": (
+        f"The bundle nests deeper than {_MAX_ITEM_DEPTH} levels; nothing was merged. "
+        "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
+
+
 def id_kind(item_id: str) -> str:
     """The kind an item's id names, as approval, review and the portal read
     it: an id starting IOC- is an IOC's, T- a timeline event's, any other a
