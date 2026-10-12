@@ -447,7 +447,23 @@ def test_a_wildcard_identity_on_a_case_from_before_identities_is_refused(box, ca
     assert not copy.exists() and box.os.restored == []
 
 
-def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box):
+# A case uuid whose first 12 hex characters include a letter: with digits only,
+# the upper-cased identity is the case's own, and the row proves nothing
+PINNED_UUID = "abcdef01-2345-4678-9abc-def012345678"
+ALL_DIGITS = "12345678-9012-4abc-8def-0123456789ab"
+
+
+@pytest.mark.parametrize("drawn", [None, ALL_DIGITS], ids=["random", "all-digit-draw"])
+def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box, monkeypatch, drawn):
+    import uuid as uuids
+
+    if drawn:  # every new identity is drawn as digits only: the pin still holds
+        forced = uuids.UUID(drawn)
+        monkeypatch.setattr(uuids, "uuid4", lambda: forced)
+    meta = _meta(box.case)
+    (box.case / "CASE.yaml").write_text(
+        yaml.safe_dump({**meta, "case_uuid": PINNED_UUID})
+    )
     path = _crafted(box)
     uuid = _meta(box.case)["case_uuid"]
     c12 = uuid.replace("-", "")[:12]
@@ -458,6 +474,7 @@ def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box):
     copy = box.tmp / "cases" / "C-1-copy"
     _restore(path, copy)
     new = _meta(copy)["case_uuid"].replace("-", "")[:12]
+    assert c12.upper() != c12
     assert f"case-{new}-evtx-0" in box.os.existing  # renamed from the case's own
     assert f"case-{c12.upper()}-evtx-0" not in box.os.existing
 
