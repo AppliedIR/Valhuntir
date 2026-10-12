@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from vhir_cli.case_io import _atomic_write
+from vhir_cli.case_io import _atomic_write, case_file_there
 
 
 def host_identity():
@@ -41,6 +41,8 @@ def host_identity():
 
 def case_uuid(case_dir: Path) -> str:
     """The case's UUID from CASE.yaml, or "" when it has none."""
+    if not case_file_there(Path(case_dir) / "CASE.yaml"):
+        return ""
     try:
         meta = yaml.safe_load((Path(case_dir) / "CASE.yaml").read_text()) or {}
     except (OSError, yaml.YAMLError):

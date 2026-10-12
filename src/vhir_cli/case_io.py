@@ -25,6 +25,25 @@ class CaseError(Exception):
     """Raised when case directory cannot be resolved or validation fails."""
 
 
+class CaseFileNotRegular(CaseError, OSError):
+    """A case file that is there but isn't a regular file: reading a named
+    pipe would block, so it is refused by name."""
+
+
+def case_file_there(path: Path) -> bool:
+    """Whether a case file is there to read: False when it's absent. One that
+    is there but isn't a regular file (a named pipe, socket or device) raises
+    CaseFileNotRegular; checking never opens it."""
+    if not path.exists():
+        return False
+    if not path.is_file():
+        raise CaseFileNotRegular(
+            f"{path} isn't a regular file (a named pipe, socket or device). Put "
+            "the case's own file back, then try again."
+        )
+    return True
+
+
 def _validate_case_id(case_id: str) -> None:
     """Validate case_id to prevent path traversal."""
     if not case_id:
@@ -140,7 +159,7 @@ def get_examiner(case_dir: Path | None = None) -> str:
 def load_case_meta(case_dir: Path) -> dict:
     """Load CASE.yaml metadata."""
     meta_file = case_dir / "CASE.yaml"
-    if not meta_file.exists():
+    if not case_file_there(meta_file):
         return {}
     try:
         with open(meta_file) as f:

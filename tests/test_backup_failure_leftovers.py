@@ -1,5 +1,7 @@
 """A backup that fails or is interrupted must not leave a directory that
-looks like a finished backup, and a retry takes the plain name."""
+looks like a finished backup, and a retry takes the plain name. One stopped
+before copying leaves nothing; one that fails while copying leaves its marked
+.incomplete folder."""
 
 from __future__ import annotations
 
@@ -69,12 +71,12 @@ def _fail_on(monkeypatch, nth: int, exc: BaseException):
     monkeypatch.setattr(bk, "_copy_file_hashing", copy)
 
 
-def test_a_failed_backup_never_takes_the_backup_name(case, locked, tmp_path):
+def test_a_backup_stopped_before_copying_leaves_nothing(case, locked, tmp_path):
     dest = tmp_path / "out"
-    with pytest.raises(OSError):
+    dest.mkdir()  # an existing, empty destination: still empty afterwards
+    with pytest.raises(OSError, match="Backup stopped before copying"):
         bk.create_backup_data(case, str(dest), "tester")
-    assert _backup_named(dest) == []
-    assert len(_leftovers(dest)) == 1
+    assert list(dest.iterdir()) == []
 
 
 def test_the_retry_after_a_failure_takes_the_plain_name(case, locked, tmp_path):
@@ -92,8 +94,9 @@ def test_the_error_names_the_unreadable_file(case, locked, tmp_path):
     assert str(locked) in str(e.value)
 
 
-def test_the_failed_copy_keeps_its_marker_and_is_refused(case, locked, tmp_path):
+def test_the_failed_copy_keeps_its_marker_and_is_refused(case, tmp_path, monkeypatch):
     dest = tmp_path / "out"
+    _fail_on(monkeypatch, 5, OSError(errno.ENOSPC, "No space left on device"))
     with pytest.raises(OSError):
         bk.create_backup_data(case, str(dest), "tester")
     (left,) = [p for p in dest.iterdir() if p.is_dir()]
@@ -120,9 +123,12 @@ def test_an_interrupted_backup_never_takes_the_backup_name(case, tmp_path, monke
     assert _backup_named(dest) == []
 
 
-def test_two_failures_leave_two_separate_marked_copies(case, locked, tmp_path):
+def test_two_failures_midway_leave_two_separate_marked_copies(
+    case, tmp_path, monkeypatch
+):
     dest = tmp_path / "out"
     for _ in range(2):
+        _fail_on(monkeypatch, 5, OSError(errno.ENOSPC, "No space left on device"))
         with pytest.raises(OSError):
             bk.create_backup_data(case, str(dest), "tester")
     left = _leftovers(dest)
