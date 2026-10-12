@@ -216,6 +216,36 @@ def _create_backup(args, identity: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+_COPY_CHUNK = 1024 * 1024
+# The files the case's writers change together, copied in one hold of their lock
+_WRITER_SET = ("findings.json", "timeline.json", "iocs.json", "todos.json",
+               "pending-reviews.json", "approvals.jsonl", "verification.jsonl")  # fmt: skip
+
+
+def _copy_file_hashing(src: Path, dst: Path) -> tuple[Path, str]:
+    """Copy src to dst; return the path written and the SHA-256 of the bytes copied.
+
+    Stands in for shutil.copy2 (copyfile + copystat) so the manifest hash comes
+    from the stream in flight instead of a second read of the destination. Gives
+    up copy2's sendfile fast path — hashing requires the bytes in user space.
+    Like copy2, a dst that is an existing directory receives src inside it.
+    """
+    if dst.is_dir():
+        dst = dst / src.name
+    if stat.S_ISFIFO(os.stat(src).st_mode):
+        raise shutil.SpecialFileError(f"`{src}` is a named pipe")
+    h = hashlib.sha256()
+    with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+        while True:
+            chunk = fsrc.read(_COPY_CHUNK)
+            if not chunk:
+                break
+            h.update(chunk)
+            fdst.write(chunk)
+    shutil.copystat(str(src), str(dst))
+    return dst, h.hexdigest()
+
+
 def create_backup_data(
     case_dir: Path, destination: str, examiner: str, **kwargs
 ) -> dict:
@@ -267,10 +297,7 @@ def _create_backup_data(
     meta = load_case_meta(case_dir)
     case_id = meta.get("case_id", case_dir.name)
     dest = Path(destination)
-    # The case's copies of its signed history (this box's chain, its 0.6
-    # copy and the signing keys) are written into the case first, so the
-    # backup carries them; CopyFailed stops the backup
-    copied = case_copies.write_case_copies(case_id, case_dir)
+    case_copies.refuse_hidden_store()  # before anything is created
 
     # Build under an ".incomplete" name; only a finished backup takes the
     # case-date name, so a failed or interrupted one can't pass for a backup.
@@ -284,23 +311,29 @@ def _create_backup_data(
 
     # Scan case directory
     scan = scan_case_dir(case_dir)
+
     # What the scan couldn't read or follow stops the backup before anything
     # is copied, unless it is in a part of the case this backup leaves out;
     # skip_unreadable leaves it out and lists it in the manifest instead.
-    problems = []
-    for err in scan["unreadable"]:
-        top = Path(err.filename).relative_to(case_dir).parts[:1]
-        real = os.path.realpath(err.filename)
-        evidence = (
-            top == ("evidence",)
-            or real in scan["registered"]
-            or _in_folder(real, scan.get("registered_folders", set()))
-        )
-        if evidence and not include_evidence:
-            continue
-        if not evidence and top == ("extractions",) and not include_extractions:
-            continue
-        problems.append(err)
+    def unreadable_here(scan_result) -> list:
+        """What a scan couldn't read or follow in the parts this backup copies."""
+        out = []
+        for err in scan_result["unreadable"]:
+            top = Path(err.filename).relative_to(case_dir).parts[:1]
+            real = os.path.realpath(err.filename)
+            evidence = (
+                top == ("evidence",)
+                or real in scan_result["registered"]
+                or _in_folder(real, scan_result.get("registered_folders", set()))
+            )
+            if evidence and not include_evidence:
+                continue
+            if not evidence and top == ("extractions",) and not include_extractions:
+                continue
+            out.append(err)
+        return out
+
+    problems = unreadable_here(scan)
     # A registered file the scan didn't reach is a problem too, wherever it
     # is: one that is there sits behind a link or folder the scan won't
     # follow, and any other can't be found where it was registered.
@@ -395,18 +428,58 @@ def _create_backup_data(
         except OSError:
             ledger_failed = True
             ledger_note = "Warning: could not copy the case's 0.6 approval records"
-    else:
-        # a case signed from the start has none; its signed history is in ledger/
-        ledger_note = (
-            ""
-            if copied.get("chain_id")
-            else "Note: this case has no 0.6 approval records and no signed decisions yet"
-        )
 
     # No credential file is ever backed up: a key's private half stays on its
     # box, and the case's signed lines carry the public keys that check them
 
-    # Copy files
+    # Copy files — hash each stream in flight so the manifest needs no second
+    # pass over the payload, and so the recorded hash is the bytes read.
+    copied_hashes: dict[str, str] = {}
+    refused = {e["path"] for e in skipped}
+    point_in_time: list[str] = []
+
+    def copy_one(src: Path, rel: str) -> None:
+        dst = backup_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        written_to, fhash = _copy_file_hashing(Path(src), dst)
+        copied_hashes[str(written_to.relative_to(backup_dir))] = fhash
+
+    def writer_set() -> None:
+        """Under the writers' lock: the writer set as the scan finds it now
+        (its root names and ledger/), copying exactly what the scan accepts;
+        what it can't read stops the backup, or is skipped and listed."""
+        now = scan_case_dir(case_dir, within={*_WRITER_SET, "ledger"})
+        accepted = [*now["case_data"], *(now["evidence"] if include_evidence else []),
+                    *(now["extractions"] if include_extractions else [])]  # fmt: skip
+        for e in unreadable_here(now):
+            rel = os.path.relpath(e.filename, case_dir)
+            if rel in refused:
+                continue
+            if not skip_unreadable:
+                raise OSError(f"Backup stopped: {e.filename}: {_reason(e)}")
+            skipped.append({"path": rel, "reason": _reason(e)})
+        for rel, src, _size in accepted:
+            if rel not in refused and not _is_credential_copy(rel):
+                copy_one(Path(src), rel)
+
+    # The writer set and this box's copies of the signed history (its chain,
+    # 0.6 copy and the signing keys) in one hold of the writers' lock: the
+    # copies go into the backup, never the case. CopyFailed stops the backup.
+    copied = case_copies.write_case_copies(
+        case_id, case_dir, into=backup_dir, inside_lock=writer_set
+    )
+    for root, _dirs, files in os.walk(backup_dir / "ledger"):
+        point_in_time += [os.path.relpath(Path(root, f), backup_dir) for f in files]
+    point_in_time += [n for n in _WRITER_SET if (backup_dir / n).is_file()]
+    # the copies may have rewritten or moved any of these: hashed from disk
+    for rel in [r for r in copied_hashes if r.startswith("ledger/")]:
+        del copied_hashes[rel]
+    copied_hashes.pop("verification.jsonl", None)
+    if not ledger_path.is_file() and not copied.get("chain_id"):
+        ledger_note = (
+            "Note: this case has no 0.6 approval records and no signed decisions yet"
+        )
+
     total_files = len(files_to_copy)
     # A case file at a control path this backup just wrote (e.g. a copy left
     # in the case dir by an older restore) must not replace the live copy.
@@ -416,9 +489,9 @@ def _create_backup_data(
     for i, (rel_path, abs_path, _size) in enumerate(files_to_copy, 1):
         if rel_path in written or _is_credential_copy(rel_path):
             continue
-        dst = backup_dir / rel_path
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(abs_path), str(dst))
+        if rel_path in _WRITER_SET or rel_path.startswith("ledger/"):
+            continue  # the locked section's, never copied again
+        copy_one(Path(abs_path), rel_path)
         if progress_fn:
             progress_fn("Copying", i, total_files)
     # The chain copies were written before the case files were copied; a
@@ -453,7 +526,11 @@ def _create_backup_data(
     total_manifest = len(all_backup_files)
     for i, (rel, fpath) in enumerate(sorted(all_backup_files), 1):
         fsize = fpath.stat().st_size
-        fhash = sha256_file(fpath)
+        # Copied payload was already hashed in flight; everything else here
+        # (the signed-history copies, the 0.6 file, the snapshot) from disk.
+        fhash = copied_hashes.get(rel)
+        if fhash is None:
+            fhash = sha256_file(fpath)
         manifest_files.append({"path": rel, "sha256": fhash, "bytes": fsize})
         total_bytes += fsize
         if progress_fn:
@@ -473,6 +550,9 @@ def _create_backup_data(
             opensearch_snapshot_info and not opensearch_snapshot_info.get("error")
         ),
         "notes": ["approvals.jsonl is an archival copy, not used for verification"],
+        # copied or written in one hold of the writers' lock: the case's state
+        # at one moment; every other file was copied after it
+        "point_in_time": {"files": sorted(point_in_time)},
         "files": manifest_files,
         "total_bytes": total_bytes,
         "file_count": len(manifest_files),
@@ -754,8 +834,9 @@ def _is_backup(path: Path) -> bool:
     )
 
 
-def scan_case_dir(case_dir: Path) -> dict:
-    """Scan case directory and categorize files.
+def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
+    """Scan case directory and categorize files (only the root names in
+    `within`, and what lies under them, when it's given).
 
     Returns dict with keys: case_data, evidence, extractions, symlinks,
     unreadable (the OSError for each entry the walk could not list, stat,
@@ -817,6 +898,9 @@ def scan_case_dir(case_dir: Path) -> dict:
         case_dir, followlinks=True, onerror=unreadable.append
     ):
         root_path = Path(root)
+        if within is not None and root_path == case_dir:  # never visit the rest
+            dirs[:] = [d for d in dirs if d in within]
+            files = [f for f in files if f in within]
         # Filter out skip names, links that lead out of the case, loops, and
         # backups (finished or in progress) made into a folder inside the case
         dirs[:] = [
