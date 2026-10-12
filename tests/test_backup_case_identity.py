@@ -71,7 +71,11 @@ class FakeOpenSearch:
             create=self._create,
             status=lambda **k: {"snapshots": [{"state": "SUCCESS"}]},
             restore=self._restore,
-            get=lambda **k: {"snapshots": [{"indices": list(self.snapshot_holds)}]},
+            get=lambda **k: {
+                "snapshots": [
+                    {"state": "SUCCESS", "indices": list(self.snapshot_holds)}
+                ]
+            },
         )
         self.cat = SimpleNamespace(indices=self._cat)
         self.indices = SimpleNamespace(
@@ -89,14 +93,16 @@ class FakeOpenSearch:
             {"index": n, "docs.count": "1"} for n in self.existing if _matches(n, index)
         ]
 
-    def _create(self, body, **k):
+    def _create(self, body, repository, **k):
         self.created.append(body)
+        (B._SNAPSHOTS_DIR / repository / "index-0").write_bytes(b"")  # its root index
         self.snapshot_holds = sorted(
             n for n in self.existing if _matches(n, body["indices"])
         )
 
     def _restore(self, body, **k):
         self.restored.append(body)
+        count = 0
         for name in self.snapshot_holds:
             if not _matches(name, body["indices"]):
                 continue
@@ -104,6 +110,10 @@ class FakeOpenSearch:
                 java = re.sub(r"\$(\d)", r"\\\1", body["rename_replacement"])
                 name = re.sub(body["rename_pattern"].replace("\\-", "-"), java, name)
             self.existing.add(name)
+            count += 1
+        return {
+            "snapshot": {"shards": {"total": count, "failed": 0, "successful": count}}
+        }
 
     def _template(self, name):
         if "-hayabusa-" in name:
@@ -437,7 +447,23 @@ def test_a_wildcard_identity_on_a_case_from_before_identities_is_refused(box, ca
     assert not copy.exists() and box.os.restored == []
 
 
-def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box):
+# A case uuid whose first 12 hex characters include a letter: with digits only,
+# the upper-cased identity is the case's own, and the row proves nothing
+PINNED_UUID = "abcdef01-2345-4678-9abc-def012345678"
+ALL_DIGITS = "12345678-9012-4abc-8def-0123456789ab"
+
+
+@pytest.mark.parametrize("drawn", [None, ALL_DIGITS], ids=["random", "all-digit-draw"])
+def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box, monkeypatch, drawn):
+    import uuid as uuids
+
+    if drawn:  # every new identity is drawn as digits only: the pin still holds
+        forced = uuids.UUID(drawn)
+        monkeypatch.setattr(uuids, "uuid4", lambda: forced)
+    meta = _meta(box.case)
+    (box.case / "CASE.yaml").write_text(
+        yaml.safe_dump({**meta, "case_uuid": PINNED_UUID})
+    )
     path = _crafted(box)
     uuid = _meta(box.case)["case_uuid"]
     c12 = uuid.replace("-", "")[:12]
@@ -448,6 +474,7 @@ def test_an_upper_cased_identity_is_restored_as_the_case_s_own(box):
     copy = box.tmp / "cases" / "C-1-copy"
     _restore(path, copy)
     new = _meta(copy)["case_uuid"].replace("-", "")[:12]
+    assert c12.upper() != c12
     assert f"case-{new}-evtx-0" in box.os.existing  # renamed from the case's own
     assert f"case-{c12.upper()}-evtx-0" not in box.os.existing
 

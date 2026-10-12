@@ -283,8 +283,9 @@ def test_a_restore_refuses_another_case_s_chain(box, tmp_path, capsys):
 
 @pytest.mark.parametrize(
     "rel,why,code",
-    [("./ledger/chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes", 0),
-     # a `..` component refuses the whole restore, before anything is written
+    # a path not in normal form, or with a `..` component, refuses the whole
+    # restore, before anything is written
+    [("./ledger/chains/0123456789abcdef.jsonl", "isn't a file path its backup writes", 1),
      ("ledger/x/../chains/0123456789abcdef.jsonl", "lists a file outside the case folder", 1),
      ("../escaped.jsonl", "lists a file outside the case folder", 1)],
 )  # fmt: skip

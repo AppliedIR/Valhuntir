@@ -467,6 +467,9 @@ def _create_backup_data(
         "case_id": case_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "source": str(case_dir),
+        # Where the case's files really were: evidence is registered by real
+        # path, so a restore re-points from here when the source was a link
+        "source_realpath": os.path.realpath(case_dir),
         "examiner": examiner,
         "includes_evidence": include_evidence,
         "includes_extractions": include_extractions,
@@ -624,6 +627,15 @@ def _verify_backup(backup_path: Path) -> bool:
     _print_skipped(manifest.get("skipped"))
     if mismatch_count or missing_count:
         print("FAILED: backup integrity check failed")
+        return False
+    if manifest.get("includes_opensearch") and not any(
+        re.fullmatch(r"opensearch-snapshot/index-\d+", e["path"]) for e in files
+    ):
+        print(
+            "FAILED: the backup says it holds the case's OpenSearch indices, but "
+            "its opensearch-snapshot has no index-N file, so they can't be "
+            "restored (restore --skip-opensearch still restores its files)"
+        )
         return False
 
     print("PASSED: all files verified")
@@ -1147,9 +1159,9 @@ def _create_opensearch_snapshot(
                     "Snapshot timed out after 30 minutes. "
                     "Check OpenSearch health and retry."
                 )
-            status = client.snapshot.status(
-                repository=repo_name, snapshot=snapshot_name
-            )
+            # The repository's own listing: _status says SUCCESS before the
+            # repository's root index-N is written
+            status = client.snapshot.get(repository=repo_name, snapshot=snapshot_name)
             snapshots = status.get("snapshots", [])
             if snapshots:
                 state = snapshots[0].get("state", "")
@@ -1158,6 +1170,14 @@ def _create_opensearch_snapshot(
                 if state in ("FAILED", "PARTIAL", "INCOMPATIBLE"):
                     raise RuntimeError(f"Snapshot failed: {state}")
             time.sleep(2)
+
+        # A cluster whose snapshot folder isn't staging wrote it elsewhere
+        if not any(re.fullmatch(r"index-\d+", p.name) for p in staging.iterdir()):
+            raise RuntimeError(
+                f"OpenSearch didn't write the snapshot into {staging}: the "
+                "cluster's snapshot folder (path.repo) must be that folder on "
+                "this host"
+            )
 
         # Move snapshot data to backup dir
         backup_snapshot_dir = backup_dir / "opensearch-snapshot"
@@ -1281,6 +1301,11 @@ def _read_manifest(backup_path: Path) -> tuple[dict, str]:
         rel = entry.get("path") if isinstance(entry, dict) else None
         if not _stays_inside(rel):
             return {}, f"the backup lists a file outside the case folder: {rel!r}."
+        if os.path.normpath(rel) != rel:  # ./x, x//y, x/: an alias of a control path
+            return (
+                {},
+                f"the backup lists {rel!r}, which isn't a file path its backup writes.",
+            )
         if not isinstance(entry.get("sha256"), str):
             return {}, f"the manifest gives no sha256 for {rel!r}."
     ledger = f"verification/{case_id}.jsonl"
@@ -1308,13 +1333,18 @@ def _stays_inside(rel) -> bool:
 
 
 def _repoint_evidence(
-    target_dir: Path, source: str, restored: set[str] = frozenset()
+    target_dir: Path,
+    source: str,
+    restored: set[str] = frozenset(),
+    source_realpath: str | None = None,
 ) -> tuple[int, int, list[str]] | None:
     """Point evidence.json entries under the backed-up case at the restored copy.
 
     Registration stores absolute paths, so after a restore elsewhere they still
     name the original's files. An entry under the recorded source, or under
-    its real path, gets the same relative path under the restored folder;
+    its real path, or under the real path the backup recorded (a case reached
+    through a link that this box doesn't have), gets the same relative path
+    under the restored folder;
     entries elsewhere (evidence linked in from outside) are kept and listed.
     ``restored`` holds the case-relative paths the backup restored.
     Returns (entries re-pointed, of those the ones whose file the backup
@@ -1337,6 +1367,8 @@ def _repoint_evidence(
         return None
     new_root = target_dir.resolve()
     roots = [Path(os.path.abspath(source)), Path(os.path.realpath(source))]
+    if source_realpath:
+        roots.append(Path(source_realpath))
     moved, absent, outside = 0, 0, []
     for entry in files:
         path = entry.get("path") if isinstance(entry, dict) else None
@@ -1743,14 +1775,19 @@ def cmd_restore(args, identity: dict) -> None:
         print(f"  {cannot_sign_text(case_id, source_path)}")
 
     # Evidence registered in the backed-up case is re-pointed at the restored
-    # copy, so verify checks these files. Before the marker goes: a failed
-    # write leaves the restore flagged.
-    if integrity_ok and target_dir.resolve() != Path(os.path.realpath(source_path)):
+    # copy, so verify checks these files: in place too, since the case may
+    # have been reached through a link this box doesn't have. Before the
+    # marker goes: a failed write leaves the restore flagged.
+    recorded = manifest.get("source_realpath")
+    if not (isinstance(recorded, str) and os.path.isabs(recorded)):
+        recorded = None
+    if integrity_ok:
         try:
             repointed = _repoint_evidence(
                 target_dir,
                 source_path,
                 {os.path.normpath(e["path"]) for e in files},
+                recorded,
             )
         except OSError as e:
             print(
@@ -2185,6 +2222,21 @@ def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
     }
 
 
+def _every_shard_restored(response) -> None:
+    """Raise unless the restore's result says every shard came back: a shard
+    the cluster couldn't allocate leaves a red index with no documents."""
+    snapshot = response.get("snapshot") if isinstance(response, dict) else None
+    shards = snapshot.get("shards") if isinstance(snapshot, dict) else None
+    total = shards.get("total") if isinstance(shards, dict) else None
+    if not (
+        isinstance(total, int)
+        and total > 0
+        and shards.get("failed") == 0
+        and shards.get("successful") == total
+    ):
+        raise RuntimeError(f"not every shard was restored ({shards})")
+
+
 def _template_aliases(client, prefix: str) -> list[dict]:
     """The alias actions each restored index's own index template gives it
     (restored with include_aliases false, so a legacy or other case's alias
@@ -2278,12 +2330,14 @@ def _restore_opensearch_snapshot(
             print(f"  OpenSearch indices... none of case {case_id}'s in the snapshot")
             return
         if rename is None:
-            client.snapshot.restore(
+            restored = client.snapshot.restore(
                 repository=repo_name,
                 snapshot="snap",
                 body={"indices": ",".join(current + legacy), **common},
                 wait_for_completion=True,
+                request_timeout=1800,  # the backup's own wait
             )
+            _every_shard_restored(restored)
         else:
             new = f"case-{rename['new_c12']}-"
             renames = []
@@ -2303,7 +2357,7 @@ def _restore_opensearch_snapshot(
                     )
                 )
             for indices, pattern, replacement in renames:
-                client.snapshot.restore(
+                restored = client.snapshot.restore(
                     repository=repo_name,
                     snapshot="snap",
                     body={
@@ -2315,7 +2369,9 @@ def _restore_opensearch_snapshot(
                         **common,
                     },
                     wait_for_completion=True,
+                    request_timeout=1800,
                 )
+                _every_shard_restored(restored)
             actions = _template_aliases(client, new)
             if actions:
                 client.indices.update_aliases(body={"actions": actions})
