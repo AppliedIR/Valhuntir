@@ -54,18 +54,24 @@ def test_an_imported_finding_and_event_are_in_export_since(case):
     assert [t["id"] for t in exported["timeline"]] == ["T-alice-001"]
 
 
-@pytest.mark.parametrize("timeline", [["oops"], None], ids=["oops", "null"])
-def test_a_timeline_that_cant_be_merged_writes_neither_file(case, timeline):
+@pytest.mark.parametrize(
+    "timeline,why",
+    [(["oops"], "item 0 isn't an object"), (None, "isn't a list")],
+    ids=["oops", "null"],
+)
+def test_a_timeline_that_cant_be_merged_writes_neither_file(case, timeline, why):
     """The finding is one the case doesn't hold, so a merge would add it: the
     control below shows it does, with a valid timeline."""
     new = {"id": "F-carol-001", "status": "DRAFT", "title": "t", "modified_at": ST}
     before = _files(case)
-    with pytest.raises(
-        (AttributeError, TypeError)
-    ):  # "oops" has no .get; None no items
-        import_bundle(
-            case, {"case_id": "INC-C", "findings": [new], "timeline": timeline}
-        )
+    result = import_bundle(
+        case, {"case_id": "INC-C", "findings": [new], "timeline": timeline}
+    )
+    assert result == {
+        "status": "error",
+        "message": f"The bundle's timeline {why}; nothing was merged. "
+        "Fix the bundle or ask for a new export, then merge again.",
+    }
     assert _files(case) == before
 
     result = import_bundle(
