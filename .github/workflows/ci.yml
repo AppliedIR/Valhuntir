@@ -29,4 +29,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
+      # The restore tests need the siblings; one command, so opensearch-mcp's sift-common comes from its branch
+      - run: pip install "sift-common @ git+https://github.com/AppliedIR/sift-mcp.git#subdirectory=packages/sift-common" "opensearch-mcp @ git+https://github.com/AppliedIR/opensearch-mcp.git"
       - run: pytest tests/ -v --tb=short
