@@ -92,12 +92,21 @@ def cmd_merge(args, identity: dict) -> None:
 
     fr = result.get("findings", {})
     tr = result.get("timeline", {})
+
+    def kept(r: dict) -> str:  # items this case recorded, never replaced by a merge
+        n = r.get("own", 0)
+        return (
+            f", {n} kept: recorded in this case (incoming copy not applied)"
+            if n
+            else ""
+        )
+
     print("Merge complete:")
     print(
-        f"  Findings: {fr.get('added', 0)} added, {fr.get('updated', 0)} updated, {fr.get('skipped', 0)} skipped"
+        f"  Findings: {fr.get('added', 0)} added, {fr.get('updated', 0)} updated, {fr.get('skipped', 0)} skipped{kept(fr)}"
     )
     print(
-        f"  Timeline: {tr.get('added', 0)} added, {tr.get('updated', 0)} updated, {tr.get('skipped', 0)} skipped"
+        f"  Timeline: {tr.get('added', 0)} added, {tr.get('updated', 0)} updated, {tr.get('skipped', 0)} skipped{kept(tr)}"
     )
     anchors = result.get("ledger") or {}
     if anchors.get("keys") or anchors.get("heads"):
