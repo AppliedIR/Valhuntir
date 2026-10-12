@@ -1928,11 +1928,14 @@ def cmd_restore(args, identity: dict) -> None:
                 for path in outside:
                     print(f"    {path}")
         try:
-            if os.path.isabs(source_path):
+            # a move only: an in-place restore (the evidence block runs for a
+            # case reached through a link) appends no relocation
+            moved_case = target_dir.resolve() != Path(os.path.realpath(source_path))
+            if os.path.isabs(source_path) and moved_case:
                 _mark_relocation(
                     target_dir,
                     source_path,
-                    manifest_file,
+                    backup_path / "backup-manifest.json",
                     identity.get("examiner", "unknown"),
                 )
         except OSError as e:

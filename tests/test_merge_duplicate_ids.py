@@ -64,9 +64,10 @@ def test_a_local_duplicate_id_is_refused_and_an_approved_finding_kept(case_dir):
 def test_an_incoming_duplicate_id_is_refused(case_dir, key):
     """Before, the second copy merged as an update over the first (when its
     timestamp is newer): added 1, updated 1."""
-    copies = [{"id": "X-a-001", "description": "first", "staged": OLD},
-              {"id": "X-a-001", "description": "second", "staged": NEW}]  # fmt: skip
-    _refused(case_dir, {key: copies}, f"bundle's {key}", "X-a-001")
+    dup = "T-a-001" if key == "timeline" else "X-a-001"  # an event's id names its kind
+    copies = [{"id": dup, "description": "first", "staged": OLD},
+              {"id": dup, "description": "second", "staged": NEW}]  # fmt: skip
+    _refused(case_dir, {key: copies}, f"bundle's {key}", dup)
 
 
 def test_a_duplicate_in_one_list_writes_neither_file(case_dir):
