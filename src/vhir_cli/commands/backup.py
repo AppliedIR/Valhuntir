@@ -160,11 +160,11 @@ def _create_backup(args, identity: dict) -> None:
     if snap_info.get("error"):
         print(
             f"\nWARNING: OpenSearch snapshot failed: {snap_info['error']}\n"
-            "Backup completed without OpenSearch indices.\n"
-            "Re-run setup-opensearch.sh to enable snapshot support:\n"
-            "  cd opensearch-mcp && ./scripts/setup-opensearch.sh",
+            "Backup completed without OpenSearch indices.",
             file=sys.stderr,
         )
+        if _snapshot_setup_error(snap_info["error"]):
+            print(_snapshot_setup_hint(), file=sys.stderr)
 
     # Trailing newline after progress output
     print()
@@ -1106,6 +1106,36 @@ def _index_scope(case_dir: Path, case_id: str) -> str:
 
 class _NothingToSnapshot(RuntimeError):
     """The case has no indices: nothing to include, which isn't a failure."""
+
+
+def _snapshot_setup_error(error: str) -> bool:
+    """The cluster can't write snapshots to this box's folder (path.repo, its mount, its owner)."""
+    return any(
+        s in error
+        for s in (
+            "path.repo",
+            "repository_exception",
+            "repository_verification_exception",
+            "didn't write the snapshot into",
+        )
+    ) or ("Permission denied" in error and str(_SNAPSHOTS_DIR) in error)
+
+
+def _snapshot_setup_hint() -> str:
+    from vhir_cli.commands.update import _resolve_opensearch_mcp_repo
+
+    repo = _resolve_opensearch_mcp_repo(Path.home() / ".vhir" / "src" / "sift-mcp")
+    script = (
+        repo / "scripts" / "setup-opensearch.sh"
+        if repo
+        else "<your opensearch-mcp folder>/scripts/setup-opensearch.sh"
+    )
+    return (
+        "OpenSearch on this box isn't set up for snapshots. To set it up, run:\n"
+        f"  bash {script}\n"
+        "It recreates the vhir-opensearch container; its indexed data is kept.\n"
+        "Then run the backup again."
+    )
 
 
 def _create_opensearch_snapshot(
