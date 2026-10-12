@@ -169,7 +169,20 @@ def _create_backup(args, identity: dict) -> None:
     # Trailing newline after progress output
     print()
 
-    print(f"Backup complete: {result['backup_path']}")
+    # A part that was asked for and didn't happen fails the run; the files
+    # backup is kept, valid without it
+    missing = [
+        part
+        for part, gone in (
+            ("its OpenSearch indices", include_opensearch and snap_info.get("error")),
+            ("its 0.6 approval records", result.get("ledger_copy_failed")),
+        )
+        if gone
+    ]
+    if missing:  # the headline says so: stdout is what a script or an AI reads
+        print(f"Backup PARTIAL: {result['backup_path']} (see the warning above)")
+    else:
+        print(f"Backup complete: {result['backup_path']}")
     print(f"  Files: {result['file_count']}")
     print(f"  Size:  {human_size(result['total_bytes'])}")
     if result.get("includes_opensearch"):
@@ -194,16 +207,6 @@ def _create_backup(args, identity: dict) -> None:
     print("enrol with `vhir config --setup-password`; the signed approvals keep")
     print("verifying through the public keys they carry.")
 
-    # A part that was asked for and didn't happen fails the run; the files
-    # backup is kept, valid without it
-    missing = [
-        part
-        for part, gone in (
-            ("its OpenSearch indices", include_opensearch and snap_info.get("error")),
-            ("its 0.6 approval records", result.get("ledger_copy_failed")),
-        )
-        if gone
-    ]
     if missing:
         print(
             f"Error: PARTIAL backup: {result['backup_path']} is complete without "
@@ -596,18 +599,19 @@ def _verify_backup(backup_path: Path) -> bool:
     missing_count = 0
     total = len(files)
 
+    problems: list[str] = []  # shown after the verdict line
     for i, entry in enumerate(files, 1):
         rel_path = entry["path"]
         expected_hash = entry["sha256"]
         fpath = backup_path / rel_path
 
         if not fpath.exists():
-            print(f"  MISSING: {rel_path}")
+            problems.append(f"  MISSING: {rel_path}")
             missing_count += 1
         else:
             actual_hash = sha256_file(fpath)
             if actual_hash != expected_hash:
-                print(f"  MISMATCH: {rel_path}")
+                problems.append(f"  MISMATCH: {rel_path}")
                 mismatch_count += 1
             else:
                 ok_count += 1
@@ -617,27 +621,33 @@ def _verify_backup(backup_path: Path) -> bool:
     if total:
         print()
 
-    print(f"\nVerification: {ok_count} OK", end="")
+    counts = f"Files checked: {ok_count} OK"  # a count, not the verdict
     if mismatch_count:
-        print(f", {mismatch_count} MISMATCH", end="")
+        counts += f", {mismatch_count} MISMATCH"
     if missing_count:
-        print(f", {missing_count} MISSING", end="")
-    print()
+        counts += f", {missing_count} MISSING"
 
-    _print_skipped(manifest.get("skipped"))
+    failed = ""
     if mismatch_count or missing_count:
-        print("FAILED: backup integrity check failed")
-        return False
-    if manifest.get("includes_opensearch") and not any(
+        failed = "FAILED: backup integrity check failed"
+    elif manifest.get("includes_opensearch") and not any(
         re.fullmatch(r"opensearch-snapshot/index-\d+", e["path"]) for e in files
     ):
-        print(
+        failed = (
             "FAILED: the backup says it holds the case's OpenSearch indices, but "
             "its opensearch-snapshot has no index-N file, so they can't be "
             "restored (restore --skip-opensearch still restores its files)"
         )
+    if failed:  # the verdict first, then what it rests on
+        print(f"\n{failed}")
+        for line in problems:
+            print(line)
+        print(counts)
+        _print_skipped(manifest.get("skipped"))
         return False
 
+    print(f"\n{counts}")
+    _print_skipped(manifest.get("skipped"))
     print("PASSED: all files verified")
     return True
 
