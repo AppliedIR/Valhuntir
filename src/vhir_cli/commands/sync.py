@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    bundle_too_deep,
     export_bundle,
     get_case_dir,
     import_bundle,
@@ -78,6 +79,9 @@ def cmd_merge(args, identity: dict) -> None:
     try:
         with open(input_file) as f:
             bundle = json.load(f)
+    except RecursionError:  # too deep to decode: refused by name, nothing read
+        print(f"Merge failed: {bundle_too_deep()['message']}", file=sys.stderr)
+        sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"Bundle file contains invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)

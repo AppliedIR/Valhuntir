@@ -247,3 +247,43 @@ def test_vhir_merge_says_merge_failed_and_exits_1(case, tmp_path, capsys):
     refusal = msg("timeline", "item 0 isn't an object")
     assert (e.value.code, out, err) == (1, "", f"Merge failed: {refusal}\n")
     assert files(case) == before
+
+
+# --- a bundle too deep to decode ----------------------------------------------
+
+TOO_DEEP = {"status": "error", "message": (
+    "The bundle nests deeper than 100 levels; nothing was merged. "
+    "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
+
+
+def deep_bundle_text(levels: int) -> str:
+    """A bundle whose finding holds `levels` nested lists, written as text:
+    deep enough, json can't build it, so it can't be made with json.dumps."""
+    finding = json.dumps(NEW_F)[:-1] + ', "x": ' + "[" * levels + "]" * levels + "}"
+    return '{"case_id": "INC-C", "examiner": "carol", "findings": [' + finding + "]}"
+
+
+def test_bundle_too_deep_is_the_named_refusal():
+    assert cio.bundle_too_deep() == TOO_DEEP
+
+
+@pytest.mark.parametrize("levels", [2000, 100_000])
+def test_vhir_merge_refuses_a_bundle_too_deep_to_decode_by_name(
+    case, tmp_path, capsys, levels
+):
+    path = tmp_path / "bundle.json"
+    path.write_text(deep_bundle_text(levels))
+    before = files(case)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        cmd_merge(argparse.Namespace(case=None, file=str(path)), {"examiner": "bob"})
+    out, err = capsys.readouterr()
+    assert (e.value.code, out, err) == (1, "", f"Merge failed: {TOO_DEEP['message']}\n")
+    assert files(case) == before
+
+
+def test_vhir_merge_still_merges_a_bundle_100_levels_deep(case, tmp_path, capsys):
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps({"case_id": "INC-C", "findings": [nested(NEW_F, 100)]}))
+    cmd_merge(argparse.Namespace(case=None, file=str(path)), {"examiner": "bob"})
+    assert "F-carol-001" in (case / "findings.json").read_text()
