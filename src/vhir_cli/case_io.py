@@ -158,15 +158,11 @@ def case_lines(path):
     return _capped_lines(os.fdopen(_open_regular_fd(path, log=True), "rb"), path)
 
 
-def read_case_file(path) -> bytes:
-    """A case log's bytes, read as `case_lines` reads it."""
-    return b"".join(case_lines(path))
-
-
 def read_case_document(path) -> bytes:
     """A case document's bytes (findings.json, timeline.json, iocs.json,
     keys.json), checked as a log is and read whole in one read, never split
-    into lines: up to DOC_CAP, by its size when opened and as it is read."""
+    into lines: up to DOC_CAP, by its size when opened and as it is read. A
+    log is never read whole: it is read with `case_lines`, a line at a time."""
     with os.fdopen(_open_regular_fd(path, log=True, budget=DOC_CAP), "rb") as f:
         data = f.read(DOC_CAP + 1)
     if len(data) > DOC_CAP:  # it grew while read

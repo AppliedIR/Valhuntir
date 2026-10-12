@@ -380,3 +380,96 @@ def test_a_wintools_log_of_crlf_lines_reads_as_its_lf_twin(tmp_path):
     assert (
         len(read[b"\n"][1]) == 199 and "wintools-tester-20261012-001" in read[b"\n"][0]
     )
+
+
+# --- the 0.6 sources: read a line at a time, never joined ---------------------
+
+_LEGACY_PEAK = """
+import json, resource, sys
+from pathlib import Path
+from vhir_cli import ledger_verify as lv, verification
+case, which = Path(sys.argv[1]), sys.argv[2]
+verification.VERIFICATION_DIR = case.parent / "box"
+r = lv.Result(case_id="c", case_id_source="test")
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+counted, uncounted, problems = lv._legacy("c", case, {}, r)
+grew = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) // 1024
+print(json.dumps({"counted": counted, "grew_mib": grew, "sources": len(r.sources)}))
+"""
+_SOURCES = {"box 0.6 file": "box/c.jsonl", "0.6 copy": "case/ledger/legacy-1.jsonl",
+            "0.6 close copy": "case/verification.jsonl"}  # fmt: skip
+
+
+@POSIX
+@pytest.mark.parametrize("source", sorted(_SOURCES))
+def test_a_0_6_source_padded_with_newlines_is_read_a_line_at_a_time(tmp_path, source):
+    """One 0.6 record and 16 MiB of newlines: the same record comes out, and
+    the read holds no more than a line (a whole read held it all, then millions
+    of tiny lines)."""
+    import subprocess
+    import sys
+
+    record = {
+        "finding_id": "F-tester-001",
+        "action": "APPROVED",
+        "ts": "2026-01-01T00:00:00Z",
+    }
+    path = tmp_path / _SOURCES[source]
+    path.parent.mkdir(parents=True)
+    (tmp_path / "case").mkdir(exist_ok=True)
+    path.write_bytes(json.dumps(record).encode() + b"\n" + b"\n" * (16 << 20))
+    p = subprocess.run([sys.executable, "-c", _LEGACY_PEAK, str(tmp_path / "case"), source],
+                       capture_output=True, text=True, timeout=120)  # fmt: skip
+    assert p.returncode == 0, p.stderr[-500:]
+    got = json.loads(p.stdout)
+    assert got["counted"] == {"F-tester-001": [record]} and got["sources"] == 1
+    assert got["grew_mib"] <= 32, got["grew_mib"]
+
+
+def test_a_genesis_prefix_reads_as_a_whole_read_did_at_every_cut(tmp_path):
+    """The prefix a genesis froze, cut at every byte of a source (inside a
+    line, at its end, in a CRLF), holds the records a whole read of those
+    bytes held, and matches by the same hash."""
+    import hashlib
+    from types import SimpleNamespace
+
+    from vhir_cli import ledger_verify, verification
+
+    lines = [json.dumps({"finding_id": f"F-tester-00{n}", "action": "APPROVED"}).encode()
+             for n in (1, 2, 3)]  # fmt: skip
+    data = lines[0] + b"\n" + lines[1] + b"\r\n" + b"  \n" + lines[2] + b"\n"
+    case = tmp_path / "case"
+    (case / "ledger").mkdir(parents=True)
+    (case / "ledger" / "legacy-x.jsonl").write_bytes(data)
+
+    def whole_read(n):  # the read before this change: the bytes held, then split
+        held = data[:n]
+        out = []
+        for raw in held.splitlines():
+            text = raw.strip()
+            try:
+                obj = json.loads(text) if text else None
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and obj.get("finding_id"):
+                out.append(obj)
+        return {o["finding_id"]: [o] for o in out}
+
+    old = verification.VERIFICATION_DIR
+    verification.VERIFICATION_DIR = tmp_path / "box"
+    try:
+        for n in range(1, len(data) + 1):
+            genesis = {
+                "legacy_sha256": hashlib.sha256(data[:n]).hexdigest(),
+                "legacy_bytes": n,
+            }
+            chains = {
+                "x": SimpleNamespace(
+                    lines=[SimpleNamespace(seq=1, obj={"genesis": genesis})]
+                )
+            }
+            result = ledger_verify.Result(case_id="c", case_id_source="test")
+            counted, _, problems = ledger_verify._legacy("c", case, chains, result)
+            assert problems == [] and counted == whole_read(n), n
+    finally:
+        verification.VERIFICATION_DIR = old
