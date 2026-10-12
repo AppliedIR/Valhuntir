@@ -790,6 +790,17 @@ def _at_or_before(ts: object, end: str) -> bool:
     return value <= bound
 
 
+def _changed_at(item: dict) -> object:
+    """When this case last changed the item: modified_at, else staged, else
+    (an imported copy carries neither) when it came in."""
+    imp = item.get("imported_from")
+    return (
+        item.get("modified_at")
+        or item.get("staged")
+        or (imp.get("imported_at", "") if isinstance(imp, dict) else "")
+    )
+
+
 def export_bundle(case_dir: Path, since: str = "") -> dict:
     """Export findings + timeline as JSON for sharing.
 
@@ -805,16 +816,8 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
     timeline = load_timeline(case_dir)
 
     if since:
-        findings = [
-            f
-            for f in findings
-            if _at_or_after(f.get("modified_at", f.get("staged", "")), since)
-        ]
-        timeline = [
-            t
-            for t in timeline
-            if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
-        ]
+        findings = [f for f in findings if _at_or_after(_changed_at(f), since)]
+        timeline = [t for t in timeline if _at_or_after(_changed_at(t), since)]
 
     from vhir_cli import case_copies
 
@@ -847,7 +850,6 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         "case_id": str(bundle.get("case_id") or ""),
         "examiner": str(bundle.get("examiner") or ""),
         "exported_at": str(bundle.get("exported_at") or ""),
-        "imported_at": datetime.now(timezone.utc).isoformat(),
     }
     # Host identity is this case's own: another case's machine ids and keys
     # never come in with its findings and timeline items.
@@ -864,6 +866,7 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
 
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
+    writes: list = []  # both merged in memory first: a failure writes neither
 
     # A bundle's chains are never added: they are data, and its keys and
     # heads anchors (decisions don't travel by import; restore carries them).
@@ -872,6 +875,9 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     # One case-lock span around both merges and their saves, as every writer
     # of the case files: a decision committed meanwhile can't be overwritten.
     with ledger.case_lock(case_id_of(case_dir)):
+        # stamped once the lock is held: an import that waited for it stores
+        # its items after this time, never before it (export --since reads it)
+        origin["imported_at"] = datetime.now(timezone.utc).isoformat()
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
         # So is an id held twice, in a local file or the bundle: the merge would
@@ -902,12 +908,14 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                 return _duplicates_refused(filename, duplicated)
         if "findings" in bundle:
             findings_result = _merge_items(
-                case_dir, "findings.json", bundle["findings"], "id", origin
+                case_dir, "findings.json", bundle["findings"], "id", origin, writes
             )
         if "timeline" in bundle:
             timeline_result = _merge_items(
-                case_dir, "timeline.json", bundle["timeline"], "id", origin
+                case_dir, "timeline.json", bundle["timeline"], "id", origin, writes
             )
+        for path, local in writes:
+            _protected_write(path, json.dumps(local, indent=2, default=str))
 
     return {
         "status": "merged",
@@ -1050,10 +1058,12 @@ def _merge_items(
     filename: str,
     incoming: list[dict],
     id_field: str,
-    origin: dict | None = None,
+    origin: dict | None,
+    writes: list,
 ) -> dict:
     """Merge incoming items into a local JSON file using last-write-wins.
-    With `origin` (an import), each item added or updated is stamped with it."""
+    With `origin` (an import), each item added or updated is stamped with it.
+    The merged list isn't written: (file, list) is appended to `writes`."""
     local_file = case_dir / filename
     local: list[dict] = []
     if local_file.exists():
@@ -1132,7 +1142,7 @@ def _merge_items(
             else:
                 skipped += 1
 
-    _protected_write(local_file, json.dumps(local, indent=2, default=str))
+    writes.append((local_file, local))
     return {
         "added": added,
         "updated": updated,
