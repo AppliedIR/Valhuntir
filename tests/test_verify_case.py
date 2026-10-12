@@ -1072,6 +1072,47 @@ def test_a_finding_reusing_a_signed_timeline_id_fails_the_case(case, steve):
     assert approved_view(case)["findings"] == []
 
 
+@pytest.mark.parametrize(
+    "kind,file,item,bundle",
+    [
+        ("timeline", "timeline",
+         {"id": "T-steve-001", "timestamp": "2026-10-01T00:00:00Z", "description": "e",
+          "status": "DRAFT"},
+         {"findings": [{"id": "T-steve-001", "title": "FORGED", "status": "DRAFT"}]}),
+        ("finding", "findings", _finding(),
+         {"timeline": [{"id": "F-steve-001", "timestamp": "2026-10-01T00:00:00Z",
+                        "description": "FORGED", "status": "DRAFT"}]}),
+        ("ioc", "iocs",
+         {"id": "IOC-steve-001", "value": "10.0.0.5", "type": "ipv4-addr", "status": "DRAFT"},
+         {"findings": [{"id": "IOC-steve-001", "title": "FORGED", "status": "DRAFT"}]}),
+    ],
+    ids=["peer-finding-on-an-approved-event", "peer-event-on-an-approved-finding",
+         "peer-finding-on-an-approved-ioc"],
+)  # fmt: skip
+def test_a_peer_bundle_reusing_an_approved_items_id_as_another_kind_is_refused(
+    case, steve, kind, file, item, bundle
+):
+    """The bundle is refused, so the approved item stays VALID and the case
+    verifies."""
+    from vhir_cli.case_io import import_bundle
+
+    _save(case, **{file: [item]})
+    _sign(case, steve, [(item, kind, "approve", "APPROVED", None)])
+    _save(
+        case,
+        **{file: [dict(item, status="APPROVED", approved_by="steve", approved_at=AT)]},
+    )
+    assert _status(verify_case(case), item["id"]) == "VALID"
+    result = import_bundle(case, {"case_id": "C9", "examiner": "bob", **bundle})
+    assert result["status"] == "error"
+    after = verify_case(case)
+    assert (after.failures, after.exit_code, _status(after, item["id"])) == (
+        [],
+        0,
+        "VALID",
+    )
+
+
 def test_nothing_is_shown_as_approved_while_the_case_fails(case, steve):
     _three(case, steve)
     lines = _chain_lines()

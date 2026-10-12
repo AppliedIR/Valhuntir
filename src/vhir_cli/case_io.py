@@ -890,17 +890,38 @@ def _too_deep(item: object, limit: int = _MAX_ITEM_DEPTH) -> bool:
     return False
 
 
-def _unmergeable(items: object) -> str:
-    """Why the merge can't take a bundle's findings or timeline, or "": it
-    takes a list of objects, each id text when it's set, none nested deeper
-    than the writers can store."""
+def id_kind(item_id: str) -> str:
+    """The kind an item's id names, as approval, review and the portal read
+    it: an id starting IOC- is an IOC's, T- a timeline event's, any other a
+    finding's."""
+    if item_id.startswith("IOC-"):
+        return "ioc"
+    return "timeline" if item_id.startswith("T-") else "finding"
+
+
+_KIND_FAULTS = {
+    "timeline": "has a timeline event's id (it starts with T-)",
+    "ioc": "has an IOC's id (it starts with IOC-)",
+}
+
+
+def _unmergeable(items: object, kind: str) -> str:
+    """Why the merge can't take a bundle's findings or timeline (`kind`:
+    finding or timeline), or "": it takes a list of objects, each id text when
+    it's set and naming that kind, none nested deeper than the writers can
+    store."""
     if not isinstance(items, list):
         return "isn't a list"
     for n, item in enumerate(items):
         if not isinstance(item, dict):
             return f"item {n} isn't an object"
-        if not isinstance(item.get("id"), (str, type(None))):
+        item_id = item.get("id")
+        if not isinstance(item_id, (str, type(None))):
             return f"item {n} has an id that isn't text"
+        if item_id and id_kind(item_id) != kind:  # approval would read another kind
+            if kind == "timeline":
+                return f"item {n} has an id that doesn't start with T-"
+            return f"item {n} {_KIND_FAULTS[id_kind(item_id)]}"
         if _too_deep(item):
             return f"item {n} nests deeper than {_MAX_ITEM_DEPTH} levels"
     return ""
@@ -918,8 +939,9 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
-    for key in ("findings", "timeline"):  # refused by name, before the case is touched
-        if key in bundle and (why := _unmergeable(bundle[key])):
+    for key, kind in (("findings", "finding"), ("timeline", "timeline")):
+        # refused by name, before the case is touched
+        if key in bundle and (why := _unmergeable(bundle[key], kind)):
             return {"status": "error", "message": (
                 f"The bundle's {key} {why}; nothing was merged. "
                 "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
