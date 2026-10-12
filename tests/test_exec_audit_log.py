@@ -21,7 +21,9 @@ from vhir_cli.commands import execute
 tty = MagicMock(); tty.readline.return_value = "y\n"
 def run(cmd, **kw):
     Path(sys.argv[2]).write_text("ran")
-    out = "r/r 5-128-1:\tfile-one.txt\n" * (1000 if os.environ.get("STDOUT_CLOSED") else 1)
+    size = os.environ.get("STDOUT_SIZE")  # with a closed stdout: past the buffer, short or none
+    out = {"big": "r/r 5-128-1:\tfile-one.txt\n" * 1000, "short": "x" * 30, "empty": ""}.get(
+        size, "r/r 5-128-1:\tfile-one.txt\n")
     return subprocess.CompletedProcess(cmd, 0, out, "")
 class A: cmd = ["fakefls", "-r", "image.dd"]; purpose = "triage"; case = None
 with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execute.subprocess, "run", run):
@@ -32,7 +34,7 @@ NOT_RUN = "Not run: vhir exec can't write this command's audit entry ({}: {}). M
 RAN = "WARNING: the command ran, but its audit entry couldn't be written ({}: {}), so it is not in the case's audit trail."
 
 
-def _exec(case, fsize=None, stdout_closed=False):
+def _exec(case, fsize=None, stdout_closed=""):
     mark = case.parent / "ran"
     mark.unlink(missing_ok=True)
 
@@ -43,7 +45,7 @@ def _exec(case, fsize=None, stdout_closed=False):
 
     env = {**os.environ, "VHIR_CASE_DIR": str(case), "PYTHONDONTWRITEBYTECODE": "1"}
     if stdout_closed:
-        env["STDOUT_CLOSED"] = "1"
+        env["STDOUT_CLOSED"], env["STDOUT_SIZE"] = "1", stdout_closed
     p = subprocess.run([sys.executable, "-c", CHILD, "-", str(mark)], env=env, timeout=20,
                        capture_output=True, text=True, preexec_fn=limits)  # fmt: skip
     # the prompt has no newline
@@ -138,11 +140,13 @@ def test_an_audit_folder_that_links_to_another_case_refuses_the_run(case):
     assert (other / "cli-exec.jsonl").read_text() == PRIOR
 
 
-def test_a_reader_that_stops_early_still_hears_the_write_failed(case):
-    """The output goes to a pipe its reader closed (| head): the warning on
-    stderr still says the entry wasn't written, and the exit is 1."""
+@pytest.mark.parametrize("size", ["big", "short", "empty"])
+def test_a_reader_that_stops_early_still_hears_the_write_failed(case, size):
+    """The output goes to a pipe its reader closed (| head): past stdout's
+    buffer, or short enough to sit in it, or none. The warning on stderr
+    still says the entry wasn't written, and the exit is 1."""
     _prior(case)
-    rc, _, err, ran = _exec(case, fsize=len(PRIOR), stdout_closed=True)
+    rc, _, err, ran = _exec(case, fsize=len(PRIOR), stdout_closed=size)
     assert (rc, ran) == (1, True)
     assert err == RAN.format(_log(case), "File too large")
     assert _log(case).read_text() == PRIOR
