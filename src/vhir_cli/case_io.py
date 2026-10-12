@@ -869,6 +869,41 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
     }
 
 
+# the deepest a bundle's item may nest (the item is level 1; each list and
+# object counts): a relay hop adds 2, and every writer must still store it
+_MAX_ITEM_DEPTH = 100
+
+
+def _too_deep(item: object, limit: int = _MAX_ITEM_DEPTH) -> bool:
+    """Whether `item` nests deeper than `limit` levels, counted with an
+    explicit stack, never by recursion, so the check can't hit the limit it
+    guards."""
+    stack = [(item, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return True
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
+    return False
+
+
+def _unmergeable(items: object) -> str:
+    """Why the merge can't take a bundle's findings or timeline, or "": it
+    takes a list of objects, each id text when it's set, none nested deeper
+    than the writers can store."""
+    if not isinstance(items, list):
+        return "isn't a list"
+    for n, item in enumerate(items):
+        if not isinstance(item, dict):
+            return f"item {n} isn't an object"
+        if not isinstance(item.get("id"), (str, type(None))):
+            return f"item {n} has an id that isn't text"
+        if _too_deep(item):
+            return f"item {n} nests deeper than {_MAX_ITEM_DEPTH} levels"
+    return ""
+
+
 def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     """Merge incoming bundle into local findings + timeline.
 
@@ -881,6 +916,11 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
+    for key in ("findings", "timeline"):  # refused by name, before the case is touched
+        if key in bundle and (why := _unmergeable(bundle[key])):
+            return {"status": "error", "message": (
+                f"The bundle's {key} {why}; nothing was merged. "
+                "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
     # Where each item comes from (a bare array names no case or examiner)
     origin = {
         "case_id": str(bundle.get("case_id") or ""),
@@ -943,8 +983,10 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
             timeline_result = _merge_items(
                 case_dir, "timeline.json", bundle["timeline"], "id", origin, writes
             )
-        for path, local in writes:
-            _protected_write(path, json.dumps(local, indent=2, default=str))
+        # every file's text first: one that can't be made writes none
+        texts = [(p, json.dumps(v, indent=2, default=str)) for p, v in writes]
+        for path, text in texts:
+            _protected_write(path, text)
 
     return {
         "status": "merged",
