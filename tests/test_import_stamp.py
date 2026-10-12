@@ -182,8 +182,8 @@ def test_an_item_decided_here_is_left_as_it_is(tmp_path):
 
 
 def test_the_same_bundle_imported_twice_keeps_the_same_hash(tmp_path, monkeypatch):
-    """When it was imported isn't content: re-importing leaves a staged
-    review's hash valid."""
+    """Re-importing the same bundle leaves the stored copy as it was, so a
+    staged review's hash stays valid; and when it was imported isn't content."""
     import vhir_cli.case_io as cio
 
     b = _case(tmp_path / "INC-B", "INC-B")
@@ -198,13 +198,13 @@ def test_the_same_bundle_imported_twice_keeps_the_same_hash(tmp_path, monkeypatc
             return cio.datetime(2027, 1, 1, tzinfo=tz)
 
     monkeypatch.setattr(cio, "datetime", Later)
-    import_bundle(b, bundle)
+    result = import_bundle(b, bundle)
+    assert (result["findings"]["updated"], result["findings"]["skipped"]) == (0, 1)
     again = json.loads((b / "findings.json").read_text())[0]
-    assert (
-        again["imported_from"]["imported_at"] != first["imported_from"]["imported_at"]
-    )
-    assert again["content_hash"] == first["content_hash"]
-    assert again["content_hash"] == compute_content_hash(again)
+    assert again == first
+    restamped = {**first, "imported_from": {**first["imported_from"],
+                                            "imported_at": "2027-01-01T00:00:00+00:00"}}  # fmt: skip
+    assert compute_content_hash(restamped) == first["content_hash"]
 
 
 # The same item, and the same digest, pinned in sift's forensic-mcp tests: the

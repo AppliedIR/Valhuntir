@@ -810,6 +810,47 @@ def _at_or_before(ts: object, end: str) -> bool:
     return value <= bound
 
 
+def _changed_at(item: dict) -> object:
+    """When this case last changed the item: modified_at, else staged, else
+    (an imported copy carries neither) when it came in."""
+    imp = item.get("imported_from")
+    return (
+        item.get("modified_at")
+        or item.get("staged")
+        or (imp.get("imported_at", "") if isinstance(imp, dict) else "")
+    )
+
+
+_NO_TIME = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _rev_key(ts: object) -> datetime:
+    """A revision time to compare: a naive one read as UTC; one that isn't a
+    string, or doesn't parse, is no time (the oldest)."""
+    return _utc(ts) or _NO_TIME
+
+
+def _revised_at(item: object) -> object:
+    """When the item's content last changed: its author's modified_at (else
+    staged), found down the imported_from.original chain, or a later edit
+    made on the way (examiner_modifications). A copy's own time is a decision
+    made there, which never travels, so it isn't a revision."""
+    best = ""
+    while isinstance(item, dict):
+        imp = item.get("imported_from")
+        orig = imp.get("original") if isinstance(imp, dict) else None
+        if not isinstance(orig, dict):  # the author's own record
+            own = next((t for t in (item.get("modified_at"), item.get("staged"))
+                        if isinstance(t, str) and t), "")  # fmt: skip
+            return max(best, own, key=_rev_key)
+        mods = item.get("examiner_modifications")
+        for m in mods.values() if isinstance(mods, dict) else ():
+            if isinstance(m, dict) and isinstance(m.get("modified_at"), str):
+                best = max(best, m["modified_at"], key=_rev_key)
+        item = orig
+    return best
+
+
 def export_bundle(case_dir: Path, since: str = "") -> dict:
     """Export findings + timeline as JSON for sharing.
 
@@ -824,23 +865,21 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
 
+    untimed = {}
     if since:
-        findings = [
-            f
-            for f in findings
-            if _at_or_after(f.get("modified_at", f.get("staged", "")), since)
-        ]
-        timeline = [
-            t
-            for t in timeline
-            if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
-        ]
+        # an item with no time at all (imported before 0.6.4) can't be judged:
+        # left out, and counted so the export says so
+        untimed = {k: sum(not _changed_at(i) for i in v)
+                   for k, v in (("findings", findings), ("timeline", timeline))}  # fmt: skip
+        findings = [f for f in findings if _at_or_after(_changed_at(f), since)]
+        timeline = [t for t in timeline if _at_or_after(_changed_at(t), since)]
 
     from vhir_cli import case_copies
 
     # the case's copies first (CopyFailed is an OSError), then carried along
     copied = case_copies.write_case_copies(case_id_of(case_dir), case_dir)
     return {
+        **({"untimed": untimed} if any(untimed.values()) else {}),
         "case_id": meta.get("case_id", ""),
         "examiner": get_examiner(case_dir),
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -848,6 +887,70 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
         "timeline": timeline,
         "ledger": case_copies.bundle_block(case_id_of(case_dir), case_dir, copied),
     }
+
+
+# the deepest a bundle's item may nest (the item is level 1; each list and
+# object counts): a relay hop adds 2, and every writer must still store it
+_MAX_ITEM_DEPTH = 100
+
+
+def _too_deep(item: object, limit: int = _MAX_ITEM_DEPTH) -> bool:
+    """Whether `item` nests deeper than `limit` levels, counted with an
+    explicit stack, never by recursion, so the check can't hit the limit it
+    guards."""
+    stack = [(item, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return True
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
+    return False
+
+
+def bundle_too_deep() -> dict:
+    """The refusal for a bundle json can't decode for its depth (RecursionError,
+    from about 1000 levels): what each reader of a bundle file returns."""
+    return {"status": "error", "message": (
+        f"The bundle nests deeper than {_MAX_ITEM_DEPTH} levels; nothing was merged. "
+        "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
+
+
+def id_kind(item_id: str) -> str:
+    """The kind an item's id names, as approval, review and the portal read
+    it: an id starting IOC- is an IOC's, T- a timeline event's, any other a
+    finding's."""
+    if item_id.startswith("IOC-"):
+        return "ioc"
+    return "timeline" if item_id.startswith("T-") else "finding"
+
+
+_KIND_FAULTS = {
+    "timeline": "has a timeline event's id (it starts with T-)",
+    "ioc": "has an IOC's id (it starts with IOC-)",
+}
+
+
+def _unmergeable(items: object, kind: str) -> str:
+    """Why the merge can't take a bundle's findings or timeline (`kind`:
+    finding or timeline), or "": it takes a list of objects, each id text when
+    it's set and naming that kind, none nested deeper than the writers can
+    store."""
+    if not isinstance(items, list):
+        return "isn't a list"
+    for n, item in enumerate(items):
+        if not isinstance(item, dict):
+            return f"item {n} isn't an object"
+        item_id = item.get("id")
+        if not isinstance(item_id, (str, type(None))):
+            return f"item {n} has an id that isn't text"
+        if item_id and id_kind(item_id) != kind:  # approval would read another kind
+            if kind == "timeline":
+                return f"item {n} has an id that doesn't start with T-"
+            return f"item {n} {_KIND_FAULTS[id_kind(item_id)]}"
+        if _too_deep(item):
+            return f"item {n} nests deeper than {_MAX_ITEM_DEPTH} levels"
+    return ""
 
 
 def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
@@ -862,12 +965,17 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
+    for key, kind in (("findings", "finding"), ("timeline", "timeline")):
+        # refused by name, before the case is touched
+        if key in bundle and (why := _unmergeable(bundle[key], kind)):
+            return {"status": "error", "message": (
+                f"The bundle's {key} {why}; nothing was merged. "
+                "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
     # Where each item comes from (a bare array names no case or examiner)
     origin = {
         "case_id": str(bundle.get("case_id") or ""),
         "examiner": str(bundle.get("examiner") or ""),
         "exported_at": str(bundle.get("exported_at") or ""),
-        "imported_at": datetime.now(timezone.utc).isoformat(),
     }
     # Host identity is this case's own: another case's machine ids and keys
     # never come in with its findings and timeline items.
@@ -884,6 +992,7 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
 
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
+    writes: list = []  # both merged in memory first: a failure writes neither
 
     # A bundle's chains are never added: they are data, and its keys and
     # heads anchors (decisions don't travel by import; restore carries them).
@@ -892,6 +1001,9 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     # One case-lock span around both merges and their saves, as every writer
     # of the case files: a decision committed meanwhile can't be overwritten.
     with ledger.case_lock(case_id_of(case_dir)):
+        # stamped once the lock is held: an import that waited for it stores
+        # its items after this time, never before it (export --since reads it)
+        origin["imported_at"] = datetime.now(timezone.utc).isoformat()
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
         for key, filename in (
@@ -915,12 +1027,16 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                 }
         if "findings" in bundle:
             findings_result = _merge_items(
-                case_dir, "findings.json", bundle["findings"], "id", origin
+                case_dir, "findings.json", bundle["findings"], "id", origin, writes
             )
         if "timeline" in bundle:
             timeline_result = _merge_items(
-                case_dir, "timeline.json", bundle["timeline"], "id", origin
+                case_dir, "timeline.json", bundle["timeline"], "id", origin, writes
             )
+        # every file's text first: one that can't be made writes none
+        texts = [(p, json.dumps(v, indent=2, default=str)) for p, v in writes]
+        for path, text in texts:
+            _protected_write(path, text)
 
     return {
         "status": "merged",
@@ -1030,10 +1146,12 @@ def _merge_items(
     filename: str,
     incoming: list[dict],
     id_field: str,
-    origin: dict | None = None,
+    origin: dict | None,
+    writes: list,
 ) -> dict:
     """Merge incoming items into a local JSON file using last-write-wins.
-    With `origin` (an import), each item added or updated is stamped with it."""
+    With `origin` (an import), each item added or updated is stamped with it.
+    The merged list isn't written: (file, list) is appended to `writes`."""
     local_file = case_dir / filename
     local: list[dict] = []
     if local_file.exists():
@@ -1047,6 +1165,7 @@ def _merge_items(
     updated = 0
     skipped = 0
     protected = 0
+    own = 0
 
     # Protected fields that cannot be smuggled via merge
     _MERGE_PROTECTED_FIELDS = {
@@ -1098,9 +1217,11 @@ def _merge_items(
             if existing.get("status") in ("APPROVED", "REJECTED"):  # decided here
                 protected += 1
                 continue
-            inc_ts = item.get("modified_at", item.get("staged", ""))
-            loc_ts = existing.get("modified_at", existing.get("staged", ""))
-            if _parse_ts(inc_ts) > _parse_ts(loc_ts):
+            if existing.get("created_by"):  # recorded here: a copy never replaces it
+                own += 1
+                continue
+            inc_ts, loc_ts = _revised_at(item), _revised_at(existing)
+            if _rev_key(inc_ts) > _rev_key(loc_ts):
                 idx = next(i for i, x in enumerate(local) if x.get(id_field) == item_id)
                 local[idx] = cleaned
                 local_by_id[item_id] = cleaned
@@ -1108,10 +1229,11 @@ def _merge_items(
             else:
                 skipped += 1
 
-    _protected_write(local_file, json.dumps(local, indent=2, default=str))
+    writes.append((local_file, local))
     return {
         "added": added,
         "updated": updated,
         "skipped": skipped,
         "protected": protected,
+        "own": own,
     }
