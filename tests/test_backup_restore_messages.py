@@ -218,3 +218,18 @@ def test_recovery_never_promises_a_box_ledger_restore():
     from vhir_cli import ledger_verify
 
     assert not any("box ledger" in t for t in ledger_verify.RECOVERY.values())
+
+
+def test_with_opensearch_asked_for_a_case_yaml_that_isnt_utf8_is_named_not_hidden(
+    box, capsys, monkeypatch
+):
+    src = make_case(box)
+    (src / "CASE.yaml").write_bytes(BAD)
+    _reachable_cluster(box, monkeypatch)
+    code, out = vhir(
+        capsys, "backup", "--case", "C-1", box / "out", "--include-opensearch"
+    )
+    assert code == 1
+    assert f"{src / 'CASE.yaml'} isn't UTF-8 text" in out
+    assert "OpenSearch is not available" not in out
+    assert list((box / "out").iterdir()) == []

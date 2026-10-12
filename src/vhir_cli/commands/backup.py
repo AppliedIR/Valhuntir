@@ -24,7 +24,6 @@ from pathlib import Path
 
 from vhir_cli.case_io import (
     CaseError,
-    CaseFileNotRegular,
     _validate_case_id,
     get_case_dir,
     load_case_meta,
@@ -1097,8 +1096,8 @@ def _detect_opensearch(case_dir: Path) -> dict:
             "size_bytes": total_bytes,
             "size_human": human_size(total_bytes),
         }
-    except CaseFileNotRegular:
-        raise  # a bad CASE.yaml is named, never read as no OpenSearch
+    except CaseError:
+        raise  # a bad CASE.yaml (a pipe, not UTF-8) is named, never read as no OpenSearch
     except Exception:
         return {"available": False}
 
