@@ -30,9 +30,11 @@ from vhir_cli import verification
 from .test_backup_restore_cli_legs import (
     _reachable_cluster,
     _within,
+    _without_sift_common,
     backed_up,
     make_case,
     meta,
+    only_backup,
     vhir,
 )
 
@@ -158,3 +160,61 @@ def test_a_recorded_folder_whose_case_yaml_cant_be_read_doesnt_hold_the_case(
     assert code == 0, out
     assert str(old / "CASE.yaml") in out and "Warning" in out
     assert json.loads(paths.read_text())[uuid] == str(case.resolve())
+
+
+# --- texts ---------------------------------------------------------------------
+
+
+def test_a_case_relative_evidence_entry_is_not_called_outside(box, capsys):
+    src = make_case(box)
+    (src / "evidence").mkdir()
+    (src / "evidence" / "x.bin").write_bytes(b"x")
+    (src / "evidence.json").write_text(
+        json.dumps({"files": [{"path": "evidence/x.bin", "sha256": "0" * 64}]})
+    )
+    assert (
+        vhir(capsys, "backup", "--case", "C-1", box / "out", "--include-evidence")[0]
+        == 0
+    )
+    target = box / "cases" / "R"
+    code, out = vhir(
+        capsys, "restore", only_backup(box), "--target", target, "--skip-opensearch"
+    )
+    assert code == 0, out
+    assert "still registered outside" not in out
+
+
+def test_without_sift_common_the_copy_note_doesnt_send_the_examiner_to_new_identity(
+    box, capsys, monkeypatch
+):
+    make_case(box)
+    bk = backed_up(box, capsys)
+    _without_sift_common(monkeypatch)
+    target = box / "cases" / "C-1-copy"
+    code, out = vhir(capsys, "restore", bk, "--target", target, "--skip-opensearch")
+    assert code == 0, out
+    assert "Restored beside the original" in out
+    assert "vhir case new-identity" not in out
+
+
+def test_the_manifest_names_approvals_jsonl_only_when_the_backup_holds_it(box, capsys):
+    make_case(box)
+    bk = backed_up(box, capsys)
+    notes = json.loads((bk / "backup-manifest.json").read_text()).get("notes", [])
+    assert not (bk / "approvals.jsonl").exists()
+    assert not any("approvals.jsonl" in n for n in notes)
+
+
+def test_a_case_s_approvals_jsonl_keeps_its_note(box, capsys):
+    src = make_case(box)
+    (src / "approvals.jsonl").write_text("{}\n")
+    bk = backed_up(box, capsys)
+    notes = json.loads((bk / "backup-manifest.json").read_text()).get("notes", [])
+    assert (bk / "approvals.jsonl").exists()
+    assert any("approvals.jsonl" in n for n in notes)
+
+
+def test_recovery_never_promises_a_box_ledger_restore():
+    from vhir_cli import ledger_verify
+
+    assert not any("box ledger" in t for t in ledger_verify.RECOVERY.values())

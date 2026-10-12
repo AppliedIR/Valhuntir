@@ -179,7 +179,7 @@ RECOVERY = {
         "CHAIN_BROKEN"
     ),
     "LEDGER_MISSING": (
-        "Restore the box ledger or the case's chain copies from a backup; otherwise "
+        "Restore the case's chain copies from a backup; otherwise "
         "`vhir approve --reattest`"
     ),
     "KEY_CHANGED": (

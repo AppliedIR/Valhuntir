@@ -559,7 +559,12 @@ def _create_backup_data(
         "includes_opensearch": bool(
             opensearch_snapshot_info and not opensearch_snapshot_info.get("error")
         ),
-        "notes": ["approvals.jsonl is an archival copy, not used for verification"],
+        # the archival note only where the backup holds the file
+        "notes": [
+            "approvals.jsonl is an archival copy, not used for verification"
+            for e in manifest_files
+            if e["path"] == "approvals.jsonl"
+        ],
         # copied or written in one hold of the writers' lock: the case's state
         # at one moment; every other file was copied after it
         "point_in_time": {"files": sorted(point_in_time)},
@@ -1475,6 +1480,8 @@ def _repoint_evidence(
                 absent += os.path.normpath(rel) not in restored
             break
         else:
+            if not os.path.isabs(path):  # case-relative: inside the restored case
+                continue
             try:
                 Path(path).relative_to(new_root)
             except ValueError:
@@ -2286,8 +2293,8 @@ def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
     if module is None:
         print(
             "  Restored beside the original: this copy still has the original's "
-            "identity. Give it its own with `vhir case new-identity` before "
-            "using it.",
+            "identity, so both folders read the same indices. Giving it its own "
+            "needs the SIFT workstation's sift-common package.",
             file=sys.stderr,
         )
         return None
