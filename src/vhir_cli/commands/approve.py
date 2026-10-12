@@ -625,51 +625,34 @@ def _apply_edit(item: dict, identity: dict) -> None:
             if key in item:
                 editable[key] = item[key]
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
-        tmpfile = f.name
-
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+    tmpfile = f.name
     try:
-        subprocess.run([editor, tmpfile], check=True, timeout=3600)
-    except subprocess.TimeoutExpired:
-        print("  Editor timed out after 1 hour.", file=sys.stderr)
+        # written in the try, so a failed dump removes it too; closed for the
+        # editor, which reopens it by name
+        with f:
+            yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
         try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except subprocess.CalledProcessError as e:
-        print(f"  Editor exited with error: {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except OSError as e:
-        print(f"  Failed to launch editor '{editor}': {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
+            subprocess.run([editor, tmpfile], check=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            print("  Editor timed out after 1 hour.", file=sys.stderr)
+            return
+        except subprocess.CalledProcessError as e:
+            print(f"  Editor exited with error: {e}", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"  Failed to launch editor '{editor}': {e}", file=sys.stderr)
+            return
 
-    try:
-        with open(tmpfile) as f:
-            edited = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        print(f"  Edited file contains invalid YAML: {e}", file=sys.stderr)
         try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except OSError as e:
-        print(f"  Failed to read edited file: {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
+            with open(tmpfile) as f:
+                edited = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            print(f"  Edited file contains invalid YAML: {e}", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"  Failed to read edited file: {e}", file=sys.stderr)
+            return
     finally:
         try:
             os.unlink(tmpfile)

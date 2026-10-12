@@ -705,10 +705,12 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     return withdrawals
 
 
-def load_audit_index(case_dir: Path) -> dict[str, dict]:
+def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str, dict]:
     """Scan audit/*.jsonl and build {audit_id: {**entry, "_source_file": filename}}.
 
-    Used by review --detail to resolve evidence chains.
+    Used by review --detail to resolve evidence chains. Pass `wanted` to keep
+    only those audit_ids, so the index stays bounded by what the caller
+    resolves rather than by the size of the audit trail.
     """
     audit_dir = case_dir / "audit"
     index: dict[str, dict] = {}
@@ -724,7 +726,7 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
                     try:
                         entry = json.loads(line)
                         eid = entry.get("audit_id", "")
-                        if eid:
+                        if eid and (wanted is None or eid in wanted):
                             entry["_source_file"] = jsonl_file.name
                             index[eid] = entry
                     except json.JSONDecodeError:
@@ -1006,17 +1008,22 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         origin["imported_at"] = datetime.now(timezone.utc).isoformat()
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
+        # So is an id held twice, in a local file or the bundle: the merge would
+        # compare against one copy and write over the other (an APPROVED one too).
         for key, filename in (
             ("findings", "findings.json"),
             ("timeline", "timeline.json"),
         ):
             local_file = case_dir / filename
-            if key not in bundle or not local_file.exists():
+            if key not in bundle:
+                continue
+            if duplicated := _duplicate_ids(bundle[key]):
+                return _duplicates_refused(f"The bundle's {key}", duplicated)
+            if not local_file.exists():
                 continue
             try:
                 text = local_file.read_text()
-                if text.strip():
-                    json.loads(text)
+                local = json.loads(text) if text.strip() else []
             except (OSError, ValueError) as e:
                 return {
                     "status": "error",
@@ -1025,6 +1032,8 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                         "Fix or restore it, then merge again."
                     ),
                 }
+            if duplicated := _duplicate_ids(local):
+                return _duplicates_refused(filename, duplicated)
         if "findings" in bundle:
             findings_result = _merge_items(
                 case_dir, "findings.json", bundle["findings"], "id", origin, writes
@@ -1043,6 +1052,39 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         "findings": findings_result,
         "timeline": timeline_result,
         "ledger": anchors,
+    }
+
+
+def _duplicate_ids(items: object) -> list:
+    """The ids held more than once, keyed as the merge keys them (raw values).
+    Non-dict items and an empty or unhashable id are left to the merge."""
+    seen: set = set()
+    duplicated: dict = {}  # an ordered set: first-seen order, constant-time lookups
+    for item in items if isinstance(items, list) else []:
+        item_id = item.get("id") if isinstance(item, dict) else None
+        try:
+            if item_id and item_id in seen:
+                duplicated[item_id] = None
+            seen.add(item_id)
+        except TypeError:  # unhashable
+            continue
+    return list(duplicated)
+
+
+def _duplicates_refused(where: str, duplicated: list) -> dict:
+    # the ids are case or bundle data: one line, their controls shown as "?",
+    # each capped
+    from vhir_cli.display import one_line
+
+    shown = [one_line(i) for i in duplicated[:5]]
+    named = ", ".join(i if len(i) <= 80 else i[:80] + "…" for i in shown)
+    more = f" and {len(duplicated) - 5} more" if len(duplicated) > 5 else ""
+    return {
+        "status": "error",
+        "message": (
+            f"{where} holds an id more than once ({named}{more}); nothing was merged. "
+            "Keep one item per id, then merge again."
+        ),
     }
 
 

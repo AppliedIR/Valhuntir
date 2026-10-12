@@ -56,7 +56,8 @@ def cmd_exec(args, identity: dict) -> None:
     # Pre-allocate evidence ID
     audit_id = _next_audit_id(case_dir, examiner)
 
-    # Execute
+    # Execute. Once it has started, the command is audited whatever happens:
+    # output that isn't UTF-8 is kept as \x escapes, not raised on.
     start = time.monotonic()
     try:
         result = subprocess.run(
@@ -64,6 +65,7 @@ def cmd_exec(args, identity: dict) -> None:
             shell=False,
             capture_output=True,
             text=True,
+            errors="backslashreplace",
             timeout=300,
             cwd=str(case_dir),
         )
@@ -80,16 +82,14 @@ def cmd_exec(args, identity: dict) -> None:
         stderr = f"Failed to execute command: {e}"
         if e.errno == 2:
             stderr = f"Command not found: {cmd_parts[0]}"
+    except BaseException as e:  # interrupted or failed while it ran: run() killed it
+        how = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
+        _log_exec(case_dir, command_str, purpose, -1, "", f"{how} ({type(e).__name__})",
+                  examiner, audit_id, (time.monotonic() - start) * 1000)  # fmt: skip
+        raise
     elapsed_ms = (time.monotonic() - start) * 1000
 
-    # Display output
-    if stdout:
-        print(f"\n--- stdout ---\n{stdout[:10000]}")
-    if stderr:
-        print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
-    print(f"\nExit code: {exit_code}")
-
-    # Write audit entry
+    # Write audit entry, before showing the output: printing it can fail
     _log_exec(
         case_dir,
         command_str,
@@ -101,6 +101,13 @@ def cmd_exec(args, identity: dict) -> None:
         audit_id,
         elapsed_ms,
     )
+
+    # Display output
+    if stdout:
+        print(f"\n--- stdout ---\n{stdout[:10000]}")
+    if stderr:
+        print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
+    print(f"\nExit code: {exit_code}")
     print(f"Audit ID: {audit_id}")
 
 
