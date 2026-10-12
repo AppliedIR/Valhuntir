@@ -3,8 +3,12 @@
 `vhir backup --include-opensearch` runs through the real command line with a
 stand-in cluster. When the cluster can't write snapshots to this box's
 folder (path.repo empty, the folder not writable), the warning is followed
-by the setup script's absolute path; other failures (a PARTIAL snapshot, a
-refused connection) get the warning only. The 500's text is the one a
+by the setup script's absolute path, quoted for the shell; other failures (a
+PARTIAL snapshot, a refused connection) get the warning only. A cause setup
+can't change is named instead of the setup hint: an examiner whose uid isn't
+OpenSearch's (1000), and VHIR_SNAPSHOTS_DIR set to a folder OpenSearch doesn't
+write; a verification exception gets the hint plus what's left when setup has
+run. The 500's text is the one a
 3.5.0 cluster gives with an empty path.repo; other values are synthetic.
 """
 
@@ -36,7 +40,14 @@ class FakeCluster:
             delete_repository=lambda **k: None,
             create=lambda **k: {"accepted": True},
             status=lambda **k: {"snapshots": [{"state": "PARTIAL"}]},
-            get=lambda **k: {"snapshots": [{"state": "PARTIAL", "indices": []}]},
+            get=lambda **k: {
+                "snapshots": [
+                    {
+                        "state": "SUCCESS" if mode == "elsewhere" else "PARTIAL",
+                        "indices": [],
+                    }
+                ]
+            },
         )
         self.cat = SimpleNamespace(
             indices=lambda **k: [{"index": "case-x-evtx-0", "docs.count": "3"}]
@@ -49,6 +60,13 @@ class FakeCluster:
         from opensearchpy.exceptions import ConnectionError as Refused
         from opensearchpy.exceptions import TransportError
 
+        if self.mode == "verification":
+            reason = (
+                f"[{repository}] store location [...] is not accessible on the node"
+            )
+            cause = {"type": "repository_verification_exception", "reason": reason}
+            body = {"error": {"root_cause": [cause], **cause}, "status": 500}
+            raise TransportError(500, "repository_verification_exception", body)
         if self.mode == "path.repo empty":
             reason = EMPTY.format(repo=repository)
             cause = {"type": "repository_exception", "reason": reason}
@@ -120,6 +138,9 @@ HINT = (
 
 @pytest.mark.parametrize("mode", ["path.repo empty", "folder not writable"])
 def test_a_setup_failure_names_the_setup_script(box, monkeypatch, capsys, mode):
+    monkeypatch.setattr(
+        B.os, "getuid", lambda: 1000
+    )  # OpenSearch's own uid: setup can fix it
     if mode == "folder not writable":
         (box.tmp / "snapshots").chmod(0o555)  # a folder the examiner can't stage in
     try:
@@ -185,3 +206,53 @@ def test_an_unreadable_candidate_folder_still_gives_the_hint_and_the_partial(
         in err
     )
     assert "Error: PARTIAL backup:" in err
+
+
+def test_another_uid_is_told_setup_cant_help(box, monkeypatch, capsys):
+    monkeypatch.setattr(B.os, "getuid", lambda: 1001)
+    (box.tmp / "snapshots").chmod(
+        0o555
+    )  # as OpenSearch's 1000:1000 folder is to uid 1001
+    try:
+        code, err = _backup(box, monkeypatch, capsys, "folder not writable")
+    finally:
+        (box.tmp / "snapshots").chmod(0o755)
+    assert code == 1 and "Permission denied" in err
+    assert "This account (uid 1001)" in err and "as uid 1000" in err
+    assert "setup-opensearch.sh can't change that" in err
+    assert "To set it up, run:" not in err
+
+
+def test_a_snapshots_folder_set_elsewhere_is_named(box, monkeypatch, capsys):
+    monkeypatch.setenv("VHIR_SNAPSHOTS_DIR", str(box.tmp / "snapshots"))
+    code, err = _backup(box, monkeypatch, capsys, "elsewhere")
+    assert (
+        code == 1 and "didn't write the snapshot into" in err
+    )  # it went to its own folder
+    assert f"VHIR_SNAPSHOTS_DIR is set to {box.tmp / 'snapshots'}" in err
+    assert "/var/lib/vhir/snapshots" in err and "Unset it" in err
+    assert "To set it up, run:" not in err
+
+
+def test_a_verification_exception_also_says_what_setup_cant_change(
+    box, monkeypatch, capsys
+):
+    monkeypatch.setattr(B.os, "getuid", lambda: 1000)
+    code, err = _backup(box, monkeypatch, capsys, "verification")
+    assert code == 1 and "repository_verification_exception" in err
+    assert HINT.format(script=box.repo / "scripts" / "setup-opensearch.sh") in err
+    assert "the cause is the folder itself" in err
+
+
+def test_the_hint_survives_a_space_in_the_path(box, monkeypatch, capsys):
+    import shlex
+
+    from vhir_cli.commands import update
+
+    repo = box.tmp / "jo smith" / "opensearch-mcp"
+    (repo / "scripts").mkdir(parents=True)
+    monkeypatch.setattr(update, "_resolve_opensearch_mcp_repo", lambda source: repo)
+    monkeypatch.setattr(B.os, "getuid", lambda: 1000)
+    _, err = _backup(box, monkeypatch, capsys, "path.repo empty")
+    (line,) = [ln for ln in err.splitlines() if ln.startswith("  bash ")]
+    assert shlex.split(line) == ["bash", str(repo / "scripts" / "setup-opensearch.sh")]

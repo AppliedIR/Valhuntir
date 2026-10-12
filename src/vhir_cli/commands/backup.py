@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -36,7 +37,11 @@ _SKIP_NAMES = {"__pycache__", ".DS_Store", "examiners.bak"}
 # would be overwritten in the backup, so it is a problem path
 _BACKUP_OWN_NAMES = ("backup-manifest.json", ".backup-in-progress")
 _PASSWORDS_DIR = Path("/var/lib/vhir/passwords")
-_SNAPSHOTS_DIR = Path(os.environ.get("VHIR_SNAPSHOTS_DIR", "/var/lib/vhir/snapshots"))
+_SNAPSHOTS_HOME = (
+    "/var/lib/vhir/snapshots"  # what docker-compose.yml binds for OpenSearch
+)
+_SNAPSHOTS_DIR = Path(os.environ.get("VHIR_SNAPSHOTS_DIR", _SNAPSHOTS_HOME))
+_OPENSEARCH_UID = 1000  # the user OpenSearch runs as in its container
 
 
 def cmd_backup(args, identity: dict) -> None:
@@ -164,7 +169,7 @@ def _create_backup(args, identity: dict) -> None:
             file=sys.stderr,
         )
         if _snapshot_setup_error(snap_info["error"]):
-            print(_snapshot_setup_hint(), file=sys.stderr)
+            print(_snapshot_setup_hint(snap_info["error"]), file=sys.stderr)
 
     # Trailing newline after progress output
     print()
@@ -1121,7 +1126,27 @@ def _snapshot_setup_error(error: str) -> bool:
     ) or ("Permission denied" in error and str(_SNAPSHOTS_DIR) in error)
 
 
-def _snapshot_setup_hint() -> str:
+def _snapshot_setup_hint(error: str = "") -> str:
+    """What to do about a snapshot ``error`` of setup's kind: run setup, unless
+    the cause is one setup can't change, which is named instead."""
+    elsewhere = os.environ.get("VHIR_SNAPSHOTS_DIR")
+    if elsewhere and Path(elsewhere) != Path(_SNAPSHOTS_HOME):
+        return (
+            f"VHIR_SNAPSHOTS_DIR is set to {elsewhere}, but OpenSearch writes its snapshots "
+            f"to {_SNAPSHOTS_HOME}, the folder its docker-compose.yml binds; "
+            "setup-opensearch.sh doesn't read VHIR_SNAPSHOTS_DIR.\n"
+            "Unset it and run the backup again."
+        )
+    uid = os.getuid()
+    if uid != _OPENSEARCH_UID and (
+        "Permission denied" in error or "repository_verification_exception" in error
+    ):
+        return (
+            f"This account (uid {uid}) stages the snapshot in {_SNAPSHOTS_DIR}, and "
+            f"OpenSearch writes it there as uid {_OPENSEARCH_UID}, the user it runs as in "
+            "its container; setup-opensearch.sh can't change that.\n"
+            f"Run the backup as the account with uid {_OPENSEARCH_UID}."
+        )
     try:
         from vhir_cli.commands.update import _resolve_opensearch_mcp_repo
 
@@ -1133,12 +1158,20 @@ def _snapshot_setup_hint() -> str:
         if repo
         else "<your opensearch-mcp folder>/scripts/setup-opensearch.sh"
     )
-    return (
+    if repo:
+        script = shlex.quote(str(script))
+    hint = (
         "OpenSearch on this box isn't set up for snapshots. To set it up, run:\n"
         f"  bash {script}\n"
         "It recreates the vhir-opensearch container; its indexed data is kept.\n"
         "Then run the backup again."
     )
+    if "repository_verification_exception" in error:
+        hint += (
+            "\nIf setup says snapshots are set up and this still fails, the cause is the "
+            "folder itself (its free space or permissions), which setup doesn't change."
+        )
+    return hint
 
 
 def _create_opensearch_snapshot(

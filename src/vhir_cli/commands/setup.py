@@ -198,6 +198,22 @@ def _run_connectivity_test() -> None:
         for line in codex:
             print(line)
 
+    # --- OpenSearch snapshots: what vhir backup needs to save the indices ---
+    from vhir_cli.commands.update import (
+        _resolve_opensearch_mcp_repo,
+        _tell_snapshot_setup,
+    )
+
+    try:
+        repo = _resolve_opensearch_mcp_repo(Path.home() / ".vhir" / "src" / "sift-mcp")
+    except Exception as e:  # noqa: BLE001 — an unreadable folder on the way
+        print(f"\n  OpenSearch snapshots: couldn't find opensearch-mcp ({e})")
+        repo = None
+    if repo is not None and _tell_snapshot_setup(
+        repo / "scripts" / "setup-opensearch.sh"
+    ):
+        print("\n  OpenSearch snapshots: OK (vhir backup can save the indices)")
+
     # Resolve gateway URL
     from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 

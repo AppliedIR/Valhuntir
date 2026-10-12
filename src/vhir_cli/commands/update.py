@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -625,19 +626,26 @@ def _check_opensearch_version(source: Path) -> None:
         print(
             f"\n  OpenSearch version mismatch: running {running}, code requires {pinned}."
         )
-        print("  Upgrading requires recreating the container. Indexed search data")
-        print("  will be cleared and must be reingested. Case records (findings,")
-        print("  timeline, evidence) are NOT affected.")
+        print("  Upgrading recreates the container. Its indexed data is kept: it")
+        print("  lives in a Docker volume the new container uses. Case records")
+        print("  (findings, timeline, evidence) are NOT affected.")
         try:
             answer = input("\n  Upgrade OpenSearch now? [y/N] ").strip().lower()
         except EOFError:
             answer = ""
         if answer in ("y", "yes"):
             print(f"  Running {setup_script}...")
-            result = subprocess.run(
-                ["bash", str(setup_script)],
-                timeout=300,
-            )
+            try:
+                result = subprocess.run(["bash", str(setup_script)], timeout=300)
+            except subprocess.TimeoutExpired:  # the rest of update still runs
+                print(
+                    "  OpenSearch upgrade: setup-opensearch.sh didn't finish in 5 minutes"
+                    " and was stopped;\n  the container may still be starting (docker ps)."
+                    f" Run it again:\n    bash {shlex.quote(str(setup_script))}",
+                    file=sys.stderr,
+                )
+                print()
+                return
             # setup-opensearch.sh exits 3: OpenSearch runs, but snapshots aren't set up
             if result.returncode == 3:
                 print(
@@ -647,7 +655,7 @@ def _check_opensearch_version(source: Path) -> None:
             elif result.returncode != 0:
                 print("  OpenSearch upgrade failed.", file=sys.stderr)
         else:
-            print(f"  Skipped. To upgrade later: bash {setup_script}")
+            print(f"  Skipped. To upgrade later: bash {shlex.quote(str(setup_script))}")
         print()
 
 
@@ -662,9 +670,10 @@ def _cant_check_snapshots(reason: str) -> None:
     print(f"\n  Couldn't check whether OpenSearch is set up for snapshots ({reason}).")
 
 
-def _tell_snapshot_setup(setup_script: Path) -> None:
+def _tell_snapshot_setup(setup_script: Path) -> bool | None:
     """Say so when the running container can't take vhir backup's snapshots: the
-    same two things setup-opensearch.sh checks (the bind, the node's path.repo)."""
+    same two things setup-opensearch.sh checks (the bind, the node's path.repo).
+    True when it can, False when it can't, None when that couldn't be checked."""
     try:
         r = subprocess.run(
             [
@@ -709,7 +718,7 @@ def _tell_snapshot_setup(setup_script: Path) -> None:
             f"(_nodes/settings: '{json.dumps(reply, separators=(',', ':'))[:160]}')"
         )
     if not problems:
-        return
+        return True
     print(
         "\n  OpenSearch isn't set up for snapshots, so `vhir backup --include-opensearch`"
     )
@@ -719,7 +728,8 @@ def _tell_snapshot_setup(setup_script: Path) -> None:
     print(
         "  To set it up (it recreates the vhir-opensearch container; its indexed data"
     )
-    print(f"  is kept), run:\n    bash {setup_script}\n")
+    print(f"  is kept), run:\n    bash {shlex.quote(str(setup_script))}\n")
+    return False
 
 
 def _redeploy_clients(manifest: dict) -> list[str]:

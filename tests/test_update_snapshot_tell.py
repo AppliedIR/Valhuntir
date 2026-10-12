@@ -5,8 +5,11 @@ read-write bind of /var/lib/vhir/snapshots at /usr/share/opensearch/snapshots,
 and a node whose path.repo holds that folder. It says what's missing and the
 setup script to run, never prompting or running it; when it can't check, it
 says so in one line. On the upgrade path, a setup that exits 3 is reported as
-an upgrade whose snapshots aren't set up. docker, the cluster client, input()
-and bash are stand-ins; values are synthetic.
+an upgrade whose snapshots aren't set up, and one that runs past its 5 minutes
+is reported with the command to run again. The upgrade prompt says the
+indexed data is kept, and every printed command survives a path with a space.
+docker, the cluster client, input() and bash are stand-ins; values are
+synthetic.
 """
 
 from __future__ import annotations
@@ -59,6 +62,8 @@ def box(tmp_path, monkeypatch):
     def run(cmd, *a, **k):
         if cmd[0] == "bash":
             seen.bash.append(cmd)
+            if seen.setup_rc == "timeout":
+                raise subprocess.TimeoutExpired(cmd, k.get("timeout"))
             return subprocess.CompletedProcess(cmd, seen.setup_rc, "", "")
         assert cmd[:3] == ["docker", "inspect", "--format"], cmd
         if seen.docker_rc:
@@ -167,3 +172,52 @@ def test_an_upgrade_whose_setup_exits_3_says_snapshots_not_upgrade(
     assert line in text
     assert (rc == 3) is ("OpenSearch upgrade failed." not in text)
     assert box.bash == [["bash", str(box.script)]]
+
+
+def test_the_upgrade_prompt_says_the_indexed_data_is_kept(box, capsys):
+    box.image, box.answer = "opensearchproject/opensearch:3.4.0", "n"
+    text = _check(box, capsys)
+    assert "Its indexed data is kept" in text
+    assert "cleared" not in text and "reingest" not in text
+
+
+def test_an_upgrade_that_runs_past_its_time_is_told_and_update_goes_on(box, capsys):
+    box.image, box.answer, box.setup_rc = (
+        "opensearchproject/opensearch:3.4.0",
+        "y",
+        "timeout",
+    )
+    text = _check(box, capsys)  # returns: update's later steps still run
+    assert "didn't finish in 5 minutes" in text and "docker ps" in text
+    assert f"    bash {box.script}" in text
+
+
+def _spaced(box, monkeypatch, tmp_path):
+    repo = tmp_path / "jo smith" / "opensearch-mcp"
+    (repo / "docker").mkdir(parents=True)
+    (repo / "scripts").mkdir()
+    (repo / "docker" / "docker-compose.yml").write_text(
+        "services:\n  opensearch:\n    image: opensearchproject/opensearch:3.5.0\n"
+    )
+    monkeypatch.setattr(update, "_resolve_opensearch_mcp_repo", lambda source: repo)
+    return repo / "scripts" / "setup-opensearch.sh"
+
+
+@pytest.mark.parametrize("path", ["not set up", "upgrade skipped", "upgrade timed out"])
+def test_every_printed_command_survives_a_space_in_its_path(
+    box, capsys, monkeypatch, tmp_path, path
+):
+    import shlex
+
+    script = _spaced(box, monkeypatch, tmp_path)
+    if path != "not set up":
+        box.image = "opensearchproject/opensearch:3.4.0"
+        box.answer = "y" if path == "upgrade timed out" else "n"
+        box.setup_rc = "timeout" if path == "upgrade timed out" else 0
+    update._check_opensearch_version(script.parent)
+    out = capsys.readouterr()
+    lines = [ln for ln in (out.out + out.err).splitlines() if "bash " in ln]
+    assert lines, out
+    for line in lines:
+        words = shlex.split(line[line.index("bash ") :])
+        assert words == ["bash", str(script)], line
