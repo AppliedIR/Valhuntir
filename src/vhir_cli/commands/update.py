@@ -589,28 +589,37 @@ def _check_opensearch_version(source: Path) -> None:
         return  # No opensearch-mcp repo found — opensearch not installed
 
     os_path = repo / "docker" / "docker-compose.yml"
+    setup_script = os_path.parent.parent / "scripts" / "setup-opensearch.sh"
     if not os_path.is_file():
-        return
+        return _cant_check_snapshots(f"{os_path} is missing")
     text = os_path.read_text()
     m = re.search(r"opensearchproject/opensearch:(\S+)", text)
     if not m:
-        return
+        return _cant_check_snapshots(f"{os_path} names no opensearch image")
     pinned = m.group(1)
 
     # Check running container version
-    result = subprocess.run(
-        ["docker", "inspect", "--format", "{{.Config.Image}}", "vhir-opensearch"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Config.Image}}", "vhir-opensearch"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return _cant_check_snapshots(f"docker: {e}")
     if result.returncode != 0:
-        return  # Container not running
+        return _cant_check_snapshots(
+            "docker inspect vhir-opensearch: "
+            + (result.stderr.strip().splitlines() or ["failed"])[0]
+        )
     running_image = result.stdout.strip()
     running_m = re.search(r"opensearchproject/opensearch:(\S+)", running_image)
     if not running_m:
-        return
+        return _cant_check_snapshots(f"the container runs {running_image!r}")
     running = running_m.group(1)
+    if running == pinned:
+        _tell_snapshot_setup(setup_script)
 
     if running != pinned:
         print(
@@ -619,7 +628,6 @@ def _check_opensearch_version(source: Path) -> None:
         print("  Upgrading requires recreating the container. Indexed search data")
         print("  will be cleared and must be reingested. Case records (findings,")
         print("  timeline, evidence) are NOT affected.")
-        setup_script = os_path.parent.parent / "scripts" / "setup-opensearch.sh"
         try:
             answer = input("\n  Upgrade OpenSearch now? [y/N] ").strip().lower()
         except EOFError:
@@ -630,11 +638,88 @@ def _check_opensearch_version(source: Path) -> None:
                 ["bash", str(setup_script)],
                 timeout=300,
             )
-            if result.returncode != 0:
+            # setup-opensearch.sh exits 3: OpenSearch runs, but snapshots aren't set up
+            if result.returncode == 3:
+                print(
+                    "  OpenSearch was upgraded, but its snapshots aren't set up; see above.",
+                    file=sys.stderr,
+                )
+            elif result.returncode != 0:
                 print("  OpenSearch upgrade failed.", file=sys.stderr)
         else:
             print(f"  Skipped. To upgrade later: bash {setup_script}")
         print()
+
+
+_SNAPSHOT_REPO = "/usr/share/opensearch/snapshots"
+_SNAPSHOT_MOUNT_FORMAT = (
+    '{{range .Mounts}}{{if eq .Destination "/usr/share/opensearch/snapshots"}}'
+    "{{.Type}} {{.Source}} {{.RW}}{{end}}{{end}}"
+)
+
+
+def _cant_check_snapshots(reason: str) -> None:
+    print(f"\n  Couldn't check whether OpenSearch is set up for snapshots ({reason}).")
+
+
+def _tell_snapshot_setup(setup_script: Path) -> None:
+    """Say so when the running container can't take vhir backup's snapshots: the
+    same two things setup-opensearch.sh checks (the bind, the node's path.repo)."""
+    try:
+        r = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                _SNAPSHOT_MOUNT_FORMAT,
+                "vhir-opensearch",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode != 0:
+            raise OSError(
+                (r.stderr.strip().splitlines() or ["docker inspect failed"])[0]
+            )
+        from opensearch_mcp.client import get_client
+
+        reply = get_client().nodes.info(
+            metric="settings", filter_path="nodes.*.settings.path.repo"
+        )
+    except Exception as e:  # noqa: BLE001 — any failure is "couldn't check", said once
+        return _cant_check_snapshots(f"{type(e).__name__}: {e}")
+    problems = []
+    if r.stdout.strip() != "bind /var/lib/vhir/snapshots true":
+        problems.append(
+            "the container has no read-write bind of /var/lib/vhir/snapshots at "
+            f"{_SNAPSHOT_REPO} (docker inspect: {r.stdout.strip()!r})"
+        )
+    try:
+        nodes = reply["nodes"]
+        repos = [n["settings"]["path"]["repo"] for n in nodes.values()]
+        ok = bool(nodes) and all(
+            _SNAPSHOT_REPO in ([x] if isinstance(x, str) else x) for x in repos
+        )
+    except (KeyError, TypeError, AttributeError):
+        ok = False
+    if not ok:
+        problems.append(
+            f"couldn't confirm that OpenSearch's path.repo includes {_SNAPSHOT_REPO} "
+            f"(_nodes/settings: '{json.dumps(reply, separators=(',', ':'))[:160]}')"
+        )
+    if not problems:
+        return
+    print(
+        "\n  OpenSearch isn't set up for snapshots, so `vhir backup --include-opensearch`"
+    )
+    print("  can't save its indices:")
+    for line in problems:
+        print(f"    - {line}")
+    print(
+        "  To set it up (it recreates the vhir-opensearch container; its indexed data"
+    )
+    print(f"  is kept), run:\n    bash {setup_script}\n")
 
 
 def _redeploy_clients(manifest: dict) -> list[str]:
