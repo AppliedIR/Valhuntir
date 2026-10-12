@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli import credentials, keys, ledger
+from vhir_cli import case_io, credentials, keys, ledger
 from vhir_cli.case_io import (
     case_id_of,
     compute_content_hash,
@@ -78,9 +78,7 @@ class Decision:
 
 
 def item_type(item_id: str) -> str:
-    if item_id.startswith("IOC-"):
-        return "ioc"
-    return "timeline" if item_id.startswith("T-") else "finding"
+    return case_io.id_kind(item_id)  # one rule, which import_bundle also enforces
 
 
 def cascades(
