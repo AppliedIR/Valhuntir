@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 
+from vhir_cli.case_io import CaseError, NotRegularFile, read_regular
 from vhir_cli.provenance_view import roots_of
 
 # A root bigger than this whose stat fields don't vouch for it is hashed in
@@ -307,15 +308,44 @@ def _root(case_dir: Path, root: dict, background=False, note=None) -> dict:
 # --- ENTRY ------------------------------------------------------------------
 
 
+class AuditUnreadable(CaseError):
+    """An audit log, or the audit folder, the approval checks couldn't read:
+    one could hold another entry for a chained id. Nothing is signed."""
+
+    def __init__(self, unread: list[str]):
+        super().__init__(
+            f"The approval checks couldn't read {', '.join(unread)}: an entry there "
+            "could change their result. Nothing was signed. Make each log a readable "
+            "regular file, then approve again."
+        )
+        self.unread = unread
+
+
 def audit_lines(case_dir) -> dict[str, list[bytes]]:
     """Each audit id in the case's trail with the bytes of every line that
-    carries it (as written, without the newline)."""
-    by_id: dict[str, list[bytes]] = {}
-    for log in sorted((Path(case_dir) / "audit").glob("*.jsonl")):
+    carries it (as written, without the newline). A folder that can't be
+    listed, or a log that can't be read as a regular file, raises
+    AuditUnreadable naming each one; a missing folder is an empty trail."""
+    audit = Path(case_dir) / "audit"
+    unread: list[str] = []
+    try:
+        names = sorted(n for n in os.listdir(audit) if n.endswith(".jsonl"))
+    except FileNotFoundError:
+        names = []
+    except OSError as e:
+        names, unread = [], [f"audit/ ({e.strerror or type(e).__name__})"]
+    logs: list[bytes] = []
+    for name in names:
         try:
-            data = log.read_bytes()
-        except OSError:
-            continue
+            logs.append(read_regular(audit / name))
+        except NotRegularFile:
+            unread.append(f"audit/{name} (not a regular file)")
+        except OSError as e:
+            unread.append(f"audit/{name} ({e.strerror or type(e).__name__})")
+    if unread:
+        raise AuditUnreadable(unread)
+    by_id: dict[str, list[bytes]] = {}
+    for data in logs:
         for line in data.splitlines():
             try:
                 entry = json.loads(line)
