@@ -30,8 +30,8 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
 )
+from vhir_cli.display import cited_text, one_line
 from vhir_cli.display import lines as indent_lines
-from vhir_cli.display import one_line
 from vhir_cli.ledger_verify import (
     approved_view,
     shown_label,
@@ -407,7 +407,7 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         lines.append(f"  Confidence:   {_d(f.get('confidence', '?'), safe)}")
         if f.get("confidence_justification"):
             lines.append(f"  Justification: {_d(f['confidence_justification'], safe)}")
-        lines.append(f"  Evidence:     {_d(', '.join(f.get('audit_ids', [])), safe)}")
+        lines.append(f"  Evidence:     {_d(cited_text(f.get('audit_ids')), safe)}")
         lines.append(f"  Observation:  {_ml(f.get('observation', ''), safe, ' ' * 16)}")
         lines.append(
             f"  Interpretation: {_ml(f.get('interpretation', ''), safe, ' ' * 18)}"

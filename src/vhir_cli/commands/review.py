@@ -32,6 +32,7 @@ from vhir_cli.case_io import (
     load_todos,
     load_withdrawals,
 )
+from vhir_cli.display import cited as _cited
 from vhir_cli.display import display_safe, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.provenance_view import finding_lines, grade_label
@@ -158,14 +159,6 @@ def _show_findings_table(case_dir: Path) -> None:
         provenance = grade_label(f, reason=False)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
-
-
-def _cited(value) -> list:
-    """The audit ids a record cites, as a list: a list as it is, None as none,
-    any other value as one id. Whatever the shape, it is shown, never a crash."""
-    if isinstance(value, list):
-        return value
-    return [] if value is None else [value]
 
 
 def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:

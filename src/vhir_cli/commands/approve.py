@@ -51,6 +51,8 @@ from vhir_cli.case_io import (
     signed_text,
 )
 from vhir_cli.display import MULTI_LINE as _MULTI_LINE
+from vhir_cli.display import cited as _cited
+from vhir_cli.display import cited_text as _cited_text
 from vhir_cli.display import lines as _lines
 from vhir_cli.display import one_line as _one_line
 
@@ -931,8 +933,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
             )
             if item.get(key)
         ]
-        if item.get("audit_ids"):
-            meta.append(f"Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+        if _cited(item.get("audit_ids")):
+            meta.append(f"Evidence: {_safe(_cited_text(item['audit_ids']))}")
         if meta:
             print(f"  {' | '.join(meta)}")
         print(f"  Observation: {_safe(item.get('observation', ''))}")
@@ -946,8 +948,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
     else:
         print(f"  [{_safe(item['id'])}]  {_safe(item.get('timestamp', '?'))}")
         print(f"  Description: {_safe(item.get('description', ''))}")
-        if item.get("audit_ids"):
-            print(f"  Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+        if _cited(item.get("audit_ids")):
+            print(f"  Evidence: {_safe(_cited_text(item['audit_ids']))}")
 
 
 def _print_decision_header(item: dict) -> None:
@@ -998,10 +1000,8 @@ def _display_item(item: dict) -> None:
         print(f"  | By: {_one_line(created_by)}", end="")
     if item.get("confidence"):
         print(f"  | Confidence: {_one_line(item['confidence'])}", end="")
-    if item.get("audit_ids"):
-        print(
-            f"  | Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}", end=""
-        )
+    if _cited(item.get("audit_ids")):
+        print(f"  | Evidence: {_one_line(_cited_text(item['audit_ids']))}", end="")
     print()
     print(f"{'─' * 60}")
 
@@ -1019,8 +1019,8 @@ def _display_item(item: dict) -> None:
         # It's a timeline event
         print(f"  Timestamp: {_one_line(item.get('timestamp', '?'))}")
         print(f"  Description: {_lines(item.get('description', ''), ' ' * 15)}")
-        if item.get("audit_ids"):
-            print(f"  Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}")
+        if _cited(item.get("audit_ids")):
+            print(f"  Evidence: {_one_line(_cited_text(item['audit_ids']))}")
     print()
 
 
@@ -1108,10 +1108,8 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
         _render_field("Interpretation", item, modifications, "interpretation")
-        if item.get("audit_ids"):
-            print(
-                f"  Evidence:       {_one_line(', '.join(map(str, item['audit_ids'])))}"
-            )
+        if _cited(item.get("audit_ids")):
+            print(f"  Evidence:       {_one_line(_cited_text(item['audit_ids']))}")
         for label, field in (("MITRE", "mitre_ids"), ("IOCs", "iocs"),
                              ("Context", "context"),
                              ("Justification", "confidence_justification")):  # fmt: skip
