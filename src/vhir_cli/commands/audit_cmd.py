@@ -7,11 +7,12 @@ Read and summarize audit entries from the case directory:
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir
+from vhir_cli.case_io import get_case_dir, read_regular
 from vhir_cli.display import display_safe, one_line
 
 
@@ -36,7 +37,9 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
     if audit_dir.is_dir():
         for jsonl_file in sorted(audit_dir.glob("*.jsonl")):
             try:
-                with open(jsonl_file, encoding="utf-8") as f:
+                with io.TextIOWrapper(
+                    io.BytesIO(read_regular(jsonl_file)), encoding="utf-8"
+                ) as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -56,7 +59,9 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
         try:
-            with open(approvals_file, encoding="utf-8") as f:
+            with io.TextIOWrapper(
+                io.BytesIO(read_regular(approvals_file)), encoding="utf-8"
+            ) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
