@@ -34,10 +34,18 @@ def _check_ts(entry) -> None:
         raise TypeError(f"an audit entry's ts isn't text: {entry.get('ts')!r}")
 
 
-def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
+def _why(e: OSError) -> str:
+    """What made a log unreadable, in the refusal's own words."""
+    return getattr(e, "why", None) or e.strerror or str(e)
+
+
+def _load_audit_entries(
+    case_dir: Path, keep=None, unread: list | None = None
+) -> list[dict]:
     """Load all audit entries from audit/*.jsonl and approvals.jsonl. `keep`:
     a test of each parsed entry; only those it passes are kept, so a caller
-    that wants a few entries never holds the whole trail."""
+    that wants a few entries never holds the whole trail. `unread` gets each
+    log that couldn't be read, as "audit/<name> (<why>)"."""
     entries: list[dict] = []
     corrupt_lines = 0
 
@@ -65,6 +73,8 @@ def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
                     f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
                     file=sys.stderr,
                 )
+                if unread is not None:
+                    unread.append(one_line(f"audit/{jsonl_file.name} ({_why(e)})"))
                 continue
 
     approvals_file = case_dir / "approvals.jsonl"
@@ -89,6 +99,8 @@ def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
                 f"  Warning: could not read {one_line(f'{approvals_file}: {e}')}",
                 file=sys.stderr,
             )
+            if unread is not None:
+                unread.append(one_line(f"approvals.jsonl ({_why(e)})"))
 
     if corrupt_lines:
         print(

@@ -77,8 +77,9 @@ def cmd_approve(args, identity: dict) -> None:
         )
         return
 
+    unread: list[str] = []
     try:
-        withdrawn = len(load_withdrawals(case_dir))
+        withdrawn = len(load_withdrawals(case_dir, unread))
     except Exception as e:  # the count is information; a bad line mustn't block
         print(f"  Warning: withdrawn candidates not counted: {e}", file=sys.stderr)
         withdrawn = 0
@@ -88,6 +89,12 @@ def cmd_approve(args, identity: dict) -> None:
         if withdrawn
         else ""
     )
+    if unread:  # a withdrawal in a log that wasn't read isn't counted: say so
+        withdrawn_line = (
+            f"  {withdrawn} candidate finding(s) withdrawn after challenge counted;"
+            f" {', '.join(unread)} couldn't be read, so there may be more"
+            " — `vhir review --withdrawn`"
+        )
 
     if review:
         _review_mode(

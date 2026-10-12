@@ -158,16 +158,28 @@ def case_lines(path):
     return _capped_lines(os.fdopen(_open_regular_fd(path, log=True), "rb"), path)
 
 
+def _read_whole(path, limit: int) -> bytes:
+    """A case file's bytes, checked as a log is and read in one read, up to
+    `limit` by its size when opened and as it is read; never split into lines."""
+    with os.fdopen(_open_regular_fd(path, log=True, budget=limit), "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:  # it grew while read
+        raise CaseFileTooLarge(path, limit=limit)
+    return data
+
+
 def read_case_document(path) -> bytes:
     """A case document's bytes (findings.json, timeline.json, iocs.json,
-    keys.json), checked as a log is and read whole in one read, never split
-    into lines: up to DOC_CAP, by its size when opened and as it is read. A
-    log is never read whole: it is read with `case_lines`, a line at a time."""
-    with os.fdopen(_open_regular_fd(path, log=True, budget=DOC_CAP), "rb") as f:
-        data = f.read(DOC_CAP + 1)
-    if len(data) > DOC_CAP:  # it grew while read
-        raise CaseFileTooLarge(path, limit=DOC_CAP)
-    return data
+    keys.json), read whole up to DOC_CAP."""
+    return _read_whole(path, DOC_CAP)
+
+
+def read_case_log_whole(path) -> bytes:
+    """A case log's bytes, read whole up to FILE_BUDGET: only for a reader that
+    must select a prefix of the bytes before it splits them into lines (the
+    0.6 approval sources, whose prefix a genesis froze). Any other log is read
+    with `case_lines`, a line at a time."""
+    return _read_whole(path, FILE_BUDGET)
 
 
 def _capped_lines(f, path):
@@ -842,8 +854,9 @@ def verify_approval_integrity(case_dir: Path) -> list[dict]:
 # --- Audit Index ---
 
 
-def load_withdrawals(case_dir: Path) -> list[dict]:
-    """The candidate findings withdrawn after challenge, oldest first.
+def load_withdrawals(case_dir: Path, unread: list | None = None) -> list[dict]:
+    """The candidate findings withdrawn after challenge, oldest first. `unread`
+    gets each audit log that couldn't be read (a withdrawal there isn't seen).
 
     Each is a record_finding audit entry whose result is WITHDRAWN. An entry
     repeated in the trail counts once, by audit id and time together, so two
@@ -860,7 +873,7 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     seen: set[tuple] = set()
     withdrawals = []
     # only the withdrawals are kept while the trail is read, never the whole trail
-    for entry in _load_audit_entries(case_dir, keep=withdrawn):
+    for entry in _load_audit_entries(case_dir, keep=withdrawn, unread=unread):
         key = (entry.get("audit_id"), entry.get("ts"))
         if key not in seen:
             seen.add(key)

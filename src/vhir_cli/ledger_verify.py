@@ -644,51 +644,35 @@ def _legacy(
         ),
         ("0.6 close copy", case_dir / "verification.jsonl"),
     ]
-    from vhir_cli.case_io import case_lines
+    from vhir_cli.case_io import read_case_log_whole
 
-    # The prefix lengths a genesis froze: each source's hash is taken at each
-    # of them as the source streams past, never by holding the source whole
-    cuts = sorted({int(g["legacy_bytes"]) for g in map(_genesis, chains.values())
-                   if g is not None and int(g["legacy_bytes"])})  # fmt: skip
-
-    def scan(path) -> tuple[list[tuple[bytes, dict, int]], dict[int, str], int]:
-        """A source's records, each with where its text ends in the file; the
-        SHA-256 of its first n bytes for each n in `cuts` it reaches; its size.
-        Read line by line (a line within LINE_CAP), split as `bytes.splitlines`
-        splits, so the records are those a whole read gave."""
-        h, pos, out, hashes, todo = hashlib.sha256(), 0, [], {}, list(cuts)
-        for raw in case_lines(path):
-            while todo and todo[0] <= pos + len(raw):
-                at = h.copy()
-                at.update(raw[: todo[0] - pos])
-                hashes[todo.pop(0)] = at.hexdigest()
-            h.update(raw)
-            start = pos
-            for part in raw.splitlines(keepends=True):
-                text = part.strip()
-                try:
-                    obj = json.loads(text) if text else None
-                except json.JSONDecodeError:
-                    obj = None
-                if isinstance(obj, dict) and obj.get("finding_id"):
-                    out.append((text, obj, start + len(part.rstrip())))
-                start += len(part)
-            pos += len(raw)
-        return out, hashes, pos
-
-    sources: list[tuple[list[tuple[bytes, dict, int]], dict[int, str], int]] = []
+    # Each source whole (within FILE_BUDGET), so a frozen prefix is selected as
+    # bytes first and only its own lines are parsed, never lines past its end
+    sources: list[bytes] = []
     for label, path in paths:
-        try:  # line by line; a FIFO is never waited on
-            sources.append(scan(path))
+        try:  # byte for byte, as read_bytes gave it; a FIFO is never waited on
+            sources.append(read_case_log_whole(path))
         except OSError:
             continue
         result.sources.append(f"{label}: {path}")
 
+    def records(data: bytes) -> list[tuple[bytes, dict]]:
+        out = []
+        for raw in _lines(data):
+            text = raw.strip()
+            try:
+                obj = json.loads(text) if text else None
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and obj.get("finding_id"):
+                out.append((text, obj))
+        return out
+
     counted: dict[str, list[dict]] = {}
     seen: dict[str, list[bytes]] = {}
     if not chains:
-        for recs, _, _ in sources:
-            for text, obj, _ in recs:
+        for data in sources:
+            for text, obj in records(data):
                 item_id = str(obj["finding_id"])
                 if text not in seen.setdefault(item_id, []):
                     seen[item_id].append(text)
@@ -696,8 +680,7 @@ def _legacy(
         return counted, set(), []
 
     problems: list[tuple[str, str]] = []
-    # one per frozen prefix: (chain, the records the prefix holds)
-    prefixes: dict[tuple[str, int], tuple[str, list[tuple[bytes, dict]]]] = {}
+    prefixes: dict[tuple[str, int], tuple[str, bytes]] = {}  # one per frozen prefix
     for cid, chain in chains.items():
         g = _genesis(chain)
         if g is None or int(g["legacy_bytes"]) == 0:
@@ -707,9 +690,10 @@ def _legacy(
             continue
         match = next(
             (
-                [(text, obj) for text, obj, end in recs if end <= key[1]]
-                for recs, hashes, size in sources
-                if size >= key[1] and hashes.get(key[1]) == key[0]
+                data[: key[1]]
+                for data in sources
+                if len(data) >= key[1]
+                and hashlib.sha256(data[: key[1]]).hexdigest() == key[0]
             ),
             None,
         )
@@ -724,9 +708,9 @@ def _legacy(
             continue
         prefixes[key] = (cid, match)
     latest: dict[str, tuple[str, bytes]] = {}  # item → (chain, its last line)
-    for cid, held in prefixes.values():
+    for cid, data in prefixes.values():
         mine: dict[str, list[tuple[bytes, dict]]] = {}
-        for text, obj in held:
+        for text, obj in records(data):
             mine.setdefault(str(obj["finding_id"]), []).append((text, obj))
         for item_id, lines in mine.items():
             if item_id in latest:
@@ -743,11 +727,30 @@ def _legacy(
             counted[item_id] = [obj for _, obj in lines]
     uncounted = {
         str(obj["finding_id"])
-        for recs, _, _ in sources
-        for _, obj, _ in recs
+        for data in sources
+        for _, obj in records(data)
         if str(obj["finding_id"]) not in counted
     }
     return counted, uncounted, problems
+
+
+def _lines(data: bytes):
+    """The lines `data.splitlines()` gives (split at \\n, \\r and \\r\\n), one at
+    a time: a list of millions of empty lines is never built."""
+    i, n = 0, len(data)
+    nl, cr = data.find(b"\n"), data.find(b"\r")
+    while i < n:
+        if nl != -1 and nl < i:
+            nl = data.find(b"\n", i)
+        if cr != -1 and cr < i:
+            cr = data.find(b"\r", i)
+        ends = [x for x in (nl, cr) if x != -1]
+        if not ends:
+            yield data[i:]
+            return
+        j = min(ends)
+        yield data[i:j]
+        i = j + 2 if data[j : j + 2] == b"\r\n" else j + 1
 
 
 def _genesis(chain: Chain | None) -> dict | None:

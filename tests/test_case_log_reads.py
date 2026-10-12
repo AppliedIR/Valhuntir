@@ -382,18 +382,27 @@ def test_a_wintools_log_of_crlf_lines_reads_as_its_lf_twin(tmp_path):
     )
 
 
-# --- the 0.6 sources: read a line at a time, never joined ---------------------
+# --- the 0.6 sources: read whole within the budget, never joined line by line -
 
 _LEGACY_PEAK = """
-import json, resource, sys
+import json, sys
 from pathlib import Path
 from vhir_cli import ledger_verify as lv, verification
+
+
+def hwm():  # this process's peak RSS, KiB (ru_maxrss would start at the parent's)
+    with open("/proc/self/status") as f:
+        return next(int(x.split()[1]) for x in f if x.startswith("VmHWM:"))
+
+
 case, which = Path(sys.argv[1]), sys.argv[2]
 verification.VERIFICATION_DIR = case.parent / "box"
 r = lv.Result(case_id="c", case_id_source="test")
-before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+with open("/proc/self/clear_refs", "w") as f:
+    f.write("5")  # the peak starts from here
+before = hwm()
 counted, uncounted, problems = lv._legacy("c", case, {}, r)
-grew = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) // 1024
+grew = (hwm() - before) // 1024
 print(json.dumps({"counted": counted, "grew_mib": grew, "sources": len(r.sources)}))
 """
 _SOURCES = {"box 0.6 file": "box/c.jsonl", "0.6 copy": "case/ledger/legacy-1.jsonl",
@@ -402,10 +411,12 @@ _SOURCES = {"box 0.6 file": "box/c.jsonl", "0.6 copy": "case/ledger/legacy-1.jso
 
 @POSIX
 @pytest.mark.parametrize("source", sorted(_SOURCES))
-def test_a_0_6_source_padded_with_newlines_is_read_a_line_at_a_time(tmp_path, source):
+def test_a_0_6_source_padded_with_newlines_costs_about_its_size(tmp_path, source):
     """One 0.6 record and 16 MiB of newlines: the same record comes out, and
-    the read holds no more than a line (a whole read held it all, then millions
-    of tiny lines)."""
+    the read costs about the file's size (measured 15 MiB). The source is read
+    whole so the frozen prefix is cut from its bytes before any line is split,
+    and its lines are taken one at a time: a whole split into 16 million empty
+    lines cost 143 MiB, a join of read lines 1.4 GB."""
     import subprocess
     import sys
 

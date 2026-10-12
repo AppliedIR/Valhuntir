@@ -197,13 +197,25 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
 
 def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
+    unread: list[str] = []
     try:
-        withdrawals = load_withdrawals(case_dir)
+        withdrawals = load_withdrawals(case_dir, unread)
     except Exception as e:  # a damaged audit line: say so, never "none"
         print(f"Withdrawn candidates couldn't be read: {e}")
         sys.exit(1)
+    if unread:  # never "none" while a log holding withdrawals went unread
+        _print_withdrawn(case_dir, withdrawals)
+        for log in unread:
+            print(f"Couldn't read {log}: a candidate withdrawn there isn't shown.")
+        sys.exit(1)
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
+        return
+    _print_withdrawn(case_dir, withdrawals)
+
+
+def _print_withdrawn(case_dir: Path, withdrawals: list[dict]) -> None:
+    if not withdrawals:
         return
     # Only the skeptic's calls are resolved below: index just those.
     wanted = {
