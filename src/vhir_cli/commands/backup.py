@@ -1126,6 +1126,30 @@ def _snapshot_setup_error(error: str) -> bool:
     ) or ("Permission denied" in error and str(_SNAPSHOTS_DIR) in error)
 
 
+def _staging_problems() -> list[str]:
+    """What stops this account staging a snapshot, as `vhir backup` would:
+    VHIR_SNAPSHOTS_DIR pointing away from setup's folder, or a folder it can't
+    create files in (the lock and the staging folder go there)."""
+    problems = []
+    elsewhere = os.environ.get("VHIR_SNAPSHOTS_DIR")
+    if elsewhere and Path(elsewhere) != Path(_SNAPSHOTS_HOME):
+        problems.append(
+            f"VHIR_SNAPSHOTS_DIR is set to {elsewhere}, but OpenSearch writes its "
+            f"snapshots to {_SNAPSHOTS_HOME}, the folder setup configures; unset it"
+        )
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=_SNAPSHOTS_DIR, prefix=".vhir-setup-test-"
+        ):
+            pass
+    except OSError as e:
+        problems.append(
+            f"this account (uid {os.getuid()}) can't create files in {_SNAPSHOTS_DIR}, "
+            f"where vhir backup stages snapshots: {e.strerror or e}"
+        )
+    return problems
+
+
 def _snapshot_setup_hint(error: str = "") -> str:
     """What to do about a snapshot ``error`` of setup's kind: run setup, unless
     the cause is one setup can't change, which is named instead."""
@@ -1138,9 +1162,9 @@ def _snapshot_setup_hint(error: str = "") -> str:
             "Unset it and run the backup again."
         )
     uid = os.getuid()
-    if uid != _OPENSEARCH_UID and (
-        "Permission denied" in error or "repository_verification_exception" in error
-    ):
+    if (
+        uid != _OPENSEARCH_UID and "Permission denied" in error
+    ):  # any other cause is shown
         return (
             f"This account (uid {uid}) stages the snapshot in {_SNAPSHOTS_DIR}, and "
             f"OpenSearch writes it there as uid {_OPENSEARCH_UID}, the user it runs as in "

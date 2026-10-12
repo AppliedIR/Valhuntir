@@ -212,7 +212,17 @@ def _run_connectivity_test() -> None:
     if repo is not None and _tell_snapshot_setup(
         repo / "scripts" / "setup-opensearch.sh"
     ):
-        print("\n  OpenSearch snapshots: OK (vhir backup can save the indices)")
+        from vhir_cli.commands.backup import _staging_problems
+
+        staging = _staging_problems()  # what backup itself needs on this box
+        if staging:
+            print(
+                "\n  OpenSearch is set up for snapshots, but vhir backup can't stage them:"
+            )
+            for line in staging:
+                print(f"    - {line}")
+        else:
+            print("\n  OpenSearch snapshots: OK (vhir backup can save the indices)")
 
     # Resolve gateway URL
     from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context

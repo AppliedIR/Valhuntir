@@ -8,8 +8,9 @@ PARTIAL snapshot, a refused connection) get the warning only. A cause setup
 can't change is named instead of the setup hint: an examiner whose uid isn't
 OpenSearch's (1000), and VHIR_SNAPSHOTS_DIR set to a folder OpenSearch doesn't
 write; a verification exception gets the hint plus what's left when setup has
-run. The 500's text is the one a
-3.5.0 cluster gives with an empty path.repo; other values are synthetic.
+run, and is blamed on the uid only when its cause is Permission denied. The
+500's text is the one a 3.5.0 cluster gives with an empty path.repo; other
+values are synthetic.
 """
 
 from __future__ import annotations
@@ -60,10 +61,12 @@ class FakeCluster:
         from opensearchpy.exceptions import ConnectionError as Refused
         from opensearchpy.exceptions import TransportError
 
-        if self.mode == "verification":
+        if self.mode in ("verification", "no space"):
             reason = (
                 f"[{repository}] store location [...] is not accessible on the node"
             )
+            if self.mode == "no space":
+                reason += ": java.io.IOException: No space left on device"
             cause = {"type": "repository_verification_exception", "reason": reason}
             body = {"error": {"root_cause": [cause], **cause}, "status": 500}
             raise TransportError(500, "repository_verification_exception", body)
@@ -256,3 +259,11 @@ def test_the_hint_survives_a_space_in_the_path(box, monkeypatch, capsys):
     _, err = _backup(box, monkeypatch, capsys, "path.repo empty")
     (line,) = [ln for ln in err.splitlines() if ln.startswith("  bash ")]
     assert shlex.split(line) == ["bash", str(repo / "scripts" / "setup-opensearch.sh")]
+
+
+def test_another_uid_with_another_cause_sees_that_cause(box, monkeypatch, capsys):
+    monkeypatch.setattr(B.os, "getuid", lambda: 1001)
+    code, err = _backup(box, monkeypatch, capsys, "no space")
+    assert code == 1 and "No space left on device" in err  # the cause, shown
+    assert "This account (uid 1001)" not in err  # not blamed on the uid
+    assert "the cause is the folder itself" in err
