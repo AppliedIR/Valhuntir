@@ -120,13 +120,13 @@ def _signed(case_id) -> list[str]:
     ]
 
 
-# --- F1: approve and sign ------------------------------------------------------
+# --- Approve and sign ------------------------------------------------------
 
 
-def test_f1_review_shows_planted_keys_escaped_and_the_true_summary(
+def test_review_shows_planted_keys_escaped_and_the_true_summary(
     case, monkeypatch, capsys
 ):
-    """C1/C2: one entry is the examiner's, two are planted with staged_by =
+    """One entry is the examiner's, two are planted with staged_by =
     the examiner (their inclusion is a separate question); the third
     finding's extra keys paint a fake one-decision screen. The screen now
     shows the 3 decisions that are signed."""
@@ -154,7 +154,7 @@ def test_f1_review_shows_planted_keys_escaped_and_the_true_summary(
     assert sorted(_signed("C-1")) == ["F-alice-001", "F-alice-002", "F-alice-003"]
 
 
-def test_f1_a_copy_refusal_names_its_values_escaped(case, monkeypatch, capsys):
+def test_a_copy_refusal_names_its_values_escaped(case, monkeypatch, capsys):
     """approve.py's preflight: the refusal names the case's id and folders."""
     d = case()
     save_findings(d, [_finding("F-alice-001")])
@@ -169,7 +169,7 @@ def test_f1_a_copy_refusal_names_its_values_escaped(case, monkeypatch, capsys):
     assert_clean(cap.out + cap.err, "copy")
 
 
-def test_f1_an_unreadable_audit_log_is_named_escaped(case, monkeypatch, capsys):
+def test_an_unreadable_audit_log_is_named_escaped(case, monkeypatch, capsys):
     """AuditUnreadable, printed by main as `Error: {e}` (main.py:769, kept):
     an audit/ entry that isn't a regular file, named by the VM. The approval
     checks read audit/ for a finding with schema-2 provenance."""
@@ -186,10 +186,10 @@ def test_f1_an_unreadable_audit_log_is_named_escaped(case, monkeypatch, capsys):
     assert load_findings(d)[0]["status"] == "DRAFT"
 
 
-# --- F2: after signing (decide.py) ----------------------------------------------
+# --- After signing (decide.py) ----------------------------------------------
 
 
-def test_f2_the_head_line_and_a_chain_note_are_escaped(case, monkeypatch, capsys):
+def test_the_head_line_and_a_chain_note_are_escaped(case, monkeypatch, capsys):
     """:721 (the head line's case id) and :553 (a chain copy that isn't
     referenced), through a normal signing."""
     d = case(CASE_ID)
@@ -247,7 +247,7 @@ def _no_log(monkeypatch, d):
         "no activity log",
     ],
 )
-def test_f2_each_failure_after_signing_names_its_values_escaped(
+def test_each_failure_after_signing_names_its_values_escaped(
     case, monkeypatch, capsys, fault, tags, code
 ):
     """Four injected faults, so each branch is reached; the id is planted."""
@@ -267,10 +267,10 @@ def test_f2_each_failure_after_signing_names_its_values_escaped(
     assert_clean(cap.out + cap.err, *tags)
 
 
-# --- F3: review --audit and --verify ---------------------------------------------
+# --- Review --audit and --verify ---------------------------------------------
 
 
-def test_f3_review_audit_names_audit_files_escaped(case, capsys):
+def test_review_audit_names_audit_files_escaped(case, capsys):
     """review.py :565 (a corrupt line) and :569 (a log it can't read)."""
     from vhir_cli.commands.review import cmd_review
 
@@ -282,7 +282,7 @@ def test_f3_review_audit_names_audit_files_escaped(case, capsys):
     assert_clean(cap.out + cap.err, "corrupt", "unread")
 
 
-def test_f3_review_verify_shows_a_chains_sources_escaped(capsys):
+def test_review_verify_shows_a_chains_sources_escaped(capsys):
     """ledger_verify.render :1476: a chain's sources name the case's copies."""
     from vhir_cli.ledger_verify import Chain, Line, Result, render
 
@@ -292,7 +292,7 @@ def test_f3_review_verify_shows_a_chains_sources_escaped(capsys):
     assert_clean(render(result), "source")
 
 
-# --- F4: case status and case list ------------------------------------------------
+# --- Case status and case list ------------------------------------------------
 
 
 def _hostile_case(cases: Path, name="C-1") -> Path:
@@ -304,7 +304,7 @@ def _hostile_case(cases: Path, name="C-1") -> Path:
     return d
 
 
-def test_f4_case_status_and_list_show_case_yaml_escaped(tmp_path, monkeypatch, capsys):
+def test_case_status_and_list_show_case_yaml_escaped(tmp_path, monkeypatch, capsys):
     from vhir_cli.main import _case_list, _case_status
 
     d = _hostile_case(tmp_path / "cases")
@@ -318,10 +318,10 @@ def test_f4_case_status_and_list_show_case_yaml_escaped(tmp_path, monkeypatch, c
     assert_clean(listing.out + listing.err, "name", "status")
 
 
-# --- F5: the merge, export, close and backup summary --------------------------------
+# --- The merge, export, close and backup summary --------------------------------
 
 
-def test_f5_the_anchor_summary_shows_every_value_escaped():
+def test_the_anchor_summary_shows_every_value_escaped():
     from vhir_cli.case_copies import summary_lines
 
     summary = {
@@ -337,10 +337,10 @@ def test_f5_the_anchor_summary_shows_every_value_escaped():
                  "head_chain", "seq", "hash", "own", "diverged", "case_id")  # fmt: skip
 
 
-# --- C3: normal values print as before ----------------------------------------------
+# --- Normal values print as before ----------------------------------------------
 
 
-def test_c3_normal_values_print_as_before(case, tmp_path, monkeypatch, capsys):
+def test_normal_values_print_as_before(case, tmp_path, monkeypatch, capsys):
     from vhir_cli.case_copies import summary_lines
     from vhir_cli.main import _case_list
 
