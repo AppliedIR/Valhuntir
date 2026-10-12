@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
-from vhir_cli.case_io import get_case_dir
+from vhir_cli.case_io import get_case_dir, read_regular
 from vhir_cli.display import display_safe
 from vhir_cli.display import lines as indent_lines
 
@@ -404,7 +404,7 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
         logs, unread = [], [f"audit/ can't be listed ({type(e).__name__})"]
     for log in logs:
         try:
-            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = read_regular(log).decode("utf-8", errors="replace").splitlines()
         except OSError as e:
             unread.append(f"audit/{log.name} can't be read ({type(e).__name__})")
             continue
@@ -500,7 +500,7 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
 def _read_registry(reg_file: Path) -> dict:
     registry = {"files": []}
     try:
-        text = reg_file.read_text() if reg_file.exists() else ""
+        text = read_regular(reg_file).decode() if reg_file.exists() else ""
         if text.strip():
             registry = json.loads(text)
     except (OSError, ValueError) as e:
@@ -797,7 +797,7 @@ def list_evidence_data(case_dir) -> dict:
     if not reg_file.exists():
         return {"evidence": [], "registry_exists": False}
 
-    registry = json.loads(reg_file.read_text())
+    registry = json.loads(read_regular(reg_file).decode())
     return {"evidence": registry.get("files", []), "registry_exists": True}
 
 
@@ -856,7 +856,7 @@ def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
     if not reg_file.exists():
         return {"results": [], "verified": 0, "modified": 0, "missing": 0, "errors": 0}
 
-    registry = json.loads(reg_file.read_text())
+    registry = json.loads(read_regular(reg_file).decode())
     files = registry.get("files", [])
     if not files:
         return {"results": [], "verified": 0, "modified": 0, "missing": 0, "errors": 0}

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,25 @@ DEFAULT_CASES_DIR = str(Path.home() / "cases")
 
 class CaseError(Exception):
     """Raised when case directory cannot be resolved or validation fails."""
+
+
+class NotRegularFile(OSError):
+    """A FIFO, device or socket where a case file should be: refused unread.
+    An OSError, so every handler of a read error handles it."""
+
+
+def read_regular(path) -> bytes:
+    """A regular file's bytes: opened non-blocking and checked on the open
+    descriptor before any read, so a FIFO (or a link to one) never blocks."""
+    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NotRegularFile(f"{path} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as f:
+        return f.read()
 
 
 def _validate_case_id(case_id: str) -> None:
@@ -181,7 +201,7 @@ def load_findings(case_dir: Path) -> list[dict]:
     if not findings_file.exists():
         return []
     try:
-        return json.loads(findings_file.read_text())
+        return json.loads(read_regular(findings_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt findings.json ({findings_file}): {e}", file=sys.stderr)
         return []
@@ -201,7 +221,7 @@ def load_timeline(case_dir: Path) -> list[dict]:
     if not timeline_file.exists():
         return []
     try:
-        return json.loads(timeline_file.read_text())
+        return json.loads(read_regular(timeline_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt timeline.json ({timeline_file}): {e}", file=sys.stderr)
         return []
@@ -221,7 +241,7 @@ def load_todos(case_dir: Path) -> list[dict]:
     if not todos_file.exists():
         return []
     try:
-        return json.loads(todos_file.read_text())
+        return json.loads(read_regular(todos_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt todos.json ({todos_file}): {e}", file=sys.stderr)
         return []
@@ -241,7 +261,7 @@ def load_iocs(case_dir: Path) -> list[dict]:
     if not iocs_file.exists():
         return []
     try:
-        return json.loads(iocs_file.read_text())
+        return json.loads(read_regular(iocs_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt iocs.json ({iocs_file}): {e}", file=sys.stderr)
         return []
