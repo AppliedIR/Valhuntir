@@ -1,11 +1,11 @@
 """The decision screens print every case value on one line, its control
-characters shown as "?" (approve-screen-oneline, audit 8 H1/H2, M4, L1-L5).
+characters shown as "?".
 
 The analysis VM writes the case root, so a field NAME, an id, a file name or a
 CASE.yaml value can hold terminal sequences. `vhir approve --review` printed
 extra signed-body keys raw: a planted key painted a fake "Sign 1 decision(s)"
-screen while three were signed. Each family row plants all 16 classes audit 8
-used in every field the family prints, captures stdout and stderr, and asserts
+screen while three were signed. Each family row plants 16 classes of terminal
+payload in every field the family prints, captures stdout and stderr, and asserts
 that no planted sequence gets through (the product's own SGR stays). The
 marker `@<field>@` proves the row reached each field.
 """
@@ -28,7 +28,7 @@ from vhir_cli.commands.approve import _approve_specific, cmd_approve
 
 from .signing import PASSPHRASE, enrol
 
-CLASSES = [  # audit 8's classes
+CLASSES = [  # cursor, screen, OSC, SGR, C1, bidi, zero-width, a fake line
     ("csi_up_erase", "\x1b[1A\x1b[2K"),
     ("csi_clear", "\x1b[H\x1b[2J"),
     ("cr_overwrite", "AAAA\rStatus: APPROVED"),
@@ -126,8 +126,8 @@ def _signed(case_id) -> list[str]:
 def test_f1_review_shows_planted_keys_escaped_and_the_true_summary(
     case, monkeypatch, capsys
 ):
-    """C1/C2: audit 8's chain. One entry is the examiner's, two are planted
-    with staged_by = the examiner (audit 3 H4, out of scope); the third
+    """C1/C2: one entry is the examiner's, two are planted with staged_by =
+    the examiner (their inclusion is a separate question); the third
     finding's extra keys paint a fake one-decision screen. The screen now
     shows the 3 decisions that are signed."""
     d = case()
