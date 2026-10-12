@@ -114,9 +114,13 @@ def test_items_that_have_no_id_or_cant_be_keyed_are_not_duplicates(case_dir):
 
 
 def test_the_cli_names_the_duplicate_without_its_controls(case_dir, tmp_path, capsys):
-    """The id is the bundle's data: it can't drive the terminal or the MCP reply."""
+    """The id is the case file's data: it can't drive the terminal or the MCP
+    reply. (A bundle's id with controls is refused before the duplicate check.)"""
     dup = "F-\x1b[2J\x9b\nX"
-    bundle = {"findings": [{"id": dup, "staged": OLD}, {"id": dup, "staged": NEW}]}
+    (case_dir / "findings.json").write_text(
+        json.dumps([{"id": dup, "staged": OLD}, {"id": dup, "staged": NEW}])
+    )
+    bundle = {"findings": [{"id": "F-b-001", "staged": NEW}]}
     message = _refused(case_dir, bundle, "F-?[2J??X")
     assert not CONTROLS.search(message) and "\n" not in message
     path = tmp_path / "bundle.json"

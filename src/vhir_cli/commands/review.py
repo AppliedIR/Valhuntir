@@ -160,10 +160,19 @@ def _show_findings_table(case_dir: Path) -> None:
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
 
 
+def _cited(value) -> list:
+    """The audit ids a record cites, as a list: a list as it is, None as none,
+    any other value as one id. Whatever the shape, it is shown, never a crash."""
+    if isinstance(value, list):
+        return value
+    return [] if value is None else [value]
+
+
 def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
-    """One line per audit id: where it came from, and the tool or command."""
+    """One line per audit id: where it came from, and the tool or command. An
+    id that isn't text has no audit record."""
     for raw_eid in audit_ids:
-        entry = audit_index.get(raw_eid)
+        entry = audit_index.get(raw_eid) if isinstance(raw_eid, str) else None
         eid = one_line(raw_eid)
         if entry:
             entry = display_safe(entry)  # for printing inline
@@ -196,20 +205,17 @@ def _show_withdrawn(case_dir: Path) -> None:
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
-    # Only the skeptic's calls are resolved below: index just those. A list's
-    # unhashable id is left for the chain printer to meet, as before.
-    wanted = set()
-    for raw in withdrawals:
-        ids = raw["result_summary"].get("skeptic_audit_ids")
-        for eid in ids if isinstance(ids, list) else []:
-            try:
-                wanted.add(eid)
-            except TypeError:
-                continue
+    # Only the skeptic's calls are resolved below: index just those.
+    wanted = {
+        eid
+        for raw in withdrawals
+        for eid in _cited(raw["result_summary"].get("skeptic_audit_ids"))
+        if isinstance(eid, str)
+    }
     audit_index = load_audit_index(case_dir, wanted)
     print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
     for raw in withdrawals:
-        skeptic_ids = raw["result_summary"].get("skeptic_audit_ids") or []
+        skeptic_ids = _cited(raw["result_summary"].get("skeptic_audit_ids"))
         entry = display_safe(raw)  # for printing inline
         result = entry["result_summary"]
         print(f"\n{'=' * 60}")
@@ -222,7 +228,7 @@ def _show_withdrawn(case_dir: Path) -> None:
             f"  Observation:   {indent_lines(raw['result_summary'].get('observation', ''), ' ' * 17)}"
         )
         print(f"  Contradiction: {result.get('contradiction', '')}")
-        if isinstance(skeptic_ids, list) and skeptic_ids:
+        if skeptic_ids:
             print("\n  Skeptic's tool calls:")
             _print_evidence_chain(skeptic_ids, audit_index)
 
@@ -236,7 +242,12 @@ def _show_findings_detail(case_dir: Path) -> None:
 
     # Only the audit_ids these findings cite are ever resolved below, so keep
     # the index bounded by that instead of by the whole audit trail.
-    wanted = {eid for f in findings for eid in (f.get("audit_ids") or [])}
+    wanted = {
+        eid
+        for f in findings
+        for eid in _cited(f.get("audit_ids"))
+        if isinstance(eid, str)
+    }
     audit_index = load_audit_index(case_dir, wanted)
 
     for raw in findings:
@@ -250,7 +261,8 @@ def _show_findings_detail(case_dir: Path) -> None:
         if f.get("confidence_justification"):
             print(f"  Justification: {f['confidence_justification']}")
         print("\n".join(finding_lines(f)))
-        print(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
+        audit_ids = _cited(raw.get("audit_ids"))
+        print(f"  Evidence:     {', '.join(one_line(eid) for eid in audit_ids)}")
         print(f"  Observation:  {indent_lines(raw.get('observation', ''), ' ' * 16)}")
         print(
             f"  Interpretation: {indent_lines(raw.get('interpretation', ''), ' ' * 18)}"
@@ -267,7 +279,6 @@ def _show_findings_detail(case_dir: Path) -> None:
             print(f"  Reason:       {f.get('rejection_reason', '?')}")
 
         # Evidence chain
-        audit_ids = raw.get("audit_ids", [])
         if audit_ids:
             print("\n  Evidence Chain:")
             _print_evidence_chain(audit_ids, audit_index)
@@ -474,8 +485,8 @@ def _show_timeline(
             print(
                 f"  Description: {indent_lines(raw.get('description', ''), ' ' * 15)}"
             )
-            if t.get("audit_ids"):
-                print(f"  Evidence:    {', '.join(t['audit_ids'])}")
+            if audit_ids := _cited(raw.get("audit_ids")):
+                print(f"  Evidence:    {', '.join(one_line(e) for e in audit_ids)}")
             if t.get("source"):
                 print(f"  Source:      {t['source']}")
             if t.get("approved_at"):

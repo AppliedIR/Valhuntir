@@ -142,3 +142,57 @@ def test_apply_edit_dump_failure_removes_temp_file(monkeypatch, identity, tmp_pa
         _apply_edit({"title": "Old title"}, identity)
 
     assert list(tmp_path.iterdir()) == []
+
+
+def _edit(monkeypatch, item, identity, text):
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    monkeypatch.setattr(subprocess, "run", _fake_editor([], rewrite=text))
+    _apply_edit(item, identity)
+
+
+def _finding():
+    return {"id": "F-tester-001", "title": "Old title", "observation": "obs",
+            "status": "DRAFT", "audit_ids": ["sift-tester-001"], "created_by": "tester"}  # fmt: skip
+
+
+def test_keys_the_editor_didnt_offer_are_named_and_left(monkeypatch, identity, capsys):
+    """An id, a status or the evidence never reaches the signed item."""
+    item = _finding()
+    text = yaml.dump({"title": "New title", "id": "F-tester-999", "status": "REJECTED",
+                      "audit_ids": ["sift-forged-001"], "created_by": "mallory"})  # fmt: skip
+    _edit(monkeypatch, item, identity, text)
+    assert {**_finding(), "title": "New title"} == {
+        k: v for k, v in item.items() if k != "examiner_modifications"}  # fmt: skip
+    assert set(item["examiner_modifications"]) == {"title"}
+    assert capsys.readouterr().err == (
+        "  Not editable here, left unchanged: audit_ids, created_by, id, status\n"
+    )
+
+
+@pytest.mark.parametrize("text", ["- just\n- a list\n", "just text\n"])
+def test_a_file_that_isnt_a_set_of_fields_leaves_the_item(
+    monkeypatch, identity, capsys, text
+):
+    item = _finding()
+    _edit(monkeypatch, item, identity, text)
+    assert item == _finding()
+    assert capsys.readouterr().err == (
+        "  The edited file isn't a set of fields; the item is unchanged.\n"
+    )
+
+
+def test_an_unquoted_time_is_kept_as_typed(monkeypatch, identity):
+    """YAML would read it as a datetime and store another form of it."""
+    item = {
+        "id": "T-tester-001",
+        "timestamp": "2026-01-02T03:04:05Z",
+        "description": "d",
+    }
+    _edit(
+        monkeypatch, item, identity, "timestamp: 2026-01-02T03:04:06Z\ndescription: d\n"
+    )
+    assert item["timestamp"] == "2026-01-02T03:04:06Z"
+    assert (
+        item["examiner_modifications"]["timestamp"]["modified"]
+        == "2026-01-02T03:04:06Z"
+    )
