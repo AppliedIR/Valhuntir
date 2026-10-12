@@ -1479,10 +1479,11 @@ def _repoint_evidence(
                 absent += os.path.normpath(rel) not in restored
             break
         else:
-            if not os.path.isabs(path):  # case-relative: inside the restored case
-                continue
+            # a case-relative path is read against the restored case: inside it
+            # only while it stays there (evidence/../../x leaves it)
+            where = os.path.normpath(os.path.join(new_root, path))
             try:
-                Path(path).relative_to(new_root)
+                Path(where).relative_to(new_root)
             except ValueError:
                 outside.append(path)
     if moved:

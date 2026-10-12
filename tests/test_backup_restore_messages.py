@@ -233,3 +233,26 @@ def test_with_opensearch_asked_for_a_case_yaml_that_isnt_utf8_is_named_not_hidde
     assert f"{src / 'CASE.yaml'} isn't UTF-8 text" in out
     assert "OpenSearch is not available" not in out
     assert list((box / "out").iterdir()) == []
+
+
+@pytest.mark.parametrize("path", ["../shared/x.bin", "evidence/../../shared/x.bin"])
+def test_a_relative_evidence_entry_that_leaves_the_case_is_named_outside(
+    box, capsys, path
+):
+    src = make_case(box)
+    (src / "evidence").mkdir()
+    (src / "evidence" / "x.bin").write_bytes(b"x")
+    (src / "evidence.json").write_text(json.dumps({"files": [
+        {"path": "evidence/x.bin", "sha256": "0" * 64}, {"path": path, "sha256": "1" * 64}]}))  # fmt: skip
+    # the registry travels as case data (--include-evidence would refuse an entry
+    # outside the case before copying)
+    code, out = vhir(capsys, "backup", "--case", "C-1", box / "out")
+    assert code == 0, out
+    target = box / "cases" / "R"
+    code, out = vhir(
+        capsys, "restore", only_backup(box), "--target", target, "--skip-opensearch"
+    )
+    assert code == 0, out
+    listed = out.split("still registered outside the restored case:")[-1].splitlines()
+    assert f"    {path}" in listed
+    assert "    evidence/x.bin" not in listed
