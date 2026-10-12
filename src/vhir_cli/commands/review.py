@@ -562,11 +562,14 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                             entries.append(json.loads(line))
                         except json.JSONDecodeError:
                             print(
-                                f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
+                                f"  Warning: skipping corrupt audit line in {one_line(jsonl_file.name)}",
                                 file=sys.stderr,
                             )
             except OSError as e:
-                print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
+                print(
+                    f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                    file=sys.stderr,
+                )
                 continue
 
     # Read approvals

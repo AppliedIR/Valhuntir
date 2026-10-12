@@ -165,7 +165,7 @@ def _preflight(identity: dict, config_path: Path, case_dir: Path) -> bool:
         sys.exit(1)
     copy = decide.copy_problem(case_dir)
     if copy:  # signing would extend another folder's chain
-        print(copy, file=sys.stderr)
+        print(_one_line(copy), file=sys.stderr)  # names the case's folders and id
         sys.exit(1)
     return new_passphrase
 
@@ -1145,7 +1145,7 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     for field in sorted(set(body) - shown):
         value = body[field]
         text = value if isinstance(value, str) else json.dumps(value, default=str)
-        label = field.replace("_", " ").capitalize()
+        label = _one_line(field.replace("_", " ").capitalize())  # a key is case data
         print(f"  {label}:{' ' * max(1, 15 - len(label))}{_one_line(text)}")
 
     # Note

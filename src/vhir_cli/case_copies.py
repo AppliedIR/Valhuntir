@@ -292,27 +292,32 @@ def case_keys(case_dir: Path) -> dict:
 
 def summary_lines(case_id: str, summary: dict) -> list[str]:
     """The printed summary of close, export and backup: every signing key
-    with its full fingerprint, and each chain's head."""
+    with its full fingerprint, and each chain's head. Every value is shown on
+    one line, its control characters as "?": a bundle's are another box's data."""
+    from vhir_cli.display import one_line as s
+
     lines = []
     if summary.get("keys"):
         lines.append("Signing keys:")
         for k in summary["keys"]:
             lines.append(
-                f"  {k['examiner']} {k['fingerprint']} (chain {k['chain_id']} "
-                f"seq {k['first_seq']}-{k['last_seq']}; {k['label']})"
+                f"  {s(k['examiner'])} {s(k['fingerprint'])} (chain {s(k['chain_id'])} "
+                f"seq {s(k['first_seq'])}-{s(k['last_seq'])}; {s(k['label'])})"
             )
     for h in summary.get("heads", []):
         lines.append(
-            ledger.format_head(case_id, (h["seq"], h["hash"]), f"chain {h['chain_id']}")
+            ledger.format_head(
+                s(case_id), (s(h["seq"]), s(h["hash"])), f"chain {s(h['chain_id'])}"
+            )
         )
     if summary.get("own_diverged"):
         lines.append(
-            f"Chain {summary['own_diverged']}: a copy in the case differs from this box's "
+            f"Chain {s(summary['own_diverged'])}: a copy in the case differs from this box's "
             "chain; the key and head above are this box's own."
         )
     for cid in summary.get("diverged", []):
         lines.append(
-            f"Chain {cid}: its copies diverge, so no key or head is taken from it; "
+            f"Chain {s(cid)}: its copies diverge, so no key or head is taken from it; "
             "`vhir review --verify` names them."
         )
     return lines
