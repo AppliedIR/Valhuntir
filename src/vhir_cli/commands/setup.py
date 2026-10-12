@@ -212,15 +212,22 @@ def _run_connectivity_test() -> None:
     if repo is not None and _tell_snapshot_setup(
         repo / "scripts" / "setup-opensearch.sh"
     ):
-        from vhir_cli.commands.backup import _staging_problems
+        from vhir_cli.commands import backup
 
-        staging = _staging_problems()  # what backup itself needs on this box
-        if staging:
+        try:  # backup's own path: its staging, the repository verified, a snapshot of nothing
+            from opensearch_mcp.client import get_client
+
+            cause = backup.snapshot_staging_check(get_client())
+        except Exception as e:  # noqa: BLE001 — the check itself couldn't run
+            cause = f"{type(e).__name__}: {e}"
+        if cause:
             print(
-                "\n  OpenSearch is set up for snapshots, but vhir backup can't stage them:"
+                "\n  OpenSearch is set up for snapshots, but vhir backup's own run fails:"
             )
-            for line in staging:
-                print(f"    - {line}")
+            print(f"    - {cause}")
+            if backup._snapshot_setup_error(cause):
+                for line in backup._snapshot_setup_hint(cause).splitlines():
+                    print(f"    {line}")
         else:
             print("\n  OpenSearch snapshots: OK (vhir backup can save the indices)")
 

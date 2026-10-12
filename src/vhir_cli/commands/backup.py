@@ -40,7 +40,8 @@ _PASSWORDS_DIR = Path("/var/lib/vhir/passwords")
 _SNAPSHOTS_HOME = (
     "/var/lib/vhir/snapshots"  # what docker-compose.yml binds for OpenSearch
 )
-_SNAPSHOTS_DIR = Path(os.environ.get("VHIR_SNAPSHOTS_DIR", _SNAPSHOTS_HOME))
+# an empty VHIR_SNAPSHOTS_DIR is unset, never the current folder
+_SNAPSHOTS_DIR = Path(os.environ.get("VHIR_SNAPSHOTS_DIR") or _SNAPSHOTS_HOME)
 _OPENSEARCH_UID = 1000  # the user OpenSearch runs as in its container
 
 
@@ -1126,30 +1127,6 @@ def _snapshot_setup_error(error: str) -> bool:
     ) or ("Permission denied" in error and str(_SNAPSHOTS_DIR) in error)
 
 
-def _staging_problems() -> list[str]:
-    """What stops this account staging a snapshot, as `vhir backup` would:
-    VHIR_SNAPSHOTS_DIR pointing away from setup's folder, or a folder it can't
-    create files in (the lock and the staging folder go there)."""
-    problems = []
-    elsewhere = os.environ.get("VHIR_SNAPSHOTS_DIR")
-    if elsewhere and Path(elsewhere) != Path(_SNAPSHOTS_HOME):
-        problems.append(
-            f"VHIR_SNAPSHOTS_DIR is set to {elsewhere}, but OpenSearch writes its "
-            f"snapshots to {_SNAPSHOTS_HOME}, the folder setup configures; unset it"
-        )
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=_SNAPSHOTS_DIR, prefix=".vhir-setup-test-"
-        ):
-            pass
-    except OSError as e:
-        problems.append(
-            f"this account (uid {os.getuid()}) can't create files in {_SNAPSHOTS_DIR}, "
-            f"where vhir backup stages snapshots: {e.strerror or e}"
-        )
-    return problems
-
-
 def _snapshot_setup_hint(error: str = "") -> str:
     """What to do about a snapshot ``error`` of setup's kind: run setup, unless
     the cause is one setup can't change, which is named instead."""
@@ -1202,8 +1179,6 @@ def _create_opensearch_snapshot(
     case_id: str, backup_dir: Path, progress_fn=None, case_dir: Path | None = None
 ) -> dict:
     """Create OpenSearch snapshot for a case's indices. Local Docker only."""
-    import time
-
     from opensearch_mcp.client import get_client
     from opensearch_mcp.paths import sanitize_index_component
 
@@ -1214,26 +1189,9 @@ def _create_opensearch_snapshot(
     if not pattern:
         raise _NothingToSnapshot("the case has no indices to snapshot")
     snapshot_name = "snap"
-    staging = _SNAPSHOTS_DIR / repo_name
-
-    # Lock file
-    lock_path = _SNAPSHOTS_DIR / ".backup.lock"
-    _SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    _acquire_lock(lock_path)
+    staging, lock_path = _stage_repository(client, repo_name)
 
     try:
-        # Clean stale staging data
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True, exist_ok=True)
-
-        # Register repo — path inside container
-        container_path = f"/usr/share/opensearch/snapshots/{repo_name}"
-        client.snapshot.create_repository(
-            repository=repo_name,
-            body={"type": "fs", "settings": {"location": container_path}},
-        )
-
         # Get index stats before snapshot
         indices = client.cat.indices(index=pattern, format="json")
         total_docs = sum(int(idx.get("docs.count", 0)) for idx in indices)
@@ -1250,34 +1208,8 @@ def _create_opensearch_snapshot(
             wait_for_completion=False,
         )
 
-        # Poll for completion (30 minute timeout)
-        max_wait = 1800
-        start = time.monotonic()
-        while True:
-            if time.monotonic() - start > max_wait:
-                raise RuntimeError(
-                    "Snapshot timed out after 30 minutes. "
-                    "Check OpenSearch health and retry."
-                )
-            # The repository's own listing: _status says SUCCESS before the
-            # repository's root index-N is written
-            status = client.snapshot.get(repository=repo_name, snapshot=snapshot_name)
-            snapshots = status.get("snapshots", [])
-            if snapshots:
-                state = snapshots[0].get("state", "")
-                if state == "SUCCESS":
-                    break
-                if state in ("FAILED", "PARTIAL", "INCOMPATIBLE"):
-                    raise RuntimeError(f"Snapshot failed: {state}")
-            time.sleep(2)
-
-        # A cluster whose snapshot folder isn't staging wrote it elsewhere
-        if not any(re.fullmatch(r"index-\d+", p.name) for p in staging.iterdir()):
-            raise RuntimeError(
-                f"OpenSearch didn't write the snapshot into {staging}: the "
-                "cluster's snapshot folder (path.repo) must be that folder on "
-                "this host"
-            )
+        _await_snapshot(client, repo_name, snapshot_name, 1800)
+        _check_written(staging)
 
         # Move snapshot data to backup dir
         backup_snapshot_dir = backup_dir / "opensearch-snapshot"
@@ -1316,15 +1248,118 @@ def _create_opensearch_snapshot(
             "case_uuid": _case_uuid(case_dir) if case_dir else "",
         }
     except Exception:
-        # Cleanup on failure
-        try:
-            client.snapshot.delete_repository(repository=repo_name)
-        except Exception:
-            pass
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+        _unstage(client, repo_name, staging)  # cleanup on failure
         raise
     finally:
+        _release_lock(lock_path)
+
+
+_CONTAINER_SNAPSHOTS = (
+    "/usr/share/opensearch/snapshots"  # the bind, inside the container
+)
+
+
+def _stage_repository(client, repo_name: str) -> tuple[Path, Path]:
+    """Backup's staging, shared with `vhir setup test`: take the lock, make a
+    fresh staging folder (as this account, as backup makes it), and register
+    the repository at its path inside the container. (staging, lock); on a
+    failure everything is undone and it raises."""
+    staging = _SNAPSHOTS_DIR / repo_name
+    lock_path = _SNAPSHOTS_DIR / ".backup.lock"
+    _SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    _acquire_lock(lock_path)
+    try:
+        if staging.exists():  # stale staging data
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        client.snapshot.create_repository(
+            repository=repo_name,
+            body={
+                "type": "fs",
+                "settings": {"location": f"{_CONTAINER_SNAPSHOTS}/{repo_name}"},
+            },
+        )
+    except BaseException:
+        _unstage(client, repo_name, staging)
+        _release_lock(lock_path)
+        raise
+    return staging, lock_path
+
+
+def _unstage(client, repo_name: str, staging: Path) -> None:
+    try:
+        client.snapshot.delete_repository(repository=repo_name)
+    except Exception:
+        pass
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _await_snapshot(client, repo_name: str, snapshot_name: str, max_wait: int) -> None:
+    """Until the repository lists the snapshot as SUCCESS (`_status` says SUCCESS
+    before the repository's root index-N is written)."""
+    import time
+
+    start = time.monotonic()
+    while True:
+        if time.monotonic() - start > max_wait:
+            raise RuntimeError(
+                f"Snapshot timed out after {max_wait // 60} minutes. "
+                "Check OpenSearch health and retry."
+            )
+        status = client.snapshot.get(repository=repo_name, snapshot=snapshot_name)
+        snapshots = status.get("snapshots", [])
+        if snapshots:
+            state = snapshots[0].get("state", "")
+            if state == "SUCCESS":
+                return
+            if state in ("FAILED", "PARTIAL", "INCOMPATIBLE"):
+                raise RuntimeError(f"Snapshot failed: {state}")
+        time.sleep(2)
+
+
+def _check_written(staging: Path) -> None:
+    """A cluster whose snapshot folder isn't staging wrote it elsewhere."""
+    if not any(re.fullmatch(r"index-\d+", p.name) for p in staging.iterdir()):
+        raise RuntimeError(
+            f"OpenSearch didn't write the snapshot into {staging}: the "
+            "cluster's snapshot folder (path.repo) must be that folder on "
+            "this host"
+        )
+
+
+_CHECK_REPO = "vhir-backup-vhir-setup-test"
+
+
+def snapshot_staging_check(client) -> str:
+    """What `vhir backup` would hit, on its own path: its staging (the lock, a
+    folder this account makes, the repository registered), OpenSearch's
+    verification of the repository, and a snapshot of no indices that must land
+    in this host's staging folder. Everything it made is removed. "" when
+    backup can save indices, else the cause."""
+    try:
+        staging, lock_path = _stage_repository(client, _CHECK_REPO)
+    except Exception as e:
+        return str(e)
+    try:
+        client.snapshot.verify_repository(repository=_CHECK_REPO)
+        client.snapshot.create(
+            repository=_CHECK_REPO,
+            snapshot="check",
+            body={"indices": "vhir-setup-test-none-*", "include_global_state": False},
+            wait_for_completion=False,
+        )
+        _await_snapshot(client, _CHECK_REPO, "check", 120)
+        _check_written(staging)
+        return ""
+    except Exception as e:
+        return str(e)
+    finally:
+        try:  # OpenSearch removes what it wrote, before the folder goes
+            client.snapshot.delete(repository=_CHECK_REPO, snapshot="check")
+        except Exception:
+            pass
+        _unstage(client, _CHECK_REPO, staging)
         _release_lock(lock_path)
 
 
