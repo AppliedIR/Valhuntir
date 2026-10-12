@@ -61,6 +61,8 @@ def cmd_exec(args, identity: dict) -> None:
     # the entry goes through this handle
     log_file = case_dir / "audit" / f"{_MCP_NAME}.jsonl"
     try:
+        if log_file.parent.is_symlink():  # the folder too: never another case's trail
+            raise OSError(errno.ELOOP, "a symbolic link")
         log_file.parent.mkdir(parents=True, exist_ok=True)
         audit_id = _next_audit_id(case_dir, examiner)
         # never through a link: the entry stays in the case
@@ -123,12 +125,19 @@ def cmd_exec(args, identity: dict) -> None:
         elapsed_ms,
     )
 
-    # Display output
-    if stdout:
-        print(f"\n--- stdout ---\n{stdout[:10000]}")
-    if stderr:
-        print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
-    print(f"\nExit code: {exit_code}")
+    # Display output. A reader that stopped early (| head) never hides a
+    # failed write: the warning is on stderr
+    try:
+        if stdout:
+            print(f"\n--- stdout ---\n{stdout[:10000]}")
+        if stderr:
+            print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
+        print(f"\nExit code: {exit_code}")
+    except BrokenPipeError:
+        if not failed:
+            raise
+        # nothing more can reach the closed pipe, at exit either
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
     if failed:  # last, and never an audit id that names no entry
         print(_ran_unaudited(log_file, failed), file=sys.stderr)
         sys.exit(1)
