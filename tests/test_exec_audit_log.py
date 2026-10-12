@@ -12,14 +12,17 @@ import pytest
 # cmd_exec in a child: confirmed at a fake terminal, subprocess.run faked (it
 # only leaves a marker), so no command runs and rlimits stay in the child
 CHILD = r"""
-import subprocess, sys
+import os, subprocess, sys
 from pathlib import Path
+if os.environ.get("STDOUT_CLOSED"):  # a reader that stopped early (| head)
+    r, w = os.pipe(); os.close(r); os.dup2(w, 1)
 from unittest.mock import MagicMock, patch
 from vhir_cli.commands import execute
 tty = MagicMock(); tty.readline.return_value = "y\n"
 def run(cmd, **kw):
     Path(sys.argv[2]).write_text("ran")
-    return subprocess.CompletedProcess(cmd, 0, "r/r 5-128-1:\tfile-one.txt\n", "")
+    out = "r/r 5-128-1:\tfile-one.txt\n" * (1000 if os.environ.get("STDOUT_CLOSED") else 1)
+    return subprocess.CompletedProcess(cmd, 0, out, "")
 class A: cmd = ["fakefls", "-r", "image.dd"]; purpose = "triage"; case = None
 with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execute.subprocess, "run", run):
     execute.cmd_exec(A(), {"examiner": "tester"})
@@ -29,7 +32,7 @@ NOT_RUN = "Not run: vhir exec can't write this command's audit entry ({}: {}). M
 RAN = "WARNING: the command ran, but its audit entry couldn't be written ({}: {}), so it is not in the case's audit trail."
 
 
-def _exec(case, fsize=None):
+def _exec(case, fsize=None, stdout_closed=False):
     mark = case.parent / "ran"
     mark.unlink(missing_ok=True)
 
@@ -39,6 +42,8 @@ def _exec(case, fsize=None):
             resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
 
     env = {**os.environ, "VHIR_CASE_DIR": str(case), "PYTHONDONTWRITEBYTECODE": "1"}
+    if stdout_closed:
+        env["STDOUT_CLOSED"] = "1"
     p = subprocess.run([sys.executable, "-c", CHILD, "-", str(mark)], env=env, timeout=20,
                        capture_output=True, text=True, preexec_fn=limits)  # fmt: skip
     # the prompt has no newline
@@ -117,3 +122,27 @@ def test_a_failed_write_after_the_run_is_loud_and_leaves_the_log_as_it_was(case,
     ids = [json.loads(line)["audit_id"] for line in _log(case).read_text().splitlines()]
     assert rc == 0 and len(ids) == len(set(ids)) == 2
     assert out.strip().splitlines()[-1] == f"Audit ID: {ids[-1]}"
+
+
+def test_an_audit_folder_that_links_to_another_case_refuses_the_run(case):
+    """The folder is checked too, not only the log: an entry never lands in
+    another case's trail."""
+    other = case.parent / "other" / "audit"
+    other.mkdir(parents=True)
+    (other / "cli-exec.jsonl").write_text(PRIOR)
+    (case / "audit").rmdir()
+    (case / "audit").symlink_to(other)
+    rc, out, err, ran = _exec(case)
+    assert (rc, ran) == (1, False)
+    assert err == NOT_RUN.format(_log(case), "a symbolic link")
+    assert (other / "cli-exec.jsonl").read_text() == PRIOR
+
+
+def test_a_reader_that_stops_early_still_hears_the_write_failed(case):
+    """The output goes to a pipe its reader closed (| head): the warning on
+    stderr still says the entry wasn't written, and the exit is 1."""
+    _prior(case)
+    rc, _, err, ran = _exec(case, fsize=len(PRIOR), stdout_closed=True)
+    assert (rc, ran) == (1, True)
+    assert err == RAN.format(_log(case), "File too large")
+    assert _log(case).read_text() == PRIOR
