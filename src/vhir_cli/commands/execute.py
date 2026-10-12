@@ -133,6 +133,7 @@ def cmd_exec(args, identity: dict) -> None:
         if stderr:
             print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
         print(f"\nExit code: {exit_code}")
+        sys.stdout.flush()  # here, not at exit, so a closed pipe is seen now
     except BrokenPipeError:
         if not failed:
             raise
