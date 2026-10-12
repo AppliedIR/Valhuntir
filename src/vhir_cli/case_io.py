@@ -30,6 +30,17 @@ class CaseFileNotRegular(CaseError, OSError):
     pipe would block, so it is refused by name."""
 
 
+class CaseFileNotText(CaseError, ValueError):
+    """A case file that isn't UTF-8 text: refused by name, never read as an
+    empty file (an empty CASE.yaml would read as no case at all)."""
+
+
+def not_text(path) -> CaseFileNotText:
+    return CaseFileNotText(
+        f"{path} isn't UTF-8 text. Put the case's own file back, then try again."
+    )
+
+
 def case_file_there(path: Path) -> bool:
     """Whether a case file is there to read: False when it's absent. One that
     is there but isn't a regular file (a named pipe, socket or device) raises
@@ -162,8 +173,10 @@ def load_case_meta(case_dir: Path) -> dict:
     if not case_file_there(meta_file):
         return {}
     try:
-        with open(meta_file) as f:
+        with open(meta_file, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
+    except UnicodeDecodeError:
+        raise not_text(meta_file) from None
     except (yaml.YAMLError, OSError):
         return {}
 
