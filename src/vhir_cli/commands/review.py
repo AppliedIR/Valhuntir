@@ -257,8 +257,9 @@ def _show_findings_detail(case_dir: Path) -> None:
         )
         if f.get("iocs"):
             print(f"  IOCs:         {f['iocs']}")
-        if f.get("mitre_techniques"):
-            print(f"  MITRE:        {f['mitre_techniques']}")
+        # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
+        if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
+            print(f"  MITRE:        {mitre}")
         if f.get("approved_at"):
             print(f"  Approved:     {f['approved_at']}")
         if f.get("rejected_at"):
