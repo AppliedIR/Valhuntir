@@ -273,3 +273,110 @@ def test_one_class_for_a_case_file_that_isnt_regular():
     assert issubclass(CaseFileNotRegular, case_io.CaseError)
     assert issubclass(CaseFileTooLarge, OSError)
     assert issubclass(CaseFileTooLarge, case_io.CaseError)
+
+
+# --- case documents: read whole, within DOC_CAP ------------------------------
+
+_ITEMS_IN_256MIB = """
+import resource, sys
+from pathlib import Path
+resource.setrlimit(resource.RLIMIT_AS, (256 << 20, 256 << 20))
+from vhir_cli import ledger_verify as lv
+r = lv.Result(case_id="c", case_id_source="test")
+lv._items(Path(sys.argv[1]), r)
+print(r.failures)
+"""
+
+
+@POSIX
+def test_a_document_padded_with_newlines_is_read_as_one_document(case):
+    """findings.json of [] and 4 MiB of newlines is one valid document: read
+    whole, never as millions of lines, it verifies in a 256 MiB address space."""
+    import subprocess
+    import sys
+
+    (case / "findings.json").write_bytes(b"[]" + b"\n" * (4 << 20))
+    p = subprocess.run([sys.executable, "-c", _ITEMS_IN_256MIB, str(case)],
+                       capture_output=True, text=True, timeout=60)  # fmt: skip
+    assert p.returncode == 0 and p.stdout.strip() == "[]", (p.stdout, p.stderr[-500:])
+
+
+def test_a_document_over_the_cap_is_refused_by_name(case):
+    """A document is refused by its size, with the document's text, not as a
+    long line of a log."""
+    from vhir_cli import ledger_verify
+
+    path = case / "findings.json"
+    path.write_bytes(b"[" + b" " * ((16 << 20) - 1) + b"]")  # 16 MiB + 1 bytes
+    text = (
+        f"{path} is larger than 16 MiB, so it wasn't read. It holds the case's findings: "
+        "keep a copy of it before you move it out of the case, then try again."
+    )
+    result = ledger_verify.Result(case_id="c", case_id_source="test")
+    ledger_verify._items(case, result)
+    assert result.failures == [
+        ("CASE_FILE_UNREADABLE", f"findings.json couldn't be read ({text})")
+    ]
+    with pytest.raises(CaseFileTooLarge) as e:
+        case_io.read_case_document(path)
+    assert str(e.value) == text
+
+
+def test_a_large_real_shaped_document_is_read(case):
+    """About 5.3 MB of findings, as the largest real findings.json here is."""
+    from vhir_cli import ledger_verify
+
+    one = {"id": "F-tester-{n:04d}", "status": "DRAFT", "title": "t" * 40,
+           "observation": "o" * 1500, "interpretation": "i" * 800,
+           "artifacts": [{"source": "s" * 80, "content": "c" * 1200}]}  # fmt: skip
+    findings = [{**one, "id": one["id"].format(n=n)} for n in range(1, 1400)]
+    data = json.dumps(findings, indent=2).encode()
+    assert (
+        5 << 20 < len(data) < 16 << 20
+    )  # under the cap: a control, the same before the cap
+    (case / "findings.json").write_bytes(data)
+    result = ledger_verify.Result(case_id="c", case_id_source="test")
+    items = ledger_verify._items(case, result)
+    assert not result.failures and len(items) == 1399
+
+
+def test_the_cap_counts_a_lines_content_not_its_crlf(tmp_path):
+    at = tmp_path / "crlf.jsonl"
+    at.write_bytes(b"A" * LINE_CAP + b"\r\n" + b"{}\r\n")
+    assert [len(x) for x in case_io.case_lines(at)] == [LINE_CAP + 2, 4]
+    over = tmp_path / "over.jsonl"
+    over.write_bytes(b"A" * (LINE_CAP + 1) + b"\r\n")
+    with pytest.raises(CaseFileTooLarge) as e:
+        list(case_io.case_lines(over))
+    assert e.value.line == 1
+
+
+@POSIX
+def test_a_wintools_log_of_crlf_lines_reads_as_its_lf_twin(tmp_path):
+    """wintools-mcp.jsonl comes over the share in Windows text mode: its lines
+    end in CRLF. Short lines and one entry of exactly 16 MiB read as the same
+    log with LF endings does, in the readers that read it."""
+    head = b'{"audit_id": "wintools-tester-20261012-001", "tool": "run_windows_command", "pad": "'
+    big = head + b"A" * (LINE_CAP - len(head) - 2) + b'"}'
+    assert len(big) == LINE_CAP
+    lines = [json.dumps({"audit_id": f"wintools-tester-20261012-{n:03d}", "ts": "2026-10-12"}).encode()
+             for n in range(2, 200)] + [big]  # fmt: skip
+    read = {}
+    for end in (b"\r\n", b"\n"):
+        case = tmp_path / ("crlf" if end == b"\r\n" else "lf")
+        (case / "audit").mkdir(parents=True)
+        (case / "audit" / "wintools-mcp.jsonl").write_bytes(
+            b"".join(x + end for x in lines)
+        )
+
+        def run(case=case):
+            return (approval_checks.audit_lines(case),
+                    [e["audit_id"] for e in _quiet(lambda: audit_cmd._load_audit_entries(case))[0]])  # fmt: skip
+
+        status, got = _within(run, timeout=60.0)
+        assert status == "ok", got
+        read[end] = got
+    assert read[b"\r\n"] == read[b"\n"]
+    assert (
+        len(read[b"\n"][1]) == 199 and "wintools-tester-20261012-001" in read[b"\n"][0]
+    )

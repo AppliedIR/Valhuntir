@@ -77,6 +77,7 @@ def case_file_there(path: Path) -> bool:
 # parsed whole, and a parse costs up to about 34 times the line.
 LINE_CAP = 16 << 20
 FILE_BUDGET = 256 << 20
+DOC_CAP = 16 << 20  # a case document (findings.json, keys.json, ...), read whole
 _HOLDS = {  # a case file's name -> what it holds, as the refusal names it
     "approvals.jsonl": "approval records",
     "findings.json": "findings",
@@ -100,12 +101,13 @@ class CaseFileTooLarge(CaseError, OSError):
     bytes: refused by name, never held whole. `why` says which; `line` is
     the line's number, or None for the whole file."""
 
-    def __init__(self, path, line: int | None = None):
+    def __init__(self, path, line: int | None = None, limit: int | None = None):
+        limit = FILE_BUDGET if limit is None else limit
         self.why = (f"line {line} is longer than {LINE_CAP >> 20} MiB" if line
-                    else f"larger than {FILE_BUDGET >> 20} MiB")  # fmt: skip
+                    else f"larger than {limit >> 20} MiB")  # fmt: skip
         what = (f"{path} line {line} is longer than {LINE_CAP >> 20} MiB, so the file "
                 "wasn't read past it." if line else
-                f"{path} is larger than {FILE_BUDGET >> 20} MiB, so it wasn't read.")  # fmt: skip
+                f"{path} is larger than {limit >> 20} MiB, so it wasn't read.")  # fmt: skip
         super().__init__(
             f"{what} It holds the case's {holds(path)}: keep a copy of it before "
             "you move it out of the case, then try again."
@@ -113,7 +115,7 @@ class CaseFileTooLarge(CaseError, OSError):
         self.line = line
 
 
-def _open_regular_fd(path, log: bool = False) -> int:
+def _open_regular_fd(path, log: bool = False, budget: int | None = None) -> int:
     """Opened non-blocking and checked on the open descriptor before any read,
     so a FIFO (or a link to one) never blocks and a device is never read. A
     log (`log`) is also opened only under its own name (no symbolic link, no
@@ -133,8 +135,9 @@ def _open_regular_fd(path, log: bool = False) -> int:
             raise _not_regular(path)
         if log and st.st_nlink != 1:
             raise _not_regular(path, "another name links to it")
-        if log and st.st_size > FILE_BUDGET:
-            raise CaseFileTooLarge(path)
+        budget = FILE_BUDGET if budget is None else budget
+        if log and st.st_size > budget:
+            raise CaseFileTooLarge(path, limit=budget)
     except BaseException:
         os.close(fd)
         raise
@@ -156,17 +159,30 @@ def case_lines(path):
 
 
 def read_case_file(path) -> bytes:
-    """A case file's bytes, read as `case_lines` reads a log."""
+    """A case log's bytes, read as `case_lines` reads it."""
     return b"".join(case_lines(path))
+
+
+def read_case_document(path) -> bytes:
+    """A case document's bytes (findings.json, timeline.json, iocs.json,
+    keys.json), checked as a log is and read whole in one read, never split
+    into lines: up to DOC_CAP, by its size when opened and as it is read."""
+    with os.fdopen(_open_regular_fd(path, log=True, budget=DOC_CAP), "rb") as f:
+        data = f.read(DOC_CAP + 1)
+    if len(data) > DOC_CAP:  # it grew while read
+        raise CaseFileTooLarge(path, limit=DOC_CAP)
+    return data
 
 
 def _capped_lines(f, path):
     with f:
         n = total = 0
-        while raw := f.readline(LINE_CAP + 1):
+        while raw := f.readline(LINE_CAP + 2):
             n += 1
             total += len(raw)
-            if len(raw) > LINE_CAP and not raw.endswith(b"\n"):
+            # the cap counts a line's content, not its \n or \r\n
+            end = 2 if raw.endswith(b"\r\n") else 1 if raw.endswith(b"\n") else 0
+            if len(raw) - end > LINE_CAP:
                 raise CaseFileTooLarge(path, n)
             if total > FILE_BUDGET:  # it grew while read
                 raise CaseFileTooLarge(path)
