@@ -60,8 +60,11 @@ def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
                                 entries.append(entry)
                         except json.JSONDecodeError:
                             corrupt_lines += 1
-            except OSError as e:
-                print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
+            except OSError as e:  # the name and the error, controls shown
+                print(
+                    f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                    file=sys.stderr,
+                )
                 continue
 
     approvals_file = case_dir / "approvals.jsonl"

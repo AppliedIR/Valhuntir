@@ -769,7 +769,12 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
                     except json.JSONDecodeError:
                         continue
         except NotRegularFile as e:
-            print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
+            from vhir_cli.display import one_line  # a file name is the case's data
+
+            print(
+                f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                file=sys.stderr,
+            )
         except OSError:
             continue
     return index
