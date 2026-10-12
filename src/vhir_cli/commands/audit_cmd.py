@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir
+from vhir_cli.case_io import get_case_dir, open_regular
 from vhir_cli.display import display_safe, one_line
 
 
@@ -27,8 +27,17 @@ def cmd_audit(args, identity: dict) -> None:
         sys.exit(1)
 
 
-def _load_audit_entries(case_dir: Path) -> list[dict]:
-    """Load all audit entries from audit/*.jsonl and approvals.jsonl."""
+def _check_ts(entry) -> None:
+    """A damaged line stops the read whether or not it is kept: its time must
+    be text, as sorting the whole trail required."""
+    if not isinstance(entry.get("ts", ""), str):
+        raise TypeError(f"an audit entry's ts isn't text: {entry.get('ts')!r}")
+
+
+def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
+    """Load all audit entries from audit/*.jsonl and approvals.jsonl. `keep`:
+    a test of each parsed entry; only those it passes are kept, so a caller
+    that wants a few entries never holds the whole trail."""
     entries: list[dict] = []
     corrupt_lines = 0
 
@@ -36,7 +45,7 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
     if audit_dir.is_dir():
         for jsonl_file in sorted(audit_dir.glob("*.jsonl")):
             try:
-                with open(jsonl_file, encoding="utf-8") as f:
+                with open_regular(jsonl_file) as f:  # read line by line
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -46,17 +55,22 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
                             # Derive mcp name from filename if not present
                             if "mcp" not in entry:
                                 entry["mcp"] = jsonl_file.stem
-                            entries.append(entry)
+                            _check_ts(entry)  # as the sort would, kept or not
+                            if keep is None or keep(entry):
+                                entries.append(entry)
                         except json.JSONDecodeError:
                             corrupt_lines += 1
-            except OSError as e:
-                print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
+            except OSError as e:  # the name and the error, controls shown
+                print(
+                    f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                    file=sys.stderr,
+                )
                 continue
 
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
         try:
-            with open(approvals_file, encoding="utf-8") as f:
+            with open_regular(approvals_file) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -65,7 +79,9 @@ def _load_audit_entries(case_dir: Path) -> list[dict]:
                         entry = json.loads(line)
                         entry.setdefault("tool", "approval")
                         entry.setdefault("mcp", "vhir-cli")
-                        entries.append(entry)
+                        _check_ts(entry)
+                        if keep is None or keep(entry):
+                            entries.append(entry)
                     except json.JSONDecodeError:
                         corrupt_lines += 1
         except OSError:

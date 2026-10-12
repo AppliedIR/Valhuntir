@@ -414,8 +414,9 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         )
         if f.get("iocs"):
             lines.append(f"  IOCs:         {json.dumps(f['iocs'], default=str)}")
-        if f.get("mitre_techniques"):
-            lines.append(f"  MITRE:        {_d(f['mitre_techniques'], safe)}")
+        # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
+        if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
+            lines.append(f"  MITRE:        {_d(mitre, safe)}")
         if f.get("approved_at"):
             lines.append(f"  Approved:     {_d(f['approved_at'], safe)}")
         if f.get("rejected_at"):

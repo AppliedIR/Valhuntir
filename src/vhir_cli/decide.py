@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli import credentials, keys, ledger
+from vhir_cli import case_io, credentials, keys, ledger
 from vhir_cli.case_io import (
     case_id_of,
     compute_content_hash,
@@ -78,9 +78,7 @@ class Decision:
 
 
 def item_type(item_id: str) -> str:
-    if item_id.startswith("IOC-"):
-        return "ioc"
-    return "timeline" if item_id.startswith("T-") else "finding"
+    return case_io.id_kind(item_id)  # one rule, which import_bundle also enforces
 
 
 def cascades(
@@ -450,7 +448,9 @@ def sign_and_commit(
         ) as lock:
             lists, unreadable = _reload(case_dir)
             if not unreadable:
-                every, discarded = _still_as_shown(lists, direct, planned, skipped)
+                every, discarded = _still_as_shown(
+                    lists, direct, planned, skipped, case_dir
+                )
             if every:
                 at = datetime.now(timezone.utc).isoformat()
                 items = [_find(lists, d.type, d.id) for d in every]
@@ -619,11 +619,27 @@ def _spliced(current: dict, d: Decision) -> dict:
     return out
 
 
-def _still_as_shown(lists, direct, planned, skipped):
+def _checks_as_shown(case_dir, d: Decision, item: dict) -> bool:
+    """A direct decision's approval checks, run again on `item`, give the
+    result and failed checks it was shown with (none were run: True). An audit
+    log they can't read raises approval_checks.AuditUnreadable."""
+    if d.checks is None or case_dir is None:
+        return True
+    from vhir_cli import approval_checks
+
+    now = approval_checks.check_item(case_dir, item, d.type)
+    return (now["result"], approval_checks.failed_items(now)) == (
+        d.checks["result"],
+        approval_checks.failed_items(d.checks),
+    )
+
+
+def _still_as_shown(lists, direct, planned, skipped, case_dir=None):
     """Per item, under the lock: the decisions to sign (each direct one whose
-    item is unchanged since it was shown, with its edit spliced in; each
-    cascade that was shown and still holds), and a loud line for each one
-    discarded. A cascade that only now appears wasn't shown, so it isn't signed."""
+    item is unchanged since it was shown, and whose approval checks give what
+    was shown, with its edit spliced in; each cascade that was shown and
+    still holds), and a loud line for each one discarded. A cascade that only
+    now appears wasn't shown, so it isn't signed."""
     discarded, kept = [], []
     for d in direct:
         if _changed(d, _find(lists, d.type, d.id)):
@@ -632,11 +648,20 @@ def _still_as_shown(lists, direct, planned, skipped):
                 f"your {d.decision} decision on it was not signed or saved. Review it again."
             )
             continue
-        kept.append(d)
         lst = lists[d.type]
-        for i, x in enumerate(lst):
-            if isinstance(x, dict) and x.get("id") == d.id:
-                lst[i] = _spliced(x, d)
+        at = next(
+            i for i, x in enumerate(lst) if isinstance(x, dict) and x.get("id") == d.id
+        )
+        spliced = _spliced(lst[at], d)
+        if not _checks_as_shown(case_dir, d, spliced):
+            discarded.append(
+                f"  DISCARDED: {one_line(d.id)}: its approval checks changed after you saw "
+                f"them; your {d.decision} decision on it was not signed or saved. "
+                "Review it again."
+            )
+            continue
+        kept.append(d)
+        lst[at] = spliced
     shown = {(c.id, c.status_after, c.coupled_from): c for c in planned}
     again = cascades(kept, lists["finding"], lists["timeline"], lists["ioc"], skipped)
     now = {(c.id, c.status_after, c.coupled_from) for c in again}

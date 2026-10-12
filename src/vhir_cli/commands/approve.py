@@ -599,6 +599,17 @@ def _prompt_choice(choices: tuple[str, ...] = _APPROVE_CHOICES) -> str:
         print("  Invalid choice.")
 
 
+class _EditLoader(yaml.SafeLoader):
+    """SafeLoader that keeps an unquoted date or time as the text typed: a
+    stored timestamp is text, and the examiner's form of it is what's signed."""
+
+
+_EditLoader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
 def _apply_edit(item: dict, identity: dict) -> None:
     """Open item in $EDITOR as YAML, track modifications."""
     editor = os.environ.get("EDITOR", "vi")
@@ -625,61 +636,57 @@ def _apply_edit(item: dict, identity: dict) -> None:
             if key in item:
                 editable[key] = item[key]
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
-        tmpfile = f.name
-
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+    tmpfile = f.name
     try:
-        subprocess.run([editor, tmpfile], check=True, timeout=3600)
-    except subprocess.TimeoutExpired:
-        print("  Editor timed out after 1 hour.", file=sys.stderr)
+        # written in the try, so a failed dump removes it too; closed for the
+        # editor, which reopens it by name
+        with f:
+            yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
         try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except subprocess.CalledProcessError as e:
-        print(f"  Editor exited with error: {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except OSError as e:
-        print(f"  Failed to launch editor '{editor}': {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
+            subprocess.run([editor, tmpfile], check=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            print("  Editor timed out after 1 hour.", file=sys.stderr)
+            return
+        except subprocess.CalledProcessError as e:
+            print(f"  Editor exited with error: {e}", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"  Failed to launch editor '{editor}': {e}", file=sys.stderr)
+            return
 
-    try:
-        with open(tmpfile) as f:
-            edited = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        print(f"  Edited file contains invalid YAML: {e}", file=sys.stderr)
         try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except OSError as e:
-        print(f"  Failed to read edited file: {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
+            with open(tmpfile) as f:
+                edited = yaml.load(f, Loader=_EditLoader) or {}
+        except yaml.YAMLError as e:
+            print(f"  Edited file contains invalid YAML: {e}", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"  Failed to read edited file: {e}", file=sys.stderr)
+            return
     finally:
         try:
             os.unlink(tmpfile)
         except OSError:
             pass
 
+    if not isinstance(edited, dict):
+        print("  The edited file isn't a set of fields; the item is unchanged.",
+              file=sys.stderr)  # fmt: skip
+        return
+    # Only the fields offered are applied: any other key (an id, a status,
+    # the evidence) is named and left as it was.
+    other = sorted(str(k) for k in edited if k not in editable)
+    if other:
+        print(f"  Not editable here, left unchanged: {_one_line(', '.join(other))}",
+              file=sys.stderr)  # fmt: skip
+
     # Diff and record modifications
     modifications = {}
     now = datetime.now(timezone.utc).isoformat()
     for key, new_val in edited.items():
+        if key not in editable:
+            continue
         old_val = editable.get(key)
         if new_val != old_val:
             modifications[key] = {
