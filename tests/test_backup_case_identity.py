@@ -357,9 +357,13 @@ def test_a_copy_without_its_own_identity_restores_no_indices(box, monkeypatch, c
         raise OSError("disk full")
 
     monkeypatch.setattr(host_identity, "update_case_meta", fail)
-    _restore(path, box.tmp / "cases" / "C-1-copy")
+    copy = box.tmp / "cases" / "C-1-copy"
+    with pytest.raises(SystemExit) as e:  # indices were wanted: a PARTIAL restore
+        _restore(path, copy)
+    assert e.value.code == 1 and (copy / ".restore-in-progress").exists()
     assert box.os.restored == []  # never under the original's names
-    assert "couldn't be given its own identity" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "couldn't be given its own identity" in err and "PARTIAL" in err
 
 
 def _crafted(box, older=False, **snapshot) -> str:

@@ -80,7 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # backup
-    p_backup = sub.add_parser("backup", help="Back up case data")
+    p_backup = sub.add_parser(
+        "backup",
+        help="Back up case data",
+        epilog="Exit 1 (PARTIAL) when a part asked for, such as the OpenSearch indices, "
+        "couldn't be included; the files backup is kept and valid without it.",
+    )
     p_backup.add_argument("destination", nargs="?", help="Backup destination directory")
     p_backup.add_argument("--case", help="Case ID (default: active case)")
     p_backup.add_argument("--include-evidence", action="store_true")
@@ -104,7 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # restore
-    p_restore = sub.add_parser("restore", help="Restore a case from backup")
+    p_restore = sub.add_parser(
+        "restore",
+        help="Restore a case from backup",
+        epilog="Nothing outside the case folder is written until every file has "
+        "verified. Exit 1 (PARTIAL) when the files verified but a later step (the 0.6 "
+        "records, the indices) failed: the folder keeps its .restore-in-progress "
+        "marker, and a restore into it is refused; restore to another folder, or "
+        "remove it and restore again.",
+    )
     p_restore.add_argument("backup_path", help="Path to backup directory")
     p_restore.add_argument(
         "--skip-opensearch", action="store_true", help="Skip OpenSearch index restore"
