@@ -267,7 +267,8 @@ def test_bundle_too_deep_is_the_named_refusal():
     assert cio.bundle_too_deep() == TOO_DEEP
 
 
-@pytest.mark.parametrize("levels", [2000, 100_000])
+# beyond every json decoder: 3.10 stops near 1000 levels, 3.12 and 3.13 near 10,000
+@pytest.mark.parametrize("levels", [20_000, 100_000])
 def test_vhir_merge_refuses_a_bundle_too_deep_to_decode_by_name(
     case, tmp_path, capsys, levels
 ):
@@ -287,3 +288,21 @@ def test_vhir_merge_still_merges_a_bundle_100_levels_deep(case, tmp_path, capsys
     path.write_text(json.dumps({"case_id": "INC-C", "findings": [nested(NEW_F, 100)]}))
     cmd_merge(argparse.Namespace(case=None, file=str(path)), {"examiner": "bob"})
     assert "F-carol-001" in (case / "findings.json").read_text()
+
+
+def test_a_bundle_one_json_decodes_and_another_doesnt_is_refused_by_name_either_way(
+    case, tmp_path, capsys
+):
+    """2000 levels: 3.10's json can't decode it (the bundle refusal), 3.12's
+    can (the item refusal). Both are named; neither writes."""
+    path = tmp_path / "bundle.json"
+    path.write_text(deep_bundle_text(2000))
+    before = files(case)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as e:
+        cmd_merge(argparse.Namespace(case=None, file=str(path)), {"examiner": "bob"})
+    out, err = capsys.readouterr()
+    item = msg("findings", "item 0 nests deeper than 100 levels")
+    assert e.value.code == 1 and out == ""
+    assert err in (f"Merge failed: {TOO_DEEP['message']}\n", f"Merge failed: {item}\n")
+    assert files(case) == before
