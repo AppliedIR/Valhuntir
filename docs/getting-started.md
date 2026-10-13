@@ -4,8 +4,8 @@
 
 - SIFT Workstation (Ubuntu-based). WSL2 on Windows is also supported.
 - Python 3.10+
-- sudo access (required for HMAC verification ledger at `/var/lib/vhir/verification/`)
-- A **locally installed** MCP-compatible LLM client that supports Streamable HTTP transport with Bearer token authentication (Claude Code, Claude Desktop, Cherry Studio, self-hosted LibreChat, etc.). The client must run on your machine or local network — cloud-hosted LLM services (claude.ai, etc.) cannot reach internal gateway addresses. OAuth is not supported.
+- sudo access (required for the ledger and signing-key folders under `/var/lib/vhir/`)
+- A **locally installed** MCP-compatible LLM client that supports Streamable HTTP transport with Bearer token authentication (Claude Code, Codex, self-hosted LibreChat, etc.). The client must run on your machine or local network — cloud-hosted LLM services (claude.ai, etc.) cannot reach internal gateway addresses. OAuth is not supported.
 
 ## Installation
 
@@ -30,7 +30,7 @@ The installer prompts for:
 
 - **Installation tier**: Quick (core only), Recommended (core + RAG + triage), or Custom
 - **Examiner identity**: Your name slug (e.g., `alice`)
-- **Client type**: Claude Code, Claude Desktop, LibreChat, or Other
+- **Client type**: Claude Code, Codex, LibreChat, or Other
 - **Remote access**: Whether to enable TLS and bearer token auth
 
 ### Windows Forensic Workstation (Optional)
@@ -66,7 +66,9 @@ cd ~/cases/INC-2026-0225
 claude
 ```
 
-**Other MCP clients** (Claude Desktop, LibreChat, Cherry Studio): Just start your client — it connects to the gateway at `http://127.0.0.1:4508/mcp` and the active case is resolved automatically from `~/.vhir/active_case`.
+**Codex**: `cd ~/cases/<case-name> && codex -p valhuntir`.
+
+**Other MCP clients** (LibreChat, or any MCP client without a shell): Just start your client — it connects to the gateway at `http://127.0.0.1:4508/mcp` and the active case is resolved automatically from `~/.vhir/active_case`.
 
 ### 3. Start Investigating
 
@@ -142,7 +144,7 @@ cases/INC-2026-0225/
 
 ### Human-in-the-Loop
 
-The AI cannot approve its own work. All findings and timeline events stage as DRAFT. Only a human examiner can move them to APPROVED or REJECTED. The Examiner Portal is the preferred review interface — approve, reject, and commit decisions directly in the browser with challenge-response authentication. The vhir CLI (`vhir approve`) provides the same capability from the terminal. There is no MCP tool for approval.
+The AI cannot approve its own work. All findings and timeline events stage as DRAFT. Only a human examiner can move them to APPROVED or REJECTED. The Examiner Portal is the preferred review interface — approve and reject in the browser, then sign the decisions with your passphrase (the browser signs; the passphrase never leaves it). The vhir CLI (`vhir approve`) provides the same capability from the terminal. There is no MCP tool for approval.
 
 ### Evidence IDs
 

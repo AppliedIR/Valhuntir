@@ -367,6 +367,21 @@ class TestExportBundle:
 
 
 class TestImportBundle:
+    def test_an_exported_approval_verdict_is_never_stored(self, case_dir):
+        """An export marks an altered approval (`approval_verification`); the
+        import stores the item as DRAFT without that read-time annotation."""
+        altered = {"id": "F-alice-001", "title": "Altered", "status": "APPROVED",
+                   "staged": "2026-01-01T00:00:00Z",
+                   "approval_verification": "ALTERED_AFTER_APPROVAL"}  # fmt: skip
+        event = {"id": "T-alice-001", "timestamp": "2026-01-01T00:00:00Z",
+                 "description": "e", "status": "APPROVED", "approval_verification": "VALID"}  # fmt: skip
+        result = import_bundle(case_dir, {"findings": [altered], "timeline": [event]})
+        assert result["status"] == "merged"
+        (stored,) = json.loads((case_dir / "findings.json").read_text())
+        (stored_event,) = json.loads((case_dir / "timeline.json").read_text())
+        assert stored["status"] == "DRAFT" and "approval_verification" not in stored
+        assert "approval_verification" not in stored_event
+
     def test_merge_adds_new(self, case_dir):
         bundle = {
             "findings": [

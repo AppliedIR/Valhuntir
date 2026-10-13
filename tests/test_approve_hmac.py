@@ -1,184 +1,77 @@
-"""Tests for HMAC ledger integration in the approve flow."""
+"""The approve flow's ledger writes: signed lines, never a 0.6 HMAC line.
+
+0.6 wrote an HMAC line per approved item to the 0.6 verification file. Approve
+now signs a ledger line per item with the examiner's key, of the item's
+type, carrying the content signed; the 0.6 file is never written.
+"""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 import yaml
 
-from vhir_cli.commands.approve import _write_verification_entries
+from vhir_cli import ledger
+from vhir_cli.case_io import signed_text
+from vhir_cli.commands.approve import _approve_specific
 from vhir_cli.verification import read_ledger
 
+from .signing import PASSPHRASE, enrol
 
-@pytest.fixture(autouse=True)
-def _patch_verification_dir(tmp_path, monkeypatch):
-    """Redirect VERIFICATION_DIR to tmp_path for all tests."""
-    monkeypatch.setattr("vhir_cli.verification.VERIFICATION_DIR", tmp_path)
+IDENT = {"examiner": "alice", "os_user": "alice"}
+FINDING = {
+    "id": "F-alice-20260226-001",
+    "observation": "Suspicious process found on host A",
+    "interpretation": "Likely lateral movement",
+    "title": "Suspicious process",
+    "status": "DRAFT",
+}
+EVENT = {
+    "id": "T-alice-20260226-001",
+    "timestamp": "2026-02-26T14:00:00Z",
+    "description": "User logged in at 14:00",
+    "status": "DRAFT",
+}
 
 
 @pytest.fixture()
-def case_dir(tmp_path):
-    """Create a minimal case directory with CASE.yaml."""
+def case_dir(tmp_path, monkeypatch):
     d = tmp_path / "case"
     d.mkdir()
-    meta = {"case_id": "INC-2026-TEST"}
-    (d / "CASE.yaml").write_text(yaml.dump(meta))
+    (d / "CASE.yaml").write_text(yaml.dump({"case_id": "INC-2026-TEST"}))
+    (d / "findings.json").write_text(json.dumps([FINDING]))
+    (d / "timeline.json").write_text(json.dumps([EVENT]))
+    monkeypatch.setattr(
+        "vhir_cli.approval_auth.getpass_prompt", lambda p="": PASSPHRASE
+    )
     return d
 
 
-@pytest.fixture()
-def config_path(tmp_path):
-    """Create a config with password salt for test analyst."""
-    import hashlib
-    import secrets
-
-    cfg_path = tmp_path / "config.yaml"
-    salt = secrets.token_bytes(32)
-    pw_hash = hashlib.pbkdf2_hmac("sha256", b"testpassword", salt, 600_000).hex()
-    config = {"passwords": {"alice": {"hash": pw_hash, "salt": salt.hex()}}}
-    cfg_path.write_text(yaml.dump(config))
-    return cfg_path
+def _lines():
+    return [o for _, _, o in ledger.read_lines(ledger.chain_path("INC-2026-TEST")) if o]
 
 
-def test_approve_writes_ledger_entry(case_dir, config_path, tmp_path):
-    """Approving a finding writes an HMAC entry to the verification ledger."""
-    items = [
-        {
-            "id": "F-alice-20260226-001",
-            "observation": "Suspicious process found on host A",
-            "interpretation": "Likely lateral movement",
-            "title": "Suspicious process",
-        }
-    ]
-    identity = {"examiner": "alice"}
-
-    _write_verification_entries(
-        case_dir,
-        items,
-        identity,
-        config_path,
-        password="testpassword",
-        now="2026-02-26T00:00:00Z",
-    )
-
-    entries = read_ledger("INC-2026-TEST")
-    assert len(entries) == 1
-    assert entries[0]["finding_id"] == "F-alice-20260226-001"
-    assert entries[0]["type"] == "finding"
-    # HMAC signs all substantive fields as canonical JSON
-    import json
-
-    expected = json.dumps(
-        {
-            "id": "F-alice-20260226-001",
-            "observation": "Suspicious process found on host A",
-            "interpretation": "Likely lateral movement",
-            "title": "Suspicious process",
-        },
-        sort_keys=True,
-        default=str,
-    )
-    assert entries[0]["content_snapshot"] == expected
-    assert entries[0]["hmac_version"] == 2
-    assert entries[0]["approved_by"] == "alice"
-    assert entries[0]["case_id"] == "INC-2026-TEST"
-    assert len(entries[0]["hmac"]) == 64  # hex SHA-256
+def test_approve_signs_a_line_per_item_of_its_type_with_its_content(case_dir, tmp_path):
+    enrol("alice")
+    _approve_specific(case_dir, [FINDING["id"], EVENT["id"]], IDENT, tmp_path / "cfg")
+    lines = {o["item_id"]: o for o in _lines()}
+    assert lines[FINDING["id"]]["type"] == "finding"
+    assert lines[EVENT["id"]]["type"] == "timeline"
+    assert lines[FINDING["id"]]["content_snapshot"] == signed_text(FINDING, "finding")
+    assert {o["examiner"] for o in lines.values()} == {"alice"}
+    assert all(ledger.signature_valid(o) for o in lines.values())
 
 
-def test_approve_timeline_type_field(case_dir, config_path, tmp_path):
-    """Timeline events get type='timeline' in ledger entries."""
-    items = [
-        {
-            "id": "T-alice-20260226-001",
-            "description": "User logged in at 14:00",
-        },
-        {
-            "id": "F-alice-20260226-001",
-            "observation": "Malware detected",
-            "interpretation": "Known RAT variant",
-            "title": "Malware detection",
-        },
-    ]
-    identity = {"examiner": "alice"}
-
-    _write_verification_entries(
-        case_dir,
-        items,
-        identity,
-        config_path,
-        password="testpassword",
-        now="2026-02-26T00:00:00Z",
-    )
-
-    entries = read_ledger("INC-2026-TEST")
-    assert len(entries) == 2
-
-    by_id = {e["finding_id"]: e for e in entries}
-    assert by_id["T-alice-20260226-001"]["type"] == "timeline"
-    assert by_id["F-alice-20260226-001"]["type"] == "finding"
+def test_approve_writes_no_0_6_line(case_dir, tmp_path):
+    enrol("alice")
+    _approve_specific(case_dir, [FINDING["id"]], IDENT, tmp_path / "cfg")
+    assert read_ledger("INC-2026-TEST") == [] and len(_lines()) == 1
 
 
-def test_interactive_approve_writes_ledger(case_dir, config_path, tmp_path):
-    """Batch approval of multiple items writes all ledger entries."""
-    items = [
-        {
-            "id": "F-alice-20260226-001",
-            "observation": "Finding one",
-            "interpretation": "Interp one",
-            "title": "F1",
-        },
-        {
-            "id": "F-alice-20260226-002",
-            "observation": "Finding two",
-            "interpretation": "Interp two",
-            "title": "F2",
-        },
-        {"id": "T-alice-20260226-001", "description": "Timeline event"},
-    ]
-    identity = {"examiner": "alice"}
-
-    _write_verification_entries(
-        case_dir,
-        items,
-        identity,
-        config_path,
-        password="testpassword",
-        now="2026-02-26T00:00:00Z",
-    )
-
-    entries = read_ledger("INC-2026-TEST")
-    assert len(entries) == 3
-    ids = {e["finding_id"] for e in entries}
-    assert ids == {
-        "F-alice-20260226-001",
-        "F-alice-20260226-002",
-        "T-alice-20260226-001",
-    }
-    # All entries have valid HMACs
-    for entry in entries:
-        assert len(entry["hmac"]) == 64
-        assert entry["approved_by"] == "alice"
-
-
-def test_no_password_skips_ledger(case_dir, config_path, tmp_path):
-    """When password is None, no ledger entries are written."""
-    items = [
-        {
-            "id": "F-alice-20260226-001",
-            "observation": "test",
-            "interpretation": "interp",
-            "title": "T",
-        }
-    ]
-    identity = {"examiner": "alice"}
-
-    _write_verification_entries(
-        case_dir,
-        items,
-        identity,
-        config_path,
-        password=None,
-        now="2026-02-26T00:00:00Z",
-    )
-
-    entries = read_ledger("INC-2026-TEST")
-    assert len(entries) == 0
+def test_no_credential_writes_nothing(case_dir, tmp_path, capsys):
+    ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(SystemExit):
+        _approve_specific(case_dir, [FINDING["id"]], IDENT, tmp_path / "cfg")
+    assert "No passphrase configured" in capsys.readouterr().err
+    assert _lines() == [] and read_ledger("INC-2026-TEST") == []

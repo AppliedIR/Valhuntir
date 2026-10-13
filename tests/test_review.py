@@ -3,7 +3,6 @@
 import json
 import re
 from argparse import Namespace
-from pathlib import Path
 
 import pytest
 import yaml
@@ -21,6 +20,8 @@ from vhir_cli.commands.review import (
     _extract_text_iocs,
     cmd_review,
 )
+
+from .signing import approve_under_0_6
 
 
 @pytest.fixture
@@ -182,62 +183,43 @@ class TestFindingsDetail:
 
 
 class TestFindingsVerify:
-    def test_verified_finding(self, case_dir, sample_findings, identity, capsys):
-        # Write approval record for F-tester-001
+    """--verify reads the signed ledger, not approvals.jsonl (an unsigned
+    activity log): a record there doesn't make an approval verify."""
+
+    def _verify(self, capsys):
+        args = Namespace(case=None, findings=True, detail=False, verify=True, iocs=False,
+                         timeline=False, audit=False, evidence=False, limit=50)  # fmt: skip
+        with pytest.raises(SystemExit) as e:
+            cmd_review(args, {})
+        return capsys.readouterr().out, e.value.code
+
+    def test_an_approval_log_record_is_not_verification(
+        self, case_dir, sample_findings, identity, capsys
+    ):
         write_approval_log(
             case_dir, "F-tester-001", "APPROVED", identity, mode="interactive"
         )
-        args = Namespace(
-            case=None,
-            findings=True,
-            detail=False,
-            verify=True,
-            iocs=False,
-            timeline=False,
-            audit=False,
-            evidence=False,
-            limit=50,
-        )
-        cmd_review(args, {})
-        output = capsys.readouterr().out
-        assert "confirmed" in output
-        assert "F-tester-001" in output
+        out, code = self._verify(capsys)
+        assert re.search(r"F-tester-001\s+APPROVED_NO_LINE", out), out
+        assert code == 2
 
-    def test_unverified_finding(self, case_dir, sample_findings, capsys):
-        # F-tester-001 is APPROVED but no approval record exists
-        args = Namespace(
-            case=None,
-            findings=True,
-            detail=False,
-            verify=True,
-            iocs=False,
-            timeline=False,
-            audit=False,
-            evidence=False,
-            limit=50,
-        )
-        cmd_review(args, {})
-        output = capsys.readouterr().out
-        assert "NO APPROVAL RECORD" in output
+    def test_an_approved_finding_with_no_record_fails(
+        self, case_dir, sample_findings, capsys
+    ):
+        out, code = self._verify(capsys)
+        assert re.search(r"F-tester-001\s+APPROVED_NO_LINE", out), out
+        assert "LEDGER_MISSING" in out and code == 2
 
-    def test_draft_no_check(self, case_dir, capsys):
+    def test_draft_and_rejected_items_without_lines_aren_t_listed(
+        self, case_dir, capsys
+    ):
         save_findings(
-            case_dir, [{"id": "F-tester-010", "status": "DRAFT", "title": "Test"}]
-        )
-        args = Namespace(
-            case=None,
-            findings=True,
-            detail=False,
-            verify=True,
-            iocs=False,
-            timeline=False,
-            audit=False,
-            evidence=False,
-            limit=50,
-        )
-        cmd_review(args, {})
-        output = capsys.readouterr().out
-        assert "draft" in output
+            case_dir,
+            [{"id": "F-tester-010", "status": "DRAFT", "title": "Test"},
+             {"id": "F-tester-011", "status": "REJECTED", "title": "Test"}],
+        )  # fmt: skip
+        out, code = self._verify(capsys)
+        assert "F-tester-010" not in out and "F-tester-011" not in out and code == 0
 
 
 class TestVerifyIntegrity:
@@ -544,8 +526,11 @@ class TestTimelineFiltering:
 
 
 class TestVerifyTampered:
-    def test_tampered_finding_shown(self, case_dir, identity, capsys):
-        # Save DRAFT
+    def test_a_hash_and_log_record_don_t_make_an_approval(
+        self, case_dir, identity, capsys
+    ):
+        """A status flip with a recomputed content_hash and an appended
+        approvals.jsonl line (F12's forgery) has no signed line."""
         save_findings(
             case_dir,
             [
@@ -557,33 +542,18 @@ class TestVerifyTampered:
                 }
             ],
         )
-        # Simulate approve: load, compute hash, save back
         findings = load_findings(case_dir)
         findings[0]["content_hash"] = compute_content_hash(findings[0])
         findings[0]["status"] = "APPROVED"
         save_findings(case_dir, findings)
         write_approval_log(case_dir, "F-tester-010", "APPROVED", identity)
-
-        # Tamper
-        findings = load_findings(case_dir)
-        findings[0]["observation"] = "tampered"
-        save_findings(case_dir, findings)
-
-        args = Namespace(
-            case=None,
-            findings=True,
-            detail=False,
-            verify=True,
-            iocs=False,
-            timeline=False,
-            audit=False,
-            evidence=False,
-            limit=50,
-        )
-        cmd_review(args, {})
-        output = capsys.readouterr().out
-        assert "TAMPERED" in output
-        assert "Investigate immediately" in output
+        args = Namespace(case=None, findings=True, detail=False, verify=True, iocs=False,
+                         timeline=False, audit=False, evidence=False, limit=50)  # fmt: skip
+        with pytest.raises(SystemExit) as e:
+            cmd_review(args, {})
+        out = capsys.readouterr().out
+        assert re.search(r"F-tester-010\s+APPROVED_NO_LINE", out), out
+        assert "confirmed" not in out and e.value.code == 2
 
 
 class TestAuditView:
@@ -668,14 +638,10 @@ class TestAuditView:
 def ledger_case(tmp_path, monkeypatch):
     import vhir_cli.approval_auth as auth
     import vhir_cli.verification as ver
-    from vhir_cli.commands import approve
 
     monkeypatch.setattr(ver, "VERIFICATION_DIR", tmp_path / "ledger")
-    monkeypatch.setattr(auth, "get_analyst_salt", lambda cfg, ex, **k: b"\x01" * 16)
-    monkeypatch.setattr(auth, "verify_password", lambda *a, **k: True)
     prompts = []
     monkeypatch.setattr(auth, "getpass_prompt", lambda p: (prompts.append(p), "pw")[1])
-    monkeypatch.setattr(approve, "require_confirmation", lambda cfg, ex: ("pw", "pw"))
     case = tmp_path / "V-case"
     case.mkdir()
     (case / "CASE.yaml").write_text(
@@ -713,24 +679,22 @@ def ledger_case(tmp_path, monkeypatch):
 
 
 def _approve_and_verify(case, prompts, capsys, *, findings, mine=False, alice=False):
-    """The real approve (its ledger written for real), findings.json then set
-    to `findings` ("intact", "absent", "[]", "corrupt"), then --verify."""
+    """F-steve-001 and its event approved under 0.6 (as 0.6's approve left
+    them), findings.json then set to `findings` ("intact", "absent", "[]",
+    "corrupt"), then --verify. Returns (output, exit code)."""
     import vhir_cli.verification as ver
-    from vhir_cli.commands import approve
     from vhir_cli.commands.review import _show_findings_verify
 
     ident = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
     if findings != "none":
-        approve._approve_specific(case, ["F-steve-001"], ident, Path("cfg"))
-    if alice:  # another examiner's entry, correctly signed
-        snap = "F-alice-001 alice finding"
-        key = ver.derive_hmac_key("pw", b"\x01" * 16)
+        approve_under_0_6(case, {"F-steve-001", "T-steve-001"}, "steve")
+    if alice:  # another examiner's 0.6 line
         entry = {
             "finding_id": "F-alice-001",
             "type": "finding",
-            "hmac": ver.compute_hmac(key, snap),
+            "hmac": "00",
             "hmac_version": 2,
-            "content_snapshot": snap,
+            "content_snapshot": "{}",
             "approved_by": "alice",
             "approved_at": "2026-01-01",
             "case_id": "INC-REAL-1",
@@ -738,7 +702,7 @@ def _approve_and_verify(case, prompts, capsys, *, findings, mine=False, alice=Fa
         with open(ver.VERIFICATION_DIR / "INC-REAL-1.jsonl", "a") as fh:
             fh.write(json.dumps(entry) + "\n")
     path = case / "findings.json"
-    path.chmod(0o644)  # approve leaves it read-only
+    path.chmod(0o644)
     if findings == "absent":
         path.unlink()
     elif findings in ("[]", "none"):
@@ -747,36 +711,44 @@ def _approve_and_verify(case, prompts, capsys, *, findings, mine=False, alice=Fa
         path.write_text('[{"id": "F-steve-001", "status": "APPRO')
     capsys.readouterr()
     prompts.clear()
-    _show_findings_verify(case, identity=ident, mine_only=mine)
-    return capsys.readouterr().out
+    with pytest.raises(SystemExit) as e:
+        _show_findings_verify(case, identity=ident, mine_only=mine)
+    return capsys.readouterr().out, e.value.code
 
 
-@pytest.mark.parametrize("findings", ["absent", "[]", "corrupt"])
-def test_ledger_entries_without_findings_are_reported(ledger_case, capsys, findings):
+@pytest.mark.parametrize("findings", ["absent", "[]"])
+def test_0_6_lines_without_their_findings_are_reported(ledger_case, capsys, findings):
     case, prompts = ledger_case
-    out = _approve_and_verify(case, prompts, capsys, findings=findings)
-    assert re.search(r"F-steve-001\s+VERIFICATION_NO_FINDING", out), out
+    out, code = _approve_and_verify(case, prompts, capsys, findings=findings)
+    assert "ITEM_MISSING (0.6 line, informational): F-steve-001" in out, out
+    assert code == 0 and not prompts
 
 
-def test_the_signatures_are_still_checked_without_findings(ledger_case, capsys):
+def test_a_corrupt_findings_file_fails(ledger_case, capsys):
     case, prompts = ledger_case
-    out = _approve_and_verify(case, prompts, capsys, findings="absent")
-    assert len(prompts) == 1 and out.count("CONFIRMED") == 2, (prompts, out)
+    out, code = _approve_and_verify(case, prompts, capsys, findings="corrupt")
+    assert "CASE_FILE_UNREADABLE" in out and code == 2, out
 
 
-def test_intact_findings_verify_as_before(ledger_case, capsys):
+def test_intact_0_6_approvals_verify_with_no_password(ledger_case, capsys):
     case, prompts = ledger_case
-    out = _approve_and_verify(case, prompts, capsys, findings="intact")
-    assert "VERIFIED" in out and out.count("CONFIRMED") == 2 and len(prompts) == 1
+    out, code = _approve_and_verify(case, prompts, capsys, findings="intact")
+    assert re.search(r"F-steve-001\s+approved before 0.6.4", out), out
+    assert re.search(r"T-steve-001\s+approved before 0.6.4", out), out
+    assert code == 0 and not prompts
 
 
-def test_no_findings_and_no_ledger_says_only_that(ledger_case, capsys):
+def test_no_findings_and_no_ledger_passes_quietly(ledger_case, capsys):
     case, prompts = ledger_case
-    out = _approve_and_verify(case, prompts, capsys, findings="none")
-    assert out.strip() == "No findings recorded." and not prompts
+    out, code = _approve_and_verify(case, prompts, capsys, findings="none")
+    assert code == 0 and not prompts and "FAIL" not in out
 
 
-def test_mine_asks_only_for_the_callers_password(ledger_case, capsys):
+def test_mine_filters_what_s_shown_and_asks_nothing(ledger_case, capsys):
     case, prompts = ledger_case
-    _approve_and_verify(case, prompts, capsys, findings="absent", mine=True, alice=True)
-    assert len(prompts) == 1 and "'steve'" in prompts[0], prompts
+    out, code = _approve_and_verify(
+        case, prompts, capsys, findings="intact", mine=True, alice=True
+    )
+    items = [x for x in out.split("Items:")[1].splitlines() if x.startswith("  ")]
+    assert not prompts and items and not any("F-alice-001" in x for x in items), out
+    assert "the whole case; --mine only filters what's shown" in out

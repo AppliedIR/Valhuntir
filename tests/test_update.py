@@ -725,3 +725,39 @@ def test_locked_install_is_not_cut_off_by_a_timeout(manifest_dir):
         cmd_update(_make_args(no_restart=True), {})
 
     assert len(locked) == 1 and locked[0].get("timeout") is None
+
+
+def test_a_key_the_redeploy_records_survives_the_manifest_update(manifest_dir):
+    """Step 5's deploys record their own keys (the Codex profile's hash, by
+    which the next update tells a generated profile from an edited one), and
+    Step 6 writes the manifest after them: it never reverts them, update after
+    update."""
+    tmp_path, manifest_path = manifest_dir
+    from vhir_cli.commands import client_setup
+
+    def mock_run(cmd, **kwargs):
+        result = MagicMock()
+        result.returncode, result.stdout, result.stderr = 0, "0", ""
+        if cmd[:2] == ["uv", "--version"]:
+            result.stdout = "uv 0.12.20"
+        elif "symbolic-ref" in cmd:
+            result.stdout = "main"
+        return result
+
+    for digest in ("hash-of-the-first-profile", "hash-of-the-next-profile"):
+
+        def redeploy(manifest, digest=digest):
+            client_setup._manifest_set("codex_profile_sha256", digest)  # as written
+            return ["codex"]
+
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("subprocess.run", side_effect=mock_run),
+            patch("vhir_cli.commands.update._redeploy_clients", side_effect=redeploy),
+            patch("vhir_cli.commands.update._ensure_bwrap_profile"),
+            patch("vhir_cli.commands.setup._run_connectivity_test"),
+        ):
+            cmd_update(_make_args(no_restart=True), {})
+        saved = json.loads(manifest_path.read_text())
+        assert saved["codex_profile_sha256"] == digest
+        assert saved["updated_at"] and saved["git"]  # Step 6's own keys too

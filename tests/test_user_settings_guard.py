@@ -128,7 +128,7 @@ def test_without_a_terminal_nothing_changes_and_it_says_so(box, capsys):
     out = capsys.readouterr().out
     assert box.settings.read_bytes() == before and same() and not asked
     assert "would change" in out and '"enabled"' in out and "vhir update" in out
-    assert "Merged:" not in out and "NOT applied" in out
+    assert "Merged:" not in out  # setup and update then say NOT applied, once
     assert result == (box.settings, "kept")
 
 
@@ -453,7 +453,10 @@ def test_setup_claims_global_controls_only_when_applied(
     cs._generate_config("claude-code", {}, "steve")
     out = capsys.readouterr().out
     assert ("Forensic controls deployed globally." in out) is claims
-    assert ("will always apply" in out) is claims
+    assert ("Forensic controls NOT applied" in out) is not claims
+    # the block reads the file itself: here there is none, so no row claims it
+    assert f"Valhuntir's controls aren't fully applied in {box.settings}" in out
+    assert "    Deny rules:" not in out
 
 
 def test_a_null_mcpservers_map_is_registered_into_not_a_crash(claude_json, capsys):
@@ -487,7 +490,7 @@ def _setup_args(**kw):
 
     base = dict(
         client="claude-code",
-        sift="http://127.0.0.1:4508",
+        sift="http://127.0.0.1:9",  # nothing listens: never a live gateway
         windows=None,
         windows_token=None,
         remnux=None,
@@ -569,10 +572,8 @@ def test_ask_user_files_without_a_terminal_keeps_the_file(box, setup):
 
 def test_anchor_vhir_update_without_a_terminal_still_keeps(box, capsys):
     before = _write_user(box.settings)
-    box.run()  # _deploy_claude_code_assets alone, as `vhir update` calls it
-    assert (
-        box.settings.read_bytes() == before and "NOT applied" in capsys.readouterr().out
-    )
+    result, _ = box.run()  # _deploy_claude_code_assets alone, as `vhir update` calls it
+    assert box.settings.read_bytes() == before and result[1] == "kept"
 
 
 def test_anchor_a_fresh_file_is_created_with_no_undo_line(box, setup, capsys):
@@ -633,3 +634,25 @@ def test_the_claude_json_backup_is_in_the_undo_block(box, setup, capsys):
     assert note.startswith("#") and "Claude Code" in note and "close" in note
     subprocess.run(undo, shell=True, check=True)
     assert path.read_bytes() == before
+
+
+# --- -y's undo also restores the deprecated hook it removed -------------------
+
+
+def test_y_undo_also_restores_the_deprecated_hook(box, setup, capsys):
+    hook = _with_deprecated_hook(box)
+    hook.chmod(0o755)
+    before = box.settings.read_bytes(), hook.read_bytes()
+    setup(sift="http://127.0.0.1:9")  # -y, no terminal; no gateway
+    assert not hook.exists()
+    for ln in _undo_lines(capsys.readouterr().out):
+        subprocess.run(ln, shell=True, check=True)
+    assert (box.settings.read_bytes(), hook.read_bytes()) == before
+    assert os.access(hook, os.X_OK)  # a backup that lost its mode can't run
+
+
+def test_anchor_no_deprecated_hook_no_backup_and_no_undo_line(box, setup, capsys):
+    setup(sift="http://127.0.0.1:9")
+    out = capsys.readouterr().out
+    assert "pre-bash-guard" not in out
+    assert not list(box.home.rglob("pre-bash-guard.sh*"))
