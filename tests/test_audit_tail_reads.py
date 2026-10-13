@@ -172,3 +172,45 @@ def test_a_line_that_isnt_an_object_ends_a_page_as_it_ends_a_full_read(case, lin
 
     assert outcome(20) == outcome(None)
     assert outcome(None).startswith("TypeError: ")  # stopped, as a whole read is
+
+
+@POSIX
+def test_review_audit_shows_the_entries_before_an_over_cap_line_and_warns(
+    case, monkeypatch
+):
+    """A line over LINE_CAP in a log's tail: `vhir review --audit` shows the
+    entries read before it and names the log, as `vhir audit log` does."""
+    monkeypatch.setattr("vhir_cli.commands.review.get_case_dir", lambda *a: case)
+    with open(case / "audit" / "sift-mcp.jsonl", "ab") as f:
+        f.write(b"x" * (LINE_CAP + 1) + b"\n")
+
+    def run():
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            cmd_review(Namespace(case=None, audit=True, limit=20), {})
+        return ("sift-tester-002999" in out.getvalue(), "No audit entries" in out.getvalue(),
+                "line 3001 is longer than 16 MiB" in err.getvalue())  # fmt: skip
+
+    assert _within(run, timeout=60.0) == ("ok", (True, False, True))
+
+
+def test_a_filtered_page_stops_at_a_ts_that_isnt_text_as_a_full_read_does(case):
+    """An entry the filter doesn't keep still has its time checked first."""
+    with open(case / "audit" / "sift-mcp.jsonl", "a") as f:
+        f.write(
+            json.dumps({"ts": 5, "tool": "other", "audit_id": "sift-tester-bad"}) + "\n"
+        )
+
+    def outcome(**kw):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                audit_cmd._load_audit_entries(case, **kw)
+        except TypeError as e:
+            return f"TypeError: {e}"
+        return "read"
+
+    assert (
+        outcome(limit=20, tool_filter="run_command")
+        == outcome()
+        == ("TypeError: an audit entry's ts isn't text: 5")
+    )

@@ -48,6 +48,9 @@ def _make_keep(mcp_filter, tool_filter, mcp_default: str, tool_default: str):
         return None
 
     def keep(entry: dict) -> bool:
+        _check_ts(
+            entry
+        )  # every entry's time is checked, kept or not, as a full read does
         if mcp_filter and entry.get("mcp", mcp_default) != mcp_filter:
             return False
         if tool_filter:
