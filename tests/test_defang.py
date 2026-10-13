@@ -134,3 +134,21 @@ def test_the_sample_gives_its_live_indicators_never_the_parent_domain():
     for got in (collected, report):
         assert set(got["Domain"]) == {"evil.com", "bad.example.com"}
         assert set(got["IPv4"]) == {"185.220.101.45"}
+
+
+@pytest.mark.parametrize(
+    ("text", "kind", "value"),
+    [
+        ("C2 at hxxp://hxxp[.]example[.]com", "Domain", "hxxp.example.com"),
+        (r"dropped C:\Tools\hxxp\payload.exe", "File", r"C:\Tools\hxxp\payload.exe"),
+    ],
+)
+def test_hxxp_is_a_scheme_only_before_its_separator(text, kind, value):
+    """Only a scheme's hxxp is refanged: the same letters in a host name or a
+    path are part of the indicator, in both extractors."""
+    collected: dict[str, set[str]] = {}
+    _extract_text_iocs(text, collected)
+    report = _extract_all_iocs([{"observation": text, "interpretation": ""}])
+    for got in (collected, report):
+        assert value in got[kind]
+        assert not any("http" in v for v in got.get(kind, ())), got

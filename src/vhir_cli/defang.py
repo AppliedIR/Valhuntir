@@ -29,7 +29,7 @@ _SCHEME_SEP_RE = re.compile(r"\[://\]|\[:\]//")
 _COLON_RE = re.compile(r"(?<=[\w])\[:\](?=[\w/])")
 
 # hxxp / hXXps / HXXP -> http / https, preserving the surrounding case.
-_HXXP_RE = re.compile(r"\b(h)(xx)(ps?)\b", re.IGNORECASE)
+_HXXP_RE = re.compile(r"\b(h)(xx)(ps?)(?=://)", re.IGNORECASE)
 
 _REPLACEMENTS = (
     (_DOT_RE, "."),
