@@ -981,9 +981,14 @@ def _capped(line: bytes) -> bytes:
     return line
 
 
+CORRUPT_LINE = object()  # what iter_jsonl_entries gives for a line that isn't JSON
+
+
 def _iter_entries(path: Path, keep=None):
     """Every entry of a case log in file order, read forwards by
-    `open_regular`, each as it is read; None for each corrupt line."""
+    `open_regular`, each as it is read; CORRUPT_LINE for each corrupt line.
+    `keep` tests objects only: any other value is given to the caller, whose
+    read it stops as a whole read's does."""
     with open_regular(path) as f:
         for line in f:
             line = line.strip()
@@ -992,15 +997,15 @@ def _iter_entries(path: Path, keep=None):
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError:
-                yield None
+                yield CORRUPT_LINE
                 continue
-            if keep is None or keep(entry):
+            if keep is None or not isinstance(entry, dict) or keep(entry):
                 yield entry
 
 
 def iter_jsonl_entries(path: Path, limit: int | None, keep=None):
-    """The entries `tail_jsonl_entries` returns, in file order, and None for
-    each corrupt line it counts. A full read yields each entry as it is read,
+    """The entries `tail_jsonl_entries` returns, in file order, and
+    CORRUPT_LINE for each corrupt line it counts. A full read yields each entry as it is read,
     so a caller keeps what came before a line the reader refuses."""
     if limit is not None:
         try:
@@ -1009,7 +1014,7 @@ def iter_jsonl_entries(path: Path, limit: int | None, keep=None):
             pass
         else:
             yield from entries
-            yield from [None] * corrupt
+            yield from [CORRUPT_LINE] * corrupt
             return
     yield from _iter_entries(path, keep)
 
@@ -1043,7 +1048,7 @@ def tail_jsonl_entries(
     entries: list[dict] = []
     corrupt = 0
     for entry in iter_jsonl_entries(path, limit, keep):
-        if entry is None:
+        if entry is CORRUPT_LINE:
             corrupt += 1
         else:
             entries.append(entry)

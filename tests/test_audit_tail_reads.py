@@ -155,3 +155,20 @@ def test_review_audit_names_a_fifo_log_and_never_waits_on_it(case, monkeypatch):
         )
 
     assert _within(run) == ("ok", (True, True))
+
+
+@pytest.mark.parametrize("line", ["null", "[1]", '"text"'])
+def test_a_line_that_isnt_an_object_ends_a_page_as_it_ends_a_full_read(case, line):
+    with open(case / "audit" / "sift-mcp.jsonl", "a") as f:
+        f.write(line + "\n")
+
+    def outcome(limit):
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                got = audit_cmd._load_audit_entries(case, limit)
+        except Exception as e:  # noqa: BLE001 - the two reads are compared
+            return f"{type(e).__name__}: {e}"
+        return [e.get("audit_id") for e in got][-20:]
+
+    assert outcome(20) == outcome(None)
+    assert outcome(None).startswith("TypeError: ")  # stopped, as a whole read is

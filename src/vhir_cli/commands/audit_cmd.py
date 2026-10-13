@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir, iter_jsonl_entries
+from vhir_cli.case_io import CORRUPT_LINE, get_case_dir, iter_jsonl_entries
 from vhir_cli.display import display_safe, one_line
 
 
@@ -87,7 +87,7 @@ def _load_audit_entries(
             file_keep = _make_keep(mcp_filter, tool_filter, stem, "")
             try:  # each entry as it is read, so those before a refusal are kept
                 for entry in iter_jsonl_entries(jsonl_file, limit, file_keep):
-                    if entry is None:
+                    if entry is CORRUPT_LINE:
                         corrupt_lines += 1
                         continue
                     # Derive mcp name from filename if not present
@@ -109,7 +109,7 @@ def _load_audit_entries(
         file_keep = _make_keep(mcp_filter, tool_filter, "vhir-cli", "approval")
         try:
             for entry in iter_jsonl_entries(approvals_file, limit, file_keep):
-                if entry is None:
+                if entry is CORRUPT_LINE:
                     corrupt_lines += 1
                     continue
                 entry.setdefault("tool", "approval")
