@@ -89,12 +89,13 @@ def defang_iocs(text: str, iocs: list[str]) -> str:
     occurrence is never part of a longer name or address: no name character
     or dot before it, and no name character, or dot and label, after it. A
     domain right after a single / or \\ is a path component, left as written
-    (after two of them, mixed or not, it is a host). A defanged form no
-    longer holds the live value, so it isn't defanged twice."""
+    (after two of them, mixed or not, or one right after a scheme's colon, it
+    is a host). A defanged form no longer holds the live value, so it isn't
+    defanged twice."""
 
     def one(m: re.Match, name: bool) -> str:
         s, i = m.string, m.start()
-        if name and i and s[i - 1] in "/\\" and (i < 2 or s[i - 2] not in "/\\"):
+        if name and i and s[i - 1] in "/\\" and (i < 2 or s[i - 2] not in "/\\:"):
             return m.group(0)  # a path component, not a host
         return _defanged(m.group(0))
 
