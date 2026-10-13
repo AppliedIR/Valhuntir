@@ -118,3 +118,19 @@ def test_report_extractor_finds_defanged_indicators():
     )
     assert "evil.com" in out["Domain"]
     assert "185.220.101.45" in out["IPv4"]
+
+
+SAMPLE = (
+    "C2 at hxxp://evil[.]com via bad(dot)example.com, beacon to 185[.]220[.]101[.]45"
+)
+
+
+def test_the_sample_gives_its_live_indicators_never_the_parent_domain():
+    """Both extractors: the defanged domains and IP come out live, and
+    bad(dot)example.com is bad.example.com, never its parent example.com."""
+    collected: dict[str, set[str]] = {}
+    _extract_text_iocs(SAMPLE, collected)
+    report = _extract_all_iocs([{"observation": SAMPLE, "interpretation": ""}])
+    for got in (collected, report):
+        assert set(got["Domain"]) == {"evil.com", "bad.example.com"}
+        assert set(got["IPv4"]) == {"185.220.101.45"}
