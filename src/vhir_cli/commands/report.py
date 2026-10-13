@@ -152,14 +152,16 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
 
 
 def _save_output(
-    case_dir: Path, save_path: str | None, content: str, view: dict
+    case_dir: Path, save_path: str | None, content: str, view: dict | None
 ) -> None:
-    """Write report content to file if --save is specified, with every IOC of
-    the case's approved findings defanged (the block too: nothing reads its
-    text back)."""
+    """Write report content to file if --save is specified. A text report
+    (`view` given) has every IOC of the case defanged, its block too: nothing
+    reads its text back. JSON (`view` None) keeps them live: it is input for
+    tools."""
     if not save_path:
         return
-    content = defang_iocs(content, _report_iocs(case_dir, view))
+    if view is not None:
+        content = defang_iocs(content, _report_iocs(case_dir, view))
     out = Path(save_path)
     if not out.is_absolute():
         reports_dir = case_dir / "reports"
@@ -288,7 +290,7 @@ def _report_full(case_dir: Path, args) -> None:
 
     output = json.dumps(report, indent=2, default=str)
     print(output)
-    _save_output(case_dir, getattr(args, "save", None), output, view)
+    _save_output(case_dir, getattr(args, "save", None), output, None)  # JSON: live
 
 
 def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | None:

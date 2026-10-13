@@ -81,16 +81,15 @@ def test_only_an_approved_findings_typed_iocs_are_defanged(case_dir, identity): 
     assert "relay.example.dev; stage[.]example[.]dev." in saved
 
 
-def test_the_full_json_report_is_saved_defanged(case_dir, identity):  # noqa: F811
+def test_the_full_json_report_keeps_its_iocs_live_and_the_text_report_doesnt(  # noqa: F811
+    case_dir, identity  # noqa: F811
+):  # fmt: skip
+    """JSON is input for tools: --full --save keeps the IOCs as stored, while a
+    text report saved from the same case has them defanged."""
     saved = _saved(case_dir, identity, [APPROVED], full=True)
     assert json.loads(saved)["approved_findings"][0]["title"].startswith(
-        "C2 at evil[.]com (see"
+        "C2 at evil.com (see"
     )
-
-
-def test_a_name_an_approved_finding_only_mentions_stays_live(case_dir, identity):  # noqa: F811
-    """download.vendor.com is in the finding's text, not among its IOCs."""
-    saved = _saved(case_dir, identity, [APPROVED], report_findings="F-tester-001")
-    assert (
-        "tool from download.vendor.com;" in saved and "download[.]vendor" not in saved
-    )
+    assert "http://bad.example.com/x.php" in saved and "hxxp" not in saved
+    text = _saved(case_dir, identity, [APPROVED], report_findings="F-tester-001")
+    assert "C2 at evil[.]com (see" in text
