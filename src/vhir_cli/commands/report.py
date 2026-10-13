@@ -27,10 +27,11 @@ from vhir_cli.case_io import (
     get_case_dir,
     load_case_meta,
     load_findings,
+    load_iocs,
     load_timeline,
     load_todos,
 )
-from vhir_cli.defang import refang
+from vhir_cli.defang import defang_iocs, network_ioc, refang
 from vhir_cli.display import cited_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ledger_verify import (
@@ -112,13 +113,56 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
         ):
             stored = report(case_dir, args, safe=False)
         stored = stored if stored is not None else output
-        _save_output(case_dir, save, stored + "\n\n" + "\n".join(block))
+        _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
-def _save_output(case_dir: Path, save_path: str | None, content: str) -> None:
-    """Write report content to file if --save is specified."""
+_NETWORK_TYPES = ("domain", "ipv4", "url")  # an IOC type naming one of these
+
+
+def _report_iocs(case_dir: Path, view: dict) -> list[str]:
+    """The domains, URLs and IPv4 addresses of the case's approved findings,
+    live, longest first (a URL before the host it holds): from their text and
+    IOC fields, and the case's IOCs typed so whose source is one of them, as
+    report-mcp gathers them. Hashes, paths and the rest aren't."""
+    findings = view.get("findings") or []
+    approved = {f.get("id") for f in findings}
+    kept: set[str] = set()
+
+    def take(value, typed: bool) -> None:
+        if (v := network_ioc(value, typed)) is not None:
+            kept.add(v)
+
+    for kind, values in _extract_all_iocs(findings).items():
+        typed = any(t in kind.lower() for t in _NETWORK_TYPES)
+        for value in values:
+            take(value, typed)
+    for f in findings:  # a field's plain values, untyped
+        field = f.get("iocs")
+        for value in field if isinstance(field, list) else ():
+            if isinstance(value, str):
+                take(value, False)
+    case_iocs = [  # the case's IOCs that one of the approved findings cites
+        i for i in load_iocs(case_dir)
+        if isinstance(i, dict) and isinstance(i.get("source_findings"), list)
+        and approved.intersection(map(str, i["source_findings"]))
+    ]  # fmt: skip
+    for ioc in [*(view.get("iocs") or []), *case_iocs]:  # approved, or so cited
+        if isinstance(ioc, dict) and any(
+            t in str(ioc.get("type", "")).lower() for t in _NETWORK_TYPES
+        ):
+            take(ioc.get("value", ""), True)
+    return sorted(kept, key=lambda v: (-len(v), v))
+
+
+def _save_output(
+    case_dir: Path, save_path: str | None, content: str, view: dict
+) -> None:
+    """Write report content to file if --save is specified, with every IOC of
+    the case's approved findings defanged (the block too: nothing reads its
+    text back)."""
     if not save_path:
         return
+    content = defang_iocs(content, _report_iocs(case_dir, view))
     out = Path(save_path)
     if not out.is_absolute():
         reports_dir = case_dir / "reports"
@@ -247,7 +291,7 @@ def _report_full(case_dir: Path, args) -> None:
 
     output = json.dumps(report, indent=2, default=str)
     print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    _save_output(case_dir, getattr(args, "save", None), output, view)
 
 
 def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | None:
