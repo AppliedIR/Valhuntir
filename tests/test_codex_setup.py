@@ -81,6 +81,7 @@ def box(tmp_path, monkeypatch):
         "shared/hooks/forensic-audit.sh",
         "shared/hooks/codex-stdin-capture.sh",
         "full/hooks/case-dir-check.sh",
+        "shared/hooks/codex-skeptic-tools.sh",
     ):
         (repo / "claude-code" / hook).parent.mkdir(parents=True, exist_ok=True)
         (repo / "claude-code" / hook).write_text(f"#!/bin/bash\n# {hook}\n")  # fmt: skip
