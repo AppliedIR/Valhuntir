@@ -704,3 +704,81 @@ def test_a_lock_held_by_another_users_live_process_is_held(tmp_path):
         B._acquire_lock(lock)
     B._release_lock(lock)
     assert lock.read_text() == "1"
+
+
+# --- the first line a reader sees is the verdict --------------------------------
+
+
+def _verdict_lines(out: str) -> list[str]:
+    """stdout's lines without the transient `Checking... i/N` progress line."""
+    return [
+        ln for ln in out.splitlines() if ln.strip() and not ln.startswith("Checking...")
+    ]
+
+
+@pytest.mark.parametrize("part", ["indices", "0.6 records"])
+def test_a_partial_backup_says_partial_on_stdout_not_complete(
+    box, monkeypatch, capsys, part
+):
+    if part == "indices":
+        code = _backup(box, monkeypatch, include_opensearch=True)
+    else:
+        (B.VERIFICATION_DIR / f"{CASE}.jsonl").write_text("legacy\n")
+        real = shutil.copy2
+
+        def copy2(src, dst, **k):
+            if "/verification/" in str(dst):
+                raise OSError("stand-in disk refused")
+            return real(src, dst, **k)
+
+        monkeypatch.setattr(B.shutil, "copy2", copy2)
+        code = _backup(box, monkeypatch)
+    out = capsys.readouterr().out
+    (kept,) = (box.tmp / "dest").iterdir()
+    assert code == 1
+    assert "Backup complete" not in out
+    assert f"Backup PARTIAL: {kept} (see the warning above)" in out.splitlines()
+
+
+def test_a_clean_backup_still_says_complete(box, monkeypatch, capsys):
+    box.answers = {"Include OpenSearch indices": "n"}
+    assert _backup(box, monkeypatch) == 0
+    out = capsys.readouterr().out
+    (kept,) = (box.tmp / "dest").iterdir()
+    assert f"Backup complete: {kept}" in out.splitlines() and "PARTIAL" not in out
+
+
+def test_verify_of_a_failing_backup_leads_with_failed(box, capsys):
+    bk = make_backup(box)
+    (bk / "findings.json").write_bytes(b"changed\n")
+    capsys.readouterr()
+    assert B._verify_backup(bk) is False
+    lines = _verdict_lines(capsys.readouterr().out)
+    assert lines[:3] == [
+        "FAILED: backup integrity check failed",
+        "  MISMATCH: findings.json",
+        "Files checked: 4 OK, 1 MISMATCH",
+    ], lines
+    assert not any(ln.startswith("Verification:") for ln in lines)
+
+
+def test_verify_of_a_backup_missing_its_promised_indices_leads_with_failed(box, capsys):
+    bk = make_backup(box, snapshot=False)
+    manifest = json.loads((bk / "backup-manifest.json").read_text())
+    manifest["includes_opensearch"] = True
+    (bk / "backup-manifest.json").write_text(json.dumps(manifest))
+    capsys.readouterr()
+    assert B._verify_backup(bk) is False
+    lines = _verdict_lines(capsys.readouterr().out)
+    assert lines[0].startswith(
+        "FAILED: the backup says it holds the case's OpenSearch indices"
+    )
+    assert lines[1] == "Files checked: 4 OK"
+
+
+def test_verify_of_a_good_backup_reads_as_before_with_files_checked(box, capsys):
+    bk = make_backup(box)
+    capsys.readouterr()
+    assert B._verify_backup(bk) is True
+    lines = _verdict_lines(capsys.readouterr().out)
+    assert lines == ["Files checked: 5 OK", "PASSED: all files verified"], lines
