@@ -334,13 +334,28 @@ def _clear_failures(analyst: str) -> None:
         _save_failures(data)
 
 
+class NoTerminal(RuntimeError):
+    """The passphrase prompt can't open /dev/tty: no examiner is at a
+    terminal (an AI's shell, a pipe). Signing refuses and saves nothing."""
+
+
+def require_terminal() -> None:
+    """Raise NoTerminal unless the passphrase prompt could open /dev/tty."""
+    if not _HAS_TERMIOS:
+        raise NoTerminal("Passphrase entry requires a terminal with termios support.")
+    try:
+        open("/dev/tty").close()
+    except OSError as err:
+        raise NoTerminal("Passphrase entry requires /dev/tty.") from err
+
+
 def getpass_prompt(prompt: str) -> str:
     """Read password from /dev/tty with masked input (shows * per keystroke).
 
-    Raises RuntimeError if /dev/tty or termios is unavailable.
+    Raises NoTerminal if /dev/tty or termios is unavailable.
     """
     if not _HAS_TERMIOS:
-        raise RuntimeError(
+        raise NoTerminal(
             "Passphrase entry requires a terminal with termios support. "
             "Cannot read the passphrase without /dev/tty."
         )
@@ -348,7 +363,7 @@ def getpass_prompt(prompt: str) -> str:
     try:
         tty_in = open("/dev/tty")
     except OSError as err:
-        raise RuntimeError(
+        raise NoTerminal(
             "Passphrase entry requires /dev/tty. Cannot read the passphrase in this environment. "
             "Ensure you are running from an interactive terminal."
         ) from err

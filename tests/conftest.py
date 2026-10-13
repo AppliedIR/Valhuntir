@@ -77,6 +77,16 @@ def _forbid_var_lib_vhir():
 
 
 @pytest.fixture(autouse=True)
+def _a_terminal(monkeypatch):
+    """Every test runs as if the examiner were at a terminal: approve and
+    reject check for one first. The no-terminal rows run the CLI in a new
+    session, where this patch doesn't reach."""
+    from vhir_cli import approval_auth
+
+    monkeypatch.setattr(approval_auth, "require_terminal", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
     from vhir_cli import approval_auth, keys, ledger, verification
     from vhir_cli.commands import backup, update
