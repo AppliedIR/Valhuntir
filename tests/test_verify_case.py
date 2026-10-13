@@ -597,6 +597,28 @@ def test_an_ioc_cascade_needs_its_value_in_the_source_s_signed_iocs(case, steve)
     assert _status(result, "IOC-steve-002") == "CASCADE_UNSUPPORTED"
 
 
+@pytest.mark.parametrize(
+    ("cited", "stored"),
+    [  # a finding's IOC, and the value forensic-mcp stored and signed for it
+        ("evil(dot)com", "evil(dot)com"),
+        ("bad[dot]example.com", "bad[dot]example.com"),
+        ("C:\\Tools\\hxxp\\a.exe", "C:\\Tools\\http\\a.exe"),
+        ("hxxpserver.local", "httpserver.local"),
+    ],
+)
+def test_an_ioc_signed_as_staging_stored_it_verifies(case, steve, cited, stored):
+    """The cascade check reads the finding's IOCs by the rule they were stored
+    and signed under, so a case signed before any change of that rule verifies."""
+    f = _finding(iocs=[cited])
+    ioc = {"id": "IOC-steve-001", "value": stored, "type": "domain", "status": "DRAFT"}
+    _save(case, findings=[f], iocs=[ioc])
+    _sign(case, steve, [(f, "finding", "approve", "APPROVED", None),
+                        (ioc, "ioc", "approve", "APPROVED", f["id"])])  # fmt: skip
+    done = {"status": "APPROVED", "approved_by": "steve", "approved_at": AT}
+    _save(case, findings=[dict(f, **done)], iocs=[dict(ioc, **done)])
+    assert _status(verify_case(case), "IOC-steve-001") == "VALID"
+
+
 # --- Several chains ----------------------------------------------------------
 
 

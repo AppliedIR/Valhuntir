@@ -17,8 +17,6 @@ from pathlib import Path
 
 import yaml
 
-from vhir_cli.defang import refang
-
 _EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
 DEFAULT_CASES_DIR = str(Path.home() / "cases")
@@ -487,7 +485,8 @@ def signed_text(item: dict, item_type: str, view: int = 2) -> str:
 
 
 def _refang_ioc(value: str) -> str:
-    return re.sub(r"\[(\W)\]", r"\1", refang(value))
+    v = value.replace("[.]", ".").replace("hxxp", "http")
+    return re.sub(r"\[(\W)\]", r"\1", v)
 
 
 def normalize_ioc(value: str) -> str:
