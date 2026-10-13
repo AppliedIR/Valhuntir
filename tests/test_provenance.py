@@ -79,6 +79,8 @@ class TestSummaryColumns:
                     "title": "Test finding",
                     "confidence": "HIGH",
                     "provenance": "MCP",
+                    "provenance_schema": 2,
+                    "provenance_grade": "DECLARED",
                 }
             ],
         )
@@ -88,7 +90,7 @@ class TestSummaryColumns:
         assert "Confidence" in output
         assert "Provenance" in output
         assert "Status" in output
-        assert "MCP" in output
+        assert "DECLARED" in output and "MCP" not in output  # the grade, not the tier
 
     def test_summary_missing_provenance(self, case_dir, capsys):
         save_findings(
@@ -104,7 +106,7 @@ class TestSummaryColumns:
         )
         cmd_review(_review_args(findings=True), {})
         output = capsys.readouterr().out
-        assert "\u2014" in output  # em dash for missing provenance
+        assert "recorded before 0.6.4" in output  # no chain was recorded for it
 
 
 # --- Detail view evidence chain ---

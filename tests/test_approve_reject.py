@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from vhir_cli.approval_auth import setup_password
 from vhir_cli.case_io import (
     load_approval_log,
     load_findings,
@@ -20,6 +19,8 @@ from vhir_cli.case_io import (
 )
 from vhir_cli.commands.approve import _approve_specific, cmd_approve
 from vhir_cli.commands.reject import cmd_reject
+
+from .signing import enrol
 
 
 @pytest.fixture
@@ -71,12 +72,8 @@ def isolate_passwords_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def pw_config(config_path):
-    """Set up a password for analyst1 and return config_path."""
-    with patch(
-        "vhir_cli.approval_auth.getpass_prompt",
-        side_effect=["testpass1", "testpass1"],
-    ):
-        setup_password(config_path, "analyst1")
+    """Enrol analyst1 (passphrase testpass1) and return config_path."""
+    enrol("analyst1")
     return config_path
 
 
@@ -169,7 +166,7 @@ class TestApproveSpecific:
         assert log[0]["item_id"] == "F-tester-001"
         assert log[0]["action"] == "APPROVED"
         assert log[0]["examiner"] == "analyst1"
-        assert log[0]["mode"] == "password"
+        assert log[0]["mode"] == "cli"
 
     def test_no_password_configured_exits(
         self, case_dir, identity, staged_finding, config_path, capsys
@@ -178,7 +175,7 @@ class TestApproveSpecific:
         with pytest.raises(SystemExit):
             _approve_specific(case_dir, ["F-tester-001"], identity, config_path)
         captured = capsys.readouterr()
-        assert "No approval password configured" in captured.err
+        assert "No passphrase configured" in captured.err
 
     def test_approve_with_note(self, case_dir, identity, staged_finding, pw_config):
         with patch("vhir_cli.approval_auth.getpass_prompt", return_value="testpass1"):
@@ -490,7 +487,7 @@ class TestReject:
         log = load_approval_log(case_dir)
         assert log[0]["action"] == "REJECTED"
         assert log[0]["reason"] == "Bad data"
-        assert log[0]["mode"] == "password"
+        assert log[0]["mode"] == "cli"
 
     def test_reject_nonexistent(
         self, case_dir, identity, staged_finding, capsys, pw_config
@@ -499,7 +496,7 @@ class TestReject:
         with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             cmd_reject(args, identity)
         captured = capsys.readouterr()
-        assert "not found or not DRAFT" in captured.err
+        assert "not found or already rejected" in captured.err
 
     def test_reject_no_reason(self, case_dir, identity, staged_finding, pw_config):
         args = Namespace(ids=["F-tester-001"], reason="", case=None, analyst=None)
@@ -518,12 +515,9 @@ class TestReject:
         self, case_dir, identity, staged_finding, pw_config
     ):
         """A finding added between display and confirmation survives rejection."""
-        original_confirm = __import__(
-            "vhir_cli.approval_auth", fromlist=["require_confirmation"]
-        ).require_confirmation
 
-        def confirm_and_add_finding(config_path, analyst):
-            # Simulate an MCP write happening during the confirmation prompt
+        def add_finding_then_type(prompt=""):
+            # Simulate an MCP write happening during the passphrase prompt
             findings = load_findings(case_dir)
             findings.append(
                 {
@@ -535,19 +529,15 @@ class TestReject:
                 }
             )
             save_findings(case_dir, findings)
-            return original_confirm(config_path, analyst)
+            return "testpass1"
 
         args = Namespace(ids=["F-tester-001"], reason="bad", case=None, analyst=None)
         with patch("vhir_cli.commands.reject.Path.home", return_value=case_dir.parent):
             with patch(
-                "vhir_cli.commands.reject.require_confirmation",
-                side_effect=confirm_and_add_finding,
+                "vhir_cli.approval_auth.getpass_prompt",
+                side_effect=add_finding_then_type,
             ):
-                with patch(
-                    "vhir_cli.approval_auth.getpass_prompt",
-                    return_value="testpass1",
-                ):
-                    cmd_reject(args, identity)
+                cmd_reject(args, identity)
 
         # F-tester-001 should be REJECTED, F-tester-002 should survive as DRAFT
         findings = load_findings(case_dir)
@@ -565,15 +555,17 @@ class TestReject:
 # writer here writes what record_finding writes: a finding, its auto event
 # and an IOC.
 
-from vhir_cli.case_io import hmac_text  # noqa: E402
+from vhir_cli import ledger  # noqa: E402
 from vhir_cli.commands import approve as approve_mod  # noqa: E402
+
+from .signing import PASSPHRASE  # noqa: E402
 
 _NOW = "2026-01-01T00:00:00+00:00"
 _CORRUPT = '{"broken": '
 _IDENT = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
 
 
-def _f(fid, title, tid):
+def _f(fid, title, tid, iocs=()):
     return {
         "id": fid,
         "title": title,
@@ -587,6 +579,7 @@ def _f(fid, title, tid):
         "created_by": "steve",
         "examiner": "steve",
         "timeline_event_id": tid,
+        "iocs": list(iocs),
         "content_hash": "x",
     }
 
@@ -640,7 +633,7 @@ def _write(path, data):
 def _stage_concurrently(case):
     """What record_finding writes for a new finding; returns the records."""
     recs = {
-        "F": _f("F-steve-002", "Staged during wait", "T-steve-003"),
+        "F": _f("F-steve-002", "Staged during wait", "T-steve-003", ["10.9.9.9"]),
         "T": _t("T-steve-003", "F-steve-002", "Staged during wait"),
         "I": _ioc("IOC-steve-002", "10.9.9.9", "F-steve-002"),
     }
@@ -673,7 +666,7 @@ def wait_case(tmp_path, monkeypatch):
     case.mkdir()
     (case / "CASE.yaml").write_text("case_id: K-case\nstatus: open\n")
     (case / "findings.json").write_text(
-        json.dumps([_f("F-steve-001", "First", "T-steve-001")])
+        json.dumps([_f("F-steve-001", "First", "T-steve-001", ["10.1.2.3"])])
     )
     (case / "timeline.json").write_text(
         json.dumps(
@@ -689,24 +682,18 @@ def wait_case(tmp_path, monkeypatch):
     return case
 
 
-def _run(
-    case, monkeypatch, mode, hook, *, ids=("F-steve-001",), answers=(), texts=None, **kw
-):
-    """Runs a mode with `hook` during the wait; returns (exit code, signed ids).
-    `texts`, if given, receives each signed item's HMAC text by id."""
-    signed = []
+def _run(case, monkeypatch, mode, hook, *, ids=("F-steve-001",), answers=(), **kw):
+    """Runs a mode with `hook` during the wait (at the passphrase prompt; in
+    the interactive mode, at the first per-item prompt); returns (exit code,
+    the ids the ledger signed)."""
+    enrol("steve")
     state = {"first": True}
 
-    def confirm(cfg, examiner):
-        if mode != "int":
+    def passphrase(prompt=""):
+        if mode != "int" and state["first"]:
+            state["first"] = False
             hook()
-        return ("pw", "pw")
-
-    def ledger(case_dir, items, *a, **k):
-        signed.extend(i["id"] for i in items)
-        if texts is not None:
-            texts.update((i["id"], hmac_text(i)) for i in items)
-        return []
+        return PASSPHRASE
 
     replies = iter(answers)
 
@@ -716,18 +703,23 @@ def _run(
             hook()
         return next(replies, "q")
 
-    monkeypatch.setattr(approve_mod, "require_confirmation", confirm)
-    monkeypatch.setattr(approve_mod, "_write_verification_entries", ledger)
+    monkeypatch.setattr("vhir_cli.approval_auth.getpass_prompt", passphrase)
     monkeypatch.setattr("builtins.input", ask)
+    code = 0
     try:
         if mode == "ids":
             approve_mod._approve_specific(case, list(ids), _IDENT, Path("cfg"), **kw)
+        elif mode == "rev-saved":
+            approve_mod._review_mode(case, _IDENT, Path("cfg"))
         elif mode == "rev":
             (case / "pending-reviews.json").write_text(
                 json.dumps(
                     {
                         "case_id": "K-case",
-                        "items": [{"id": i, "action": "approve"} for i in ids],
+                        "items": [
+                            {"id": i, "action": "approve", "staged_by": "steve"}
+                            for i in ids
+                        ],
                     }
                 )
             )
@@ -735,8 +727,9 @@ def _run(
         else:
             approve_mod._interactive_review(case, _IDENT, Path("cfg"))
     except SystemExit as e:
-        return e.code, signed
-    return 0, signed
+        code = e.code
+    lines = ledger.read_lines(ledger.chain_path("K-case"))
+    return code, [obj["item_id"] for _, _, obj in lines if obj]
 
 
 def _on_disk(case):
@@ -775,7 +768,7 @@ def test_records_staged_during_the_wait_are_kept(
 
 def test_records_staged_while_editor_is_open_are_kept(wait_case, monkeypatch, tmp_path):
     recs = {
-        "F": _f("F-steve-002", "Staged during wait", "T-steve-003"),
+        "F": _f("F-steve-002", "Staged during wait", "T-steve-003", ["10.9.9.9"]),
         "T": _t("T-steve-003", "F-steve-002", "Staged during wait"),
         "I": _ioc("IOC-steve-002", "10.9.9.9", "F-steve-002"),
     }
@@ -800,16 +793,40 @@ def _vanish(case):
     [("ids", ()), ("int", ("a", "s")), ("rev", ())],
     ids=["ids", "int", "rev"],
 )
-def test_anchor_an_item_deleted_during_the_wait_is_written_back_as_today(
-    wait_case, monkeypatch, mode, answers
+def test_an_item_deleted_during_the_wait_is_discarded_loudly_not_written_back(
+    wait_case, monkeypatch, capsys, mode, answers
 ):
-    """Only records new on disk are added; nothing else about the write changes."""
-    _run(wait_case, monkeypatch, mode, lambda: _vanish(wait_case), answers=answers)
-    F, T, _ = _on_disk(wait_case)
-    assert (
-        F["F-steve-001"]["status"] == "APPROVED"
-        and T["T-steve-001"]["status"] == "APPROVED"
+    """Under the case lock the files are read again; an item shown and since
+    gone has its own decision discarded, loudly. Its cascades go with it."""
+    rc, signed = _run(
+        wait_case, monkeypatch, mode, lambda: _vanish(wait_case), answers=answers
     )
+    err = capsys.readouterr().err
+    assert "DISCARDED: F-steve-001 was changed or deleted after you saw it" in err
+    assert rc == 1 and signed == []
+    F, T, _ = _on_disk(wait_case)
+    assert F == {} and T["T-steve-001"]["status"] == "DRAFT"
+
+
+def test_one_of_three_items_edited_during_the_prompt_is_discarded_the_others_signed(
+    wait_case, monkeypatch, capsys
+):
+    _write(wait_case / "findings.json",
+           [_f(f"F-steve-00{n}", f"Finding {n}", None) for n in (1, 2, 3)])  # fmt: skip
+
+    def edit_second():
+        fs = json.loads((wait_case / "findings.json").read_text())
+        fs[1]["title"] = "edited by someone else"
+        _write(wait_case / "findings.json", fs)
+
+    ids = ("F-steve-001", "F-steve-002", "F-steve-003")
+    rc, signed = _run(wait_case, monkeypatch, "ids", edit_second, ids=ids)
+    err = capsys.readouterr().err
+    assert "DISCARDED: F-steve-002" in err and "1 decision(s) were discarded" in err
+    assert rc == 1 and sorted(signed) == ["F-steve-001", "F-steve-003"]
+    F = _on_disk(wait_case)[0]
+    assert [F[i]["status"] for i in ids] == ["APPROVED", "DRAFT", "APPROVED"]
+    assert F["F-steve-002"]["title"] == "edited by someone else"  # not overwritten
 
 
 def test_note_and_interpretation_are_saved_with_the_concurrent_records(
@@ -897,40 +914,55 @@ def _corrupt(case, name):
     [("ids", ()), ("int", ("a", "s")), ("rev", ())],
     ids=["ids", "int", "rev"],
 )
-def test_a_corrupt_file_at_the_re_read_gets_a_loud_line_then_todays_write(
+def test_a_file_corrupted_during_the_wait_saves_the_decisions_and_signs_nothing(
     wait_case, monkeypatch, capsys, mode, answers, name
 ):
+    good = (wait_case / name).read_text()
     rc, signed = _run(
         wait_case, monkeypatch, mode, lambda: _corrupt(wait_case, name), answers=answers
     )
     err = capsys.readouterr().err
-    assert f"could not check {name} for items added during approval" in err
-    assert rc == 0 and (wait_case / name).read_text() != _CORRUPT
-    F, T, _ = _on_disk(wait_case)
-    assert F["F-steve-001"]["status"] == "APPROVED" and "F-steve-001" in signed
+    assert rc == 1 and signed == []
+    assert (
+        f"{name} couldn't be read as case data" in err and "Nothing was signed" in err
+    )
+    assert (wait_case / name).read_text() == _CORRUPT  # never saved over
+    saved = json.loads((wait_case / "pending-reviews.json").read_text())["items"]
+    assert [(e["id"], e["action"]) for e in saved] == [("F-steve-001", "approve")]
+    assert saved[0]["saved_unsigned"]["reason"] == "case file unreadable"
+    # repaired, the next `vhir approve` points at them and --review signs them
+    _write(wait_case / name, json.loads(good))
+    monkeypatch.setenv("VHIR_CASE_DIR", str(wait_case))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "q")
+    approve_mod.cmd_approve(Namespace(case=None, ids=[], review=False), _IDENT)
+    assert (
+        "1 of your decision(s) were saved unsigned (case file unreadable)"
+        in capsys.readouterr().out
+    )
+    _, signed = _run(wait_case, monkeypatch, "rev-saved", lambda: None)
+    assert "F-steve-001" in signed
+    assert _on_disk(wait_case)[0]["F-steve-001"]["status"] == "APPROVED"
 
 
 @pytest.mark.parametrize(
-    "mode,answers",
-    [("ids", ()), ("rev", ()), ("int", ("a", "s"))],
+    "mode,answers,signs",
+    [
+        ("ids", (), ["F-steve-001", "IOC-steve-001", "T-steve-001"]),
+        ("rev", (), ["F-steve-001", "IOC-steve-001", "T-steve-001"]),
+        # T-steve-001 is skipped at its own prompt: a skipped item is never cascaded
+        ("int", ("a", "s"), ["F-steve-001", "IOC-steve-001"]),
+    ],
     ids=["ids", "rev", "int"],
 )
 def test_without_a_concurrent_write_the_outcome_is_unchanged(
-    wait_case, monkeypatch, mode, answers, capsys
+    wait_case, monkeypatch, mode, answers, signs
 ):
     _, signed = _run(wait_case, monkeypatch, mode, lambda: None, answers=answers)
-    print(
-        "CAPTURED-STDOUT-BEGIN",
-        capsys.readouterr().out,
-        "CAPTURED-STDOUT-END",
-        sep="\n",
-        file=sys.stderr,
-    )
     F, T, iocs = _on_disk(wait_case)
     assert F["F-steve-001"]["status"] == "APPROVED"
-    assert (
-        T["T-steve-001"]["status"] == "APPROVED"
-        and T["T-steve-002"]["status"] == "DRAFT"
-    )
     assert iocs["IOC-steve-001"]["status"] == "APPROVED"
-    assert sorted(signed) == ["F-steve-001", "IOC-steve-001", "T-steve-001"]
+    assert T["T-steve-001"]["status"] == (
+        "APPROVED" if "T-steve-001" in signs else "DRAFT"
+    )
+    assert T["T-steve-002"]["status"] == "DRAFT"
+    assert sorted(signed) == signs

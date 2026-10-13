@@ -78,18 +78,24 @@ def _forbid_var_lib_vhir():
 
 @pytest.fixture(autouse=True)
 def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
-    from vhir_cli import approval_auth, verification
+    from vhir_cli import approval_auth, keys, ledger, verification
     from vhir_cli.commands import backup, update
 
     root = tmp_path_factory.mktemp("var_lib_vhir")
     for mod, name, sub in (
         (verification, "VERIFICATION_DIR", "verification"),
         (approval_auth, "_PASSWORDS_DIR", "passwords"),
+        (keys, "KEYS_DIR", "keys"),
+        (ledger, "LEDGER_DIR", "ledger"),
         (backup, "VERIFICATION_DIR", "verification"),  # imported by name
         (backup, "_PASSWORDS_DIR", "passwords"),
         (backup, "_SNAPSHOTS_DIR", "snapshots"),
     ):
         monkeypatch.setattr(mod, name, root / sub)
+    # the installer makes both: the case lock lives in ledger/, and signing
+    # checks for both before any prompt
+    (root / "ledger").mkdir(mode=0o700)
+    (root / "keys").mkdir(mode=0o700)
     # Built inside functions: the legacy pins/ migration and update's check.
     monkeypatch.setattr(approval_auth, "_maybe_migrate_pin_dir", lambda: None)
     monkeypatch.setattr(update, "_ensure_password_dir", lambda: None)

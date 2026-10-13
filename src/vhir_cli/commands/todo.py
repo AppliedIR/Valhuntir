@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 
 from vhir_cli.case_io import get_case_dir, load_todos, save_todos
+from vhir_cli.display import display_safe, one_line
 
 
 def cmd_todo(args, identity: dict) -> None:
@@ -45,11 +46,12 @@ def _todo_list(case_dir, args) -> None:
     print(f"{'ID':<16} {'Status':<11} {'Priority':<9} {'Assignee':<12} Description")
     print("-" * 80)
     for t in todos:
+        t = display_safe(t)  # for printing inline
         todo_id = t["todo_id"]
         status = t.get("status", "open")
         priority = t.get("priority", "medium")
         assignee = t.get("assignee", "") or "-"
-        desc = t.get("description", "")[:40]
+        desc = one_line(t.get("description", ""))[:40]  # one row per todo
         print(f"{todo_id:<16} {status:<11} {priority:<9} {assignee:<12} {desc}")
 
 

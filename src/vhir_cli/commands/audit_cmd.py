@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import get_case_dir
+from vhir_cli.display import display_safe, one_line
 
 
 def cmd_audit(args, identity: dict) -> None:
@@ -106,6 +107,7 @@ def _audit_log(args) -> None:
     print(f"{'Timestamp':<22} {'Examiner':<12} {'MCP':<20} {'Tool':<25} Audit ID")
     print("-" * 100)
     for e in entries:
+        e = display_safe(e)  # for printing inline
         ts = e.get("ts", "?")[:19]
         examiner = e.get("examiner", "?")
         mcp = e.get("mcp", "?")
@@ -173,10 +175,10 @@ def _audit_summary(args) -> None:
 
     print("By MCP:")
     for mcp, count in sorted(data["by_mcp"].items()):
-        print(f"  {mcp:<25} {count}")
+        print(f"  {one_line(mcp):<25} {count}")
 
     print()
     print("By Tool:")
     for mcp in sorted(data["by_tool"]):
         for tool, count in sorted(data["by_tool"][mcp].items()):
-            print(f"  {mcp:<20} {tool:<25} {count}")
+            print(f"  {one_line(mcp):<20} {one_line(tool):<25} {count}")

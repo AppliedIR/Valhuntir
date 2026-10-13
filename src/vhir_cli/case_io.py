@@ -11,7 +11,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -35,7 +35,7 @@ def _validate_case_id(case_id: str) -> None:
 
 def _validate_examiner(examiner: str) -> None:
     """Validate examiner slug: lowercase alphanumeric + hyphens, max 20 chars."""
-    if not examiner or not _EXAMINER_RE.match(examiner):
+    if not examiner or not _EXAMINER_RE.fullmatch(examiner):
         raise CaseError(f"Invalid examiner slug: {examiner!r}")
 
 
@@ -379,17 +379,227 @@ def compute_content_hash(item: dict) -> str:
     are excluded so the hash covers only the substantive content.
     """
     hashable = {k: v for k, v in item.items() if k not in HASH_EXCLUDE_KEYS}
+    imported = hashable.get("imported_from")
+    if isinstance(imported, dict) and "imported_at" in imported:
+        # when it was imported isn't content: a re-import keeps the hash
+        hashable["imported_from"] = {
+            k: v for k, v in imported.items() if k != "imported_at"
+        }
     canonical = json.dumps(hashable, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def hmac_text(item: dict) -> str:
-    """Canonical text for HMAC signing.
+# The signed view of an item (what a ledger line's content_snapshot holds).
+# View 0 is the 0.6 set (hmac_text), for legacy lines. View 1 signs
+# timeline_event_id (the link a timeline cascade follows) and leaves out the
+# re-attestation stamp. View 2 also signs the finding's provenance, its
+# resolved source evidence and the examiner's edits. An IOC's four derived
+# fields, computed from every citing finding, are left out of all of them. A
+# change to these sets adds a view; a view is never edited (tests pin them).
+REATTEST_KEYS = frozenset({"reattested_at", "reattested_by"})
+IOC_DERIVED_KEYS = frozenset(
+    {"source_findings", "sightings", "confidence", "mitre_techniques"}
+)
+VIEW_EXCLUDES = {
+    0: frozenset(HASH_EXCLUDE_KEYS),
+    1: frozenset(HASH_EXCLUDE_KEYS - {"timeline_event_id"}) | REATTEST_KEYS,
+}
+VIEW_EXCLUDES[2] = VIEW_EXCLUDES[1] - {
+    "source_evidence",
+    "provenance",
+    "provenance_warnings",
+    "examiner_modifications",
+}
 
-    Signs all substantive fields — everything except volatile/derived
-    metadata. Same exclusion set as compute_content_hash(). Used for
-    both findings and timeline events (same formula, no type branching).
-    """
+
+def signed_text(item: dict, item_type: str, view: int = 2) -> str:
+    """The canonical text a ledger line signs for `item` (`item_type`:
+    finding, timeline or ioc), in the given view."""
+    excluded = VIEW_EXCLUDES[view] | (
+        IOC_DERIVED_KEYS if item_type == "ioc" else frozenset()
+    )
+    return json.dumps(
+        {k: v for k, v in item.items() if k not in excluded},
+        sort_keys=True,
+        default=str,
+    )
+
+
+# --- IOC values, as forensic-mcp's _process_iocs extracts them ---
+# A copy of forensic-mcp (case/manager.py: _refang_ioc, _normalize_ioc, the
+# IPv4 test in _detect_ioc_type, and _process_iocs' flatten, refang and port
+# strip); forensic-mcp doesn't depend on vhir-cli. A parity test runs both.
+
+
+def _refang_ioc(value: str) -> str:
+    v = value.replace("[.]", ".").replace("hxxp", "http")
+    return re.sub(r"\[(\W)\]", r"\1", v)
+
+
+def normalize_ioc(value: str) -> str:
+    """An IOC value as forensic-mcp compares them."""
+    v = value.strip()
+    if re.match(r"^[a-fA-F0-9]{32,64}$", v):
+        return v.lower()
+    if "." in v and not v.replace(".", "").isdigit():
+        return v.lower().rstrip(".")
+    if "\\" in v:
+        return v.lower()
+    return v
+
+
+def _is_ipv4(value: str) -> bool:
+    stripped = re.sub(r"[:/]\d{1,5}$", "", value.strip())
+    if not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", stripped):
+        return False
+    return all(0 <= int(o) <= 255 for o in stripped.split("."))
+
+
+def ioc_values(iocs_field) -> set[str]:
+    """The normalised IOC values a finding's `iocs` field names, as
+    forensic-mcp extracts them (its first 100 entries)."""
+    raw_iocs = iocs_field or []
+    if isinstance(raw_iocs, dict):
+        raw_iocs = [
+            v
+            for vals in raw_iocs.values()
+            for v in (vals if isinstance(vals, list) else [vals])
+        ]
+    if not isinstance(raw_iocs, list):
+        return set()
+    values = set()
+    for raw in raw_iocs[:100]:
+        if isinstance(raw, dict) and "value" in raw:
+            value = _refang_ioc(str(raw["value"]).strip())
+            ipv4 = (
+                raw.get("type", "") == "ipv4-addr"
+                if raw.get("type")
+                else _is_ipv4(value)
+            )
+        else:
+            value = _refang_ioc(str(raw).strip())
+            ipv4 = _is_ipv4(value)
+        if not value:
+            continue
+        if ipv4 and re.search(r":\d{1,5}$", value):
+            value = re.sub(r":\d{1,5}$", "", value)
+        values.add(normalize_ioc(value))
+    return values
+
+
+def case_id_of(case_dir: Path) -> str:
+    """The case id every ledger writer and reader uses: CASE.yaml's
+    `case_id`, else the directory name."""
+    return str(load_case_meta(case_dir).get("case_id") or case_dir.name)
+
+
+def plan_cascades(
+    decided: dict[str, str],
+    findings: list[dict],
+    timeline: list[dict],
+    iocs: list[dict],
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> list[dict]:
+    """The items a commit decides along with its findings, chosen only through
+    each decided finding's signed fields (its `timeline_event_id` and `iocs`).
+
+    `decided`: finding id -> status_after, for findings decided directly in
+    this commit (approve, reject or edit; a re-attestation never cascades).
+    `findings` hold the post-edit items. `exclude`: ids decided directly or
+    skipped by the examiner; they are never cascaded.
+
+    A timeline event cascades when it is the finding's `timeline_event_id`,
+    its `auto_created_from` is that finding, it has no examiner
+    modifications, and it is DRAFT (approve) or not REJECTED (reject).
+    An IOC cascades when it is DRAFT and not manually reviewed, its value is
+    among a decided finding's IOCs, and every finding citing it has that
+    status after this commit. Unsigned data can only narrow a cascade.
+
+    Returns `{item, type, status_after, coupled_from}` per cascade."""
+    out: list[dict] = []
+    # entries that aren't records are ignored, never a crash under the lock
+    findings = [f for f in findings if isinstance(f, dict)]
+    timeline = [t for t in timeline if isinstance(t, dict)]
+    by_id = {f.get("id"): f for f in findings}
+    events = {t.get("id"): t for t in timeline}
+    for fid, after in decided.items():
+        f = by_id.get(fid)
+        if f is None or after not in ("APPROVED", "REJECTED"):
+            continue
+        t = events.get(f.get("timeline_event_id"))
+        if t is None or t.get("id") in exclude:
+            continue
+        if t.get("auto_created_from") != fid or t.get("examiner_modifications"):
+            continue
+        if (after == "APPROVED" and t.get("status") != "DRAFT") or (
+            after == "REJECTED" and t.get("status") == "REJECTED"
+        ):
+            continue
+        out.append(
+            {"item": t, "type": "timeline", "status_after": after, "coupled_from": fid}
+        )
+    status_after = {
+        f.get("id"): decided.get(f.get("id"), f.get("status", "DRAFT"))
+        for f in findings
+    }
+    cited = {f.get("id"): ioc_values(f.get("iocs")) for f in findings}
+    for ioc in iocs:
+        if not isinstance(ioc, dict) or ioc.get("id") in exclude:
+            continue
+        if ioc.get("manually_reviewed") or ioc.get("status") != "DRAFT":
+            continue
+        value = normalize_ioc(str(ioc.get("value", "")))
+        citing = [fid for fid, values in cited.items() if value in values]
+        sources = sorted(fid for fid in citing if fid in decided)
+        for after in ("APPROVED", "REJECTED"):
+            mine = [fid for fid in sources if decided[fid] == after]
+            if mine and all(status_after[fid] == after for fid in citing):
+                out.append(
+                    {
+                        "item": ioc,
+                        "type": "ioc",
+                        "status_after": after,
+                        "coupled_from": mine[0],
+                    }
+                )
+                break
+    return out
+
+
+def set_status(
+    item: dict,
+    decision: str,
+    status_after: str,
+    examiner: str,
+    at: str,
+    *,
+    reason: str = "",
+    fresh_approver: bool = False,
+) -> None:
+    """Apply a signed decision to its item, with the time and examiner from
+    the signed body (never a fresh clock). A re-attestation stamps
+    `reattested_*` and keeps `approved_*`, except on an item with no earlier
+    approval record (`fresh_approver`)."""
+    if decision == "reattest":
+        item["reattested_by"], item["reattested_at"] = examiner, at
+        if fresh_approver:
+            item["approved_by"], item["approved_at"] = examiner, at
+    elif status_after == "APPROVED":
+        item["status"] = "APPROVED"
+        item["approved_by"], item["approved_at"] = examiner, at
+    elif status_after == "REJECTED":
+        item["status"] = "REJECTED"
+        item["rejected_by"], item["rejected_at"] = examiner, at
+        if reason:
+            item["rejection_reason"] = reason
+    item["modified_at"] = at
+    item["content_hash"] = compute_content_hash(item)
+
+
+def hmac_text(item: dict) -> str:
+    """The text a 0.6 approval line signed: every field outside the
+    content-hash exclusions (view 0 of `signed_text`). Read only to judge
+    0.6 lines; no 0.6.4 code signs it."""
     hashable = {k: v for k, v in item.items() if k not in HASH_EXCLUDE_KEYS}
     return json.dumps(hashable, sort_keys=True, default=str)
 
@@ -449,6 +659,30 @@ def verify_approval_integrity(case_dir: Path) -> list[dict]:
 
 
 # --- Audit Index ---
+
+
+def load_withdrawals(case_dir: Path) -> list[dict]:
+    """The candidate findings withdrawn after challenge, oldest first.
+
+    Each is a record_finding audit entry whose result is WITHDRAWN. An entry
+    repeated in the trail counts once, by audit id and time together, so two
+    withdrawals never collapse into one.
+    """
+    from vhir_cli.commands.audit_cmd import _load_audit_entries
+
+    seen: set[tuple] = set()
+    withdrawals = []
+    for entry in _load_audit_entries(case_dir):
+        if not isinstance(entry, dict) or entry.get("tool") != "record_finding":
+            continue
+        result = entry.get("result_summary")
+        if not isinstance(result, dict) or result.get("status") != "WITHDRAWN":
+            continue
+        key = (entry.get("audit_id"), entry.get("ts"))
+        if key not in seen:
+            seen.add(key)
+            withdrawals.append(entry)
+    return withdrawals
 
 
 def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str, dict]:
@@ -514,12 +748,48 @@ def _utc(ts: object) -> datetime | None:
         return None
 
 
+_ZONED = re.compile(r"(Z|[+-]\d{2}:?\d{2})$")
+
+
+def display_instant(ts: object) -> str:
+    """A timestamp for a table column, to the second. One with an offset (or
+    Z) shows its UTC instant ("…Z"); one without shows as written; one that
+    doesn't parse shows whole. Never a time cut off its offset, which reads
+    as UTC."""
+    if not ts:
+        return "?"
+    text = str(ts)
+    value = _utc(text)
+    if value is None:
+        return text
+    if _ZONED.search(text):
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return text[:19]
+
+
 def _at_or_after(ts: object, since: str) -> bool:
     """Compare instants; when either side doesn't parse, compare as text, as before."""
     bound, value = _utc(since), _utc(ts)
     if bound is None or value is None:
         return ts >= since
     return value >= bound
+
+
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _at_or_before(ts: object, end: str) -> bool:
+    """Compare instants, with a date-only end including its whole UTC day;
+    when either side doesn't parse, compare as text, as before."""
+    bound, value = _utc(end), _utc(ts)
+    if bound is None or value is None:
+        return ts <= end
+    if _DATE_ONLY.match(end):
+        try:
+            return value < bound + timedelta(days=1)
+        except OverflowError:  # the end is 9999-12-31
+            return True
+    return value <= bound
 
 
 def export_bundle(case_dir: Path, since: str = "") -> dict:
@@ -548,12 +818,17 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
             if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
         ]
 
+    from vhir_cli import case_copies
+
+    # the case's copies first (CopyFailed is an OSError), then carried along
+    copied = case_copies.write_case_copies(case_id_of(case_dir), case_dir)
     return {
         "case_id": meta.get("case_id", ""),
         "examiner": get_examiner(case_dir),
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "findings": findings,
         "timeline": timeline,
+        "ledger": case_copies.bundle_block(case_id_of(case_dir), case_dir, copied),
     }
 
 
@@ -569,25 +844,117 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
+    # Where each item comes from (a bare array names no case or examiner)
+    origin = {
+        "case_id": str(bundle.get("case_id") or ""),
+        "examiner": str(bundle.get("examiner") or ""),
+        "exported_at": str(bundle.get("exported_at") or ""),
+        "imported_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Host identity is this case's own: another case's machine ids and keys
+    # never come in with its findings and timeline items.
+    bundle = {
+        **bundle,
+        **{
+            k: _without_host_fields(bundle[k])
+            for k in ("findings", "timeline")
+            if k in bundle
+        },
+    }
+
+    from vhir_cli import ledger
 
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
 
-    if "findings" in bundle:
-        findings_result = _merge_items(
-            case_dir, "findings.json", bundle["findings"], "id"
-        )
-
-    if "timeline" in bundle:
-        timeline_result = _merge_items(
-            case_dir, "timeline.json", bundle["timeline"], "id"
-        )
+    # A bundle's chains are never added: they are data, and its keys and
+    # heads anchors (decisions don't travel by import; restore carries them).
+    # Read first, so a malformed block can't fail the merge after it saved.
+    anchors = _bundle_anchors(bundle.get("ledger"))
+    # One case-lock span around both merges and their saves, as every writer
+    # of the case files: a decision committed meanwhile can't be overwritten.
+    with ledger.case_lock(case_id_of(case_dir)):
+        # A local file that can't be read as JSON would merge as empty and be
+        # written back holding only the bundle's items: refuse before writing either.
+        for key, filename in (
+            ("findings", "findings.json"),
+            ("timeline", "timeline.json"),
+        ):
+            local_file = case_dir / filename
+            if key not in bundle or not local_file.exists():
+                continue
+            try:
+                text = local_file.read_text()
+                if text.strip():
+                    json.loads(text)
+            except (OSError, ValueError) as e:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"{filename} can't be read as JSON ({e}); nothing was merged. "
+                        "Fix or restore it, then merge again."
+                    ),
+                }
+        if "findings" in bundle:
+            findings_result = _merge_items(
+                case_dir, "findings.json", bundle["findings"], "id", origin
+            )
+        if "timeline" in bundle:
+            timeline_result = _merge_items(
+                case_dir, "timeline.json", bundle["timeline"], "id", origin
+            )
 
     return {
         "status": "merged",
         "findings": findings_result,
         "timeline": timeline_result,
+        "ledger": anchors,
     }
+
+
+_ANCHOR_FIELDS = {
+    "keys": ("examiner", "fingerprint", "chain_id", "first_seq", "last_seq", "label"),
+    "heads": ("chain_id", "seq", "hash"),
+}
+
+
+def _bundle_anchors(block: object) -> dict:
+    """A bundle's signing keys and chain heads, as it states them: printed as
+    anchors, never added to this case's ledger. Only lists count, and only
+    entries with every field the printout reads."""
+    out: dict[str, list] = {"keys": [], "heads": []}
+    if not isinstance(block, dict):
+        return out
+    for name, fields in _ANCHOR_FIELDS.items():
+        items = block.get(name)
+        if isinstance(items, list):
+            out[name] = [
+                x for x in items if isinstance(x, dict) and all(f in x for f in fields)
+            ]
+    return out
+
+
+_HOST_FIELDS = ("host_id", "vhir.host_key", "vhir.unit", "vhir.prev_ids")
+
+
+def _without_host_fields(items):
+    """Incoming items without another case's host identity: `host_id` and
+    the `vhir.*` host fields, flat or under `vhir`. Anything not a list of
+    dicts is left for the merge to judge."""
+    if not isinstance(items, list):
+        return items
+    out = []
+    for item in items:
+        if isinstance(item, dict):
+            item = {k: v for k, v in item.items() if k not in _HOST_FIELDS}
+            if isinstance(item.get("vhir"), dict):
+                vhir = {k: v for k, v in item["vhir"].items()
+                        if f"vhir.{k}" not in _HOST_FIELDS}  # fmt: skip
+                item["vhir"] = vhir
+                if not vhir:
+                    del item["vhir"]
+        out.append(item)
+    return out
 
 
 def _parse_ts(ts: str) -> datetime:
@@ -600,10 +967,55 @@ def _parse_ts(ts: str) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+# What an imported item kept from the case it came from: its who, when, edits
+# and grades, under imported_from.original
+_ORIGINAL_KEYS = (
+    "examiner", "created_by", "staged", "modified_at", "provenance",
+    "provenance_detail", "provenance_grade", "provenance_reason",
+    "examiner_notes", "examiner_modifications", "imported_from",
+)  # fmt: skip
+# The other examiner's edits: kept only under imported_from, so an approval
+# here never signs them as this case's own
+_FOREIGN_EDITS = ("examiner_notes", "examiner_modifications", "provenance_detail")
+
+
+def _stamp_import(item: dict, cleaned: dict, origin: dict) -> dict:
+    """`cleaned`, an incoming item as it will be stored, with where it came
+    from and its original who, when, edits and grades under `imported_from`;
+    the other examiner's edits are only there. It and its artifacts are
+    graded IMPORTED, and its hash is of it as stored."""
+    original = {k: item[k] for k in _ORIGINAL_KEYS if k in item}
+    for k in _FOREIGN_EDITS:
+        cleaned.pop(k, None)
+    # Its chain is in the other case: graded IMPORTED here, saying where
+    imported = {"provenance_grade": "IMPORTED", "provenance_reason": (
+        f"chain lives in case {origin['case_id'] or '?'} (imported from "
+        f"{origin['examiner'] or '?'}, exported {origin['exported_at'] or '?'})")}  # fmt: skip
+    arts = cleaned.get("artifacts")
+    if isinstance(arts, list):
+        for key in ("grade", "reason"):
+            original[f"artifact_{key}s"] = [
+                a.get(f"provenance_{key}") if isinstance(a, dict) else None
+                for a in arts
+            ]
+        cleaned["artifacts"] = [
+            {**a, **imported} if isinstance(a, dict) else a for a in arts
+        ]
+    cleaned["imported_from"] = {**origin, "original": original}
+    cleaned.update(imported)
+    cleaned["content_hash"] = compute_content_hash(cleaned)  # of it as stored
+    return cleaned
+
+
 def _merge_items(
-    case_dir: Path, filename: str, incoming: list[dict], id_field: str
+    case_dir: Path,
+    filename: str,
+    incoming: list[dict],
+    id_field: str,
+    origin: dict | None = None,
 ) -> dict:
-    """Merge incoming items into a local JSON file using last-write-wins."""
+    """Merge incoming items into a local JSON file using last-write-wins.
+    With `origin` (an import), each item added or updated is stamped with it."""
     local_file = case_dir / filename
     local: list[dict] = []
     if local_file.exists():
@@ -630,6 +1042,20 @@ def _merge_items(
         # Approval couples an event to its finding by this; only forensic-mcp's
         # auto-timeline sets it, never an import.
         "auto_created_from",
+        # A decision belongs to the case that made it: this case has no ledger
+        # entry to back an incoming one.
+        "approved_at",
+        "approved_by",
+        "rejected_at",
+        "rejected_by",
+        "rejection_reason",
+        "verification",
+        # A read-time annotation (get_findings, export_bundle: whether the
+        # source case's approval verifies), never stored content
+        "approval_verification",
+        # The challenge cites this case's audit trail; the incoming case's
+        # skeptic ids don't resolve here.
+        "challenged",
     }
 
     for item in incoming:
@@ -642,6 +1068,8 @@ def _merge_items(
         cleaned = {k: v for k, v in item.items() if k not in _MERGE_PROTECTED_FIELDS}
         cleaned["status"] = "DRAFT"
         cleaned[id_field] = item_id  # Restore id after stripping
+        if origin is not None:
+            cleaned = _stamp_import(item, cleaned, origin)
 
         if item_id not in local_by_id:
             local.append(cleaned)
@@ -649,7 +1077,7 @@ def _merge_items(
             added += 1
         else:
             existing = local_by_id[item_id]
-            if existing.get("status") == "APPROVED":
+            if existing.get("status") in ("APPROVED", "REJECTED"):  # decided here
                 protected += 1
                 continue
             inc_ts = item.get("modified_at", item.get("staged", ""))

@@ -157,3 +157,17 @@ def test_an_override_that_cannot_be_resolved_still_lets_init_finish(
     lines = _init_cli(home, capsys, "CASE-E")
     assert "Active case is now CASE-E" in lines
     assert [x for x in lines if "VHIR_CASE_DIR" in x]
+
+
+def test_init_encourages_a_host_list(home, capsys, monkeypatch):
+    """A new case has no host list: init says how to give it one, in the
+    words case-mcp's case_init uses."""
+    monkeypatch.setattr(main, "_wintools_configured", lambda: False)
+    args = argparse.Namespace(
+        name="d", case_id="CASE-D", description="", cases_dir=str(home / "cases")
+    )
+    main._case_init(args, {"examiner": "tester"})
+    assert (
+        "If you have an inventory of the machines in scope, upload it in the Hosts tab "
+        "before ingesting; matching hosts then confirm automatically."
+    ) in capsys.readouterr().out.splitlines()

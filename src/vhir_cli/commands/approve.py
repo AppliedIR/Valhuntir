@@ -1,7 +1,8 @@
 """Approve staged findings and timeline events.
 
-Every approval requires password confirmation via /dev/tty.
-This blocks AI-via-Bash from approving without human involvement.
+Every decision is signed with the examiner's key: the password is asked for
+last, on /dev/tty, after every item and cascade has been shown. That stops a
+command that only pipes input; a program that controls a terminal can type it.
 
 Interactive review options per item:
   [a]pprove  — approve as-is
@@ -15,45 +16,87 @@ Interactive review options per item:
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
-from vhir_cli.approval_auth import require_confirmation
+from vhir_cli import (
+    approval_auth,
+    approval_checks,
+    credentials,
+    decide,
+    ledger,
+    provenance_view,
+)
 from vhir_cli.case_io import (
+    case_id_of,
     check_case_file_integrity,
     compute_content_hash,
     find_draft_item,
     get_case_dir,
-    hmac_text,
     load_findings,
+    load_iocs,
     load_timeline,
     load_todos,
-    save_findings,
-    save_timeline,
+    load_withdrawals,
     save_todos,
-    write_approval_log,
+    signed_text,
 )
+from vhir_cli.display import MULTI_LINE as _MULTI_LINE
+from vhir_cli.display import lines as _lines
+from vhir_cli.display import one_line as _one_line
 
 
 def cmd_approve(args, identity: dict) -> None:
-    """Approve findings/timeline events."""
+    """Approve findings/timeline events (or re-attest 0.6 approvals)."""
     case_dir = get_case_dir(getattr(args, "case", None))
     config_path = Path.home() / ".vhir" / "config.yaml"
+    show_signed = getattr(args, "show_signed", False)
 
     review = getattr(args, "review", False)
     if review and args.ids:
         print("Error: --review cannot be used with specific IDs.", file=sys.stderr)
         sys.exit(1)
 
+    if getattr(args, "reattest", False):
+        _reattest(
+            case_dir,
+            args.ids,
+            identity,
+            config_path,
+            every=getattr(args, "all", False),
+            show_signed=show_signed,
+        )
+        return
+
+    try:
+        withdrawn = len(load_withdrawals(case_dir))
+    except Exception as e:  # the count is information; a bad line mustn't block
+        print(f"  Warning: withdrawn candidates not counted: {e}", file=sys.stderr)
+        withdrawn = 0
+    withdrawn_line = (
+        f"  {withdrawn} candidate finding(s) withdrawn after challenge"
+        " — `vhir review --withdrawn`"
+        if withdrawn
+        else ""
+    )
+
     if review:
-        _review_mode(case_dir, identity, config_path)
+        _review_mode(
+            case_dir,
+            identity,
+            config_path,
+            withdrawn_line=withdrawn_line,
+            show_signed=show_signed,
+        )
         return
 
     # Inform about pending dashboard reviews (non-blocking)
@@ -61,68 +104,111 @@ def cmd_approve(args, identity: dict) -> None:
     if delta_path.exists():
         try:
             delta = json.loads(delta_path.read_text())
-            n_items = len(delta.get("items", []))
-            if n_items > 0:
+            items = [e for e in delta.get("items", []) if isinstance(e, dict)]
+            mine = [
+                e for e in items
+                if e.get("saved_unsigned") and e.get("staged_by") == identity["examiner"]
+            ]  # fmt: skip
+            if mine:
                 print(
-                    f"  Note: {n_items} pending dashboard review(s). "
+                    f"  {len(mine)} of your decision(s) were saved unsigned "
+                    f"({_one_line(mine[-1]['saved_unsigned'].get('reason', ''))}). "
+                    "`vhir approve --review` signs those whose content still matches "
+                    "what you saw."
+                )
+            if len(items) > len(mine):
+                print(
+                    f"  Note: {len(items) - len(mine)} pending dashboard review(s). "
                     "Use `vhir approve --review` to apply them."
                 )
         except (json.JSONDecodeError, OSError):
             pass
 
     if args.ids:
-        # Specific-ID mode with optional flags
-        note = getattr(args, "note", None)
-        edit = getattr(args, "edit", False)
-        interpretation = getattr(args, "interpretation", None)
+        if withdrawn_line:
+            print(withdrawn_line)
         _approve_specific(
             case_dir,
             args.ids,
             identity,
             config_path,
-            note=note,
-            edit=edit,
-            interpretation=interpretation,
+            note=getattr(args, "note", None),
+            edit=getattr(args, "edit", False),
+            interpretation=getattr(args, "interpretation", None),
+            show_signed=show_signed,
         )
     else:
-        # Interactive review mode
-        by_filter = getattr(args, "by", None)
-        findings_only = getattr(args, "findings_only", False)
-        timeline_only = getattr(args, "timeline_only", False)
         _interactive_review(
             case_dir,
             identity,
             config_path,
-            by_filter=by_filter,
-            findings_only=findings_only,
-            timeline_only=timeline_only,
+            by_filter=getattr(args, "by", None),
+            findings_only=getattr(args, "findings_only", False),
+            timeline_only=getattr(args, "timeline_only", False),
+            withdrawn_line=withdrawn_line,
+            show_signed=show_signed,
         )
 
 
-def _keep_landed(case_dir: Path, *lists) -> None:
-    """Append the records on disk whose ids aren't in memory: forensic-mcp
-    staged them during the approval wait. Lists: findings, timeline, iocs."""
-    names = ("findings.json", "timeline.json", "iocs.json")
-    for name, items in zip(names, lists, strict=True):
-        if items is None:
-            continue
-        try:
-            on_disk = json.loads((case_dir / name).read_text() or "[]")
-        except FileNotFoundError:
-            continue
-        except (OSError, ValueError):
-            on_disk = None
-        if not isinstance(on_disk, list):
-            print(
-                f"WARNING: could not check {name} for items added during "
-                "approval — re-run vhir review",
-                file=sys.stderr,
-            )
-            continue
-        known = {x.get("id") for x in items}
-        items += [
-            x for x in on_disk if isinstance(x, dict) and x.get("id") not in known
-        ]
+_STATUS_AFTER = {"approve": "APPROVED", "reject": "REJECTED"}
+
+
+def _preflight(identity: dict, config_path: Path, case_dir: Path) -> bool:
+    """The checks that can fail, before any item is shown (and a 0.6 upgrade).
+    Returns True when a new passphrase was set."""
+    try:
+        new_passphrase = credentials.preflight(identity["examiner"], config_path)
+    except credentials.CredentialError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+    copy = decide.copy_problem(case_dir)
+    if copy:  # signing would extend another folder's chain
+        print(copy, file=sys.stderr)
+        sys.exit(1)
+    return new_passphrase
+
+
+def _modifications(loaded: dict, item: dict) -> dict:
+    """The field edits made in this command: {field: {original, modified}}."""
+    before = loaded.get("examiner_modifications") or {}
+    return {
+        k: {"original": v.get("original"), "modified": v.get("modified")}
+        for k, v in (item.get("examiner_modifications") or {}).items()
+        if before.get(k) != v
+    }
+
+
+def _no_items(decision: str) -> None:
+    if decision == "reject":
+        print("No items to reject.")
+        return
+    print("No items to approve.")
+    print(
+        "  Staged portal work: `vhir approve --review`. Portal approvals need a signing "
+        "key: `vhir config --upgrade-key`."
+    )
+
+
+def _show_as_signed(item: dict, loaded: dict, decision: str, show_signed: bool) -> None:
+    """After this command's edits: an item whose signed body changed is shown
+    again as it will be signed (each edit as - before / + after), and
+    --show-signed prints the body itself."""
+    kind = decide.item_type(item["id"])
+    if signed_text(item, kind) != signed_text(loaded, kind):
+        print("  As it will be signed:")
+        _render_terminal_diff(
+            item,
+            {"id": item["id"], "action": decision,
+             "modifications": _modifications(loaded, item)},
+        )  # fmt: skip
+    if show_signed:
+        _print_signed(item)
+
+
+def _print_signed(item: dict) -> None:
+    """--show-signed: the full signed view of an item."""
+    kind = decide.item_type(item["id"])
+    print(f"  Signed view: {_one_line(signed_text(item, kind))}")
 
 
 def _approve_specific(
@@ -133,152 +219,84 @@ def _approve_specific(
     note: str | None = None,
     edit: bool = False,
     interpretation: str | None = None,
+    decision: str = "approve",
+    reason: str = "",
+    show_signed: bool = False,
 ) -> None:
-    """Approve specific finding/event IDs with optional modifications."""
+    """Approve (DRAFT findings and timeline events) or reject (findings,
+    timeline events and IOCs not already rejected) specific ids."""
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
-    to_approve = []
-
-    for item_id in ids:
-        item = find_draft_item(item_id, findings, timeline)
-        if item is None:
-            print(f"  {item_id}: not found or not DRAFT", file=sys.stderr)
-            continue
-        _display_item(item)
-        to_approve.append(item)
-
-    if not to_approve:
-        print("No items to approve.")
+    iocs = load_iocs(case_dir)
+    picked = []
+    for item_id in dict.fromkeys(ids):  # an id named twice is decided once
+        if decision == "approve":
+            item = find_draft_item(item_id, findings, timeline)
+            if item is None:
+                print(
+                    f"  {_one_line(item_id)}: not found or not DRAFT", file=sys.stderr
+                )
+                continue
+        else:
+            item = next(
+                (
+                    x
+                    for x in findings + timeline + iocs
+                    if isinstance(x, dict) and x.get("id") == item_id
+                ),
+                None,
+            )
+            if item is None or item.get("status") == "REJECTED":
+                print(
+                    f"  {_one_line(item_id)}: not found or already rejected",
+                    file=sys.stderr,
+                )
+                continue
+        picked.append(item)
+    if not picked:
+        _no_items(decision)
         return
 
-    # Apply modifications before confirmation
-    for item in to_approve:
-        if edit:
-            _apply_edit(item, identity)
-        if interpretation:
-            _apply_field_override(item, "interpretation", interpretation, identity)
+    new_passphrase = _preflight(identity, config_path, case_dir)
+    direct = []
+    for item in picked:
+        loaded = copy.deepcopy(item)
+        _display_item(item)
+        if decision == "approve":
+            if edit:
+                _apply_edit(item, identity)
+            if interpretation:
+                _apply_field_override(item, "interpretation", interpretation, identity)
         if note:
             _apply_note(item, note, identity)
-
-    print(f"\n{len(to_approve)} item(s) to approve.")
-    mode, password = require_confirmation(config_path, identity["examiner"])
-
-    now = datetime.now(timezone.utc).isoformat()
-    for item in to_approve:
-        staging_hash = item.get("content_hash", "")
-        new_hash = compute_content_hash(item)
-        if staging_hash and staging_hash != new_hash:
-            print(
-                f"  NOTE: Finding {item['id']} was modified since staging "
-                f"(content hash changed)."
+        kind = decide.item_type(item["id"])
+        if kind == "ioc":
+            item["manually_reviewed"] = (
+                True  # a direct decision; no longer a cascade target
             )
-        item["content_hash"] = new_hash
-        item["status"] = "APPROVED"
-        item["approved_at"] = now
-        item["approved_by"] = identity["examiner"]
-        item["modified_at"] = now
-
-    # Timeline approval coupling: auto-created events follow their finding
-    approved_ids = {
-        item["id"] for item in to_approve if item.get("status") == "APPROVED"
-    }
-    coupled_events = []
-    for tl_event in timeline:
-        auto_from = tl_event.get("auto_created_from", "")
-        if not auto_from or auto_from not in approved_ids:
+        _show_as_signed(item, loaded, decision, show_signed)
+        chosen = decide.Decision(
+            item, kind, decision, _STATUS_AFTER[decision], loaded=loaded,
+            reason=reason, note=note or "", modifications=_modifications(loaded, item),
+        )  # fmt: skip
+        if not _approval_checked(case_dir, chosen):
             continue
-        if tl_event.get("examiner_modifications"):
-            continue
-        if tl_event.get("status") != "DRAFT":  # an explicit reject wins
-            continue
-        tl_event["status"] = "APPROVED"
-        tl_event["approved_at"] = now
-        tl_event["approved_by"] = identity["examiner"]
-        tl_event["modified_at"] = now
-        new_hash = compute_content_hash(tl_event)
-        tl_event["content_hash"] = new_hash
-        coupled_events.append(tl_event)
-
-    # IOC approval coupling
-    from vhir_cli.case_io import load_iocs, save_iocs
-
-    # Build lookup for all findings (not just ones being approved)
-    all_findings = load_findings(case_dir)
-    finding_status = {fi["id"]: fi.get("status", "DRAFT") for fi in all_findings}
-    # Overlay the just-approved statuses
-    for item in to_approve:
-        finding_status[item["id"]] = item.get("status", "DRAFT")
-
-    iocs = load_iocs(case_dir)
-    iocs_modified = False
-    for ioc in iocs:
-        if ioc.get("manually_reviewed"):
-            continue
-        source_ids = ioc.get("source_findings", [])
-        if not source_ids:
-            continue
-        # ALL source findings must be APPROVED
-        all_approved = all(
-            finding_status.get(sid, "DRAFT") == "APPROVED" for sid in source_ids
-        )
-        if all_approved and ioc.get("status") != "APPROVED":
-            ioc["status"] = "APPROVED"
-            ioc["approved_at"] = now
-            ioc["approved_by"] = identity["examiner"]
-            ioc["modified_at"] = now
-            iocs_modified = True
-            coupled_events.append(ioc)
-
-    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
-
-    # Step 1: Persist primary data FIRST
-    try:
-        save_findings(case_dir, findings)
-        save_timeline(case_dir, timeline)
-        if iocs_modified:
-            save_iocs(case_dir, iocs)
-    except OSError as e:
-        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
-        print(
-            "No changes were committed. Retry after fixing the issue.", file=sys.stderr
-        )
-        sys.exit(1)
-
-    # Step 2: Audit log (best-effort, warn on failure)
-    log_failures = []
-    all_approved = list(to_approve) + coupled_events
-    for item in all_approved:
-        if not write_approval_log(
-            case_dir,
-            item["id"],
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=item["content_hash"],
-        ):
-            log_failures.append(item["id"])
-
-    # Step 3: HMAC ledger (warn on failure)
-    hmac_failures = _write_verification_entries(
-        case_dir, all_approved, identity, config_path, password, now
+        direct.append(chosen)
+    if not direct:
+        print("Nothing to sign.")
+        return
+    planned = decide.cascades(direct, findings, timeline, iocs)
+    print(f"\n{len(direct)} item(s) to {decision}.")
+    decide.confirm_plan(direct, planned, _display_item)
+    decide.sign_and_commit(
+        case_dir, identity, direct, planned, new_passphrase=new_passphrase
     )
 
-    result_ids = [item["id"] for item in to_approve]
-    print(f"Approved: {', '.join(result_ids)}")
-    if coupled_events:
-        coupled_tl = [e["id"] for e in coupled_events if e["id"].startswith("T-")]
-        coupled_ioc = [e["id"] for e in coupled_events if e["id"].startswith("IOC-")]
-        if coupled_tl:
-            print(f"  Auto-approved timeline events: {', '.join(coupled_tl)}")
-        if coupled_ioc:
-            print(f"  Auto-approved IOCs: {', '.join(coupled_ioc)}")
-    if log_failures:
-        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
-    if hmac_failures:
-        print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
-        print("  Re-run 'vhir approve' on these items to generate HMAC entries.")
+
+_APPROVE_CHOICES = ("approve", "edit", "note", "reject", "todo", "skip", "quit")
+_REJECT_CHOICES = ("reject", "skip", "quit")
 
 
 def _interactive_review(
@@ -288,12 +306,17 @@ def _interactive_review(
     by_filter: str | None = None,
     findings_only: bool = False,
     timeline_only: bool = False,
+    withdrawn_line: str = "",
+    choices: tuple[str, ...] = _APPROVE_CHOICES,
+    show_signed: bool = False,
 ) -> None:
-    """Review each DRAFT item with full per-item options."""
+    """Review each DRAFT item. The evidence of every item is shown first, then
+    each decision; the password comes last, after the cascades are listed."""
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
+    iocs = load_iocs(case_dir)
 
     drafts = (
         [] if timeline_only else [f for f in findings if f.get("status") == "DRAFT"]
@@ -302,382 +325,277 @@ def _interactive_review(
         [] if findings_only else [t for t in timeline if t.get("status") == "DRAFT"]
     )
     all_items = drafts + draft_events
-
-    # Filter by creator
     if by_filter:
         all_items = [i for i in all_items if i.get("created_by") == by_filter]
-
     if not all_items:
         print("No staged items to review.")
+        if withdrawn_line:  # every candidate may have been withdrawn
+            print(withdrawn_line)
         return
 
+    new_passphrase = _preflight(identity, config_path, case_dir)
     print(f"Reviewing {len(all_items)} DRAFT item(s)...\n")
-
-    # Authenticate before review so examiner doesn't lose work on password failure
-    mode, password = require_confirmation(config_path, identity["examiner"])
-
-    # Collect dispositions
-    dispositions: dict[str, tuple] = {}  # id -> (action, extra_data)
-    todos_to_create: list[dict] = []
-
     for item in all_items:
-        _display_item(item)
-        choice = _prompt_choice()
+        _print_pending_item(item, timeline)
+        if show_signed:
+            _print_signed(item)
+    print()
 
-        if choice == "approve":
-            dispositions[item["id"]] = ("approve", None)
-            print("  -> APPROVE")
-
-        elif choice == "edit":
-            _apply_edit(item, identity)
-            dispositions[item["id"]] = ("approve", "edited")
-            print("  -> APPROVE (with edits)")
-
-        elif choice == "note":
-            try:
-                note_text = input("  Note: ").strip()
-            except EOFError:
-                note_text = ""
-            if note_text:
-                _apply_note(item, note_text, identity)
-            dispositions[item["id"]] = ("approve", "noted")
-            print("  -> APPROVE (with note)")
-
+    direct: list[decide.Decision] = []
+    skipped: set[str] = set()  # skipped by the examiner: never cascaded
+    todos_to_create: list[dict] = []
+    not_reviewed = 0
+    for n, item in enumerate(all_items):
+        _print_decision_header(item)
+        choice = _prompt_choice(choices)
+        loaded = copy.deepcopy(item)
+        kind = decide.item_type(item["id"])
+        if choice in ("approve", "edit", "note"):
+            if choice == "edit":
+                _apply_edit(item, identity)
+            note_text = ""
+            if choice == "note":
+                try:
+                    note_text = input("  Note: ").strip()
+                except EOFError:
+                    note_text = ""
+                if note_text:
+                    _apply_note(item, note_text, identity)
+            _show_as_signed(item, loaded, "approve", False)
+            chosen = decide.Decision(item, kind, "approve", "APPROVED", loaded=loaded,
+                                     note=note_text, modifications=_modifications(loaded, item))  # fmt: skip
+            if not _approval_checked(case_dir, chosen):
+                skipped.add(item["id"])
+                continue
+            direct.append(chosen)
+            print(f"  -> APPROVE{' (with edits)' if choice == 'edit' else ''}")
         elif choice == "reject":
             try:
                 reason = input("  Rejection reason (optional): ").strip()
             except EOFError:
                 reason = ""
-            dispositions[item["id"]] = ("reject", reason)
+            direct.append(
+                decide.Decision(
+                    item, kind, "reject", "REJECTED", loaded=loaded, reason=reason
+                )
+            )
             print("  -> REJECT")
-
         elif choice == "todo":
             try:
                 desc = input("  TODO description: ").strip()
                 assignee = input("  Assign to [unassigned]: ").strip()
                 priority = input("  Priority [medium]: ").strip() or "medium"
             except EOFError:
-                desc = "Follow up on " + item["id"]
-                assignee = ""
-                priority = "medium"
+                desc, assignee, priority = "Follow up on " + item["id"], "", "medium"
             if desc:
-                todos_to_create.append(
-                    {
-                        "description": desc,
-                        "assignee": assignee,
-                        "priority": priority,
-                        "related_findings": [item["id"]],
-                    }
-                )
-            dispositions[item["id"]] = ("skip", None)
+                todos_to_create.append({"description": desc, "assignee": assignee,
+                                        "priority": priority, "related_findings": [item["id"]]})  # fmt: skip
+            skipped.add(item["id"])
             print("  -> skip (TODO created)")
-
         elif choice == "skip":
-            dispositions[item["id"]] = ("skip", None)
+            skipped.add(item["id"])
             print("  -> skip (remains DRAFT)")
-
         elif choice == "quit":
+            # not decided, so not skipped: one can still follow its finding,
+            # listed with it before the prompt
+            not_reviewed = len(all_items) - n
             print("  Stopping review.")
             break
 
-    # Summary
-    approvals = {k for k, v in dispositions.items() if v[0] == "approve"}
-    rejections = {k for k, v in dispositions.items() if v[0] == "reject"}
-    skipped = {k for k, v in dispositions.items() if v[0] == "skip"}
-
+    approvals = sum(1 for d in direct if d.decision == "approve")
     print(f"\n{'=' * 60}")
     print(
-        f"  Summary: {len(approvals)} approve, {len(rejections)} reject, "
+        f"  Summary: {approvals} approve, {len(direct) - approvals} reject, "
         f"{len(skipped)} skip, {len(todos_to_create)} TODO(s) created"
+        + (f", {not_reviewed} not reviewed" if not_reviewed else "")
     )
     print(f"{'=' * 60}")
-
-    if not approvals and not rejections:
-        # Still create TODOs even if nothing to commit
+    if not direct:
         if todos_to_create:
             _create_todos(case_dir, todos_to_create, identity)
-        print("Nothing to commit.")
+        if withdrawn_line:
+            print(withdrawn_line)
+        print("Nothing to sign.")
         return
-
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Apply approvals (in-memory)
-    for item in all_items:
-        if item["id"] in approvals:
-            staging_hash = item.get("content_hash", "")
-            new_hash = compute_content_hash(item)
-            if staging_hash and staging_hash != new_hash:
-                print(
-                    f"  NOTE: Finding {item['id']} was modified since staging "
-                    f"(content hash changed)."
-                )
-            item["content_hash"] = new_hash
-            item["status"] = "APPROVED"
-            item["approved_at"] = now
-            item["approved_by"] = identity["examiner"]
-
-    # Apply rejections (in-memory)
-    for item in all_items:
-        disp = dispositions.get(item["id"])
-        if disp and disp[0] == "reject":
-            reason = disp[1] or ""
-            item["status"] = "REJECTED"
-            item["rejected_at"] = now
-            item["rejected_by"] = identity["examiner"]
-            if reason:
-                item["rejection_reason"] = reason
-
-    # Update modified_at on changed items
-    for item in all_items:
-        if item["id"] in approvals or item["id"] in rejections:
-            item["modified_at"] = now
-
-    # Timeline approval coupling: auto-created events follow their finding
-    coupled_tl = []
-    coupled_ioc = []
-    finding_by_id = {f["id"]: f for f in findings}
-    for tl_event in timeline:
-        auto_from = tl_event.get("auto_created_from", "")
-        if not auto_from:
-            continue
-        if tl_event.get("examiner_modifications"):
-            continue
-        source = finding_by_id.get(auto_from)
-        if not source:
-            continue
-        if source["id"] in approvals and tl_event.get("status") == "DRAFT":
-            tl_event["status"] = "APPROVED"
-            tl_event["approved_at"] = now
-            tl_event["approved_by"] = identity["examiner"]
-            tl_event["modified_at"] = now
-            new_hash = compute_content_hash(tl_event)
-            tl_event["content_hash"] = new_hash
-            coupled_tl.append(tl_event)
-        elif source["id"] in rejections:
-            tl_event["status"] = "REJECTED"
-            tl_event["rejected_at"] = now
-            tl_event["rejected_by"] = identity["examiner"]
-            tl_event["rejection_reason"] = "Source finding rejected"
-            tl_event["modified_at"] = now
-            coupled_tl.append(tl_event)
-
-    # IOC approval/rejection coupling
-    from vhir_cli.case_io import load_iocs, save_iocs
-
-    all_finding_status = {f["id"]: f.get("status", "DRAFT") for f in findings}
-    iocs = load_iocs(case_dir)
-    iocs_modified = False
-    for ioc in iocs:
-        if ioc.get("manually_reviewed"):
-            continue
-        source_ids = ioc.get("source_findings", [])
-        if not source_ids:
-            continue
-        statuses = {all_finding_status.get(sid, "DRAFT") for sid in source_ids}
-        if statuses == {"APPROVED"} and ioc.get("status") != "APPROVED":
-            ioc["status"] = "APPROVED"
-            ioc["approved_at"] = now
-            ioc["approved_by"] = identity["examiner"]
-            ioc["modified_at"] = now
-            iocs_modified = True
-            coupled_ioc.append(ioc)
-        elif statuses == {"REJECTED"} and ioc.get("status") != "REJECTED":
-            ioc["status"] = "REJECTED"
-            ioc["rejected_at"] = now
-            ioc["rejected_by"] = identity["examiner"]
-            ioc["rejection_reason"] = "All source findings rejected"
-            ioc["modified_at"] = now
-            iocs_modified = True
-            coupled_ioc.append(ioc)
-
-    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
-
-    # Step 1: Persist primary data FIRST
-    try:
-        save_findings(case_dir, findings)
-        save_timeline(case_dir, timeline)
-        if iocs_modified:
-            save_iocs(case_dir, iocs)
-    except OSError as e:
-        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
-        print(
-            "No changes were committed. Retry after fixing the issue.", file=sys.stderr
-        )
-        sys.exit(1)
-
-    # Step 2: Approval log (best-effort, collect failures)
-    log_failures = []
-    for item in all_items:
-        if item["id"] in approvals and not write_approval_log(
-            case_dir,
-            item["id"],
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=item["content_hash"],
-        ):
-            log_failures.append(item["id"])
-    for item in all_items:
-        disp = dispositions.get(item["id"])
-        if disp and disp[0] == "reject":
-            reason = disp[1] or ""
-            if not write_approval_log(
-                case_dir, item["id"], "REJECTED", identity, reason=reason, mode=mode
-            ):
-                log_failures.append(item["id"])
-    # Coupled items also need audit log entries
-    for item in coupled_tl:
-        status = item.get("status", "")
-        reason = (
-            item.get("rejection_reason", "Source finding rejected")
-            if status == "REJECTED"
-            else ""
-        )
-        if not write_approval_log(
-            case_dir,
-            item["id"],
-            status,
-            identity,
-            mode=mode,
-            coupled_from=item.get("auto_created_from", ""),
-            content_hash=item.get("content_hash", ""),
-            reason=reason,
-        ):
-            log_failures.append(item["id"])
-    for item in coupled_ioc:
-        status = item.get("status", "")
-        reason = item.get("rejection_reason", "") if status == "REJECTED" else ""
-        if not write_approval_log(
-            case_dir, item["id"], status, identity, mode=mode, reason=reason
-        ):
-            log_failures.append(item["id"])
-
-    # Step 3: HMAC ledger (warn on failure)
-    approved_items = [item for item in all_items if item["id"] in approvals]
-    approved_items += [item for item in coupled_tl if item.get("status") == "APPROVED"]
-    approved_items += [item for item in coupled_ioc if item.get("status") == "APPROVED"]
-    hmac_failures = _write_verification_entries(
-        case_dir, approved_items, identity, config_path, password, now
+    planned = decide.cascades(direct, findings, timeline, iocs, skipped)
+    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line)
+    decide.sign_and_commit(
+        case_dir,
+        identity,
+        direct,
+        planned,
+        new_passphrase=new_passphrase,
+        skipped=skipped,
+        todos=todos_to_create,
+        make_todos=lambda todos: _create_todos(case_dir, todos, identity),
     )
 
-    # Step 4: TODOs (best-effort)
-    if todos_to_create:
-        try:
-            _create_todos(case_dir, todos_to_create, identity)
-        except OSError as e:
-            print(f"  WARNING: Failed to create TODOs: {e}", file=sys.stderr)
 
-    print(f"Committed {len(approvals) + len(rejections)} disposition(s).")
-    if coupled_tl:
-        print(
-            f"  Auto-coupled timeline events: {', '.join(e['id'] for e in coupled_tl)}"
-        )
-    if coupled_ioc:
-        print(f"  Auto-coupled IOCs: {', '.join(e['id'] for e in coupled_ioc)}")
-    if log_failures:
-        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
-    if hmac_failures:
-        print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
-        print("  Re-run 'vhir approve' on these items to generate HMAC entries.")
+# An approval with no signed line of its own: before 0.6.4, or none that counts
+# (a 0.6 line outside the history signing froze, or no line at all).
+_REATTESTABLE = {"APPROVED_UNDER_0_6", "APPROVED_NO_LINE"}
 
 
-def _write_verification_entries(
+def _reattest(
     case_dir: Path,
-    items: list[dict],
+    ids: list[str],
     identity: dict,
     config_path: Path,
-    password: str | None,
-    now: str,
-) -> list[str]:
-    """Write HMAC verification ledger entries. Returns list of failed item IDs."""
-    if not password:
-        return []  # No password — HMAC not applicable, not a failure
+    every: bool = False,
+    show_signed: bool = False,
+) -> None:
+    """Sign a fresh approval of an item's current content, dated now and marked
+    as a re-attestation. The 0.6 record is left as it is. An item with no
+    earlier approval record takes its approver and time from the new line."""
+    from vhir_cli.ledger_verify import verify_case
 
-    try:
-        from vhir_cli.approval_auth import get_analyst_salt
-        from vhir_cli.verification import (
-            compute_hmac,
-            derive_hmac_key,
-            write_ledger_entry,
+    if not ids and not every:
+        print("Error: name the items to re-attest, or use --all.", file=sys.stderr)
+        sys.exit(1)
+    verdicts = {v.item_id: v for v in verify_case(case_dir).items}
+    wanted = (
+        [v for v in verdicts.values() if v.status in _REATTESTABLE] if every else []
+    )
+    for item_id in ids:
+        v = verdicts.get(item_id)
+        if v is None or v.status not in _REATTESTABLE:
+            shown = v.status if v else "not an APPROVED item with lines to re-attest"
+            print(
+                f"  {_one_line(item_id)}: not re-attestable ({_one_line(shown)})",
+                file=sys.stderr,
+            )
+            continue
+        wanted.append(v)
+    if not wanted:
+        print("No items to re-attest.")
+        return
+    new_passphrase = _preflight(identity, config_path, case_dir)
+    lists = {
+        "finding": load_findings(case_dir),
+        "timeline": load_timeline(case_dir),
+        "ioc": load_iocs(case_dir),
+    }
+    direct = []
+    for v in wanted:
+        item = next(
+            x
+            for x in lists[v.item_type]
+            if isinstance(x, dict) and x.get("id") == v.item_id
         )
-    except ImportError:
-        return [item.get("id", "") for item in items]
-
-    try:
-        salt = get_analyst_salt(config_path, identity["examiner"])
-    except (ValueError, OSError):
-        return [item.get("id", "") for item in items]
-
-    derived_key = derive_hmac_key(password, salt)
-
-    # Resolve case_id from CASE.yaml
-    case_id = ""
-    try:
-        meta_file = case_dir / "CASE.yaml"
-        if meta_file.exists():
-            import yaml
-
-            meta = yaml.safe_load(meta_file.read_text()) or {}
-            case_id = meta.get("case_id", "")
-    except Exception:
-        pass
-    if not case_id:
-        case_id = case_dir.name
-
-    failures: list[str] = []
-    for item in items:
-        item_id = item.get("id", "")
-        item_type = (
-            "timeline"
-            if item_id.startswith("T-")
-            else "ioc"
-            if item_id.startswith("IOC-")
-            else "finding"
+        _display_item(item)
+        if show_signed:
+            _print_signed(item)
+        by, at = (
+            _one_line(item.get("approved_by", "?")),
+            _one_line(item.get("approved_at", "?")),
         )
-        desc = hmac_text(item)
-        entry = {
-            "finding_id": item_id,
-            "type": item_type,
-            "hmac": compute_hmac(derived_key, desc),
-            "hmac_version": 2,
-            "content_snapshot": desc,
-            "approved_by": identity["examiner"],
-            "approved_at": now,
-            "case_id": case_id,
-        }
+        if v.status == "APPROVED_NO_LINE":
+            print(
+                f"  unverified: {_one_line(v.label)} (the file says {by}, {at}); "
+                "re-attesting makes you its approver"
+            )
+        else:
+            print(
+                f"  approved before 0.6.4 by {by} on {at} (unverified); {_one_line(v.status)}"
+            )
         try:
-            write_ledger_entry(case_id, entry)
-        except OSError:
-            failures.append(item_id)
-
-    return failures
-
-
-def _prompt_choice() -> str:
-    """Prompt for per-item action."""
-    while True:
-        try:
-            response = (
-                input("  [a]pprove  [e]dit  [n]ote  [r]eject  [t]odo  [s]kip  [q]uit: ")
-                .strip()
-                .lower()
+            answer = (
+                input(f"  Re-attest {_one_line(v.item_id)}? [y/N] ").strip().lower()
             )
         except EOFError:
+            answer = ""
+        if answer == "y":
+            direct.append(
+                decide.Decision(item, v.item_type, "reattest", "APPROVED", loaded=copy.deepcopy(item),
+                                fresh_approver=v.status == "APPROVED_NO_LINE")
+            )  # fmt: skip
+    if not direct:
+        print("Nothing to sign.")
+        return
+    decide.confirm_plan(direct, [], _display_item)
+    decide.sign_and_commit(
+        case_dir, identity, direct, [], new_passphrase=new_passphrase
+    )
+
+
+def _approval_checked(case_dir: Path, d: decide.Decision) -> bool:
+    """Run the approval checks on a direct approval and show, before the
+    passphrase, its roots, its grade and any failed check. A failed check
+    needs a reason typed at the terminal; with none, the item stays DRAFT
+    (False). Other decisions pass through."""
+    if d.decision != "approve" or d.type not in ("finding", "timeline"):
+        return True
+    d.checks = approval_checks.check_item(case_dir, d.item, d.type, note=_hashing_note)
+    for line in _approval_lines(d.item, d.checks):
+        print(line)
+    if d.checks["result"] != "failed":
+        return True
+    reason = approval_auth.read_tty_line(
+        "  A check failed. Type why you approve it anyway (empty: leave it DRAFT): "
+    )
+    if not reason:
+        print(
+            f"  -> {_one_line(d.id)} left DRAFT: a check failed and no reason was typed"
+        )
+        return False
+    d.approval_override_reason = reason
+    return True
+
+
+def _hashing_note(path: str, size: int) -> None:
+    print(
+        f"  Hashing {_safe(path)} ({size / 1e9:.1f} GB) once to verify it; "
+        "later approvals won't need to read it again..."
+    )
+
+
+def _approval_lines(item: dict, checks: dict) -> list[str]:
+    """What an approval shows before the passphrase: each root (path, SHA-256,
+    label), the grade with its reason when it isn't FULL, and each failed
+    check."""
+    lines = []
+    if checks.get("detail"):
+        lines.append(f"  Checks: not applicable: {_safe(checks['detail'])}")
+    if "title" in item and not item.get("imported_from"):
+        arts = [a for a in item.get("artifacts") or [] if isinstance(a, dict)]
+        roots = {}
+        for a in arts if item.get("provenance_schema") == 2 else []:
+            for r in approval_checks.roots_of(a):
+                roots[(str(r["path"]), str(r.get("sha256") or ""))] = r
+        lines += [
+            f"  Root: {provenance_view.root_line(r)}" for _, r in sorted(roots.items())
+        ]
+        lines.append(
+            f"  Provenance: {_safe(provenance_view.grade_label(item, reason=False))}"
+        )
+        for n, a in enumerate(arts if item.get("provenance_schema") == 2 else [], 1):
+            label, why = provenance_view.grade(item, a)
+            if label != "FULL" or why:
+                lines.append(f"    [{n}] {_safe(provenance_view.grade_label(item, a))}")
+    for i in checks.get("items", []):
+        if i.get("status") == "failed":
+            lines.append(
+                f"  Check failed: {_safe(i.get('code', ''))} {_safe(i.get('subject', ''))}: "
+                f"{_safe(i.get('detail', ''))}"
+            )
+    return lines
+
+
+def _prompt_choice(choices: tuple[str, ...] = _APPROVE_CHOICES) -> str:
+    """Prompt for a per-item action among `choices` (Enter approves, when it's one)."""
+    labels = {"approve": "[a]pprove", "edit": "[e]dit", "note": "[n]ote", "reject": "[r]eject",
+              "todo": "[t]odo", "skip": "[s]kip", "quit": "[q]uit"}  # fmt: skip
+    keys = {c[0]: c for c in choices}
+    prompt = "  " + "  ".join(labels[c] for c in choices) + ": "
+    while True:
+        try:
+            response = input(prompt).strip().lower()
+        except EOFError:
             return "skip"
-        if response in ("", "a"):
+        if response == "" and "approve" in choices:
             return "approve"
-        if response == "e":
-            return "edit"
-        if response == "n":
-            return "note"
-        if response == "r":
-            return "reject"
-        if response == "t":
-            return "todo"
-        if response == "s":
-            return "skip"
-        if response == "q":
-            return "quit"
+        if response in keys:
+            return keys[response]
         print("  Invalid choice.")
 
 
@@ -700,6 +618,7 @@ def _apply_edit(item: dict, identity: dict) -> None:
         ):
             if key in item or key == "context":
                 editable[key] = item.get(key, "")
+        editable["alternatives"] = item.get("alternatives", [])
     else:
         # Timeline event
         for key in ("timestamp", "description", "source"):
@@ -831,39 +750,270 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
             "completed_at": None,
         }
         todos.append(todo)
-        print(f"  Created {todo_id}: {td['description']}")
+        shown = f"  Created {_one_line(todo_id)}: "
+        print(shown + _lines(td["description"], " " * len(shown)))
     save_todos(case_dir, todos)
 
 
+def _challenge_line(challenged) -> str:
+    """The finding's challenge state, in one line."""
+    if not isinstance(challenged, dict):
+        return "Not challenged"
+    ids = challenged.get("skeptic_audit_ids") or []
+    ids = ", ".join(str(i) for i in ids) if isinstance(ids, list) else str(ids)
+    outcome = challenged.get("outcome")
+    if outcome == "stands":
+        return f"Challenged (client-reported): stands — skeptic: {ids}"
+    if outcome == "revised":
+        return f"Challenged (client-reported): revised after challenge — skeptic: {ids}"
+    if outcome == "withdrawn":
+        return (
+            "Challenged (client-reported): withdrawn, not applied, staged for "
+            f"your decision — skeptic: {ids or 'none'}"
+        )
+    return f"Challenged (client-reported): {outcome}"
+
+
+def _challenge_reasons(challenged) -> list[str]:
+    """The marker's stated contradiction and the server's refusal, escaped."""
+    if not isinstance(challenged, dict):
+        return []
+    lines = []
+    if challenged.get("contradiction"):
+        lines.append(f"Contradiction (client-reported): {challenged['contradiction']}")
+    if challenged.get("refused"):
+        lines.append(f"Server: {challenged['refused']}")
+    return [_safe(line) for line in lines]
+
+
+def _alternative_lines(alternatives) -> list[str]:
+    """One line per alternative; any other shape (an examiner's edit) as text."""
+    if not isinstance(alternatives, list):
+        return [_safe(alternatives)] if alternatives else []
+    lines = []
+    for a in alternatives:
+        if not isinstance(a, dict):
+            lines.append(_safe(a))
+            continue
+        status = str(a.get("status") or "open").replace("_", " ")
+        line = f"[{status}] {a.get('explanation', '')}"
+        if a.get("evidence"):
+            line += f" — {a['evidence']}"
+        if isinstance(a.get("audit_ids"), list) and a["audit_ids"]:
+            line += f" (audit: {', '.join(str(i) for i in a['audit_ids'])})"
+        lines.append(_safe(line))
+    return lines
+
+
+# --- Evidence before the decision -------------------------------------------
+#
+# Artifact content and the finding's text come from evidence and the model,
+# and now print before the password prompt: every line goes through _safe,
+# and content lines carry a gutter so they can't pass for a banner or prompt.
+
+_GUTTER = "      │ "
+_UNSAFE_CATEGORIES = {"Cc", "Cf", "Cs", "Zl", "Zp"}
+
+
+def _safe(text) -> str:
+    """Text shown as written, with control, format, surrogate and line or
+    paragraph separator characters (newlines included) as visible escapes."""
+    out = []
+    for ch in str(text):
+        if unicodedata.category(ch) in _UNSAFE_CATEGORIES:
+            cp = ord(ch)
+            if cp <= 0xFF:
+                out.append(f"\\x{cp:02x}")
+            elif cp <= 0xFFFF:
+                out.append(f"\\u{cp:04x}")
+            else:
+                out.append(f"\\U{cp:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _content_lines(text) -> list[str]:
+    """Content line by line, each behind the gutter; a run of more than two
+    blank lines is shown as one."""
+    lines: list[str] = []
+    blanks = 0
+
+    def flush() -> None:
+        if blanks > 2:
+            lines.append(f"{_GUTTER}({blanks} blank lines)")
+        else:
+            lines.extend([_GUTTER.rstrip()] * blanks)
+
+    for line in str(text).split("\n"):
+        if not line.strip():
+            blanks += 1
+            continue
+        flush()
+        blanks = 0
+        lines.append(_GUTTER + _safe(line))
+    flush()
+    return lines
+
+
+def _linked_events(item: dict, timeline: list[dict]) -> list[dict]:
+    """The DRAFT timeline event approving this finding approves with it: the
+    one its signed `timeline_event_id` names (the cascade's own rule)."""
+    return [
+        t
+        for t in timeline
+        if t.get("id") == item.get("timeline_event_id")
+        and t.get("auto_created_from") == item.get("id")
+        and t.get("status") == "DRAFT"
+        and not t.get("examiner_modifications")
+    ]
+
+
+def _evidence_lines(item: dict, timeline: list[dict]) -> list[str]:
+    """A finding's artifacts, then the events approved with it."""
+    return _artifact_lines(item) + _linked_lines(item, timeline)
+
+
+def _artifact_lines(item: dict) -> list[str]:
+    artifacts = item.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    lines = []
+    if not artifacts:
+        lines.append("  Artifacts: no artifacts recorded")
+    else:
+        lines.append(f"  Artifacts ({len(artifacts)}):")
+    for n, art in enumerate(artifacts, 1):
+        if not isinstance(art, dict):
+            lines.append(f"    {n}. {_safe(art)}")
+            continue
+        lines.append(f"    {n}. source:     {_safe(art.get('source', ''))}")
+        lines.append(f"       extraction: {_safe(art.get('extraction', ''))}")
+        lines.append(f"       audit id:   {_safe(art.get('audit_id', ''))}")
+        lines.append("       content:")
+        lines.extend(_content_lines(art.get("content", "")))
+    return lines
+
+
+def _linked_lines(item: dict, timeline: list[dict]) -> list[str]:
+    lines = []
+    linked = _linked_events(item, timeline)
+    if linked:
+        lines.append("  Timeline events approved with it:")
+        for t in linked:
+            lines.append(
+                f"    [{_safe(t.get('id', ''))}] {_safe(t.get('timestamp', '?'))}"
+                f"  {_safe(t.get('description', ''))}"
+            )
+    return lines
+
+
+def _print_pending_item(item: dict, timeline: list[dict]) -> None:
+    """Everything the examiner decides on, before the password prompt."""
+    print(f"{'─' * 60}")
+    if "title" in item:
+        print(f"  {_safe(_challenge_line(item.get('challenged')))}")
+        for line in _challenge_reasons(item.get("challenged")):
+            print(f"    {line}")
+        print(f"  [{_safe(item['id'])}]  {_safe(item.get('title', 'Untitled'))}")
+        meta = [
+            f"{label}: {_safe(item[key])}"
+            for label, key in (
+                ("Examiner", "examiner"),
+                ("By", "created_by"),
+                ("Confidence", "confidence"),
+            )
+            if item.get(key)
+        ]
+        if item.get("audit_ids"):
+            meta.append(f"Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+        if meta:
+            print(f"  {' | '.join(meta)}")
+        print(f"  Observation: {_safe(item.get('observation', ''))}")
+        print(f"  Interpretation: {_safe(item.get('interpretation', ''))}")
+        for line in _alternative_lines(item.get("alternatives")):
+            print(f"  Alternative: {line}")
+        if item.get("iocs"):
+            print(f"  IOCs: {_safe(item['iocs'])}")
+        for line in _evidence_lines(item, timeline):
+            print(line)
+    else:
+        print(f"  [{_safe(item['id'])}]  {_safe(item.get('timestamp', '?'))}")
+        print(f"  Description: {_safe(item.get('description', ''))}")
+        if item.get("audit_ids"):
+            print(f"  Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+
+
+def _print_decision_header(item: dict) -> None:
+    """One line per decision: the evidence was shown before the prompt."""
+    if "title" in item:
+        artifacts = item.get("artifacts")
+        count = len(artifacts) if isinstance(artifacts, list) else 0
+        label = f"{_safe(item.get('title', 'Untitled'))} — {count} artifact(s)"
+    else:
+        label = (
+            f"{_safe(item.get('timestamp', '?'))}  {_safe(item.get('description', ''))}"
+        )
+    print(f"\n── [{_safe(item['id'])}]  {label}")
+
+
+def _display_ioc(item: dict) -> None:
+    """An IOC: what the examiner decides about it, and its derived context."""
+    print(f"\n{'─' * 60}")
+    print(f"  [{_one_line(item['id'])}]  {_one_line(item.get('value', ''))}")
+    print(f"{'─' * 60}")
+    for label, key in (("Value", "value"), ("Type", "type"), ("Category", "category"),
+                       ("Tags", "tags"), ("Description", "description")):  # fmt: skip
+        value = item.get(key, "")
+        if isinstance(value, list):
+            value = ", ".join(str(x) for x in value)
+        print(f"  {label}: {_one_line(value)}")
+    print("  Sources, sightings, confidence, MITRE: derived, not signed")
+    print()
+
+
 def _display_item(item: dict) -> None:
-    """Display a finding or timeline event."""
+    """Display a finding, timeline event or IOC."""
+    if str(item.get("id", "")).startswith("IOC-"):
+        _display_ioc(item)
+        return
     created_by = item.get("created_by", "")
     examiner = item.get("examiner", "")
     print(f"\n{'─' * 60}")
-    print(f"  [{item['id']}]  {item.get('title', item.get('description', 'Untitled'))}")
+    title = item.get("title", item.get("description", "Untitled"))
+    print(f"  [{_one_line(item['id'])}]  {_one_line(title)}")
+    if "title" in item:  # under the title, which can't hide it
+        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
+        for line in _challenge_reasons(item.get("challenged")):
+            print(f"    {line}")
     if examiner:
-        print(f"  Examiner: {examiner}", end="")
+        print(f"  Examiner: {_one_line(examiner)}", end="")
     if created_by:
-        print(f"  | By: {created_by}", end="")
+        print(f"  | By: {_one_line(created_by)}", end="")
     if item.get("confidence"):
-        print(f"  | Confidence: {item['confidence']}", end="")
+        print(f"  | Confidence: {_one_line(item['confidence'])}", end="")
     if item.get("audit_ids"):
-        print(f"  | Evidence: {', '.join(item['audit_ids'])}", end="")
+        print(
+            f"  | Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}", end=""
+        )
     print()
     print(f"{'─' * 60}")
 
     if "title" in item:
         # It's a finding
-        print(f"  Observation: {item.get('observation', '')}")
-        print(f"  Interpretation: {item.get('interpretation', '')}")
+        print(f"  Observation: {_lines(item.get('observation', ''), ' ' * 15)}")
+        print(f"  Interpretation: {_lines(item.get('interpretation', ''), ' ' * 18)}")
+        for line in _alternative_lines(item.get("alternatives")):
+            print(f"  Alternative: {_one_line(line)}")
         if item.get("iocs"):
-            print(f"  IOCs: {item['iocs']}")
+            print(f"  IOCs: {_one_line(item['iocs'])}")
+        if item.get("timeline_event_id"):
+            print(f"  Timeline event: {_one_line(item['timeline_event_id'])}")
     else:
         # It's a timeline event
-        print(f"  Timestamp: {item.get('timestamp', '?')}")
-        print(f"  Description: {item.get('description', '')}")
+        print(f"  Timestamp: {_one_line(item.get('timestamp', '?'))}")
+        print(f"  Description: {_lines(item.get('description', ''), ' ' * 15)}")
         if item.get("audit_ids"):
-            print(f"  Evidence: {', '.join(item['audit_ids'])}")
+            print(f"  Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}")
     print()
 
 
@@ -879,6 +1029,7 @@ _DELTA_EDITABLE_FIELDS = {
     "mitre_ids",
     "iocs",
     "context",
+    "alternatives",
     # Timeline event fields
     "timestamp",
     "description",
@@ -896,11 +1047,27 @@ _DIM = "\033[2m"
 _RESET = "\033[0m"
 
 
+def _staged_body(item: dict, delta_entry: dict) -> dict:
+    """The item as the entry would have it signed: its edits applied."""
+    post = copy.deepcopy(item)
+    mods = delta_entry.get("modifications") or {}
+    for f, m in mods.items() if isinstance(mods, dict) else ():
+        if f in _DELTA_EDITABLE_FIELDS and isinstance(m, dict):
+            post[f] = m.get("modified")
+    return post
+
+
 def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
-    """Print a terminal diff for a single delta item."""
-    item_id = delta_entry.get("id", "?")
-    action = delta_entry.get("action", "?").upper()
-    modifications = delta_entry.get("modifications", {})
+    """Print a staged entry as it would be signed: the item with the entry's
+    edits applied, each edited field shown as - before / + after, then every
+    other field of the signed body, so nothing signed goes unshown."""
+    item_id = _one_line(delta_entry.get("id", "?"))
+    action = _one_line(delta_entry.get("action", "?")).upper()
+    modifications = {
+        f: m
+        for f, m in (delta_entry.get("modifications") or {}).items()
+        if f in _DELTA_EDITABLE_FIELDS and isinstance(m, dict)
+    }
 
     # Color for action
     action_color = {
@@ -919,46 +1086,85 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     if item is None:
         print(f"  {_RED}Item not found in case data{_RESET}")
         return
+    item = _staged_body(item, delta_entry)
+    shown = {"id", "status", "challenged", "alternatives"}
 
     # Finding fields
     if "title" in item:
-        print(f"  Title:          {item.get('title', '')}")
+        if "title" in modifications:
+            _render_field("Title", item, modifications, "title")
+        else:
+            print(f"  Title:          {_one_line(item.get('title', ''))}")
+        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
+        for line in _challenge_reasons(item.get("challenged")):
+            print(f"    {line}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
         _render_field("Interpretation", item, modifications, "interpretation")
         if item.get("audit_ids"):
-            print(f"  Evidence:       {', '.join(item['audit_ids'])}")
-        if item.get("mitre_ids"):
-            _render_field("MITRE", item, modifications, "mitre_ids")
-        if item.get("iocs"):
-            _render_field("IOCs", item, modifications, "iocs")
+            print(
+                f"  Evidence:       {_one_line(', '.join(map(str, item['audit_ids'])))}"
+            )
+        for label, field in (("MITRE", "mitre_ids"), ("IOCs", "iocs"),
+                             ("Context", "context"),
+                             ("Justification", "confidence_justification")):  # fmt: skip
+            if item.get(field) or field in modifications:
+                _render_field(label, item, modifications, field)
+        shown |= {"title", "confidence", "observation", "interpretation", "audit_ids",
+                  "mitre_ids", "iocs", "context", "confidence_justification"}  # fmt: skip
+        if "alternatives" in modifications:
+            mod = modifications["alternatives"]
+            for line in _alternative_lines(mod.get("original")):
+                print(f"  Alternative:    {_RED}- {_one_line(line)}{_RESET}")
+            for line in _alternative_lines(mod.get("modified")):
+                print(f"  Alternative:    {_GREEN}+ {_one_line(line)}{_RESET}")
+        else:
+            for line in _alternative_lines(item.get("alternatives")):
+                print(f"  Alternative:    {_one_line(line)}")
     else:
         # Timeline event
-        print(f"  Timestamp:      {item.get('timestamp', '?')}")
+        _render_field("Timestamp", item, modifications, "timestamp")
         _render_field("Description", item, modifications, "description")
-        if item.get("source"):
-            print(f"  Source:         {item.get('source', '')}")
+        if item.get("source") or "source" in modifications:
+            _render_field("Source", item, modifications, "source")
+        shown |= {"timestamp", "description", "source"}
+    if item.get("tags") or "tags" in modifications:
+        _render_field("Tags", item, modifications, "tags")
+    shown.add("tags")
+    if "artifacts" in item:  # signed: shown whatever the action
+        for line in _artifact_lines(item):
+            print(line)
+        shown.add("artifacts")
+    # every other field of the signed body
+    body = json.loads(signed_text(item, decide.item_type(str(item.get("id", "")))))
+    for field in sorted(set(body) - shown):
+        value = body[field]
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        label = field.replace("_", " ").capitalize()
+        print(f"  {label}:{' ' * max(1, 15 - len(label))}{_one_line(text)}")
 
     # Note
     note = delta_entry.get("note")
     if note:
-        print(f"  {_CYAN}Note: {note}{_RESET}")
+        print(f"  {_CYAN}Note: {_one_line(note)}{_RESET}")
 
     # Rejection reason
     if action == "REJECT":
         reason = delta_entry.get("rejection_reason", "") or delta_entry.get(
             "reason", ""
         )
-        print(f"  {_RED}Reason: {reason or '(no reason given)'}{_RESET}")
+        print(f"  {_RED}Reason: {_one_line(reason or '(no reason given)')}{_RESET}")
 
     # TODO details
     if action == "TODO":
         desc = delta_entry.get("todo_description", "")
         prio = delta_entry.get("todo_priority", "medium")
-        print(f"  {_YELLOW}TODO: {desc} (priority: {prio}){_RESET}")
+        print(
+            f"  {_YELLOW}TODO: {_one_line(desc)} (priority: {_one_line(prio)}){_RESET}"
+        )
 
     # Status line
-    current_status = item.get("status", "DRAFT")
+    current_status = _one_line(item.get("status", "DRAFT"))
     if action == "APPROVE":
         print(
             f"  Status:         {_DIM}{current_status}{_RESET} → {_GREEN}APPROVED{_RESET}"
@@ -978,6 +1184,9 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
     pad = max(0, 14 - len(label))
     prefix = f"  {label}:{' ' * pad}"
 
+    def shown(text, indent: str) -> str:
+        return _lines(text, indent) if field in _MULTI_LINE else _one_line(text)
+
     if field in modifications:
         mod = modifications[field]
         original = mod.get("original", "")
@@ -987,439 +1196,276 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
             original = ", ".join(str(x) for x in original)
         if isinstance(modified, list):
             modified = ", ".join(str(x) for x in modified)
-        print(f"{prefix}{_RED}- {original}{_RESET}")
-        print(f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {modified}{_RESET}")
+        indent = " " * (len(prefix) + 2)
+        print(f"{prefix}{_RED}- {shown(original, indent)}{_RESET}")
+        print(
+            f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {shown(modified, indent)}{_RESET}"
+        )
     else:
         val = item.get(field, "")
         if isinstance(val, list):
             val = ", ".join(str(x) for x in val)
-        print(f"{prefix}{val}")
+        print(f"{prefix}{shown(val, ' ' * len(prefix))}")
 
 
-def _review_mode(case_dir: Path, identity: dict, config_path: Path) -> None:
-    """Apply pending dashboard reviews from pending-reviews.json."""
+# An IOC's value and type are what the examiner decides: only its tags and
+# description are edited, here as in the portal
+_IOC_EDITABLE = frozenset({"tags", "description"})
+
+
+def _same_entry(a: dict, b: dict) -> bool:
+    """Equal apart from the CLI's own stamps."""
+    strip = lambda e: {  # noqa: E731
+        k: v for k, v in e.items() if k not in ("saved_unsigned", "review_again")
+    }
+    return strip(a) == strip(b)
+
+
+def _merge_processing(case_dir: Path) -> None:
+    """A `.processing` file left by 0.6: its entries whose id isn't in
+    pending-reviews.json are merged in as "staged by unknown", and it is kept
+    as `.processing.merged-<UTC>`. Never deleted or overwritten."""
+    processing = case_dir / "pending-reviews.processing"
+    if not processing.exists():
+        return
     delta_path = case_dir / "pending-reviews.json"
-    processing_path = case_dir / "pending-reviews.processing"
-
-    # Recovery: handle orphaned .processing from crashed session
-    if processing_path.exists():
-        if delta_path.exists():
-            # Both exist: .processing is stale, delta is newer (user saved again)
-            print(
-                "Found stale .processing file from previous session. "
-                "Removing (newer pending-reviews.json exists)."
-            )
-            processing_path.unlink()
-        else:
-            # Only .processing: crashed mid-apply. Restore for re-review.
-            print(
-                "Found unfinished review from previous session. "
-                "Restoring for re-review."
-            )
-            processing_path.rename(delta_path)
-
-    if not delta_path.exists():
-        print("No pending dashboard reviews.")
-        return
-
-    # Atomically rename to .processing (TOCTOU mitigation)
-    try:
-        delta_path.rename(processing_path)
-    except OSError as e:
-        print(f"Error: Cannot lock delta file: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        delta = json.loads(processing_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        # Restore original file on parse failure
+    with ledger.case_lock(case_id_of(case_dir)):
         try:
-            processing_path.rename(delta_path)
-        except OSError:
-            pass
-        print(f"Error: Cannot read delta file: {e}", file=sys.stderr)
+            old = json.loads(processing.read_text())
+        except (OSError, ValueError):
+            old = {}
+        delta = decide.read_delta(delta_path) or {
+            "case_id": case_id_of(case_dir),
+            "items": [],
+        }
+        have = {e.get("id") for e in delta.get("items", []) if isinstance(e, dict)}
+        for e in old.get("items", []) if isinstance(old, dict) else []:
+            if isinstance(e, dict) and e.get("id") not in have:
+                e = {
+                    k: v
+                    for k, v in e.items()
+                    if k not in ("staged_by", "saved_unsigned")
+                }
+                delta.setdefault("items", []).append(e)
+        decide._write_delta(delta_path, delta)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        processing.rename(
+            processing.with_name(f"pending-reviews.processing.merged-{stamp}")
+        )
+    print(
+        "A review file left by an earlier version was merged into pending-reviews.json."
+    )
+
+
+def _review_mode(
+    case_dir: Path,
+    identity: dict,
+    config_path: Path,
+    withdrawn_line: str = "",
+    show_signed: bool = False,
+) -> None:
+    """Sign the decisions staged in pending-reviews.json (the portal's, or
+    saved unsigned by the CLI). Your own entries are selected; entries
+    staged by someone else are shown as theirs and included only if you say
+    so. Only the entries signed (or turned into TODOs) are removed from the
+    file, under the case lock; nothing else in it changes."""
+    examiner = identity["examiner"]
+    delta_path = case_dir / "pending-reviews.json"
+    folders = credentials.signing_folders_problem()
+    if folders:  # before the lock below needs ledger/
+        print(folders, file=sys.stderr)
         sys.exit(1)
-
-    items = delta.get("items", [])
-    if not items:
-        processing_path.unlink(missing_ok=True)
+    _merge_processing(case_dir)
+    with ledger.case_lock(case_id_of(case_dir)):  # a corrupt file is set aside
+        delta = decide.read_delta(delta_path)
+    if delta is None:
         print("No pending dashboard reviews.")
+        if withdrawn_line:
+            print(withdrawn_line)
         return
-
-    # Validate case_id
+    entries = [e for e in delta.get("items", []) if isinstance(e, dict)]
+    if not entries:
+        print("No pending dashboard reviews.")
+        if withdrawn_line:
+            print(withdrawn_line)
+        return
     delta_case_id = delta.get("case_id", "")
-    case_meta_path = case_dir / "CASE.yaml"
-    if case_meta_path.exists():
-        try:
-            meta = yaml.safe_load(case_meta_path.read_text()) or {}
-            active_case_id = meta.get("case_id", "")
-            if delta_case_id and active_case_id and delta_case_id != active_case_id:
-                print(
-                    f"Error: Delta case_id ({delta_case_id}) does not match "
-                    f"active case ({active_case_id}).",
-                    file=sys.stderr,
-                )
-                processing_path.rename(delta_path)
-                sys.exit(1)
-        except (yaml.YAMLError, OSError):
-            pass
+    if delta_case_id and delta_case_id != case_id_of(case_dir):
+        print(
+            f"Error: Delta case_id ({_one_line(delta_case_id)}) does not match "
+            f"active case ({_one_line(case_id_of(case_dir))}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Check modified_at — warn if file was modified after last browser action
-    delta_modified = delta.get("modified_at", "")
-    try:
-        file_mtime = datetime.fromtimestamp(
-            processing_path.stat().st_mtime, tz=timezone.utc
-        ).isoformat()
-        if delta_modified and file_mtime > delta_modified:
-            print(
-                f"  {_YELLOW}WARNING: Delta file was modified after your last "
-                f"review action.{_RESET}"
-            )
-    except OSError:
-        pass
-
-    # Load case data — all items, not just DRAFTs
+    new_passphrase = _preflight(identity, config_path, case_dir)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
-
-    from vhir_cli.case_io import load_iocs, save_iocs
-
     iocs = load_iocs(case_dir)
+    item_by_id = {
+        x["id"]: x
+        for x in findings + timeline + iocs
+        if isinstance(x, dict) and "id" in x
+    }
 
-    # Build lookup by ID — includes findings, timeline, AND IOCs
-    item_by_id: dict[str, dict] = {}
-    for f in findings:
-        item_by_id[f["id"]] = f
-    for t in timeline:
-        item_by_id[t["id"]] = t
-    for ioc in iocs:
-        item_by_id[ioc["id"]] = ioc
-
-    # Categorize delta items
-    approvals = []
-    rejections = []
-    todos = []
-    edits = []
-    stale_warnings = []
-
-    for entry in items:
-        item_id = entry.get("id", "")
-        action = entry.get("action", "").lower()
-        item = item_by_id.get(item_id)
-
-        # Check content hash staleness
-        hash_at_review = entry.get("content_hash_at_review", "")
-        if item and hash_at_review:
-            current_hash = item.get("content_hash", "")
-            if current_hash and hash_at_review != current_hash:
-                stale_warnings.append(item_id)
-
-        # Render each item
-        _render_terminal_diff(item, entry)
-
-        if action == "approve":
-            approvals.append(entry)
-        elif action == "reject":
-            rejections.append(entry)
-        elif action == "todo":
-            todos.append(entry)
-        elif action == "edit":
-            edits.append(entry)
-
-    # Stale warnings
-    for sid in stale_warnings:
-        print(f"  {_YELLOW}WARNING: {sid} was modified after you reviewed it.{_RESET}")
-
-    # Summary
-    print(f"\n{'=' * 60}")
-    print(
-        f"  Apply {len(approvals)} approval(s), {len(rejections)} rejection(s), "
-        f"{len(edits)} edit(s), {len(todos)} TODO(s)?"
-    )
-    print(f"{'=' * 60}")
-
-    if not approvals and not rejections and not todos and not edits:
-        processing_path.unlink(missing_ok=True)
-        print("Nothing to apply.")
-        return
-
-    # Password confirmation
-    mode, password = require_confirmation(config_path, identity["examiner"])
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Process approvals (in-memory)
-    skipped = []
-    approved_ids = []
-    for entry in approvals:
-        item_id = entry.get("id", "")
-        item = item_by_id.get(item_id)
-        if item is None:
-            skipped.append((item_id, "not found"))
+    selected = [e for e in entries if e.get("staged_by") == examiner]
+    own_ids = {e.get("id") for e in selected}
+    for e in entries:
+        if e.get("staged_by") == examiner:
             continue
-
-        modifications = entry.get("modifications", {})
-
-        # Verify modification originals match current values
-        mod_conflict = False
-        for field, mod in modifications.items():
-            current_val = item.get(field)
-            original_val = mod.get("original")
-            if current_val != original_val:
-                skipped.append((item_id, f"field '{field}' changed since review"))
-                mod_conflict = True
-                break
-
-        if mod_conflict:
+        who = e.get("staged_by") or "unknown"
+        print(f"\n  Staged by {_one_line(who)}; not included unless you say so:")
+        _render_terminal_diff(item_by_id.get(e.get("id")), e)
+        if e.get("id") in own_ids:
+            print(
+                f"  You have your own entry for {_one_line(e.get('id'))}; not offered."
+            )
             continue
-
-        # Apply modifications (only editable fields)
-        if modifications:
-            for field, mod in modifications.items():
-                if field not in _DELTA_EDITABLE_FIELDS:
-                    continue
-                item[field] = mod.get("modified")
-                item.setdefault("examiner_modifications", {})[field] = {
-                    "original": mod.get("original"),
-                    "modified": mod.get("modified"),
-                    "modified_by": identity["examiner"],
-                    "modified_at": now,
-                }
-
-        # Apply note
-        note = entry.get("note")
-        if note:
-            _apply_note(item, note, identity)
-
-        # Compute content hash AFTER modifications
-        new_hash = compute_content_hash(item)
-        item["content_hash"] = new_hash
-        item["status"] = "APPROVED"
-        item["approved_at"] = now
-        item["approved_by"] = identity["examiner"]
-        item["modified_at"] = now
-        # Direct IOC actions decouple from cascade
-        if item_id.startswith("IOC-"):
-            item["manually_reviewed"] = True
-        approved_ids.append(item_id)
-
-    # Process edits (modifications only, no status change)
-    edited_ids = []
-    for entry in edits:
-        item_id = entry.get("id", "")
-        item = item_by_id.get(item_id)
-        if item is None:
-            skipped.append((item_id, "not found"))
-            continue
-
-        modifications = entry.get("modifications", {})
-        if not modifications:
-            continue
-
-        # Verify originals match
-        mod_conflict = False
-        for field, mod in modifications.items():
-            current_val = item.get(field)
-            original_val = mod.get("original")
-            if current_val != original_val:
-                skipped.append((item_id, f"field '{field}' changed since review"))
-                mod_conflict = True
-                break
-        if mod_conflict:
-            continue
-
-        # Apply modifications only
-        for field, mod in modifications.items():
-            if field not in _DELTA_EDITABLE_FIELDS:
-                continue
-            item[field] = mod.get("modified")
-            item.setdefault("examiner_modifications", {})[field] = {
-                "original": mod.get("original"),
-                "modified": mod.get("modified"),
-                "modified_by": identity["examiner"],
-                "modified_at": now,
-            }
-
-        # Recompute hash
-        new_hash = compute_content_hash(item)
-        item["content_hash"] = new_hash
-        item["modified_at"] = now
-        edited_ids.append(item_id)
-
-    # Process rejections (in-memory)
-    rejected_ids = []
-    for entry in rejections:
-        item_id = entry.get("id", "")
-        item = item_by_id.get(item_id)
-        if item is None:
-            skipped.append((item_id, "not found"))
-            continue
-
-        reason = entry.get("rejection_reason", "") or entry.get("reason", "")
-        item["status"] = "REJECTED"
-        item["rejected_at"] = now
-        item["rejected_by"] = identity["examiner"]
-        if reason:
-            item["rejection_reason"] = reason
-        item["modified_at"] = now
-        # Direct IOC actions decouple from cascade
-        if item_id.startswith("IOC-"):
-            item["manually_reviewed"] = True
-        rejected_ids.append(item_id)
-
-    # Timeline approval coupling: auto-created events follow their finding
-    for tl_event in timeline:
-        auto_from = tl_event.get("auto_created_from", "")
-        if not auto_from:
-            continue
-        if tl_event.get("examiner_modifications"):
-            continue
-        source = item_by_id.get(auto_from)
-        if not source:
-            continue
-        if source.get("status") == "APPROVED" and tl_event.get("status") == "DRAFT":
-            tl_event["status"] = "APPROVED"
-            tl_event["approved_at"] = now
-            tl_event["approved_by"] = identity["examiner"]
-            tl_event["modified_at"] = now
-            new_hash = compute_content_hash(tl_event)
-            tl_event["content_hash"] = new_hash
-            approved_ids.append(tl_event["id"])
-        elif source.get("status") == "REJECTED":
-            tl_event["status"] = "REJECTED"
-            tl_event["rejected_at"] = now
-            tl_event["rejected_by"] = identity["examiner"]
-            tl_event["rejection_reason"] = "Source finding rejected"
-            tl_event["modified_at"] = now
-            rejected_ids.append(tl_event["id"])
-
-    # IOC approval coupling (review mode)
-    # iocs already loaded above (H2 fix) — reuse same objects
-    any_ioc_acted = any(
-        aid.startswith("IOC-") for aid in approved_ids + rejected_ids + edited_ids
-    )
-    iocs_modified = any_ioc_acted
-    for ioc in iocs:
-        if ioc.get("manually_reviewed"):
-            continue
-        source_ids = ioc.get("source_findings", [])
-        relevant = [item_by_id.get(sid) for sid in source_ids if item_by_id.get(sid)]
-        if not relevant:
-            continue
-        statuses = {r.get("status", "DRAFT") for r in relevant}
-        if statuses == {"APPROVED"} and ioc.get("status") != "APPROVED":
-            ioc["status"] = "APPROVED"
-            ioc["approved_at"] = now
-            ioc["approved_by"] = identity["examiner"]
-            ioc["modified_at"] = now
-            iocs_modified = True
-            approved_ids.append(ioc["id"])
-        elif statuses == {"REJECTED"} and ioc.get("status") != "REJECTED":
-            ioc["status"] = "REJECTED"
-            ioc["rejected_at"] = now
-            ioc["rejected_by"] = identity["examiner"]
-            ioc["rejection_reason"] = "All source findings rejected"
-            ioc["modified_at"] = now
-            iocs_modified = True
-            rejected_ids.append(ioc["id"])
-
-    _keep_landed(case_dir, findings, timeline, iocs if iocs_modified else None)
-
-    # Step 1: Persist primary data FIRST
-    try:
-        save_findings(case_dir, findings)
-        save_timeline(case_dir, timeline)
-        if iocs_modified:
-            save_iocs(case_dir, iocs)
-    except OSError as e:
-        print(f"CRITICAL: Failed to save case data: {e}", file=sys.stderr)
-        print("The .processing file has been preserved for retry.", file=sys.stderr)
+        try:
+            answer = (
+                input(
+                    f"  Include {_one_line(e.get('id'))} and sign as {_one_line(examiner)}? [y/N] "
+                )
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            answer = ""
+        if answer == "y":
+            selected.append(e)
+    ids = [e.get("id") for e in selected if e.get("action") != "todo"]
+    duplicate = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicate:
+        print(f"DUPLICATE_ITEM: {', '.join(map(_one_line, duplicate))} selected twice; nothing was signed.",
+              file=sys.stderr)  # fmt: skip
         sys.exit(1)
 
-    # Step 2: Approval log (best-effort, collect failures)
-    log_failures = []
-    for item_id in approved_ids:
+    now = datetime.now(timezone.utc).isoformat()
+    direct: list[decide.Decision] = []
+    todo_entries: list[dict] = []
+    skipped: list[tuple[str, str]] = []
+    for entry in selected:
+        item_id, action = entry.get("id", ""), str(entry.get("action", "")).lower()
+        if action == "todo":
+            todo_entries.append(entry)
+            _render_terminal_diff(item_by_id.get(item_id), entry)
+            continue
         item = item_by_id.get(item_id)
-        if item and not write_approval_log(
-            case_dir,
-            item_id,
-            "APPROVED",
-            identity,
-            mode=mode,
-            content_hash=item.get("content_hash", ""),
-            stale_at_approval=item_id in stale_warnings,
-        ):
-            log_failures.append(item_id)
-    for entry in rejections:
-        item_id = entry.get("id", "")
-        if item_id in rejected_ids:
-            reason = entry.get("rejection_reason", "") or entry.get("reason", "")
-            if not write_approval_log(
-                case_dir, item_id, "REJECTED", identity, reason=reason, mode=mode
-            ):
-                log_failures.append(item_id)
-    for item_id in edited_ids:
-        item = item_by_id.get(item_id)
-        if item and not write_approval_log(
-            case_dir,
-            item_id,
-            "EDITED",
-            identity,
-            mode=mode,
-            content_hash=item.get("content_hash", ""),
-        ):
-            log_failures.append(item_id)
-
-    # Step 3: HMAC ledger (warn on failure)
-    approved_items = [item_by_id[aid] for aid in approved_ids if aid in item_by_id]
-    hmac_failures = _write_verification_entries(
-        case_dir, approved_items, identity, config_path, password, now
-    )
-
-    # Step 4: TODOs (best-effort)
-    if todos:
-        todos_to_create = []
-        for entry in todos:
-            todos_to_create.append(
-                {
-                    "description": entry.get(
-                        "todo_description", f"Follow up on {entry.get('id', '')}"
-                    ),
-                    "priority": entry.get("todo_priority", "medium"),
-                    "assignee": "",
-                    "related_findings": [entry.get("id", "")],
-                }
+        if item is None:
+            skipped.append((item_id, "not found"))
+            continue
+        if entry.get("saved_unsigned"):
+            print(
+                f"  {_one_line(item_id)}: saved unsigned from the CLI {_one_line(entry['saved_unsigned'].get('at', ''))}"
             )
-        try:
-            _create_todos(case_dir, todos_to_create, identity)
-        except OSError as e:
-            print(f"  WARNING: Failed to create TODOs: {e}", file=sys.stderr)
-
-    # Step 5: Cleanup .processing
-    try:
-        processing_path.unlink(missing_ok=True)
-    except OSError:
-        print(
-            "WARNING: Could not remove .processing file. Remove manually.",
-            file=sys.stderr,
+        at_review = entry.get("content_hash_at_review", "")
+        if at_review and at_review != compute_content_hash(item):
+            skipped.append((item_id, "changed after you reviewed it"))
+            continue
+        mods = entry.get("modifications") or {}
+        fixed = sorted(f for f in mods if f not in _IOC_EDITABLE)
+        if decide.item_type(item_id) == "ioc" and fixed:  # value and type are decided
+            skipped.append((item_id, f"an IOC's {', '.join(fixed)} can't be edited"))
+            continue
+        conflict = next(
+            (f for f, m in mods.items() if item.get(f) != m.get("original")), None
         )
-
-    # Report
+        if conflict:
+            skipped.append((item_id, f"field '{conflict}' changed since review"))
+            continue
+        loaded = copy.deepcopy(item)
+        for f, m in mods.items():
+            if f in _DELTA_EDITABLE_FIELDS:
+                item[f] = m.get("modified")
+                item.setdefault("examiner_modifications", {})[f] = {
+                    "original": m.get("original"), "modified": m.get("modified"),
+                    "modified_by": examiner, "modified_at": now,
+                }  # fmt: skip
+        if entry.get("note"):
+            _apply_note(item, entry["note"], identity)
+        kind = decide.item_type(item_id)
+        if kind == "ioc" and action in ("approve", "reject"):
+            item["manually_reviewed"] = True
+        # shown as it will be signed: after its edits
+        _render_terminal_diff(item, entry)
+        if action == "approve" and "title" in item:
+            for line in _linked_lines(item, timeline):
+                print(line)
+        if show_signed:
+            _print_signed(item)
+        if action == "edit":
+            after = loaded.get("status", "DRAFT")
+        else:
+            after = _STATUS_AFTER.get(action)
+        if after is None:
+            skipped.append((item_id, f"unknown action {action!r}"))
+            continue
+        chosen = decide.Decision(item, kind, action, after, loaded=loaded,
+                                 reason=entry.get("rejection_reason", "") or entry.get("reason", ""),
+                                 note=entry.get("note", ""), modifications=mods, delta_entry=entry)  # fmt: skip
+        if not _approval_checked(case_dir, chosen):
+            skipped.append(
+                (item_id, "a check failed and no reason was typed; left DRAFT")
+            )
+            continue
+        direct.append(chosen)
     if skipped:
-        print(
-            f"\n  {_YELLOW}Skipped {len(skipped)} item(s) (field changed since review):"
-        )
-        for sid, reason in skipped:
-            print(f"    {sid}: {reason}")
+        print(f"\n  {_YELLOW}Skipped {len(skipped)} item(s), not signed:")
+        for sid, why in skipped:
+            print(f"    {_one_line(sid)}: {_one_line(why)}")
         print(f"  Re-review in browser.{_RESET}")
 
+    def finish(lists=None, signed=()) -> None:
+        """Inside the commit's lock span: the TODOs, then remove exactly the
+        entries signed or turned into TODOs from the current file. Your own
+        entries whose decision was discarded stay, marked to review again;
+        another examiner's entry is never touched unless it was signed."""
+        if todo_entries:
+            _create_todos(case_dir, [
+                {"description": e.get("todo_description", f"Follow up on {e.get('id', '')}"),
+                 "priority": e.get("todo_priority", "medium"),
+                 "assignee": e.get("todo_assignee", ""),
+                 "related_findings": [e.get("id", "")]}
+                for e in todo_entries
+            ], identity)  # fmt: skip
+        signed_ids = {id(d) for d in signed}
+        done = [d.delta_entry for d in direct if id(d) in signed_ids] + todo_entries
+        again = [
+            d.delta_entry for d in direct
+            if id(d) not in signed_ids and d.delta_entry.get("staged_by") == examiner
+        ]  # fmt: skip
+        current = decide.read_delta(delta_path)
+        if current is None:
+            return
+        keep = []
+        for e in current.get("items", []):
+            if isinstance(e, dict) and any(_same_entry(e, x) for x in done):
+                continue
+            if isinstance(e, dict) and any(_same_entry(e, x) for x in again):
+                e["review_again"] = {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "reason": "the item changed after you saw it; nothing was signed",
+                }
+            keep.append(e)
+        current["items"] = keep
+        decide._write_delta(delta_path, current)
+
+    if not direct:
+        if todo_entries:
+            with ledger.case_lock(case_id_of(case_dir)):
+                finish()
+        print("Nothing to sign.")
+        return
+    planned = decide.cascades(direct, findings, timeline, iocs)
+    print(f"\n{'=' * 60}")
     print(
-        f"\nApplied: {len(approved_ids)} approved, {len(rejected_ids)} rejected, "
-        f"{len(edited_ids)} edited, {len(todos)} TODO(s)."
+        f"  Sign {len(direct)} decision(s) from pending reviews, {len(todo_entries)} TODO(s)"
     )
-    if log_failures:
-        print(f"  WARNING: Approval log failed for: {', '.join(log_failures)}")
-    if hmac_failures:
-        print(f"  WARNING: HMAC ledger failed for: {', '.join(hmac_failures)}")
-        print("  Re-run 'vhir approve' on these items to generate HMAC entries.")
+    print(f"{'=' * 60}")
+    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line)
+    decide.sign_and_commit(
+        case_dir, identity, direct, planned, new_passphrase=new_passphrase,
+        inside_lock=finish,
+    )  # fmt: skip
