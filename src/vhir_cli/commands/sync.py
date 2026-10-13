@@ -45,10 +45,16 @@ def cmd_export(args, identity: dict) -> None:
         print(f"Failed to write export bundle to {output_file}: {e}", file=sys.stderr)
         sys.exit(1)
 
+    from vhir_cli.case_copies import summary_lines
+
     print(f"Exported to {output_file}")
     print(f"  Examiner: {bundle.get('examiner', '?')}")
     print(f"  Findings: {len(bundle.get('findings', []))}")
     print(f"  Timeline: {len(bundle.get('timeline', []))}")
+    for line in summary_lines(
+        str(bundle.get("case_id", "")), bundle.get("ledger") or {}
+    ):
+        print(line)
 
 
 def cmd_merge(args, identity: dict) -> None:
@@ -93,3 +99,13 @@ def cmd_merge(args, identity: dict) -> None:
     print(
         f"  Timeline: {tr.get('added', 0)} added, {tr.get('updated', 0)} updated, {tr.get('skipped', 0)} skipped"
     )
+    anchors = result.get("ledger") or {}
+    if anchors.get("keys") or anchors.get("heads"):
+        from vhir_cli.case_copies import summary_lines
+
+        print(
+            "  The bundle's signed history wasn't added (decisions don't travel by "
+            "merge). Its keys and heads, to compare with the other box:"
+        )
+        for line in summary_lines(str(bundle.get("case_id", "")), anchors):
+            print(f"  {line}")

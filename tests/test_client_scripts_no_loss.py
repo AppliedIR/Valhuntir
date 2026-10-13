@@ -1,0 +1,507 @@
+"""The remote client scripts never silently replace a user's file.
+
+Claude Desktop's config was written over whole: a user's other servers and
+preferences were lost, with no backup. The workspace .mcp.json and settings.json
+were replaced without a backup when python3 was missing, when the existing file
+couldn't be parsed, or by the Windows merge's catch. Now the Desktop config is
+merged (vhir's entries replace same-named ones), an unparseable one is left with
+the entries to add by hand, and every write that changes a user's file is
+preceded by a backup that keeps its mode, with the command that restores it.
+
+Only blocks of the scripts run, in a scratch HOME/APPDATA. prompt_yn_strict is a
+stub; PATH holds only what each block needs.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import stat
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).parent.parent
+MAC = (REPO / "setup-client-macos.sh").read_text()
+LINUX = (REPO / "setup-client-linux.sh").read_text()
+WIN = (REPO / "setup-client-windows.ps1").read_text()
+
+GENERATED = {
+    "mcpServers": {
+        "forensic-mcp": {
+            "command": "npx",
+            "args": ["mcp-remote", "https://g/mcp/forensic-mcp"],
+        },
+        "zeltser-ir-writing": {
+            "command": "npx",
+            "args": ["mcp-remote", "https://z/mcp"],
+        },
+        "microsoft-learn": {"command": "npx", "args": ["mcp-remote", "https://m/mcp"]},
+    }
+}
+DEEP = {"a": {"b": {"c": {"d": {"e": {"f": {"g": "deep"}}}}}}}
+USER = {
+    "globalShortcut": "Ctrl+Space",
+    "preferences": DEEP,
+    "mcpServers": {
+        "filesystem": {
+            "command": "npx",
+            "args": ["-y", "server-filesystem", "/Users/u"],
+        },
+        "forensic-mcp": {"command": "npx", "args": ["mcp-remote", "https://old/mcp/x"]},
+    },
+}
+TRUNCATED = '{"mcpServers": {"x": '
+
+
+def _between(text, start, end):
+    i = text.index(start)
+    return text[i : text.index(end, i)]
+
+
+def _helpers(text):
+    """The script's own backup_file and replace_file."""
+    if "replace_file() {" not in text:
+        return ""  # an older script: its blocks don't call them
+    start = text.index("# A user's file is backed up")
+    return text[start : text.index("\n}\n", text.index("replace_file() {")) + 3]
+
+
+def _bin(tmp_path, tools):
+    """A PATH holding only these tools (no python3 unless asked)."""
+    d = tmp_path / "bin"
+    d.mkdir(exist_ok=True)
+    for t in tools:
+        if not (d / t).exists():
+            (d / t).symlink_to(shutil.which(t))
+    return str(d)
+
+
+SH_TOOLS = ["cat", "cp", "cmp", "date", "rm", "mkdir"]
+PROLOGUE = (
+    "set -euo pipefail\nRED=; GREEN=; YELLOW=; BLUE=; BOLD=; NC=\n"
+    'info() { echo "INFO $*"; }; ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }\n'
+    "prompt_yn_strict() { return 0; }\n"
+)
+
+
+def _bash(script_text, block, home, path, **env):
+    """Run the block from a file (its text can name /var/lib/vhir, which the
+    suite's guard refuses in an argv)."""
+    run = Path(home) / f"block-{len(list(Path(home).glob('block-*')))}.sh"
+    run.write_text(PROLOGUE + _helpers(script_text) + block)
+    p = subprocess.run(
+        ["/bin/bash", str(run)],
+        env={"HOME": str(home), "PATH": path, **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return p.returncode, p.stdout + p.stderr
+
+
+def _undo(out):
+    return [
+        ln.strip()[len("To undo: ") :] for ln in out.splitlines() if "To undo: " in ln
+    ]
+
+
+def _mode(p):
+    return stat.S_IMODE(p.stat().st_mode)
+
+
+# --- Windows: Set-UserFile, the writer every user file goes through ----------
+
+PWSH = shutil.which("pwsh")
+
+
+def _win_helpers():
+    if "function Set-UserFile" not in WIN:  # an older script
+        return "\n".join(
+            ln for ln in WIN.splitlines() if ln.startswith("function Write-")
+        )
+    start = WIN.index("# A user's file is backed up")
+    end = WIN.index("\n}\n", WIN.index("function Set-UserFile")) + 3
+    writes = "\n".join(
+        ln for ln in WIN.splitlines() if ln.startswith("function Write-")
+    )
+    return writes + "\n" + WIN[start:end]
+
+
+def _pwsh(tmp_path, body, appdata):
+    script = tmp_path / "run.ps1"
+    script.write_text(_win_helpers() + "\n" + body)
+    p = subprocess.run(
+        [PWSH, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        env={
+            "HOME": str(tmp_path),
+            "PATH": os.environ["PATH"],
+            "APPDATA": str(appdata),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return p.returncode, p.stdout + p.stderr
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_win_a_failed_backup_leaves_the_file(tmp_path):
+    """A copy that fails (non-terminating, as Copy-Item's errors are) stops the
+    write: no "Backed up", no undo line, the original byte-unchanged."""
+    before = json.dumps(USER, indent=2)
+    appdata = tmp_path / "App Data"
+    cfg = appdata / "Claude" / "claude_desktop_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(before)
+    servers = json.dumps(GENERATED["mcpServers"])
+    body = (
+        "function Copy-Item { [CmdletBinding()] param($LiteralPath, $Destination)"
+        ' Write-Error "disk full" }\n'
+        f"if (Set-UserFile '{cfg}' '{servers}') {{ Write-Output 'Merged' }}\n"
+    )
+    rc, out = _pwsh(tmp_path, body, appdata)
+    assert cfg.read_text() == before, out
+    assert "disk full" in out and "NOT changed" in out
+    assert "Backed up" not in out and "To undo" not in out and "Merged" not in out
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_win_a_failed_staging_write_leaves_the_file(tmp_path):
+    """A staging write that fails (non-terminating) with an older staging file
+    in place: nothing installed, the file byte-unchanged, the old one gone."""
+    before = json.dumps(USER, indent=2)
+    appdata = tmp_path / "App Data"
+    cfg = appdata / "Claude" / "claude_desktop_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(before)
+    (cfg.parent / (cfg.name + ".vhir-new")).write_text('{"STALE": true}')
+    servers = json.dumps(GENERATED["mcpServers"])
+    body = (
+        "function Set-Content { [CmdletBinding()] param("
+        "[Parameter(ValueFromPipeline)]$Value, $LiteralPath, $Encoding)"
+        ' Write-Error "disk full" }\n'
+        f"if (Set-UserFile '{cfg}' '{servers}') {{ Write-Output 'Merged' }}\n"
+    )
+    rc, out = _pwsh(tmp_path, body, appdata)
+    assert cfg.read_text() == before, out
+    assert "disk full" in out and "NOT changed" in out
+    assert "Backed up" not in out and "Merged" not in out
+    assert sorted(p.name for p in cfg.parent.iterdir()) == [cfg.name]
+    rc, out = _pwsh(
+        tmp_path,
+        "function Set-Content { [CmdletBinding()] param("
+        "[Parameter(ValueFromPipeline)]$Value, $LiteralPath, $Encoding)"
+        ' Write-Error "disk full" }\n'
+        f"Write-Output \"returned=$(Set-UserFile '{cfg}' 'x')\"",
+        appdata,
+    )
+    assert "returned=False" in out and cfg.read_text() == before, out
+
+
+# --- The workspace .mcp.json and settings.json --------------------------------
+
+
+def _settings_block(text):
+    start = text.index('if [[ -f "$SETTINGS_FILE" ]] && command -v python3')
+    end = text.index('ok "settings.json (hooks + permissions + sandbox)"', start)
+    return text[text.rindex("\n", 0, start) + 1 : text.index("fi\n", end) + 3]
+
+
+INCOMING = {
+    "hooks": {},
+    "permissions": {"deny": ["Bash(x)"]},
+    "sandbox": {"enabled": True},
+}
+
+
+def _restored(out, path, before):
+    (line,) = _undo(out)
+    subprocess.run(["/bin/bash", "-c", line], check=True)
+    return path.read_bytes() == before
+
+
+@pytest.mark.parametrize("script", [MAC, LINUX], ids=["macos", "linux"])
+def test_a_changed_workspace_mcp_json_is_backed_up(tmp_path, script):
+    deploy = tmp_path / "vhir"
+    deploy.mkdir()
+    cfg = deploy / ".mcp.json"
+    cfg.write_text('{"mcpServers": {"mine": {}}}\n')
+    cfg.chmod(0o600)
+    before = cfg.read_bytes()
+    block = _between(
+        script,
+        '        CONFIG_FILE="$DEPLOY_DIR/.mcp.json"',
+        '        ok "Written: $CONFIG_FILE"',
+    )
+    rc, out = _bash(
+        script,
+        block,
+        tmp_path,
+        _bin(tmp_path, SH_TOOLS),
+        DEPLOY_DIR=str(deploy),
+        MCP_JSON='{"mcpServers": {}}',
+    )
+    assert rc == 0, out
+    (bak,) = deploy.glob(".mcp.json.vhir-backup-*")
+    assert bak.read_bytes() == before and _mode(bak) == 0o600 and _mode(cfg) == 0o600
+    assert _restored(out, cfg, before)
+
+
+@pytest.mark.parametrize("script", [MAC, LINUX], ids=["macos", "linux"])
+@pytest.mark.parametrize(
+    "existing,python3,said",
+    [
+        ('{"hooks": {}, "mine": 1}\n', False, "settings.json (replaced)"),
+        ('{"hooks": {', True, "wasn't valid JSON: replaced"),
+        ('{"hooks": {}, "mine": 1}\n', True, "settings.json (merged)"),
+    ],
+    ids=["no python3", "unparseable", "merged"],
+)
+def test_settings_writes_are_backed_up(tmp_path, script, existing, python3, said):
+    settings = tmp_path / "settings.json"
+    settings.write_text(existing)
+    settings.chmod(0o600)
+    before = settings.read_bytes()
+    path = _bin(tmp_path, SH_TOOLS + (["python3"] if python3 else []))
+    rc, out = _bash(
+        script,
+        _settings_block(script),
+        tmp_path,
+        path,
+        SETTINGS_FILE=str(settings),
+        SETTINGS_CONTENT=json.dumps(INCOMING),
+    )
+    assert rc == 0, out
+    assert said in out and ("merged" in out) is (said == "settings.json (merged)")
+    (bak,) = tmp_path.glob("settings.json.vhir-backup-*")
+    assert bak.read_bytes() == before and _mode(bak) == 0o600
+    assert not (tmp_path / "settings.json.vhir-new").exists()
+    assert _restored(out, settings, before)
+
+
+@pytest.mark.parametrize("script", [MAC, LINUX], ids=["macos", "linux"])
+@pytest.mark.parametrize(
+    "how",
+    ["stale staging file", "stale, python3 exits 0 unwritten", "killed mid-write"],
+)
+def test_a_failed_merge_leaves_settings(tmp_path, script, how):
+    """Only this run's merge output is installed: a staging file left by an
+    interrupted earlier run, or a partial one from a killed merge, never is."""
+    settings = tmp_path / "settings.json"
+    settings.write_text("[1]\n")  # valid JSON, not an object: the merge fails
+    before = settings.read_bytes()
+    staging = tmp_path / "settings.json.vhir-new"
+    path = _bin(tmp_path, SH_TOOLS + ["python3"])
+    stub = {
+        "stale, python3 exits 0 unwritten": "exit 0",  # a broken shim
+        "killed mid-write": 'printf \'{"hoo\' > "$SETTINGS_FILE.vhir-new"; kill -9 $$',
+    }.get(how)
+    if how.startswith("stale"):
+        staging.write_text('{"stale": 1}\n')
+    if stub:
+        python3 = Path(path) / "python3"
+        python3.unlink()
+        python3.write_text(f"#!/bin/bash\n{stub}\n")
+        python3.chmod(0o755)
+    rc, out = _bash(
+        script,
+        _settings_block(script),
+        tmp_path,
+        path,
+        SETTINGS_FILE=str(settings),
+        SETTINGS_CONTENT=json.dumps(INCOMING),
+    )
+    assert rc == 0, out
+    assert settings.read_bytes() == before, out
+    assert "settings.json (merged)" not in out and "NOT changed" in out
+    assert not staging.exists() and not list(tmp_path.glob("*.vhir-backup-*"))
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_win_settings_catch_backs_up_before_replacing(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text('{"hooks": {')  # the merge throws: the catch replaces it
+    before = settings.read_bytes()
+    block = _between(WIN, "if (Test-Path $settingsPath) {", "\n} else {")
+    body = (
+        f"$settingsPath = '{settings}'\n"
+        "$settingsObj = [pscustomobject]@{ hooks = [pscustomobject]@{} }\n"
+        + block
+        + "\n}\n"
+    )
+    rc, out = _pwsh(tmp_path, body, tmp_path)
+    assert rc == 0 and "settings.json (replaced)" in out, out
+    (bak,) = tmp_path.glob("settings.json.vhir-backup-*")
+    assert bak.read_bytes() == before
+    (line,) = _undo(out)
+    subprocess.run([PWSH, "-NoProfile", "-Command", line], check=True)
+    assert settings.read_bytes() == before
+
+
+# --- Uninstall backs the Desktop config up before removing it -----------------
+
+
+@pytest.mark.parametrize(
+    "script,rel",
+    [(MAC, "Library/Application Support/Claude"), (LINUX, ".config/claude")],
+    ids=["macos", "linux"],
+)
+def test_uninstall_backs_up_the_desktop_config(tmp_path, script, rel):
+    cfg = tmp_path / rel / "claude_desktop_config.json"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(json.dumps(USER))
+    cfg.chmod(0o600)
+    before = cfg.read_bytes()
+    block = _between(
+        script,
+        "    CLAUDE_DESKTOP_CFG=",
+        '\n    echo ""\n    echo "Uninstall complete."',
+    )
+    rc, out = _bash(script, block, tmp_path, _bin(tmp_path, SH_TOOLS))  # "y" (stub)
+    assert rc == 0 and not cfg.exists(), out
+    assert _restored(out, cfg, before)
+
+
+# --- The shell rc: install writes our export; uninstall keeps a user's lines ----
+
+RC_INSTALL = {
+    s: _between(
+        t,
+        "# Write VHIR_EXAMINER to shell profile",
+        'export VHIR_EXAMINER="$EXAMINER_NAME"',
+    )
+    for s, t in (("linux", LINUX), ("macos", MAC))
+}
+RC_UNINSTALL = {
+    s: _between(t, "    # Clean shell profile", "    # Remove empty ~/.vhir/")
+    for s, t in (("linux", LINUX), ("macos", MAC))
+}
+USER_EXAMINER = [
+    "alias who-ir='echo \"$VHIR_EXAMINER\"'",
+    'if [ -n "${SUDO_USER:-}" ]; then',
+    '    export VHIR_EXAMINER="$SUDO_USER"',
+    "fi",
+]
+# the same block, unindented: a line start can't show who wrote it
+USER_EXAMINER_COL0 = [
+    'if [ -n "${SUDO_USER:-}" ]; then',
+    'export VHIR_EXAMINER="$SUDO_USER"',
+    "fi",
+]
+USER_PATH = 'export PATH="$HOME/.vhir/venv/bin:$HOME/go/bin:$PATH"'
+OLDER = '# Valhuntir Platform\nexport Valhuntir_EXAMINER="old"\n'  # what v0.5.4 left
+
+
+def _rc_bin(tmp_path, script):
+    """grep and sed for the rc blocks; on macOS a sed that reads BSD's `-i ''`."""
+    path = _bin(tmp_path, ["grep", "cat", "rmdir", "tail"])
+    if script == "linux":
+        _bin(tmp_path, ["sed", "readlink"])
+    else:
+        sed = Path(path) / "sed"
+        sed.write_text(
+            '#!/bin/bash\nif [[ "$1" == -i && "$2" == "" ]]; then shift 2; '
+            f'exec {shutil.which("sed")} -i "$@"; fi\nexec {shutil.which("sed")} "$@"\n'
+        )
+        sed.chmod(0o755)
+    return path
+
+
+def _rc_step(tmp_path, script, step, examiner="alice"):
+    text = LINUX if script == "linux" else MAC
+    block = (RC_INSTALL if step == "install" else RC_UNINSTALL)[script]
+    if step == "uninstall":
+        block = "{\n" + block + "\n}\n"  # an indented block from inside a function
+    rc, out = _bash(
+        text, block, tmp_path, _rc_bin(tmp_path, script), EXAMINER_NAME=examiner
+    )
+    assert rc == 0, (step, out)
+    return out
+
+
+def _block_in(lines, block):
+    return any(lines[i : i + len(block)] == block for i in range(len(lines)))
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_install_keeps_a_users_examiner_lines_and_writes_ours(tmp_path, script):
+    rc = tmp_path / ".bashrc"
+    rc.write_text("\n".join(["# my stuff", *USER_EXAMINER]) + "\n")
+    _rc_step(tmp_path, script, "install")
+    lines = rc.read_text().splitlines()
+    assert _block_in(lines, USER_EXAMINER) and 'export VHIR_EXAMINER="alice"' in lines
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_uninstall_keeps_a_users_examiner_block_and_venv_path_line(tmp_path, script):
+    # an older install's lines make the cleanup run; the user's own lines stay
+    rc = tmp_path / ".bashrc"
+    user = "\n".join(["# my stuff", *USER_EXAMINER_COL0, USER_PATH]) + "\n"
+    rc.write_text(user + OLDER)
+    _rc_step(tmp_path, script, "uninstall")
+    assert rc.read_text() == user
+    syntax = subprocess.run(["bash", "-n", str(rc)], capture_output=True, text=True)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_anchor_an_older_install_s_examiner_line_is_still_removed(tmp_path, script):
+    rc = tmp_path / ".bashrc"
+    rc.write_text('# my stuff\n# Valhuntir Platform\nexport Valhuntir_EXAMINER="old"\n')
+    _rc_step(tmp_path, script, "uninstall")
+    assert rc.read_text() == "# my stuff\n"
+
+
+def test_linux_keeps_a_symlinked_rc_a_symlink(tmp_path):
+    target = tmp_path / "dotfiles" / "bashrc"
+    target.parent.mkdir()
+    target.write_text("# my stuff\n")
+    rc = tmp_path / ".bashrc"
+    rc.symlink_to("dotfiles/bashrc")
+    _rc_step(tmp_path, "linux", "install")
+    _rc_step(tmp_path, "linux", "install", examiner="bob")
+    assert rc.is_symlink()
+    assert target.read_text() == '# my stuff\nexport VHIR_EXAMINER="bob"\n'
+    # the cleanup runs only on an older install's lines
+    target.write_text("# my stuff\n" + OLDER)
+    _rc_step(tmp_path, "linux", "uninstall")
+    assert rc.is_symlink() and target.read_text() == "# my stuff\n"
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_anchor_install_appends_then_updates_in_place(tmp_path, script):
+    rc = tmp_path / ".bashrc"
+    rc.write_text("# my stuff\n")
+    _rc_step(tmp_path, script, "install")
+    assert rc.read_text() == '# my stuff\nexport VHIR_EXAMINER="alice"\n'
+    _rc_step(tmp_path, script, "install", examiner="bob")
+    assert rc.read_text() == '# my stuff\nexport VHIR_EXAMINER="bob"\n'
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_anchor_uninstall_with_nothing_of_ours_leaves_the_file(tmp_path, script):
+    # the user's own lines mention VHIR_EXAMINER and the venv, but none is ours
+    rc = tmp_path / ".bashrc"
+    lines = ["# my stuff", *USER_EXAMINER, *USER_EXAMINER_COL0, USER_PATH]
+    content = "\n".join(lines) + "\n"
+    rc.write_text(content)
+    inode = rc.stat().st_ino
+    out = _rc_step(tmp_path, script, "uninstall")
+    assert rc.read_text() == content and rc.stat().st_ino == inode  # not even rewritten
+    assert "Removed Valhuntir lines" not in out
+
+
+@pytest.mark.parametrize("script", ["linux", "macos"])
+def test_install_starts_our_line_on_its_own_after_a_last_line_without_newline(
+    tmp_path, script
+):
+    # the user's last line mentions VHIR_EXAMINER and has no newline at the end
+    rc = tmp_path / ".bashrc"
+    last = "alias who-ir='echo \"$VHIR_EXAMINER\"'"
+    rc.write_text("# my stuff\n" + last)
+    _rc_step(tmp_path, script, "install")
+    assert rc.read_text() == f'# my stuff\n{last}\nexport VHIR_EXAMINER="alice"\n'

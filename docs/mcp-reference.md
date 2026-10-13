@@ -127,7 +127,7 @@ Report generation with data-driven profiles and Zeltser IR Writing integration. 
 
 ### How report-mcp Works
 
-`generate_report()` collects approved findings, timeline events, and IOCs, performs MITRE ATT&CK mapping, aggregates IOCs, runs report reconciliation against the HMAC verification ledger (detecting any post-approval tampering), and returns structured JSON with Zeltser IR Writing guidance. The LLM uses this data and the Zeltser guidance to render narrative sections, then saves the result with `save_report()`.
+`generate_report()` collects approved findings, timeline events, and IOCs, performs MITRE ATT&CK mapping, aggregates IOCs, shows as approved only the items that verify (listing the rest under `verification.not_verified`), carries every signing key and chain head, and returns structured JSON with Zeltser IR Writing guidance. The LLM uses this data and the Zeltser guidance to render narrative sections, then saves the result with `save_report()`.
 
 ## sift-mcp (5 tools)
 
@@ -271,20 +271,20 @@ Offline Windows baseline validation. Checks artifacts against 2.6 million known-
 ### Important Notes
 
 - `os_version` is REQUIRED for service, scheduled task, and autorun checks — these artifacts vary significantly between Windows versions.
-- `check_hash` checks against LOLDrivers only. For broader threat intel (malware hashes, IOCs), use `opencti-mcp lookup_ioc`.
+- `check_hash` checks against LOLDrivers only. For broader threat intel (malware hashes, IOCs), use `threatintel-mcp lookup_ioc`.
 - `check_registry` requires the full registry baseline database (~12GB). `check_autorun` is faster for persistence checks.
 - UNKNOWN is the most common result. It means "not in the baseline database" — not "suspicious."
 
-## opencti-mcp (8 tools)
+## threatintel-mcp (8 tools)
 
-Read-only threat intelligence from a configured OpenCTI instance.
+Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP); the other seven tools search OpenCTI. Named `opencti-mcp` in configurations from before.
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `get_health` | — | OpenCTI connectivity check | Before investigation, to verify intel source |
 | `search_threat_intel` | `query`, `limit` (5), `offset`, `labels`, `confidence_min`, `created_after`, `created_before` | Broad cross-entity search (up to 20 results per type) | For initial IOC/threat actor research |
 | `search_entity` | `type`, `query`, `limit` (10), `offset`, `labels`, `confidence_min`, `created_after`, `created_before` | Type-specific search (up to 50 results) | For focused queries on a single entity type |
-| `lookup_ioc` | `ioc` | Full context for an IOC (IP, hash, domain, URL) with related entities | When a specific IOC needs to be contextualized |
+| `lookup_ioc` | `ioc` | Each configured platform's own records for an IOC (IP, hash, domain, URL), with MATCH, NO_MATCH or UNAVAILABLE per platform; no verdict | When a specific IOC needs to be contextualized |
 | `get_recent_indicators` | `days` (7), `limit` (20) | Recently added IOCs | For situational awareness |
 | `get_entity` | `entity_id` | Full entity details by UUID | To get complete context after finding an entity via search |
 | `get_relationships` | `entity_id`, `direction`, `relationship_types`, `limit` (50) | Entity relationships (uses, indicates, targets) | To map threat actor toolkits, malware capabilities |
@@ -302,7 +302,7 @@ Read-only threat intelligence from a configured OpenCTI instance.
 | 50-79 | Medium confidence, corroborate with other sources |
 | < 50 | Low confidence, note uncertainty |
 
-## opensearch-mcp (17 tools)
+## opensearch-mcp (21 tools)
 
 Evidence indexing, structured querying, and programmatic enrichment. Connects to a local or remote OpenSearch instance. Optional but recommended for investigations at scale.
 
@@ -343,18 +343,30 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 |------|-----------|-------------|---------------------|
 | `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | List Hayabusa/Sigma detection alerts | To review automated detections |
 
+### Host Tools (2)
+
+| Tool | Parameters | Description | When the LLM uses it |
+|------|-----------|-------------|---------------------|
+| `idx_host_inventory` | `case_id`, `offset` (0), `limit` (50) | The case's machines (`host.id`) with their state, the raw names their records carry, the evidence they came from and document counts; names no machine holds yet; ingest runs awaiting host confirmation. Read only | To see which machines the case holds and what the examiner still has to confirm |
+| `case_host_fix` | `raw`, `new_canonical` | Suggest that a host name belongs to another machine. Records the suggestion for the examiner and changes no document | When a host name looks like another machine's; the examiner renames or merges in the Hosts tab |
+
+### Maintenance Tools (2)
+
+| Tool | Parameters | Description | When the LLM uses it |
+|------|-----------|-------------|---------------------|
+| `idx_shard_status` | — | Shard usage and capacity headroom | Before large ingests |
+| `idx_install_pipelines` | — | Install or verify the event-log ingest pipeline and index templates (idempotent) | When an ingest reports a missing pipeline or template |
+
 ### Index Naming Convention
 
-All indices follow: `case-{case_id}-{artifact_type}-{hostname}`
+Every write goes to `case-<c12>-<artifact_type>-0`, where `<c12>` is the case's identity (from its `CASE.yaml`). Index names carry no host: each record carries its machine in `host.id` (and the name as found in `host.name`), so filter by `host.id`.
 
 Examples:
-- `case-incident-001-evtx-server01`
-- `case-incident-001-shimcache-dc01`
-- `case-incident-001-zeek-conn-fw01`
-- `case-incident-001-vol-pslist-dc01`
-- `case-incident-001-hayabusa-server01`
+- `case-3f2a9c1b7d04-evtx-0`
+- `case-3f2a9c1b7d04-shimcache-0`
+- `case-3f2a9c1b7d04-zeek-conn-0`
 
-Wildcard queries across a case: `index="case-incident-001-*"`
+Searches without an index read the active case's own indices. A case from before 0.6.4 keeps its per-host indices (`case-{case_id}-{artifact_type}-{hostname}`), and they are read too.
 
 ### How opensearch-mcp Guides the LLM
 

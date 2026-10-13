@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.signing import sign_approved
 from vhir_cli.case_io import save_findings, save_timeline, save_todos
 from vhir_cli.commands.report import cmd_report
 
@@ -97,7 +98,8 @@ def sample_findings(case_dir):
         },
     ]
     save_findings(case_dir, findings)
-    return findings
+    sign_approved(case_dir)
+    return json.loads((case_dir / "findings.json").read_text())
 
 
 @pytest.fixture
@@ -124,7 +126,8 @@ def sample_timeline(case_dir):
         },
     ]
     save_timeline(case_dir, events)
-    return events
+    sign_approved(case_dir)
+    return json.loads((case_dir / "timeline.json").read_text())
 
 
 @pytest.fixture

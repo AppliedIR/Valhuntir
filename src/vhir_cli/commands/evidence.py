@@ -1,7 +1,7 @@
 """Evidence management commands: lock, unlock, register, list, verify, log.
 
 Subcommand group:
-  vhir evidence register <path> [--description]
+  vhir evidence register <path> [--description] [--force-reregister]
   vhir evidence list
   vhir evidence verify
   vhir evidence log [--path <filter>]
@@ -17,15 +17,19 @@ Legacy aliases (backward compat):
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import stat
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
 from vhir_cli.case_io import get_case_dir
+from vhir_cli.display import display_safe
+from vhir_cli.display import lines as indent_lines
 
 
 def cmd_evidence(args, identity: dict) -> None:
@@ -123,9 +127,16 @@ def cmd_unlock_evidence(args, identity: dict) -> None:
 
 
 def register_evidence_data(
-    case_dir, path: str, examiner: str, description: str = ""
+    case_dir,
+    path: str,
+    examiner: str,
+    description: str = "",
+    force_reregister: bool = False,
+    registered_via: str | None = None,
+    folder_hasher=None,
 ) -> dict:
-    """Register an evidence file and return structured data.
+    """Register an evidence file, or a folder as one root with a manifest of
+    its files, and return structured data.
 
     Validates path, computes SHA-256, writes registry.
 
@@ -134,13 +145,22 @@ def register_evidence_data(
         path: Path to the evidence file.
         examiner: Examiner identity slug.
         description: Optional description.
+        force_reregister: Allow re-registering a file whose hash changed.
+        registered_via: "mcp" when the AI registered it (case-mcp passes it);
+            host names from such a file are the AI's, never artifact evidence.
+        folder_hasher: for a folder, (case_dir, paths) -> (hashes, job_id).
+            Defaults to hashing every file now; case-mcp passes one that hashes
+            large files in the background, and a job id means nothing is
+            registered yet (`{"status": "hashing", "job_id": …}`).
 
     Returns:
         Dict with path, sha256, description, registered_at, registered_by.
 
     Raises:
         FileNotFoundError: If evidence file doesn't exist.
-        ValueError: If path is outside the case directory.
+        ValueError: If path is outside the case directory, or the file is
+            already registered with a different hash and force_reregister
+            is not set.
         OSError: If registry write fails.
     """
     from vhir_cli.case_io import _atomic_write
@@ -154,13 +174,6 @@ def register_evidence_data(
 
     if not evidence_path.exists():
         raise FileNotFoundError(f"File not found: {path}")
-
-    if evidence_path.is_dir():
-        raise ValueError(
-            f"'{path}' is a directory. evidence_register works on individual "
-            "files. Register key files individually, or use a container "
-            "file (VHDX, E01, 7z) for directory-based evidence."
-        )
 
     # Validate path is within case directory
     resolved = evidence_path.resolve()
@@ -191,36 +204,77 @@ def register_evidence_data(
                 f"  ln -s {resolved} {case_dir / 'evidence' / evidence_path.name}"
             )
 
-    # Compute SHA256
-    sha = hashlib.sha256()
-    with open(evidence_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha.update(chunk)
-    file_hash = sha.hexdigest()
+    if evidence_path.is_dir():
+        return _register_folder(
+            case_dir, resolved, examiner, description, force_reregister,
+            registered_via, folder_hasher or _hash_each,
+        )  # fmt: skip
+
+    # The hash, and the stat fields the approval check compares, of the same bytes
+    file_hash, entry_fields = _hash_stable(evidence_path)
+    why, acquired = _not_an_original(case_dir, str(resolved), file_hash)
+    if why:
+        raise ValueError(why)
+    entry_fields.update(acquired or {})  # an acquisition's output says so
 
     # Record in evidence registry
+    # Absent, 0-byte or whitespace-only means an empty registry. Anything else
+    # that can't be read or parsed is refused before writing: starting a new
+    # registry over it would throw away every earlier registration.
     reg_file = case_dir / "evidence.json"
-    try:
-        if reg_file.exists():
-            registry = json.loads(reg_file.read_text())
-        else:
-            registry = {"files": []}
-    except (json.JSONDecodeError, OSError):
-        registry = {"files": []}
+    registry = _read_registry(reg_file)
 
     # Dedup check — match by resolved path
     for existing in registry.get("files", []):
         if existing.get("path") == str(resolved):
             if existing.get("sha256") == file_hash:
+                if "size" in entry_fields and not any(
+                    k in existing for k in _STAT_FIELDS
+                ):
+                    # an entry from before stat fields: these bytes' fill them in
+                    existing.update({k: entry_fields[k] for k in _STAT_FIELDS})
+                    _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
                 return {
                     **existing,
                     "note": "already registered (same path and hash)",
                 }
             else:
-                # Same path, different hash — file changed. Update entry.
+                # Same path, different hash — the file changed after it was
+                # registered. Overwriting sha256 would move the integrity
+                # baseline that 'vhir evidence verify' compares against, so
+                # refuse unless the examiner explicitly asks for it.
+                if not force_reregister:
+                    raise ValueError(
+                        f"Evidence already registered with a different hash — "
+                        f"the file changed since registration.\n"
+                        f"  Path:       {resolved}\n"
+                        f"  Registered: {existing.get('sha256')}\n"
+                        f"  Current:    {file_hash}\n"
+                        f"Run 'vhir evidence verify' to review the case, then "
+                        f"re-register with --force-reregister if the new "
+                        f"content is the intended evidence."
+                    )
+                # Keep the superseded hash so the original baseline stays
+                # recoverable from evidence.json.
+                existing.setdefault("previous_hashes", []).append(
+                    {
+                        "sha256": existing.get("sha256"),
+                        "registered_at": existing.get("registered_at"),
+                        "registered_by": existing.get("registered_by"),
+                        "superseded_at": datetime.now(timezone.utc).isoformat(),
+                        "superseded_by": examiner,
+                    }
+                )
                 existing["sha256"] = file_hash
+                for k in _REDERIVED:  # the new bytes' own, below
+                    existing.pop(k, None)
+                existing.update(entry_fields)
                 existing["registered_at"] = datetime.now(timezone.utc).isoformat()
                 existing["registered_by"] = examiner
+                if registered_via:
+                    existing["registered_via"] = registered_via
+                else:  # the examiner's registration now
+                    existing.pop("registered_via", None)
                 if description:
                     existing["description"] = description
                 _atomic_write(
@@ -238,7 +292,10 @@ def register_evidence_data(
         "description": description,
         "registered_at": datetime.now(timezone.utc).isoformat(),
         "registered_by": examiner,
+        **entry_fields,
     }
+    if registered_via:
+        entry["registered_via"] = registered_via
     registry["files"].append(entry)
 
     _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
@@ -246,9 +303,412 @@ def register_evidence_data(
     return entry
 
 
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+_STAT_FIELDS = ("size", "mtime_ns", "ctime_ns", "st_dev", "st_ino")
+# Fields a file entry takes from its bytes as registered: its stat (or the
+# note that it kept changing), an acquisition's labels, the derivation note
+_REDERIVED = (*_STAT_FIELDS, "hash_note", "acquired_by", "acquisition_tool",
+              "derivation_note")  # fmt: skip
+
+
+def _stat_fields(st) -> dict:
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+            "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev, "st_ino": st.st_ino}  # fmt: skip
+
+
+def _hash_stable(path, tries: int = 3) -> tuple[str, dict]:
+    """A file's SHA-256 and the stat fields of those bytes, both from one open
+    file: stat before and after hashing, hashed again when they differ. A file
+    that kept changing gets no stat fields, so nothing vouches for it as
+    unchanged, and is noted as such."""
+    for _ in range(tries):
+        with open(path, "rb") as f:
+            before = os.fstat(f.fileno())
+            sha = hashlib.sha256()
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                sha.update(chunk)
+            after = os.fstat(f.fileno())
+        fields = _stat_fields(before)
+        if fields == _stat_fields(after):
+            return sha.hexdigest(), fields
+    return sha.hexdigest(), {"hash_note": "changed while hashing"}
+
+
+def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
+    """(real path, SHA-256) of each output an audit entry records: its output
+    records (a wintools one by its SIFT path, relative to the case), and its
+    output files and saved stdout."""
+    out = [(str(case_dir / o["sift_path"]) if o.get("sift_path") else o.get("path"),
+            o.get("sha256")) for o in entry.get("outputs") or [] if isinstance(o, dict)]  # fmt: skip
+    rs = (
+        entry.get("result_summary")
+        if isinstance(entry.get("result_summary"), dict)
+        else {}
+    )
+    out += zip(
+        rs.get("output_files") or [], rs.get("output_sha256s") or [], strict=False
+    )
+    out.append((rs.get("output_file"), rs.get("output_sha256")))
+    return [(os.path.realpath(p), h) for p, h in out if isinstance(p, str) and p
+            and isinstance(h, str)]  # fmt: skip
+
+
+def _absolute(path):
+    """`path` when absolute, as the writer records it; a relative or empty one
+    would resolve against the process's folder, not the case."""
+    if not os.path.isabs(path):
+        raise ValueError(f"a closing row with a path that isn't absolute: {path!r}")
+    return path
+
+
+def _closed_hashes(entries: list[dict]) -> tuple[dict, dict]:
+    """(job id, real path) -> one item per row that closed the file, success or
+    failure: a one-file job's at the top level, a list job's in files[]. An
+    item is the row's sha256 as recorded, or None when it has none. A job with
+    a closing entry that can't be read in full closes nothing: none of its
+    files resolves, so no failure behind an unreadable row is dropped. And
+    (job id, real path) -> the error its first failure closure recorded."""
+    closed: dict[tuple[str, str], list] = {}
+    failed: dict[tuple[str, str], str] = {}
+    unread: set[str] = set()
+    for e in entries:
+        if e.get("tool") not in ("hash_complete", "hash_failed"):
+            continue
+        job = str(e.get("job_id", ""))
+        try:  # every row must be read: one skipped could hide a failure
+            rows = [(os.path.realpath(_absolute(row["path"])), row.get("sha256"),
+                     e.get("tool") == "hash_failed" or "error" in row, row.get("error"))
+                    for row in e.get("files") or [e]]  # fmt: skip
+        except Exception:  # noqa: BLE001 -- any malformed value leaves its job open
+            unread.add(job)
+            continue
+        for p, h, failure, error in rows:
+            closed.setdefault((job, p), []).append(h)
+            if failure:
+                failed.setdefault((job, p), str(error or "no error recorded"))
+    return {k: v + [None] if k[0] in unread else v for k, v in closed.items()}, failed
+
+
+def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
+    """Every output this case's audit records: real path -> (hash, entry); why
+    any of its audit couldn't be read; and each (job, real path) whose hash job
+    failed, with its error. No other case's trail is read."""
+    index: dict[str, list[tuple[str, dict]]] = {}
+    unread: list[str] = []
+    entries: list[dict] = []
+    try:
+        logs = sorted(p for p in (case_dir / "audit").iterdir() if p.suffix == ".jsonl")
+    except FileNotFoundError:
+        logs = []
+    except OSError as e:
+        logs, unread = [], [f"audit/ can't be listed ({type(e).__name__})"]
+    for log in logs:
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as e:
+            unread.append(f"audit/{log.name} can't be read ({type(e).__name__})")
+            continue
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+    closed, failed = _closed_hashes(entries)
+    for entry in entries:
+        for p, h in _outputs_of(case_dir, entry):
+            # a pending hash resolves only when its job closed the file once,
+            # with a hash: a failure, a second closing or a bad value keep it open
+            items = closed.get((h.removeprefix("pending:"), p), [])
+            if (
+                h.startswith("pending:")
+                and len(items) == 1
+                and isinstance(items[0], str)
+                and items[0]
+            ):
+                h = items[0]
+            index.setdefault(p, []).append((h, entry))
+    return index, unread, failed
+
+
+def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
+    """The entries that recorded the file as an output, at this path with this
+    hash (a hash still pending matches on the path alone). The empty file's
+    hash never matches."""
+    if sha256 == _EMPTY_SHA256:
+        return []
+    return [
+        e for h, e in index.get(real, []) if h == sha256 or h.startswith("pending:")
+    ]
+
+
+def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> tuple:
+    """(Why a file can't be registered as an original, or None; and fields for
+    its entry: an acquisition's `acquired_by` and `acquisition_tool`, or a
+    `derivation_note`). A file this case's tools made is linked to what it was
+    made from, never registered: one this case recorded as an operation's
+    output, or one under its extractions/. A file every recording operation
+    acquired (a live memory or disk collection) is evidence itself: it
+    registers, labelled. When part of the audit can't be read, a file that
+    isn't refused registers, saying its derivation is unchecked."""
+    index, unread, failed = (
+        _recorded_outputs(case_dir) if recorded is None else recorded
+    )
+    ops = _made_here(index, real, sha256)
+    note = (
+        {"derivation_note": "derivation unchecked: " + "; ".join(unread)}
+        if unread
+        else {}
+    )
+    if ops and all(e.get("acquisition") is True for e in ops):
+        # matched on its path alone while a hash is still pending: the bytes
+        # here may not be what the acquisition wrote, so no identity yet
+        pending = [(h, e) for h, e in index.get(real, []) if h.startswith("pending:")]
+        if pending:
+            h, e = pending[0]
+            job = h.removeprefix("pending:")
+            said = f"{real} is an output of acquisition {e.get('audit_id', '?')}, whose hash job"
+            error = failed.get((job, real))
+            if error is not None:  # it will never record one: say so, and what to do
+                # its error can carry a file name, printed raw: one line, capped
+                error = display_safe(error)
+                error = error if len(error) <= 200 else error[:200] + "..."
+                return (f"{said} {job} failed and hasn't recorded one hash for it ({error}): "
+                        "acquire it again to a new path and register that file."), None  # fmt: skip
+            return (f"{said} {job} hasn't recorded one hash for it: register it after "
+                    "that job completes."), None  # fmt: skip
+        first = ops[0]
+        return None, {"acquired_by": first.get("audit_id", ""),
+                      "acquisition_tool": first.get("acquisition_tool") or first.get("tool", ""),
+                      **note}  # fmt: skip
+    if ops:
+        ids = ", ".join(str(e.get("audit_id", "?")) for e in ops)
+        return (
+            f"{real} is an output this case recorded ({ids}): register the original "
+            "evidence it was made from; this file is linked to it."
+        ), None
+    extractions = os.path.realpath(case_dir / "extractions") + os.sep
+    if real.startswith(extractions):
+        return (
+            f"{real} is under this case's extractions/, made by its tools: register "
+            "the original evidence it was made from; this file is linked to it."
+        ), None
+    return None, note or None
+
+
+def _read_registry(reg_file: Path) -> dict:
+    registry = {"files": []}
+    try:
+        text = reg_file.read_text() if reg_file.exists() else ""
+        if text.strip():
+            registry = json.loads(text)
+    except (OSError, ValueError) as e:
+        raise ValueError(
+            f"{reg_file} can't be read as JSON ({e}); nothing was registered. "
+            "Fix or restore it, then register again."
+        ) from e
+    return registry
+
+
+def _file_identity():
+    """sift-common's file identity module, or None without the sift stack."""
+    if importlib.util.find_spec("sift_common") is None:
+        return None
+    try:
+        from sift_common import file_identity
+    except ImportError:
+        return None
+    return file_identity
+
+
+def _sha256_of(path: str) -> str:
+    """The SHA-256 of a regular file. Opened non-blocking and checked before
+    any read, so a FIFO is refused (ValueError) instead of blocking."""
+    fi = _file_identity()
+    if fi is not None:
+        return fi.hash_file(path).sha256
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ValueError(f"{path} is not a regular file")
+    sha = hashlib.sha256()
+    with os.fdopen(fd, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _hash_each(
+    case_dir, paths: list[str]
+) -> tuple[dict[str, str], str, dict[str, str]]:
+    """Hash every file now (the CLI has no time limit); no job. A file that
+    can't be hashed is an error of its own, never the whole folder's."""
+    hashes, errors = {}, {}
+    for p in paths:
+        try:
+            hashes[p] = _sha256_of(p)
+        except (OSError, ValueError) as e:
+            errors[p] = str(e)
+    return hashes, "", errors
+
+
+def _walk_folder(folder: Path) -> tuple[list[str], list[str], dict[str, str]]:
+    """(regular files, everything else, what couldn't be read: path -> why)
+    under folder, in a stable order. Links aren't followed: a link, FIFO or
+    device is listed, never read; a folder that can't be listed is named,
+    never silently left out."""
+    regular, skipped, unreadable = [], [], {}
+    walk = os.walk(folder, onerror=lambda e: unreadable.__setitem__(e.filename, str(e)))
+    for root, dirs, files in walk:
+        dirs.sort()
+        links = sorted(d for d in dirs if os.path.islink(os.path.join(root, d)))
+        for name in sorted(files) + links:
+            p = os.path.join(root, name)
+            try:
+                is_reg = stat.S_ISREG(os.lstat(p).st_mode)
+            except OSError as e:
+                unreadable[p] = str(e)
+                continue
+            (regular if is_reg else skipped).append(p)
+    return regular, skipped, unreadable
+
+
+def _register_folder(
+    case_dir: Path, folder: Path, examiner: str, description: str,
+    force_reregister: bool, registered_via: str | None, hasher,
+) -> dict:  # fmt: skip
+    """A folder is one root: its manifest lists each regular file (case path,
+    SHA-256, stat fields) and what was skipped. Nothing is written while any
+    file is still hashing."""
+    from vhir_cli.case_io import _atomic_write
+
+    regular, skipped, unreadable = _walk_folder(folder)
+    hashes, job_id, *more = hasher(case_dir, regular)
+    unreadable.update(more[0] if more else {})
+    if job_id:
+        return {"status": "hashing", "job_id": job_id, "path": str(folder),
+                "files_hashing": sum(p not in hashes for p in regular)}  # fmt: skip
+    base = case_dir.resolve()
+    rows = []
+    recorded = _recorded_outputs(case_dir)  # read once for the whole folder
+    for p in regular:
+        if p not in hashes:  # not readable as a regular file when hashed
+            unreadable.setdefault(p, "not readable as a regular file")
+            continue
+        why, acquired = _not_an_original(
+            case_dir, os.path.realpath(p), hashes[p], recorded
+        )
+        if why:
+            raise ValueError(f"{folder} holds a file that isn't an original: {why}")
+        st = os.lstat(p)
+        rows.append({"path": os.path.relpath(p, base), "sha256": hashes[p],
+                     "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                     "ctime_ns": st.st_ctime_ns, "st_dev": st.st_dev,
+                     "st_ino": st.st_ino})  # fmt: skip
+        rows[-1].update(acquired or {})
+    doc = {"folder": str(folder), "files": rows,
+           "skipped": sorted(os.path.relpath(p, base) for p in skipped)}  # fmt: skip
+    if unreadable:  # only then, so a manifest written before the key is unchanged
+        doc["unreadable"] = [{"path": os.path.relpath(p, base), "error": why}
+                             for p, why in sorted(unreadable.items())]  # fmt: skip
+    manifest = json.dumps(doc, indent=2, sort_keys=True).encode()
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+
+    reg_file = case_dir / "evidence.json"
+    registry = _read_registry(reg_file)
+    existing = next((e for e in registry.get("files", [])
+                     if e.get("path") == str(folder)), None)  # fmt: skip
+    if existing and existing.get("manifest_sha256") == manifest_sha:
+        return {**existing, "note": "already registered (same path and manifest)"}
+    if existing and not force_reregister:
+        raise ValueError(
+            f"Folder already registered with a different manifest: its files "
+            f"changed since registration.\n  Path: {folder}\nRun 'vhir evidence "
+            f"verify' to review the case, then re-register with --force-reregister "
+            f"if the new content is the intended evidence."
+        )
+    manifests = case_dir / "evidence-manifests"
+    manifests.mkdir(exist_ok=True)
+    taken = [int(m.stem) for m in manifests.glob("*.json") if m.stem.isdigit()]
+    manifest_file = manifests / f"{max(taken, default=0) + 1}.json"
+    _atomic_write(manifest_file, manifest.decode())
+    entry = {
+        "kind": "folder",
+        "path": str(folder),
+        "manifest_path": str(manifest_file.relative_to(case_dir)),
+        "manifest_sha256": manifest_sha,
+        "file_count": len(rows),
+        "description": description,
+        "registered_at": datetime.now(timezone.utc).isoformat(),
+        "registered_by": examiner,
+    }
+    if registered_via:
+        entry["registered_via"] = registered_via
+    if recorded[1]:
+        entry["derivation_note"] = "derivation unchecked: " + "; ".join(recorded[1])
+    if existing:  # --force-reregister: the earlier manifest stays recoverable
+        previous = {k: existing.get(k) for k in
+                    ("manifest_path", "manifest_sha256", "registered_at", "registered_by")}  # fmt: skip
+        entry["previous_manifests"] = existing.get("previous_manifests", []) + [
+            previous
+        ]
+        registry["files"][registry["files"].index(existing)] = entry
+    else:
+        registry.setdefault("files", []).append(entry)
+    _atomic_write(reg_file, json.dumps(registry, indent=2, default=str))
+    return entry
+
+
+def registered_entry_for(case_dir, path) -> dict | None:
+    """The registry entry `path` is (by real path), or the manifest row of the
+    folder root holding it; None when it isn't registered or isn't in its
+    folder's manifest (added later, or skipped). The file itself is never
+    read, and a manifest changed since registration isn't trusted."""
+    case_dir = Path(case_dir)
+    try:
+        registry = json.loads((case_dir / "evidence.json").read_text())
+    except (OSError, ValueError):
+        return None
+    real = os.path.realpath(path)
+    entries = registry.get("files", []) if isinstance(registry, dict) else []
+    entries = [e for e in entries if isinstance(e, dict)]
+    for entry in entries:  # the file itself first, whatever the order
+        if entry.get("kind") != "folder" and entry.get("path") == real:
+            return entry
+    rel = os.path.relpath(real, case_dir.resolve())
+    for entry in entries:  # then every folder holding it, until one lists it
+        root = entry.get("path", "")
+        if entry.get("kind") == "folder" and real.startswith(root + os.sep):
+            row = next((r for r in _manifest_rows(case_dir, entry) or []
+                        if r.get("path") == rel), None)  # fmt: skip
+            if row:
+                return row
+    return None
+
+
+def _manifest_rows(case_dir: Path, entry: dict) -> list[dict] | None:
+    """A folder root's manifest rows, or None when the manifest is missing or
+    no longer has the hash recorded at registration."""
+    try:
+        data = (case_dir / entry["manifest_path"]).read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry.get("manifest_sha256"):
+            return None
+        return json.loads(data)["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def cmd_register_evidence(args, identity: dict) -> None:
-    """CLI wrapper — registers evidence and prints summary."""
+    """CLI wrapper — registers evidence and prints summary. Only with the
+    examiner's confirmation at the terminal: a shell the AI runs has none, so
+    it can't register as the examiner."""
     case_dir = get_case_dir(getattr(args, "case", None))
+    force = getattr(args, "force_reregister", False)
+    verb = "Re-register (replacing its baseline hash)" if force else "Register"
+    if not require_tty_confirmation(f"{verb} {args.path} as evidence? [y/N]: "):
+        print("Not registered.", file=sys.stderr)
+        sys.exit(1)
 
     try:
         data = register_evidence_data(
@@ -256,25 +716,45 @@ def cmd_register_evidence(args, identity: dict) -> None:
             path=args.path,
             examiner=identity.get("examiner", identity.get("analyst", "")),
             description=args.description,
+            force_reregister=force,
         )
+    # each can carry a path or a record from the case: its controls shown as
+    # "?", a line break in it starts an indented line
     except FileNotFoundError as e:
-        print(str(e), file=sys.stderr)
+        print(indent_lines(str(e), "  "), file=sys.stderr)
         sys.exit(1)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {indent_lines(str(e), '  ')}", file=sys.stderr)
         sys.exit(1)
     except OSError as e:
-        print(f"Failed to write evidence registry: {e}", file=sys.stderr)
+        print(f"Failed to write evidence registry: {indent_lines(str(e), '  ')}",
+              file=sys.stderr)  # fmt: skip
         sys.exit(1)
 
     # Log access
-    _log_evidence_action(
-        case_dir, "register", data["path"], identity, sha256=data["sha256"]
-    )
+    sha256 = data.get("sha256") or data.get("manifest_sha256", "")
+    _log_evidence_action(case_dir, "register", data["path"], identity, sha256=sha256)
 
     print(f"Registered: {data['path']}")
+    if data.get("kind") == "folder":
+        print(
+            f"  Folder: {data['file_count']} file(s), manifest {data['manifest_path']}"
+        )
+        print(f"  Manifest SHA256: {sha256}")
+        if data.get("derivation_note"):  # names the case's files: printed safe
+            print(f"  WARNING: {display_safe(data['derivation_note'])}")
+        return
+    if data.get("note") == "updated (same path, hash changed)":
+        prior = data["previous_hashes"][-1]["sha256"]
+        print(f"  WARNING: hash changed since registration (was {prior})")
     print(f"  SHA256: {data['sha256']}")
-    print("  Integrity: SHA-256 hash recorded")
+    if data.get("hash_note"):  # never "recorded" when nothing vouches for it
+        print(f"  WARNING: the file {display_safe(data['hash_note'])}: no stat fields vouch for "
+              "this hash, so every check hashes it in full")  # fmt: skip
+    else:
+        print("  Integrity: SHA-256 hash recorded")
+    if data.get("derivation_note"):
+        print(f"  WARNING: {display_safe(data['derivation_note'])}")
 
 
 def _log_evidence_action(
@@ -342,22 +822,26 @@ def cmd_list_evidence(args, identity: dict) -> None:
 
     print(f"{'#':<4} {'SHA256':<20} {'Registered By':<15} Path")
     print("-" * 80)
-    for i, entry in enumerate(files, 1):
+    for i, raw in enumerate(files, 1):
+        entry = display_safe(raw)  # for printing inline
         sha = entry.get("sha256", "?")[:16] + "..."
         by = entry.get("registered_by", "?")
         path = entry.get("path", "?")
         print(f"{i:<4} {sha:<20} {by:<15} {path}")
         if entry.get("description"):
-            print(f"     Description: {entry['description']}")
+            print(f"     Description: {indent_lines(raw['description'], ' ' * 18)}")
 
     print(f"\n{len(files)} evidence file(s) registered")
 
 
-def verify_evidence_data(case_dir) -> dict:
+def verify_evidence_data(case_dir, folder_hasher=None) -> dict:
     """Verify evidence integrity and return structured results.
 
     Args:
         case_dir: Path to the active case directory.
+        folder_hasher: as for register_evidence_data. A folder root is verified
+            file by file against its manifest; a file still hashing is PENDING,
+            with its job id.
 
     Returns:
         Dict with "results" list and summary counts (verified, modified,
@@ -380,7 +864,21 @@ def verify_evidence_data(case_dir) -> dict:
     results = []
     verified = modified = missing = errors = 0
 
+    pending = 0
     for entry in files:
+        notes = [entry[k] for k in ("hash_note", "derivation_note") if entry.get(k)]
+        if notes:  # this entry's results, appended below, carry its notes
+            mark = len(results)
+        if entry.get("kind") == "folder":
+            folder = _verify_folder(case_dir, entry, folder_hasher or _hash_each)
+            results.extend(folder)
+            for r in results[mark:] if notes else []:
+                r["notes"] = list(notes)  # its own: a member's notes may grow
+            n = Counter(r["status"] for r in folder)
+            verified, modified = verified + n["OK"], modified + n["MODIFIED"]
+            missing, errors = missing + n["MISSING"], errors + n["ERROR"]
+            pending += n["PENDING"]
+            continue
         path = Path(entry.get("path", ""))
         expected_hash = entry.get("sha256", "")
 
@@ -436,13 +934,58 @@ def verify_evidence_data(case_dir) -> dict:
             )
             modified += 1
 
-    return {
+    # a registered file's notes on its result (a folder's are set above)
+    file_notes = {str(Path(e.get("path", ""))): [e[k] for k in ("hash_note", "derivation_note")
+                  if e.get(k)] for e in files if e.get("kind") != "folder"}  # fmt: skip
+    for r in results:  # joined to a folder's, never over them
+        for note in file_notes.get(r["path"], []):
+            if note not in r.setdefault("notes", []):
+                r["notes"].append(note)
+        if not r.get("notes"):
+            r.pop("notes", None)
+    summary = {
         "results": results,
         "verified": verified,
         "modified": modified,
         "missing": missing,
         "errors": errors,
     }
+    if pending:
+        summary["pending"] = pending
+    return summary
+
+
+def _verify_folder(case_dir: Path, entry: dict, hasher) -> list[dict]:
+    """Each manifest file's status: OK, MODIFIED, MISSING, or PENDING while it
+    hashes. A manifest that's missing or changed makes the root an ERROR."""
+    rows = _manifest_rows(case_dir, entry)
+    if rows is None:
+        return [{"path": entry.get("path", ""), "status": "ERROR", "expected_hash": "",
+                 "actual_hash": None,
+                 "error": "its manifest is missing or changed since registration"}]  # fmt: skip
+    base = case_dir.resolve()
+    paths = {r["path"]: str(base / r["path"]) for r in rows}
+    hashes, job_id, *more = hasher(
+        case_dir, [p for p in paths.values() if os.path.exists(p)]
+    )
+    errors = more[0] if more else {}
+    results = []
+    for r in rows:
+        p = paths[r["path"]]
+        actual = hashes.get(p)
+        status = ("MISSING" if not os.path.exists(p) else
+                  "ERROR" if p in errors else
+                  "PENDING" if actual is None and job_id else
+                  "ERROR" if actual is None else
+                  "OK" if actual == r["sha256"] else "MODIFIED")  # fmt: skip
+        result = {"path": p, "status": status, "expected_hash": r["sha256"],
+                  "actual_hash": actual}  # fmt: skip
+        if status == "PENDING":
+            result["job_id"] = job_id
+        elif status == "ERROR":
+            result["error"] = errors.get(p, "not readable as a regular file")
+        results.append(result)
+    return results
 
 
 def cmd_verify_evidence(args, identity: dict) -> None:
@@ -463,13 +1006,16 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     print(f"{'Status':<12} {'Path'}")
     print("-" * 70)
 
-    for r in results:
+    for raw in results:
+        r = display_safe(raw)  # for printing inline
         print(f"{r['status']:<12} {r['path']}")
-        if r["status"] == "MODIFIED":
+        if raw["status"] == "MODIFIED":
             print(f"             Expected: {r['expected_hash']}")
             print(f"             Actual:   {r['actual_hash']}")
-        elif r["status"] == "ERROR" and r.get("error"):
+        elif raw["status"] == "ERROR" and raw.get("error"):
             print(f"             Error: {r['error']}")
+        for note in r.get("notes") or []:
+            print(f"             WARNING: {note}")
 
     print(
         f"\n{data['verified']} verified, {data['modified']} MODIFIED, {data['missing']} missing, {data['errors']} errors"
@@ -477,6 +1023,12 @@ def cmd_verify_evidence(args, identity: dict) -> None:
     if data["modified"]:
         print("ALERT: Evidence files have been modified since registration.")
         sys.exit(2)
+    if data["missing"] or data["errors"]:
+        print(
+            f"ALERT: {data['missing']} evidence file(s) missing and "
+            f"{data['errors']} that couldn't be read: not verified."
+        )
+        sys.exit(1)
 
 
 def cmd_evidence_log(args, identity: dict) -> None:
@@ -516,6 +1068,7 @@ def cmd_evidence_log(args, identity: dict) -> None:
     print(f"{'Timestamp':<22} {'Action':<10} {'Examiner':<12} Detail")
     print("-" * 80)
     for e in entries:
+        e = display_safe(e)  # for printing inline
         ts = e.get("ts", "?")[:19]
         action = e.get("action", "?")
         examiner = e.get("examiner", "?")

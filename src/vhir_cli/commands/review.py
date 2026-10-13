@@ -4,7 +4,7 @@ Supports multiple view modes:
   vhir review                        — case summary
   vhir review --findings             — finding summary table
   vhir review --findings --detail    — full findings with all fields
-  vhir review --findings --verify    — cross-check against approvals.jsonl
+  vhir review --findings --verify    — verify every signed decision (no password)
   vhir review --iocs                 — IOCs grouped by approval status
   vhir review --timeline             — timeline summary
   vhir review --timeline --detail    — full timeline with evidence refs
@@ -20,16 +20,22 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    _at_or_after,
+    _at_or_before,
+    display_instant,
     get_case_dir,
-    hmac_text,
     load_audit_index,
     load_case_meta,
     load_findings,
+    load_iocs,
     load_timeline,
     load_todos,
-    verify_approval_integrity,
+    load_withdrawals,
 )
 from vhir_cli.defang import refang
+from vhir_cli.display import display_safe, one_line
+from vhir_cli.display import lines as indent_lines
+from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
 
@@ -40,9 +46,13 @@ def cmd_review(args, identity: dict) -> None:
 
     if getattr(args, "verify", False):
         mine_only = getattr(args, "mine", False)
-        _show_findings_verify(case_dir, identity=identity, mine_only=mine_only)
+        _show_findings_verify(
+            case_dir, identity=identity, mine_only=mine_only, args=args
+        )
     elif getattr(args, "todos", False):
         _show_todos(case_dir, open_only=getattr(args, "open", False))
+    elif getattr(args, "withdrawn", False):
+        _show_withdrawn(case_dir)
     elif getattr(args, "iocs", False):
         _show_iocs(case_dir)
     elif getattr(args, "timeline", False):
@@ -76,11 +86,11 @@ def _show_summary(case_dir: Path) -> None:
     timeline = load_timeline(case_dir)
     evidence = _load_evidence(case_dir)
 
-    print(f"Case: {meta.get('case_id', '?')}")
-    print(f"Name: {meta.get('name', '')}")
-    print(f"Status: {meta.get('status', 'unknown')}")
-    print(f"Examiner: {meta.get('examiner', '?')}")
-    print(f"Created: {meta.get('created', '?')}")
+    print(f"Case: {one_line(meta.get('case_id', '?'))}")
+    print(f"Name: {one_line(meta.get('name', ''))}")
+    print(f"Status: {one_line(meta.get('status', 'unknown'))}")
+    print(f"Examiner: {one_line(meta.get('examiner', '?'))}")
+    print(f"Created: {one_line(meta.get('created', '?'))}")
     print()
 
     draft_f = sum(1 for f in findings if f.get("status") == "DRAFT")
@@ -115,16 +125,18 @@ def _show_todos(case_dir: Path, open_only: bool = False) -> None:
     print(f"{'ID':<16} {'Status':<11} {'Priority':<9} {'Assignee':<12} Description")
     print("-" * 90)
     for t in todos:
+        t = display_safe(t)  # for printing inline
         todo_id = t["todo_id"]
         status = t.get("status", "open")
         priority = t.get("priority", "medium")
         assignee = t.get("assignee", "") or "-"
-        desc = t.get("description", "")[:40]
+        desc = one_line(t.get("description", ""))[:40]  # one row per todo
         print(f"{todo_id:<16} {status:<11} {priority:<9} {assignee:<12} {desc}")
 
     if any(t.get("notes") for t in todos):
         print()
         for t in todos:
+            t = display_safe(t)
             for note in t.get("notes", []):
                 print(f"  {t['todo_id']}: [{note.get('by', '?')}] {note['note']}")
 
@@ -139,13 +151,71 @@ def _show_findings_table(case_dir: Path) -> None:
     print(f"{'Title':<40} {'Confidence':<12} {'Provenance':<12} {'Status':<10}")
     print("-" * 76)
     for f in findings:
+        f = display_safe(f)  # for printing inline
         title = f.get("title", "Untitled")
         if len(title) > 37:
             title = title[:37] + "..."
         confidence = f.get("confidence", "?")
-        provenance = f.get("provenance", _EM_DASH)
+        provenance = grade_label(f, reason=False)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")
+
+
+def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
+    """One line per audit id: where it came from, and the tool or command."""
+    for raw_eid in audit_ids:
+        entry = audit_index.get(raw_eid)
+        eid = one_line(raw_eid)
+        if entry:
+            entry = display_safe(entry)  # for printing inline
+            source_file = entry.get("_source_file", "")
+            ts = entry.get("ts", "")[:19]
+            if source_file == "claude-code.jsonl":
+                cmd = entry.get("command", "?")
+                print(f'    [HOOK]  {eid} {_EM_DASH} "{cmd}" @ {ts}')
+            elif raw_eid.startswith("shell-"):
+                cmd = entry.get("params", {}).get("command", "?")
+                print(f'    [SHELL] {eid} {_EM_DASH} "{cmd}"')
+            else:
+                tool = entry.get("tool", "?")
+                params = entry.get("params", {})
+                params_summary = ", ".join(
+                    f"{k}={v}" for k, v in list(params.items())[:3]
+                )
+                print(f"    [MCP]   {eid} {_EM_DASH} {tool}({params_summary}) @ {ts}")
+        else:
+            print(f"    [NONE]  {eid} {_EM_DASH} no audit record")
+
+
+def _show_withdrawn(case_dir: Path) -> None:
+    """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
+    try:
+        withdrawals = load_withdrawals(case_dir)
+    except Exception as e:  # a damaged audit line: say so, never "none"
+        print(f"Withdrawn candidates couldn't be read: {e}")
+        sys.exit(1)
+    if not withdrawals:
+        print("No candidate findings withdrawn after challenge.")
+        return
+    audit_index = load_audit_index(case_dir)
+    print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
+    for raw in withdrawals:
+        skeptic_ids = raw["result_summary"].get("skeptic_audit_ids") or []
+        entry = display_safe(raw)  # for printing inline
+        result = entry["result_summary"]
+        print(f"\n{'=' * 60}")
+        print(
+            f"  {entry.get('ts', '')[:19]}  {entry.get('examiner', '')}"
+            f"  {entry.get('audit_id', '')}"
+        )
+        print(f"  Title:         {result.get('title', '')}")
+        print(
+            f"  Observation:   {indent_lines(raw['result_summary'].get('observation', ''), ' ' * 17)}"
+        )
+        print(f"  Contradiction: {result.get('contradiction', '')}")
+        if isinstance(skeptic_ids, list) and skeptic_ids:
+            print("\n  Skeptic's tool calls:")
+            _print_evidence_chain(skeptic_ids, audit_index)
 
 
 def _show_findings_detail(case_dir: Path) -> None:
@@ -157,7 +227,8 @@ def _show_findings_detail(case_dir: Path) -> None:
 
     audit_index = load_audit_index(case_dir)
 
-    for f in findings:
+    for raw in findings:
+        f = display_safe(raw)  # for printing inline
         print(f"\n{'=' * 60}")
         print(f"  [{f['id']}] {f.get('title', 'Untitled')}")
         print(f"{'=' * 60}")
@@ -166,10 +237,12 @@ def _show_findings_detail(case_dir: Path) -> None:
         print(f"  Confidence:   {f.get('confidence', '?')}")
         if f.get("confidence_justification"):
             print(f"  Justification: {f['confidence_justification']}")
-        print(f"  Provenance:   {f.get('provenance', _EM_DASH)}")
+        print("\n".join(finding_lines(f)))
         print(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
-        print(f"  Observation:  {f.get('observation', '')}")
-        print(f"  Interpretation: {f.get('interpretation', '')}")
+        print(f"  Observation:  {indent_lines(raw.get('observation', ''), ' ' * 16)}")
+        print(
+            f"  Interpretation: {indent_lines(raw.get('interpretation', ''), ' ' * 18)}"
+        )
         if f.get("iocs"):
             print(f"  IOCs:         {f['iocs']}")
         if f.get("mitre_techniques"):
@@ -181,40 +254,21 @@ def _show_findings_detail(case_dir: Path) -> None:
             print(f"  Reason:       {f.get('rejection_reason', '?')}")
 
         # Evidence chain
-        audit_ids = f.get("audit_ids", [])
+        audit_ids = raw.get("audit_ids", [])
         if audit_ids:
             print("\n  Evidence Chain:")
-            for eid in audit_ids:
-                entry = audit_index.get(eid)
-                if entry:
-                    source_file = entry.get("_source_file", "")
-                    ts = entry.get("ts", "")[:19]
-                    if source_file == "claude-code.jsonl":
-                        cmd = entry.get("command", "?")
-                        print(f'    [HOOK]  {eid} {_EM_DASH} "{cmd}" @ {ts}')
-                    elif eid.startswith("shell-"):
-                        cmd = entry.get("params", {}).get("command", "?")
-                        print(f'    [SHELL] {eid} {_EM_DASH} "{cmd}"')
-                    else:
-                        tool = entry.get("tool", "?")
-                        params = entry.get("params", {})
-                        params_summary = ", ".join(
-                            f"{k}={v}" for k, v in list(params.items())[:3]
-                        )
-                        print(
-                            f"    [MCP]   {eid} {_EM_DASH} {tool}({params_summary}) @ {ts}"
-                        )
-                else:
-                    print(f"    [NONE]  {eid} {_EM_DASH} no audit record")
+            _print_evidence_chain(audit_ids, audit_index)
 
         # Artifacts (raw evidence)
         artifacts = f.get("artifacts", [])
         if artifacts:
             print("\n  Artifacts:")
-            for i, art in enumerate(artifacts, 1):
+            for i, (art, raw_art) in enumerate(
+                zip(artifacts, raw["artifacts"], strict=True), 1
+            ):
                 source = art.get("source", "?")
                 extraction = art.get("extraction", "")
-                content = art.get("content", "")
+                content = str(raw_art.get("content") or "")
                 content_type = art.get("content_type", "")
                 badge = f" [{content_type}]" if content_type else ""
                 print(f"    [{i}]{badge} {source}")
@@ -224,11 +278,8 @@ def _show_findings_detail(case_dir: Path) -> None:
                     display = content[:200]
                     if len(content) > 200:
                         display += "..."
-                    # Indent multiline content
-                    lines = display.split("\n")
-                    print(f"        {lines[0]}")
-                    for line in lines[1:]:
-                        print(f"        {line}")
+                    # A block: each line indented under the artifact
+                    print(f"        {indent_lines(display, ' ' * 8)}")
 
         # Supporting commands
         supporting = f.get("supporting_commands", [])
@@ -249,181 +300,44 @@ def _show_findings_verify(
     case_dir: Path,
     identity: dict | None = None,
     mine_only: bool = False,
+    args=None,
 ) -> None:
-    """Cross-check findings against approvals.jsonl and verification ledger."""
-    results = verify_approval_integrity(case_dir)
-    if not results:
-        print("No findings recorded.")
-        # No findings but ledger entries (findings.json removed, emptied or
-        # corrupt; or only timeline events approved): still check the ledger.
-        from vhir_cli.verification import read_ledger
-
-        if read_ledger(load_case_meta(case_dir).get("case_id", case_dir.name)):
-            _show_ledger_reconciliation(case_dir)
-            _show_hmac_verification(case_dir, identity=identity, mine_only=mine_only)
-        return
-
-    # --- Content hash verification (existing) ---
-    print("Content Hash Verification")
-    print(f"{'ID':<20} {'Status':<12} {'Verification':<22} Title")
-    print("-" * 80)
-    for f in results:
-        fid = f.get("id", "?")
-        status = f.get("status", "?")
-        verification = f.get("verification", "?")
-
-        if verification == "confirmed":
-            vdisplay = "confirmed"
-        elif verification == "tampered":
-            vdisplay = "TAMPERED"
-        elif verification == "no approval record":
-            vdisplay = "NO APPROVAL RECORD"
-        else:
-            vdisplay = "draft"
-
-        title = f.get("title", "Untitled")
-        print(f"{fid:<20} {status:<12} {vdisplay:<22} {title}")
-
-    # Summary
-    confirmed = sum(1 for f in results if f["verification"] == "confirmed")
-    tampered = sum(1 for f in results if f["verification"] == "tampered")
-    unverified = sum(1 for f in results if f["verification"] == "no approval record")
-    draft = sum(1 for f in results if f["verification"] == "draft")
-    parts = [f"{confirmed} confirmed"]
-    if tampered:
-        parts.append(f"{tampered} TAMPERED")
-    parts.extend([f"{unverified} unverified", f"{draft} draft"])
-    print(f"\n{', '.join(parts)}")
-    if tampered:
-        print("ALERT: Content was modified after approval. Investigate immediately.")
-    if unverified:
-        print("WARNING: Some findings have status changes without approval records.")
-
-    # --- Ledger reconciliation (no password needed) ---
-    _show_ledger_reconciliation(case_dir)
-
-    # --- HMAC verification (requires password) ---
-    _show_hmac_verification(case_dir, identity=identity, mine_only=mine_only)
-
-
-def _show_ledger_reconciliation(case_dir: Path) -> None:
-    """Show reconciliation between approved items and verification ledger."""
-    try:
-        from vhir_cli.verification import read_ledger
-    except ImportError:
-        return
-
-    meta = load_case_meta(case_dir)
-    case_id = meta.get("case_id", case_dir.name)
-
-    ledger = read_ledger(case_id)
-    if not ledger:
-        print(f"\nVerification Ledger: no entries for case {case_id}")
-        return
-
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    approved_findings = [f for f in findings if f.get("status") == "APPROVED"]
-    approved_timeline = [t for t in timeline if t.get("status") == "APPROVED"]
-    all_approved = approved_findings + approved_timeline
-
-    items_by_id = {i["id"]: i for i in all_approved}
-    ledger_by_id = {e["finding_id"]: e for e in ledger}
-    all_ids = sorted(set(items_by_id) | set(ledger_by_id))
-
-    print(f"\nVerification Ledger Reconciliation ({len(ledger)} entries)")
-    print(f"{'ID':<20} {'Reconciliation':<25}")
-    print("-" * 50)
-
-    alerts = 0
-    for item_id in all_ids:
-        item = items_by_id.get(item_id)
-        entry = ledger_by_id.get(item_id)
-        if item and not entry:
-            print(f"{item_id:<20} APPROVED_NO_VERIFICATION")
-            alerts += 1
-        elif entry and not item:
-            print(f"{item_id:<20} VERIFICATION_NO_FINDING")
-            alerts += 1
-        elif item and entry:
-            desc = hmac_text(item)
-            snap = entry.get("content_snapshot", "")
-            if desc != snap:
-                print(f"{item_id:<20} DESCRIPTION_MISMATCH")
-                alerts += 1
-            else:
-                print(f"{item_id:<20} VERIFIED")
-
-    if alerts:
-        print(
-            f"\n{alerts} alert(s) found. Run 'vhir review --findings --verify' with password for full HMAC check."
-        )
-
-
-def _show_hmac_verification(
-    case_dir: Path,
-    identity: dict | None = None,
-    mine_only: bool = False,
-) -> None:
-    """Perform full HMAC verification with password prompt."""
-    try:
-        from vhir_cli.approval_auth import (
-            get_analyst_salt,
-            getpass_prompt,
-            verify_password,
-        )
-        from vhir_cli.verification import read_ledger, verify_items
-    except ImportError:
-        return
-
-    meta = load_case_meta(case_dir)
-    case_id = meta.get("case_id", case_dir.name)
-    config_path = Path.home() / ".vhir" / "config.yaml"
-
-    ledger = read_ledger(case_id)
-    if not ledger:
-        return
-
-    # Group entries by examiner
-    examiners = sorted(
-        set(e.get("approved_by", "") for e in ledger if e.get("approved_by"))
+    """Verify every signed decision of the case (ledger.verify_case). No
+    password, terminal or credential file is needed. Exit 0 or 2; a malformed
+    pin or head exits 5. `--mine` only filters what's shown."""
+    from vhir_cli.ledger_verify import (
+        UsageError,
+        parse_head,
+        parse_pin,
+        render,
+        verify_case,
     )
-    if not examiners:
-        return
 
+    try:
+        pins = [parse_pin(p) for p in getattr(args, "expect_key", None) or []]
+        heads = [parse_head(h) for h in getattr(args, "expect_head", None) or []]
+    except UsageError as e:
+        print(f"vhir review: error: {e}", file=sys.stderr)
+        sys.exit(5)
+    ledgers = [Path(p) for p in getattr(args, "ledger", None) or []] or None
+    result = verify_case(case_dir, ledgers, heads, pins)
     if mine_only and identity:
-        examiners = [e for e in examiners if e == identity.get("examiner")]
-
-    print("\nHMAC Verification (password required)")
-    print(f"Examiners with ledger entries: {', '.join(examiners)}")
-
-    for examiner in examiners:
-        try:
-            print(f"\n  Verifying entries for examiner '{examiner}':")
-            password = getpass_prompt(f"  Enter password for '{examiner}': ")
-            salt = get_analyst_salt(config_path, examiner)
-            if not verify_password(config_path, examiner, password):
-                # A typo isn't tampering: verifying would fail every entry.
-                print(
-                    f"  Wrong password for '{examiner}'; their entries were not verified."
-                )
-                continue
-            results = verify_items(case_id, password, salt, examiner)
-
-            confirmed = sum(1 for r in results if r["verified"])
-            failed = sum(1 for r in results if not r["verified"])
-
-            for r in results:
-                status = "CONFIRMED" if r["verified"] else "TAMPERED"
-                print(f"    {r['finding_id']:<20} {status}")
-
-            print(f"  {confirmed} confirmed, {failed} failed")
-            if failed:
-                print(
-                    "  ALERT: HMAC mismatch detected. Findings may have been tampered with."
-                )
-        except (ValueError, RuntimeError) as e:
-            print(f"  Skipped: {e}")
+        me = identity.get("examiner")
+        mine = {
+            str(i.get("id"))
+            for i in load_findings(case_dir)
+            + load_timeline(case_dir)
+            + load_iocs(case_dir)
+            if isinstance(i, dict)
+            and me in (i.get("approved_by"), i.get("rejected_by"))
+        }
+        code = result.exit_code
+        result.items = [v for v in result.items if v.item_id in mine]
+        print(render(result).rsplit("\n", 1)[0])
+        print(f"Exit {code} (the whole case; --mine only filters what's shown)")
+        sys.exit(code)
+    print(render(result))
+    sys.exit(result.exit_code)
 
 
 def _show_iocs(case_dir: Path) -> None:
@@ -453,7 +367,8 @@ def _show_iocs(case_dir: Path) -> None:
         any_iocs = True
         print(f"\n=== {labels[status]} ===")
         for ioc_type, values in sorted(iocs.items()):
-            print(f"  {ioc_type + ':':<10} {', '.join(sorted(values))}")
+            shown = ", ".join(one_line(v) for v in sorted(values))
+            print(f"  {one_line(ioc_type) + ':':<10} {shown}")
 
     if not any_iocs:
         print("No IOCs found in findings.")
@@ -530,9 +445,9 @@ def _show_timeline(
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
     if start:
-        timeline = [t for t in timeline if t.get("timestamp", "") >= start]
+        timeline = [t for t in timeline if _at_or_after(t.get("timestamp", ""), start)]
     if end:
-        timeline = [t for t in timeline if t.get("timestamp", "") <= end]
+        timeline = [t for t in timeline if _at_or_before(t.get("timestamp", ""), end)]
     if event_type:
         timeline = [t for t in timeline if t.get("event_type", "") == event_type]
     if not timeline:
@@ -540,12 +455,15 @@ def _show_timeline(
         return
 
     if detail:
-        for t in timeline:
+        for raw in timeline:
+            t = display_safe(raw)  # for printing inline
             print(f"\n{'=' * 60}")
             print(f"  [{t['id']}] {t.get('timestamp', '?')}")
             print(f"{'=' * 60}")
             print(f"  Status:      {t.get('status', '?')}")
-            print(f"  Description: {t.get('description', '')}")
+            print(
+                f"  Description: {indent_lines(raw.get('description', ''), ' ' * 15)}"
+            )
             if t.get("audit_ids"):
                 print(f"  Evidence:    {', '.join(t['audit_ids'])}")
             if t.get("source"):
@@ -556,10 +474,10 @@ def _show_timeline(
         print(f"{'ID':<20} {'Status':<10} {'Timestamp':<22} Description")
         print("-" * 80)
         for t in timeline:
-            tid = t.get("id", "?")
-            item_status = t.get("status", "?")
-            ts = t.get("timestamp", "?")[:19] if t.get("timestamp") else "?"
-            desc = t.get("description", "")
+            tid = one_line(t.get("id", "?"))
+            item_status = one_line(t.get("status", "?"))
+            ts = one_line(display_instant(t.get("timestamp")))
+            desc = one_line(t.get("description", ""))  # one row per event
             if len(desc) > 40:
                 desc = desc[:37] + "..."
             print(f"{tid:<20} {item_status:<10} {ts:<22} {desc}")
@@ -576,10 +494,11 @@ def _show_evidence(case_dir: Path) -> None:
     print(f"  Registered Evidence ({len(evidence)} files)")
     print(f"{'=' * 60}")
 
-    for e in evidence:
+    for raw in evidence:
+        e = display_safe(raw)  # for printing inline
         print(f"\n  {e.get('path', '?')}")
         print(f"    SHA256: {e.get('sha256', '?')}")
-        print(f"    Description: {e.get('description', '')}")
+        print(f"    Description: {indent_lines(raw.get('description', ''), ' ' * 17)}")
         print(
             f"    Registered: {e.get('registered_at', '?')} by {e.get('registered_by', '?')}"
         )
@@ -601,6 +520,7 @@ def _show_evidence(case_dir: Path) -> None:
                     except json.JSONDecodeError:
                         print("  Warning: skipping corrupt log line", file=sys.stderr)
                         continue
+                    entry = display_safe(entry)  # for printing inline
                     print(
                         f"  {entry.get('ts', '?')} | {entry.get('action', '?')} | {entry.get('path', '?')} | {entry.get('examiner', '?')}"
                     )
@@ -669,6 +589,7 @@ def _show_audit(case_dir: Path, limit: int) -> None:
     print(f"{'=' * 60}")
 
     for e in entries:
+        e = display_safe(e)  # for printing inline
         ts = e.get("ts", "?")[:19]
         mcp = e.get("mcp", "?")
         tool = e.get("tool", "?")
