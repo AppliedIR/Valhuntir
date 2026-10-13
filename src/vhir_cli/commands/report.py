@@ -404,9 +404,6 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         elif f["id"] in view["labels"]:
             shown = shown_label(view["labels"][f["id"]])
             lines.append(f"  Verification: {_d(shown, safe)}")
-        lines.append(f"  Confidence:   {_d(f.get('confidence', '?'), safe)}")
-        if f.get("confidence_justification"):
-            lines.append(f"  Justification: {_d(f['confidence_justification'], safe)}")
         lines.append(f"  Evidence:     {_d(cited_text(f.get('audit_ids')), safe)}")
         lines.append(f"  Observation:  {_ml(f.get('observation', ''), safe, ' ' * 16)}")
         lines.append(
