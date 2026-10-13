@@ -1258,7 +1258,7 @@ def _approve_main(monkeypatch, capsys):
     [
         ("dup-mode000", "audit/wintools-mcp.jsonl (Permission denied)"),
         ("cited-mode000", "audit/sift-mcp.jsonl (Permission denied)"),
-        ("dangling", "audit/wintools-mcp.jsonl (No such file or directory)"),
+        ("dangling", "audit/wintools-mcp.jsonl (a symbolic link)"),
         ("folder-mode000", "audit/ (Permission denied)"),
     ],
 )

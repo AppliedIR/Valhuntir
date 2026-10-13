@@ -1432,6 +1432,23 @@ def test_hiding_the_signed_0_6_prefix_never_lets_a_forged_or_rolled_back_line_co
     assert not {"F-steve-001", "F-steve-003"} & set(_shown(case))
 
 
+def test_bytes_after_a_frozen_prefix_never_hide_its_latest_approval(case, steve):
+    """The 0.6 file held OLD then NEW, NEW with no newline after it, when the
+    genesis froze it. Bytes appended later run on from NEW's line; the frozen
+    prefix still holds NEW, so the finding rolled back to OLD is altered."""
+    old, new, l_old, l_new = _old_new()
+    box = _legacy([l_old, l_new])
+    box.write_text(l_old + "\n" + l_new)  # as the genesis freezes it: no last newline
+    fresh = _finding(9)
+    _save(case, findings=[new, fresh])
+    _approve(case, steve, fresh)  # genesis freezes the 0.6 file
+    box.write_bytes(box.read_bytes() + b"X\n")  # appended after signing
+    _roll_back(case, old)
+    result = verify_case(case)
+    assert _status(result, "F-steve-001") == "ALTERED_AFTER_APPROVAL"
+    assert "F-steve-001" not in _shown(case)
+
+
 def test_a_genesis_whose_frozen_prefix_no_source_holds_fails_the_case(case, steve):
     old = _finding(1, status="APPROVED", approved_by="steve", approved_at=AT)
     box, _ = _signed_over(case, steve, [_legacy_line(old)], [old])
