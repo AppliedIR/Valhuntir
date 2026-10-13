@@ -560,7 +560,8 @@ def _shown(capsys, **fields) -> list[str]:
 def test_a_clean_upheld_challenge_is_its_line_alone(capsys):
     shown = _shown(capsys, challenged=UPHELD)
     assert shown[0] == f"  Challenged (client-reported): upheld — skeptic: {RUN}"
-    assert not any(line.startswith(("  Check ", "  Contradiction")) for line in shown)
+    detail = ("    Check ", "    Contradiction", "    Server:", "    Previously")
+    assert not any(line.startswith(detail) for line in shown), shown
 
 
 @pytest.mark.parametrize(
