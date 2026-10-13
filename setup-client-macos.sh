@@ -59,8 +59,57 @@ NC='\033[0m'
 info()   { echo -e "${BLUE}[INFO]${NC} $*"; }
 ok()     { echo -e "${GREEN}[OK]${NC} $*"; }
 warn()   { echo -e "${YELLOW}[WARN]${NC} $*"; }
+
+# A user's file is backed up (mode kept) before it's changed or removed, with
+# the command that puts it back.
+backup_file() {
+    local f="$1" base bak n=1
+    base="$f.vhir-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+    bak="$base"
+    while [[ -e "$bak" ]]; do n=$((n + 1)); bak="$base-$n"; done
+    cp -p "$f" "$bak"
+    warn "Backed up $f -> $bak"
+    printf '    To undo: cp -p %q %q\n' "$bak" "$f"
+}
+# Move a new version ($1) over a file ($2), backing the file up if that changes it.
+replace_file() {
+    if [[ -f "$2" ]] && ! cmp -s "$1" "$2"; then backup_file "$2"; fi
+    cat "$1" > "$2"
+    rm -f "$1"
+}
 err()    { echo -e "${RED}[ERROR]${NC} $*"; }
 header() { echo -e "\n${BOLD}=== $* ===${NC}\n"; }
+
+# Fetch every skill file skills/MANIFEST lists into $1. Each file is fetched and
+# replaced: an edit to a vhir skill is lost on re-run. Counts failures in ERRORS.
+fetch_skills() {
+    local dest="$1" manifest rel fetched=0
+    info "Fetching skills..."
+    if ! manifest=$(curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/MANIFEST" 2>/dev/null); then
+        warn "Could not fetch the skills list"
+        ERRORS=$((ERRORS + 1))
+        return 0
+    fi
+    while IFS= read -r rel; do
+        case "$rel" in
+            "" | \#*) continue ;;
+            /* | *..* | *[!A-Za-z0-9._/-]*)
+                warn "Skipped an unexpected skills path: $rel"
+                ERRORS=$((ERRORS + 1))
+                continue
+                ;;
+        esac
+        mkdir -p "$(dirname "$dest/$rel")"
+        if curl -fsSL "$GITHUB_RAW/sift-mcp/main/skills/$rel" -o "$dest/$rel" 2>/dev/null; then
+            fetched=$((fetched + 1))
+        else
+            warn "Could not fetch skills/$rel"
+            ERRORS=$((ERRORS + 1))
+        fi
+    done <<< "$manifest"
+    ok "$fetched skill files"
+}
+
 
 prompt_yn() {
     local msg="$1" default="${2:-y}"
@@ -112,6 +161,25 @@ if $UNINSTALL; then
     DEPLOY_DIR="$HOME/vhir"
     header "Valhuntir Forensic Controls — Uninstall"
 
+    # Codex: Valhuntir's profile, skills and agent (never ~/.codex/config.toml)
+    CODEX_FILES=()
+    for f in "$HOME/.codex/valhuntir.config.toml" "$HOME/.codex/agents/finding-skeptic.toml"; do
+        [[ -f "$f" ]] && CODEX_FILES+=("$f")
+    done
+    for d in "$HOME/.agents/skills"/vhir-* "$HOME/.agents/skills/finding-skeptic"; do
+        [[ -d "$d" ]] && CODEX_FILES+=("$d")
+    done
+    if (( ${#CODEX_FILES[@]} > 0 )); then
+        echo "  Codex files:"
+        printf '    %s\n' "${CODEX_FILES[@]}"
+        if prompt_yn_strict "  Remove Valhuntir's Codex profile, skills and agent?"; then
+            rm -rf "${CODEX_FILES[@]}"
+            ok "Removed Valhuntir's Codex files"
+        fi
+        echo ""
+    fi
+
+
     if [[ ! -d "$DEPLOY_DIR" ]]; then
         info "No Valhuntir workspace found at $DEPLOY_DIR."
         exit 0
@@ -149,7 +217,6 @@ if $UNINSTALL; then
         sed -i '' '/# Valhuntir Platform/d' "$SHELL_RC"
         sed -i '' '/Valhuntir_EXAMINER/d' "$SHELL_RC"
         sed -i '' '/# vhir-path/d' "$SHELL_RC"
-        sed -i '' '\|\.vhir/venv/bin|d' "$SHELL_RC"
         sed -i '' '/register-python-argcomplete vhir/d' "$SHELL_RC"
         ok "Removed Valhuntir lines from $SHELL_RC"
     fi
@@ -163,6 +230,7 @@ if $UNINSTALL; then
         echo ""
         echo "  Claude Desktop config: $CLAUDE_DESKTOP_CFG"
         if prompt_yn_strict "  Remove Claude Desktop config?"; then
+            backup_file "$CLAUDE_DESKTOP_CFG"
             rm -f "$CLAUDE_DESKTOP_CFG"
             ok "Removed $CLAUDE_DESKTOP_CFG"
         fi
@@ -277,9 +345,10 @@ elif [[ -f "$HOME/.bashrc" ]]; then SHELL_RC="$HOME/.bashrc"; fi
 if [[ -n "$SHELL_RC" ]]; then
     # Clean up old naming from prior installs
     sed -i '' '/^export Valhuntir_EXAMINER=/d' "$SHELL_RC" 2>/dev/null || true
-    if grep -q "VHIR_EXAMINER" "$SHELL_RC" 2>/dev/null; then
+    if grep -q '^export VHIR_EXAMINER=' "$SHELL_RC" 2>/dev/null; then
         sed -i '' "s/^export VHIR_EXAMINER=.*/export VHIR_EXAMINER=\"$EXAMINER_NAME\"/" "$SHELL_RC"
     else
+        [[ -s "$SHELL_RC" && -n "$(tail -c1 "$SHELL_RC")" ]] && echo >> "$SHELL_RC"
         echo "export VHIR_EXAMINER=\"$EXAMINER_NAME\"" >> "$SHELL_RC"
     fi
 fi
@@ -319,26 +388,6 @@ build_mcp_entry_noauth() {
 ENTRY
 }
 
-build_mcp_entry_stdio() {
-    local name="$1" url="$2" token="$3"
-    if [[ -n "$token" ]]; then
-        cat << ENTRY
-    "$name": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "$url", "--header", "Authorization:\${AUTH_HEADER}"],
-      "env": { "AUTH_HEADER": "Bearer $token" }
-    }
-ENTRY
-    else
-        cat << ENTRY
-    "$name": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "$url"]
-    }
-ENTRY
-    fi
-}
-
 MCP_ENTRIES=""
 FIRST=true
 while IFS= read -r backend; do
@@ -364,45 +413,22 @@ $MCP_ENTRIES
   }
 }"
 
-# Build stdio-format config for Claude Desktop (mcp-remote bridge)
-MCP_ENTRIES_STDIO=""
-FIRST_STDIO=true
-while IFS= read -r backend; do
-    [[ -z "$backend" ]] && continue
-    if $FIRST_STDIO; then
-        FIRST_STDIO=false
-    else
-        MCP_ENTRIES_STDIO="$MCP_ENTRIES_STDIO,"
-    fi
-    MCP_ENTRIES_STDIO="$MCP_ENTRIES_STDIO
-$(build_mcp_entry_stdio "$backend" "$GATEWAY_URL/mcp/$backend" "$GATEWAY_TOKEN")"
-done <<< "$BACKENDS"
-
-# External MCPs (no auth needed — mcp-remote still required for stdio bridge)
-MCP_ENTRIES_STDIO="$MCP_ENTRIES_STDIO,
-$(build_mcp_entry_stdio "zeltser-ir-writing" "https://website-mcp.zeltser.com/mcp" "")"
-MCP_ENTRIES_STDIO="$MCP_ENTRIES_STDIO,
-$(build_mcp_entry_stdio "microsoft-learn" "https://learn.microsoft.com/api/mcp" "")"
-
-MCP_JSON_STDIO="{
-  \"mcpServers\": {
-$MCP_ENTRIES_STDIO
-  }
-}"
-
 # ---- Client Choice ----
 
 echo ""
 echo "  Which LLM client?"
 echo "  1. Claude Code"
-echo "  2. Claude Desktop"
+echo "  2. Codex"
 echo "  3. LibreChat"
 echo "  4. Other"
+echo ""
+echo "  (Claude Desktop isn't offered: its commands aren't audited. Use Claude Code"
+echo "  on the SIFT workstation, or Claude Code or Codex here.)"
 echo ""
 CHOICE=$(prompt "Choose" "1")
 case "$CHOICE" in
     1) CLIENT="claude-code" ;;
-    2) CLIENT="claude-desktop" ;;
+    2) CLIENT="codex" ;;
     3) CLIENT="librechat" ;;
     *) CLIENT="other" ;;
 esac
@@ -412,22 +438,12 @@ esac
 case "$CLIENT" in
     claude-code)
         CONFIG_FILE="$DEPLOY_DIR/.mcp.json"
-        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
+        (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE.vhir-new" &&
+            replace_file "$CONFIG_FILE.vhir-new" "$CONFIG_FILE")
         ok "Written: $CONFIG_FILE"
         ;;
-    claude-desktop)
-        if ! command -v npx &>/dev/null; then
-            warn "Claude Desktop requires npx (Node.js) for mcp-remote bridge."
-            warn "Install Node.js: https://nodejs.org/ or: brew install node"
-            warn "Skipping Claude Desktop config generation."
-        else
-            CONFIG_DIR="$HOME/Library/Application Support/Claude"
-            mkdir -p "$CONFIG_DIR"
-            CONFIG_FILE="$CONFIG_DIR/claude_desktop_config.json"
-            (umask 077 && echo "$MCP_JSON_STDIO" > "$CONFIG_FILE")
-            ok "Written: $CONFIG_FILE (stdio via mcp-remote)"
-        fi
-        ;;
+    codex)
+        ;;  # Valhuntir's Codex profile, below
     librechat)
         CONFIG_FILE="$DEPLOY_DIR/librechat_mcp.yaml"
         (umask 077 && echo "$MCP_JSON" > "$CONFIG_FILE")
@@ -440,6 +456,78 @@ case "$CLIENT" in
         info "Configure your LLM client using the entries in this file."
         ;;
 esac
+
+# ---- Codex: Valhuntir's profile, the skills and the skeptic's agent ----
+# The profile is ~/.codex/valhuntir.config.toml (codex -p valhuntir); the
+# user's ~/.codex/config.toml is never written.
+
+if [[ "$CLIENT" == "codex" ]]; then
+    header "Codex"
+    GITHUB_RAW="https://raw.githubusercontent.com/AppliedIR"
+    ERRORS=0
+    PROFILE="$HOME/.codex/valhuntir.config.toml"
+    mkdir -p "$HOME/.codex/agents" "$HOME/.agents/skills"
+    fetch_skills "$HOME/.agents/skills"
+    if curl -fsSL "$GITHUB_RAW/sift-mcp/main/agents/finding-skeptic/codex.toml" -o "$HOME/.codex/agents/finding-skeptic.toml" 2>/dev/null; then
+        ok "finding-skeptic agent"
+    else
+        warn "Could not fetch the finding-skeptic agent"
+        ERRORS=$((ERRORS + 1))
+    fi
+    PARTS=$(mktemp -d)
+    INSTRUCTIONS=""
+    NL=$'\n'
+    for part in AGENTS.md claude-code/full/FORENSIC_DISCIPLINE.md codex/OVERLAY.md codex/REMOTE.md; do
+        if curl -fsSL "$GITHUB_RAW/sift-mcp/main/$part" -o "$PARTS/part" 2>/dev/null; then
+            # each part without its trailing newlines, joined by a blank line
+            [[ -n "$INSTRUCTIONS" ]] && INSTRUCTIONS+="$NL$NL"
+            INSTRUCTIONS+="$(cat "$PARTS/part")"
+        else
+            warn "Could not fetch $part"
+            INSTRUCTIONS=""
+            ERRORS=$((ERRORS + 1))
+            break
+        fi
+    done
+    rm -rf "$PARTS"
+    if [[ -z "$INSTRUCTIONS" ]] || [[ "$INSTRUCTIONS" == *"'''"* ]]; then
+        warn "Valhuntir's instructions for Codex couldn't be fetched; $PROFILE not written."
+    else
+        (
+            umask 077
+            {
+                echo "# Valhuntir's Codex profile, for: codex -p valhuntir"
+                echo "# vhir's client setup writes this file. It holds the"
+                echo "# gateway token, so only you can read it."
+                echo 'sandbox_mode = "workspace-write"'
+                echo 'approval_policy = "on-request"'
+                echo 'project_doc_max_bytes = 0'
+                printf "developer_instructions = '''\n%s\n'''\n" "$INSTRUCTIONS"
+                while IFS= read -r backend; do
+                    [[ "$backend" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+                    printf '\n[mcp_servers.%s]\nurl = "%s"\n' "$backend" "$GATEWAY_URL/mcp/$backend"
+                    printf 'http_headers = { Authorization = "Bearer %s" }\n' "$GATEWAY_TOKEN"
+                    printf 'default_tools_approval_mode = "approve"\n'
+                done <<< "$BACKENDS"
+                printf '\n[mcp_servers.zeltser-ir-writing]\nurl = "https://website-mcp.zeltser.com/mcp"\n'
+                printf '\n[mcp_servers.microsoft-learn]\nurl = "https://learn.microsoft.com/api/mcp"\n'
+            } > "$PROFILE.vhir-new"
+        )
+        if [[ -f "$PROFILE" ]] && ! cmp -s "$PROFILE.vhir-new" "$PROFILE"; then
+            echo "  Changes to $PROFILE:"
+            { diff -u "$PROFILE" "$PROFILE.vhir-new" || true; } | sed -E 's/(vhir_[a-z]{2}_)[0-9A-Za-z]+/\1…/g; s/^/    /'
+        fi
+        replace_file "$PROFILE.vhir-new" "$PROFILE"
+        chmod 600 "$PROFILE"
+        ok "Written: $PROFILE"
+    fi
+    if [[ -f "$HOME/.codex/config.toml" ]] && grep -Eq '^[[:space:]]*sandbox_mode[[:space:]]*=[[:space:]]*"danger-full-access"' "$HOME/.codex/config.toml"; then
+        warn "$HOME/.codex/config.toml sets sandbox_mode = \"danger-full-access\": that widens Codex's sandbox. vhir doesn't edit that file."
+    fi
+    if (( ERRORS > 0 )); then
+        warn "$ERRORS Codex file(s) could not be fetched. Re-run, or fetch them by hand."
+    fi
+fi
 
 # ---- Claude Code assets (skip for other clients) ----
 
@@ -488,6 +576,7 @@ SETTINGS_CONTENT=$(cat << SETTINGS
       "mcp__forensic-rag-mcp__*",
       "mcp__windows-triage-mcp__*",
       "mcp__opencti-mcp__*",
+      "mcp__threatintel-mcp__*",
       "mcp__wintools-mcp__*",
       "mcp__remnux-mcp__*",
       "mcp__vhir__*",
@@ -502,40 +591,30 @@ SETTINGS_CONTENT=$(cat << SETTINGS
       "Edit(**/CASE.yaml)",
       "Edit(**/actions.jsonl)",
       "Edit(**/audit/*.jsonl)",
-      "Write(**/findings.json)",
-      "Write(**/timeline.json)",
-      "Write(**/approvals.jsonl)",
-      "Write(**/todos.json)",
-      "Write(**/CASE.yaml)",
-      "Write(**/actions.jsonl)",
-      "Write(**/audit/*.jsonl)",
       "Edit(**/evidence.json)",
-      "Write(**/evidence.json)",
-      "Read(/var/lib/vhir/**)",
-      "Edit(/var/lib/vhir/**)",
-      "Write(/var/lib/vhir/**)",
+      "Edit(**/evidence-verified.json)",
+      "Read(//var/lib/vhir/**)",
+      "Edit(//var/lib/vhir/**)",
       "Bash(vhir approve*)",
       "Bash(*vhir approve*)",
       "Bash(vhir reject*)",
       "Bash(*vhir reject*)",
       "Edit(**/.claude/settings.json)",
-      "Write(**/.claude/settings.json)",
       "Edit(**/.claude/CLAUDE.md)",
-      "Write(**/.claude/CLAUDE.md)",
       "Edit(**/.claude/rules/**)",
-      "Write(**/.claude/rules/**)",
       "Edit(**/.vhir/hooks/**)",
-      "Write(**/.vhir/hooks/**)",
       "Edit(**/.vhir/active_case)",
-      "Write(**/.vhir/active_case)",
       "Edit(**/.vhir/gateway.yaml)",
-      "Write(**/.vhir/gateway.yaml)",
       "Edit(**/.vhir/config.yaml)",
-      "Write(**/.vhir/config.yaml)",
       "Edit(**/.vhir/.password_lockout)",
-      "Write(**/.vhir/.password_lockout)",
       "Edit(**/pending-reviews.json)",
-      "Write(**/pending-reviews.json)"
+      "Edit(**/.claude/skills/**)",
+      "Edit(**/.claude/agents/**)",
+      "Edit(**/host-observations.jsonl)",
+      "Edit(**/host-decisions.jsonl)",
+      "Edit(**/host-ops.json)",
+      "Edit(**/host-dictionary.yaml)",
+      "Edit(**/.vhir/case-paths.json)"
     ]
   },
   "sandbox": {
@@ -561,7 +640,9 @@ SETTINGS
 
 if [[ -f "$SETTINGS_FILE" ]] && command -v python3 &>/dev/null; then
     info "Existing settings.json found. Merging..."
-    SETTINGS_FILE="$SETTINGS_FILE" SETTINGS_CONTENT="$SETTINGS_CONTENT" python3 << 'PYMERGE'
+    MERGE_RC=0
+    rm -f "$SETTINGS_FILE.vhir-new"  # only this run's merge is ever installed
+    SETTINGS_FILE="$SETTINGS_FILE" SETTINGS_CONTENT="$SETTINGS_CONTENT" python3 << 'PYMERGE' || MERGE_RC=$?
 import json, sys, os
 
 target_path = os.environ.get("SETTINGS_FILE", "")
@@ -569,12 +650,16 @@ incoming_str = os.environ.get("SETTINGS_CONTENT", "{}")
 
 if not target_path:
     sys.exit(1)
+unparseable = False
 
 try:
     with open(target_path) as f:
         existing = json.load(f)
-except (json.JSONDecodeError, FileNotFoundError):
+except FileNotFoundError:
     existing = {}
+except json.JSONDecodeError:  # replaced, with a backup; never reported as merged
+    existing = {}
+    unparseable = True
 
 try:
     incoming = json.loads(incoming_str)
@@ -611,18 +696,41 @@ if "permissions" in incoming:
             existing_deny.add(rule)
         existing_perms["deny"] = sorted(existing_deny)
 
-if "sandbox" in incoming:
-    existing.setdefault("sandbox", {}).update(incoming["sandbox"])
+# Merge sandbox: every list is a union with the user's own (a scalar takes
+# vhir's value; the change is shown before it's written)
+def _union(cur, new):
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(cur.get(k), dict):
+            _union(cur[k], v)
+        elif isinstance(v, list) and isinstance(cur.get(k), list):
+            cur[k] = cur[k] + [x for x in v if x not in cur[k]]
+        else:
+            cur[k] = v
 
-with open(target_path, "w") as f:
+
+if "sandbox" in incoming:
+    _union(existing.setdefault("sandbox", {}), incoming["sandbox"])
+
+with open(target_path + ".vhir-new", "w") as f:
     json.dump(existing, f, indent=2)
     f.write("\n")
+sys.exit(2 if unparseable else 0)
 PYMERGE
-    ok "settings.json (merged)"
+    if [[ $MERGE_RC -eq 0 && -f "$SETTINGS_FILE.vhir-new" ]]; then
+        replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+        ok "settings.json (merged)"
+    elif [[ $MERGE_RC -eq 2 && -f "$SETTINGS_FILE.vhir-new" ]]; then
+        replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+        warn "settings.json wasn't valid JSON: replaced (backed up above)."
+    else
+        rm -f "$SETTINGS_FILE.vhir-new"
+        warn "settings.json merge failed (exit $MERGE_RC): NOT changed."
+    fi
 elif [[ -f "$SETTINGS_FILE" ]]; then
-    warn "python3 not found. Overwriting existing settings.json."
-    echo "$SETTINGS_CONTENT" > "$SETTINGS_FILE"
-    ok "settings.json (overwritten)"
+    warn "python3 not found. Replacing the existing settings.json."
+    echo "$SETTINGS_CONTENT" > "$SETTINGS_FILE.vhir-new"
+    replace_file "$SETTINGS_FILE.vhir-new" "$SETTINGS_FILE"
+    ok "settings.json (replaced)"
 else
     echo "$SETTINGS_CONTENT" > "$SETTINGS_FILE"
     ok "settings.json (hooks + permissions + sandbox)"
@@ -657,11 +765,13 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
-info "Fetching TOOL_REFERENCE.md..."
-if curl -fsSL "$GITHUB_RAW/sift-mcp/main/claude-code/full/TOOL_REFERENCE.md" -o "$DEPLOY_DIR/TOOL_REFERENCE.md" 2>/dev/null; then
-    ok "TOOL_REFERENCE.md"
+# Skills and the finding skeptic's agent
+fetch_skills "$DEPLOY_DIR/.claude/skills"
+mkdir -p "$DEPLOY_DIR/.claude/agents"
+if curl -fsSL "$GITHUB_RAW/sift-mcp/main/agents/finding-skeptic/claude.md" -o "$DEPLOY_DIR/.claude/agents/finding-skeptic.md" 2>/dev/null; then
+    ok "finding-skeptic agent"
 else
-    warn "Could not fetch TOOL_REFERENCE.md"
+    warn "Could not fetch the finding-skeptic agent"
     ERRORS=$((ERRORS + 1))
 fi
 
@@ -692,11 +802,12 @@ echo "Workspace:   $DEPLOY_DIR"
 
 echo ""
 echo -e "${BOLD}SSH Access${NC}"
-echo "  SSH access to SIFT is required for finding approval and rejection"
-echo "  (vhir approve, vhir reject), evidence unlocking (vhir evidence"
-echo "  unlock), and command execution (vhir execute). These operations"
-echo "  require password or terminal confirmation and are not available through"
-echo "  MCP. All other operations are available through MCP tools."
+echo "  Approvals and rejections are signed in the Examiner Portal, or at the"
+echo "  SIFT terminal over SSH (vhir approve, vhir reject). Evidence unlocking"
+echo "  (vhir evidence unlock) and command execution (vhir execute) need SSH."
+echo "  These operations need the examiner's passphrase or terminal confirmation"
+echo "  and are not available through MCP. All other operations are available"
+echo "  through MCP tools."
 
 if [[ "$CLIENT" == "claude-code" ]]; then
     echo ""
@@ -709,7 +820,7 @@ if [[ "$CLIENT" == "claude-code" ]]; then
     echo "    - ssh-add -c (agent confirmation per use)"
     echo "    - Hardware security keys (FIDO2/U2F)"
     echo ""
-    echo "  Alternatively, use an MCP-only client (Claude Desktop, LibreChat,"
+    echo "  Alternatively, use an MCP-only client (LibreChat,"
     echo "  or any client without terminal access) which can only interact"
     echo "  with SIFT through audited MCP tools."
 
@@ -717,8 +828,9 @@ if [[ "$CLIENT" == "claude-code" ]]; then
     echo -e "${BOLD}Valhuntir workspace created at ~/vhir/${NC}"
     echo ""
     echo -e "${YELLOW}${BOLD}IMPORTANT:${NC} Always launch Claude Code from ~/vhir/ or a subdirectory."
-    echo "Forensic controls (audit logging, guardrails, MCP tools) only apply"
-    echo "when Claude Code is started from within this directory."
+    echo "Valhuntir's settings (guardrails, MCP tools) only apply when Claude Code"
+    echo "is started from within this directory. Shell commands on this machine"
+    echo "aren't in the case audit, and these settings are user-switchable."
     echo ""
     echo "  cd ~/vhir && claude"
     echo ""
@@ -729,5 +841,17 @@ if [[ "$CLIENT" == "claude-code" ]]; then
 fi
 
 echo ""
+if [[ "$CLIENT" == "codex" ]]; then
+    echo ""
+    echo "Start Codex from ~/vhir with Valhuntir's profile:"
+    echo ""
+    echo "  cd ~/vhir && codex -p valhuntir"
+    echo ""
+    echo "Not from your home folder: from there its shell could change ~/.vhir."
+    echo "Limits on this machine: Codex's shell commands here aren't in the case"
+    echo "audit (only the MCP tool calls, run on the SIFT box, are), and these"
+    echo "settings are user-switchable: there are no managed Codex settings here."
+fi
+
 echo -e "${BOLD}Documentation:${NC} https://appliedir.github.io/Valhuntir/"
 echo ""

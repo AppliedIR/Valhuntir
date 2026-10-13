@@ -9,7 +9,6 @@ import yaml
 from vhir_cli.approval_auth import (
     _LOCKOUT_SECONDS,
     _MAX_PASSWORD_ATTEMPTS,
-    _MIN_PASSWORD_LENGTH,
     _check_lockout,
     _clear_failures,
     _load_password_entry,
@@ -17,12 +16,7 @@ from vhir_cli.approval_auth import (
     _recent_failure_count,
     _record_failure,
     _validate_examiner_name,
-    get_analyst_salt,
-    has_password,
-    require_confirmation,
     require_tty_confirmation,
-    reset_password,
-    setup_password,
     verify_password,
 )
 
@@ -42,126 +36,30 @@ def passwords_dir(tmp_path, monkeypatch):
     return d
 
 
-class TestPasswordSetup:
-    def test_setup_password_writes_to_passwords_dir(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "steve", passwords_dir=passwords_dir)
-        pw_file = passwords_dir / "steve.json"
-        assert pw_file.exists()
-        data = json.loads(pw_file.read_text())
-        assert "hash" in data
-        assert "salt" in data
-        # config.yaml should NOT have passwords
-        if config_path.exists():
-            config = yaml.safe_load(config_path.read_text())
-            assert "passwords" not in (config or {})
+class TestLegacyVerifier:
+    """The 0.6 verifier stays, to check a 0.6 password before its upgrade."""
 
-    def test_setup_password_fails_when_dir_not_writable(self, config_path, tmp_path):
-        """When passwords_dir can't be created, exits with clear error instead of falling back."""
-        blocker = tmp_path / "blocker"
-        blocker.write_text("file")
-        bad_passwords = blocker / "passwords"
-        # Mock subprocess so sudo doesn't actually run in tests
-        failed = MagicMock(returncode=1, stderr="mock")
-        with (
-            patch("vhir_cli.approval_auth.subprocess.run", return_value=failed),
-            patch(
-                "vhir_cli.approval_auth.getpass_prompt",
-                side_effect=["mypasswd1", "mypasswd1"],
-            ),
-        ):
-            with pytest.raises(SystemExit) as exc_info:
-                setup_password(config_path, "steve", passwords_dir=bad_passwords)
-            assert exc_info.value.code == 1
-        # Must NOT fall back to config.yaml
-        if config_path.exists():
-            config = yaml.safe_load(config_path.read_text()) or {}
-            assert "passwords" not in config
+    @staticmethod
+    def _entry(passwords_dir, name, password):
+        import hashlib
 
-    def test_setup_password_verify_roundtrip(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
+        salt = bytes(range(32))
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600_000).hex()
+        (passwords_dir / f"{name}.json").write_text(
+            json.dumps({"hash": digest, "salt": salt.hex()})
+        )
+
+    def test_a_0_6_password_verifies(self, config_path, passwords_dir):
+        self._entry(passwords_dir, "analyst1", "mypasswd1")
         assert verify_password(
             config_path, "analyst1", "mypasswd1", passwords_dir=passwords_dir
         )
 
     def test_wrong_password_fails(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["correctpw", "correctpw"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
+        self._entry(passwords_dir, "analyst1", "correctpw")
         assert not verify_password(
             config_path, "analyst1", "wrong", passwords_dir=passwords_dir
         )
-
-    def test_has_password_false_when_no_config(self, config_path, passwords_dir):
-        assert not has_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_has_password_true_after_setup(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        assert has_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_setup_password_mismatch_exits(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["password1", "password2"],
-        ):
-            with pytest.raises(SystemExit):
-                setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_setup_password_empty_exits(self, config_path, passwords_dir):
-        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=["", ""]):
-            with pytest.raises(SystemExit):
-                setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_setup_password_too_short_exits(self, config_path, passwords_dir):
-        """Password shorter than _MIN_PASSWORD_LENGTH is rejected."""
-        short = "x" * (_MIN_PASSWORD_LENGTH - 1)
-        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=[short, short]):
-            with pytest.raises(SystemExit):
-                setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_setup_password_exact_min_length_ok(self, config_path, passwords_dir):
-        """Password exactly at _MIN_PASSWORD_LENGTH is accepted."""
-        pw = "x" * _MIN_PASSWORD_LENGTH
-        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=[pw, pw]):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        assert has_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_setup_password_preserves_existing_config(self, config_path, passwords_dir):
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w") as f:
-            yaml.dump({"examiner": "steve"}, f)
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "steve", passwords_dir=passwords_dir)
-        config = yaml.safe_load(config_path.read_text())
-        assert config["examiner"] == "steve"
-        # Password should be in passwords_dir, not config
-        assert "passwords" not in config
-
-    def test_password_file_permissions(self, config_path, passwords_dir):
-        """Password file has 0o600 permissions."""
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "steve", passwords_dir=passwords_dir)
-        pw_file = passwords_dir / "steve.json"
-        assert (pw_file.stat().st_mode & 0o777) == 0o600
 
 
 class TestPasswordMigration:
@@ -212,16 +110,6 @@ class TestPasswordMigration:
         assert "bob" in config["pins"]
         assert "alice" not in config["pins"]
 
-    def test_has_password_with_legacy_config(self, config_path, passwords_dir):
-        """has_password finds password in legacy config.yaml when passwords_dir is empty."""
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w") as f:
-            yaml.dump({"pins": {"alice": {"hash": "abc", "salt": "def"}}}, f)
-        # After has_password, migration should have happened
-        assert has_password(config_path, "alice", passwords_dir=passwords_dir)
-        # Verify it was migrated
-        assert _load_password_entry(passwords_dir, "alice") is not None
-
 
 class TestExaminerNameValidation:
     def test_reject_path_traversal_dotdot(self):
@@ -242,89 +130,6 @@ class TestExaminerNameValidation:
         _validate_examiner_name("analyst1")
 
 
-class TestPasswordReset:
-    def test_reset_password_requires_current(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["oldpasswd", "oldpasswd"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        # Wrong current password
-        with patch("vhir_cli.approval_auth.getpass_prompt", side_effect=["wrong"]):
-            with pytest.raises(SystemExit):
-                reset_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-    def test_reset_password_success(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["oldpasswd", "oldpasswd"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        # Correct current, then new password twice
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["oldpasswd", "newpasswd", "newpasswd"],
-        ):
-            reset_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        assert verify_password(
-            config_path, "analyst1", "newpasswd", passwords_dir=passwords_dir
-        )
-        assert not verify_password(
-            config_path, "analyst1", "oldpasswd", passwords_dir=passwords_dir
-        )
-
-    def test_reset_no_password_exits(self, config_path, passwords_dir):
-        with pytest.raises(SystemExit):
-            reset_password(config_path, "analyst1", passwords_dir=passwords_dir)
-
-
-class TestGetAnalystSalt:
-    def test_salt_from_passwords_dir(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        salt = get_analyst_salt(config_path, "analyst1", passwords_dir=passwords_dir)
-        assert isinstance(salt, bytes)
-        assert len(salt) == 32
-
-    def test_salt_missing_raises(self, config_path, passwords_dir):
-        with pytest.raises(ValueError, match="No salt found"):
-            get_analyst_salt(config_path, "nobody", passwords_dir=passwords_dir)
-
-
-class TestRequireConfirmation:
-    def test_password_mode_correct(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="mypasswd1"):
-            mode, password = require_confirmation(config_path, "analyst1")
-        assert mode == "password"
-        assert password == "mypasswd1"
-
-    def test_password_mode_wrong_exits(self, config_path, passwords_dir):
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="wrong"):
-            with pytest.raises(SystemExit):
-                require_confirmation(config_path, "analyst1")
-
-    def test_no_password_configured_exits(self, config_path, passwords_dir, capsys):
-        """require_confirmation with no password configured exits with setup instructions."""
-        with pytest.raises(SystemExit):
-            require_confirmation(config_path, "analyst1")
-        captured = capsys.readouterr()
-        assert "No approval password configured" in captured.err
-        assert "vhir config --setup-password" in captured.err
-
-
 class TestTtyConfirmation:
     def test_tty_y_returns_true(self):
         mock_tty = MagicMock()
@@ -343,6 +148,16 @@ class TestTtyConfirmation:
         mock_tty.readline.return_value = "\n"
         with patch("builtins.open", return_value=mock_tty):
             assert require_tty_confirmation("Confirm? ") is False
+
+    @pytest.mark.parametrize(
+        "prompt", ["Unlock evidence directory? [y/N]: ", "Execute? [y/N]: "]
+    )
+    def test_a_plain_prompt_is_written_as_given(self, prompt, capsys):
+        mock_tty = MagicMock()
+        mock_tty.readline.return_value = "n\n"
+        with patch("builtins.open", return_value=mock_tty):
+            require_tty_confirmation(prompt)
+        assert capsys.readouterr().err == prompt
 
     def test_no_tty_exits(self):
         with patch("builtins.open", side_effect=OSError("No tty")):
@@ -368,7 +183,7 @@ class TestPasswordLockout:
         with pytest.raises(SystemExit):
             _check_lockout("analyst1")
         captured = capsys.readouterr()
-        assert "Password locked" in captured.err
+        assert "Passphrase locked" in captured.err
         assert "seconds" in captured.err
 
     def test_lockout_expires_after_timeout(self, monkeypatch):
@@ -413,47 +228,6 @@ class TestPasswordLockout:
         for _ in range(_MAX_PASSWORD_ATTEMPTS - 1):
             _record_failure("analyst1")
         _check_lockout("analyst1")  # Should not raise
-
-    def test_require_confirmation_records_failure_on_wrong_password(
-        self, config_path, passwords_dir
-    ):
-        """require_confirmation records failure on wrong password."""
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="wrong"):
-            with pytest.raises(SystemExit):
-                require_confirmation(config_path, "analyst1")
-        assert _recent_failure_count("analyst1") == 1
-
-    def test_require_confirmation_clears_on_success(self, config_path, passwords_dir):
-        """require_confirmation clears failures on correct password."""
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        _record_failure("analyst1")
-        assert _recent_failure_count("analyst1") == 1
-        with patch("vhir_cli.approval_auth.getpass_prompt", return_value="mypasswd1"):
-            mode, password = require_confirmation(config_path, "analyst1")
-        assert mode == "password"
-        assert password == "mypasswd1"
-        assert _recent_failure_count("analyst1") == 0
-
-    def test_lockout_blocks_require_confirmation(self, config_path, passwords_dir):
-        """Locked-out analyst cannot even attempt password entry."""
-        with patch(
-            "vhir_cli.approval_auth.getpass_prompt",
-            side_effect=["mypasswd1", "mypasswd1"],
-        ):
-            setup_password(config_path, "analyst1", passwords_dir=passwords_dir)
-        for _ in range(_MAX_PASSWORD_ATTEMPTS):
-            _record_failure("analyst1")
-        with pytest.raises(SystemExit):
-            require_confirmation(config_path, "analyst1")
 
     def test_lockout_persists_across_clear(self, isolate_lockout_file):
         """Lockout file survives even if in-process state is gone."""

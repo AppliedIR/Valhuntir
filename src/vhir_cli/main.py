@@ -20,7 +20,7 @@ from vhir_cli.case_io import DEFAULT_CASES_DIR, CaseError
 from vhir_cli.commands.approve import cmd_approve
 from vhir_cli.commands.audit_cmd import cmd_audit
 from vhir_cli.commands.backup import cmd_backup, cmd_restore
-from vhir_cli.commands.config import cmd_config
+from vhir_cli.commands.config import cmd_config, cmd_enrol
 from vhir_cli.commands.dashboard import cmd_dashboard, cmd_portal
 from vhir_cli.commands.evidence import (
     cmd_evidence,
@@ -42,8 +42,33 @@ from vhir_cli.commands.update import cmd_update
 from vhir_cli.identity import get_examiner_identity, warn_if_unconfigured
 
 
+def _command(argv: list[str]) -> str:
+    """The subcommand named on the command line, skipping root options."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--case":
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            return a
+    return ""
+
+
+class _Parser(argparse.ArgumentParser):
+    """`vhir review` reports a usage error with exit 5, so that it can't read
+    as a verification failure (exit 2); other commands keep argparse's 2."""
+
+    def error(self, message: str):
+        if _command(sys.argv[1:]) == "review":
+            self.print_usage(sys.stderr)
+            self.exit(5, f"{self.prog}: error: {message}\n")
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="vhir",
         description="Valhuntir — forensic investigation CLI",
     )
@@ -67,6 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_backup.add_argument("--include-opensearch", action="store_true")
     p_backup.add_argument(
+        "--skip-unreadable",
+        action="store_true",
+        help=(
+            "Leave out paths that can't be read, found or followed; "
+            "list them in the manifest"
+        ),
+    )
+    p_backup.add_argument(
         "--verify", metavar="BACKUP_PATH", help="Verify backup integrity"
     )
 
@@ -79,7 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument(
         "--skip-ledger",
         action="store_true",
-        help="Skip verification ledger + password hash restore",
+        help="Skip restoring the case's 0.6 approval records to this box",
+    )
+    p_restore.add_argument(
+        "--target",
+        metavar="DIR",
+        help="Folder to restore the case into, instead of being asked "
+        "(required without a terminal)",
     )
 
     # approve
@@ -118,6 +157,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Apply pending Examiner Portal reviews from pending-reviews.json",
     )
+    p_approve.add_argument(
+        "--reattest",
+        action="store_true",
+        help="Sign a fresh approval of APPROVED items with no signed line (IDs or --all)",
+    )
+    p_approve.add_argument(
+        "--all", action="store_true", help="With --reattest: every item it applies to"
+    )
+    p_approve.add_argument(
+        "--show-signed",
+        action="store_true",
+        help="Also print each item's full signed view",
+    )
 
     # reject
     p_reject = sub.add_parser("reject", help="Reject staged findings/timeline events")
@@ -132,6 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reject.add_argument(
         "--examiner", dest="examiner_override", help="Override examiner identity"
+    )
+    p_reject.add_argument(
+        "--show-signed",
+        action="store_true",
+        help="Also print each item's full signed view",
     )
     p_reject.add_argument(
         "--analyst", dest="examiner_override", help="(deprecated, use --examiner)"
@@ -158,6 +215,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_case_activate.add_argument("case_id", help="Case ID to activate")
     p_case_activate.add_argument(
+        "--cases-dir",
+        default=None,
+        help="Cases root directory (default: $VHIR_CASES_DIR or ~/cases)",
+    )
+
+    p_case_new_id = case_sub.add_parser(
+        "new-identity", help="Give a copied case its own identity"
+    )
+    p_case_new_id.add_argument("case_id", help="Case ID of the copy")
+    p_case_new_id.add_argument(
         "--cases-dir",
         default=None,
         help="Cases root directory (default: $VHIR_CASES_DIR or ~/cases)",
@@ -209,12 +276,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument(
         "--verify",
         action="store_true",
-        help="Cross-check findings against approval records",
+        help="Verify every signed decision (with --findings); no passphrase needed",
     )
     p_review.add_argument(
         "--mine",
         action="store_true",
-        help="Filter HMAC verification to current examiner only",
+        help="With --verify, show only your items (the exit code covers the case)",
+    )
+    p_review.add_argument(
+        "--expect-key",
+        action="append",
+        metavar="NAME=SHA256:<fingerprint>[:FROM-TO]",
+        help="With --verify, a key you recorded off this machine (repeatable)",
+    )
+    p_review.add_argument(
+        "--expect-head",
+        action="append",
+        metavar="[CHAIN@]SEQ:HASH",
+        help="With --verify, a ledger head you recorded off this machine (repeatable)",
+    )
+    p_review.add_argument(
+        "--ledger",
+        action="append",
+        metavar="PATH",
+        help="With --verify, read this chain copy instead of the box's and the case's",
     )
     p_review.add_argument(
         "--iocs",
@@ -226,13 +311,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review.add_argument("--todos", action="store_true", help="Show TODO items")
     p_review.add_argument(
+        "--withdrawn",
+        action="store_true",
+        help="Show candidate findings withdrawn after challenge, with the evidence",
+    )
+    p_review.add_argument(
         "--open", action="store_true", help="Show only open TODOs (with --todos)"
     )
     p_review.add_argument("--status", help="Filter by status (DRAFT/APPROVED/REJECTED)")
     p_review.add_argument(
         "--start", help="Start date filter (ISO format, e.g. 2026-01-01)"
     )
-    p_review.add_argument("--end", help="End date filter (ISO format, e.g. 2026-12-31)")
+    p_review.add_argument(
+        "--end",
+        help="End date filter (ISO format, e.g. 2026-12-31; a date alone includes "
+        "that whole day, UTC)",
+    )
     p_review.add_argument("--type", help="Filter by event type (with --timeline)")
     p_review.add_argument("--limit", type=int, default=50, help="Limit entries shown")
 
@@ -306,6 +400,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_join.add_argument(
         "--skip-setup", action="store_true", help="Skip client config generation"
     )
+    p_join.add_argument(
+        "--name",
+        help="Examiner name to join as (default: this machine's host name, "
+        "normalised); lower-case letters, digits and hyphens, at most 20",
+    )
 
     # setup
     p_setup = sub.add_parser("setup", help="Configure LLM client and test connectivity")
@@ -322,6 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
             "claude-desktop",
             "librechat",
             "other",
+            "codex",
+            "open-webui",
         ],
         help="Target LLM client",
     )
@@ -353,9 +454,18 @@ def build_parser() -> argparse.ArgumentParser:
         "-y", "--yes", action="store_true", help="Accept defaults, no prompts"
     )
     p_client.add_argument(
+        "--ask-user-files",
+        action="store_true",
+        help="With -y, still ask (on a terminal) before changing your own "
+        "Claude settings, rules or commands",
+    )
+    p_client.add_argument(
         "--remote",
         action="store_true",
         help="Remote setup mode (gateway on another host)",
+    )
+    p_client.add_argument(  # deploys failIfUnavailable: false, after a typed phrase
+        "--allow-unsandboxed", action="store_true", help=argparse.SUPPRESS
     )
     p_client.add_argument("--token", help="Bearer token for gateway authentication")
     p_client.add_argument(
@@ -368,6 +478,16 @@ def build_parser() -> argparse.ArgumentParser:
         "join-code", help="Generate a join code for remote machines"
     )
     p_join_code.add_argument("--expires", type=int, help="Expiry in hours (default: 2)")
+    p_join_code.add_argument(
+        "--revoke",
+        action="store_true",
+        help="End every unused join code, and do nothing else",
+    )
+    p_join_code.add_argument(
+        "--name",
+        help="Bind the code to this examiner name: the join gets that name and "
+        "ends its earlier gateway tokens (for re-joining under one's own name)",
+    )
 
     # export
     p_export = sub.add_parser("export", help="Export findings + timeline as JSON")
@@ -396,12 +516,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument(
         "--setup-password",
         action="store_true",
-        help="Set approval password for current examiner",
+        help="Set up a passphrase and signing key (refused if one exists)",
     )
     p_config.add_argument(
         "--reset-password",
         action="store_true",
-        help="Reset approval password (requires current password)",
+        help="Change the passphrase (requires the current one); the key is unchanged",
+    )
+    p_config.add_argument(
+        "--forgot-password",
+        action="store_true",
+        help="Make a new signing key under a new passphrase; the old key is retired",
+    )
+    p_config.add_argument(
+        "--upgrade-key",
+        action="store_true",
+        help="Make the signing key for a 0.6 passphrase (prints the fingerprint if done)",
+    )
+
+    # enrol
+    p_enrol = sub.add_parser(
+        "enrol", help="Set up or change another examiner's signing credential, by name"
+    )
+    p_enrol.add_argument(
+        "--name", required=True, help="Examiner name (as in the portal)"
+    )
+    enrol_mode = p_enrol.add_mutually_exclusive_group()
+    enrol_mode.add_argument(
+        "--reset", action="store_true", help="Change the passphrase"
+    )
+    enrol_mode.add_argument(
+        "--forgot", action="store_true", help="Make a new signing key"
+    )
+    enrol_mode.add_argument(
+        "--upgrade", action="store_true", help="Upgrade a 0.6 passphrase"
     )
 
     # report
@@ -419,7 +567,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument(
         "--from", dest="from_date", help="Start date filter (ISO format)"
     )
-    p_report.add_argument("--to", dest="to_date", help="End date filter (ISO format)")
+    p_report.add_argument(
+        "--to",
+        dest="to_date",
+        help="End date filter (ISO format; a date alone includes that whole day, UTC)",
+    )
     p_report.add_argument(
         "--ioc", action="store_true", help="IOC report from approved findings"
     )
@@ -445,6 +597,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ev_register.add_argument("path", help="Path to evidence file")
     p_ev_register.add_argument(
         "--description", default="", help="Description of evidence"
+    )
+    p_ev_register.add_argument(
+        "--force-reregister",
+        action="store_true",
+        help="Re-register a file whose hash changed (keeps the prior hash)",
     )
 
     evidence_sub.add_parser("list", help="List registered evidence files")
@@ -516,6 +673,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip gateway restart",
     )
+    torch_build = p_update.add_mutually_exclusive_group()
+    torch_build.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Install CPU PyTorch for knowledge search (~0.7 GB)",
+    )
+    torch_build.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Install GPU (CUDA) PyTorch for knowledge search (~5.4 GB)",
+    )
 
     # portal / dashboard
     sub.add_parser("portal", help="Open the Examiner Portal in your browser")
@@ -560,6 +728,7 @@ def main() -> None:
         "unlock-evidence": cmd_unlock_evidence,
         "register-evidence": cmd_register_evidence,
         "config": cmd_config,
+        "enrol": cmd_enrol,
         "todo": cmd_todo,
         "setup": cmd_setup,
         "export": cmd_export,
@@ -577,10 +746,22 @@ def main() -> None:
 
     handler = dispatch.get(args.command)
     if handler:
+        from vhir_cli.ledger import LockDirMissing
+
         try:
             handler(args, identity)
-        except CaseError as e:
+        except (CaseError, LockDirMissing) as e:  # one line, never a traceback
             print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except PermissionError as e:
+            from vhir_cli import credentials
+
+            if not credentials.on_signing_folders(e.filename):
+                raise
+            print(  # never a traceback
+                credentials.signing_folders_problem() or credentials.FINISH_UPDATE,
+                file=sys.stderr,
+            )
             sys.exit(1)
     elif hasattr(args, "func"):
         try:
@@ -602,6 +783,8 @@ def _cmd_case(args, identity: dict) -> None:
         _case_init(args, identity)
     elif action == "activate":
         _case_activate(args, identity)
+    elif action == "new-identity":
+        _case_new_identity(args)
     elif action == "close":
         _case_close(args, identity)
     elif action == "reopen":
@@ -618,7 +801,7 @@ def _cmd_case(args, identity: dict) -> None:
         _case_list(args, identity)
     else:
         print(
-            "Usage: vhir case {init|activate|close|reopen|status|list|migrate|prune-ingest-manifests}",
+            "Usage: vhir case {init|activate|new-identity|close|reopen|status|list|migrate|prune-ingest-manifests}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -843,6 +1026,20 @@ def _case_init_data(
 
     if case_dir.exists():
         raise ValueError(f"Case directory already exists: {case_dir}")
+    # A box ledger already under this id belongs to another case: a new case
+    # would chain onto (or freeze) that history
+    from vhir_cli import ledger as _ledger
+    from vhir_cli import verification as _verification
+
+    for held in (
+        _ledger.chain_path(case_id),
+        _verification.VERIFICATION_DIR / f"{case_id}.jsonl",
+    ):
+        if held.exists():
+            raise ValueError(
+                f"This box already holds a ledger for case id {case_id} ({held}). Choose "
+                "another case id, or restore the case it belongs to."
+            )
 
     # Create flat directory structure
     case_dir.mkdir(parents=True)
@@ -902,13 +1099,31 @@ def _case_init_data(
             except OSError:
                 pass
 
-    # Set active case pointer
+    # Set the active case pointer. Every session sharing it switches too, so
+    # the result says which case was active before.
+    activation = None
+    # The case's identity and host logs (on a SIFT workstation), before the
+    # case is used
+    from vhir_cli.case_identity import ensure_identity, record_case_path
+
+    ensure_identity(case_dir, naming_version=2)
+    record_case_path(case_dir)
+
     try:
         vhir_dir = Path.home() / ".vhir"
         vhir_dir.mkdir(exist_ok=True)
-        _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
+        pointer = vhir_dir / "active_case"
+        try:
+            previous = pointer.read_text().strip()
+        except (OSError, UnicodeDecodeError):
+            previous = ""  # unreadable: it is still replaced, but names no case
+        _atomic_write(pointer, str(case_dir.resolve()))
+        activation = {
+            "active": case_id,
+            "previous": Path(previous).name if previous else None,
+        }
     except OSError:
-        pass  # non-fatal — CLI wrapper will warn
+        pass  # the case exists but isn't active: the result has no "activation"
 
     result = {
         "case_id": case_id,
@@ -918,34 +1133,162 @@ def _case_init_data(
     }
     if fs_warning:
         result["fs_warning"] = fs_warning
+    if activation:
+        result["activation"] = activation
     return result
 
 
-def _set_case_wintools_permissions(case_dir: Path) -> None:
-    """Set group-based permissions for wintools access on a case directory."""
+def _open_case_folders(case_dir: Path) -> str | None:
+    """On a box joined with vhir's own share, open `extractions/` and
+    `audit/` to 0775 by the owner's own chmod, so files the share writes as
+    the installer's group can go in them, old cases included: only a folder
+    whose group is the installer's private group (checked at join). Returns
+    what was left as it was, or None."""
     import grp
     import os
+    import stat
 
+    from vhir_cli.commands.join import SHARE_NAME, share_settings
+
+    share = share_settings()
+    group = share.get("force_group")
+    if share.get("share_name") != SHARE_NAME or not group:
+        return None
     try:
-        sift_gid = grp.getgrnam("sift").gr_gid
+        gid = grp.getgrnam(group).gr_gid
     except KeyError:
+        return f"extractions/ and audit/ left as they are: group {group!r} not found"
+    root = os.path.realpath(case_dir)
+    notes = []
+    for name in ("extractions", "audit"):
+        path = case_dir / name
+        try:
+            path.mkdir(exist_ok=True)
+            if os.path.commonpath([os.path.realpath(path), root]) != root:
+                notes.append(f"{path} left as it is: it leads outside the case")
+                continue
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_DIRECTORY
+            fd = os.open(path, flags)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISDIR(st.st_mode) or st.st_gid != gid:
+                    notes.append(f"{path} left as it is: its group isn't {group}")
+                    continue
+                os.fchmod(fd, 0o775)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            notes.append(f"{path} left as it is: {e.strerror or e}")
+    return "; ".join(notes) or None
+
+
+def _set_case_wintools_permissions(case_dir: Path) -> str | None:
+    """Open the case's folders to the share (`_open_case_folders`), then set
+    group-based permissions for wintools access on it: the group the share
+    writes as (`force_group`) on a box joined with vhir's own share, else
+    `sift`.
+
+    Returns a warning when a step can't be applied (a process that doesn't
+    have the sift group yet), so the caller still repoints the share and
+    notifies wintools. The share marker is written when the share is pointed
+    at the case (`join.mark_case`).
+    """
+    import grp
+    import os
+    import stat
+
+    from vhir_cli.commands.join import SHARE_NAME, share_settings
+
+    opened = _open_case_folders(case_dir)  # whatever the group step does
+    share = share_settings()
+    own_share = share.get("share_name") == SHARE_NAME and share.get("force_group")
+    group = str(share["force_group"]) if own_share else "sift"
+    try:
+        sift_gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        if own_share:
+            raise RuntimeError(
+                f"Group {group!r}, which the share writes as, not found. "
+                "Re-join with 'vhir setup join-code' to set the share up again."
+            ) from None
         raise RuntimeError(
             "Group 'sift' not found. Run 'vhir setup join-code' to set up wintools integration."
         ) from None
 
-    # Create extractions/wintools/ with setgid + group-writable
-    wintools_dir = case_dir / "extractions" / "wintools"
-    wintools_dir.mkdir(parents=True, exist_ok=True)
-    os.chown(str(wintools_dir), -1, sift_gid)
-    os.chmod(str(wintools_dir), 0o2775)
+    remedy = (
+        "This box still uses the old [cases] share, whose group 'sift' this "
+        "process doesn't have until the box reboots. Run 'vhir setup join-code' "
+        "and the Windows installer with the new code: vhir's own share needs no "
+        "group, re-login or restart."
+    )
+    if (
+        not own_share
+        and os.geteuid() != 0
+        and sift_gid != os.getegid()
+        and sift_gid not in os.getgroups()
+    ):
+        # the group step can't succeed here: make nothing rather than half
+        wintools_dir = case_dir / "extractions" / "wintools"
+        missing = f"Group permissions not applied to {wintools_dir}: {remedy}"
+        return "; ".join(w for w in (opened, missing) if w)
 
-    # Create audit/wintools-mcp.jsonl with group-writable
-    audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
-    if not audit_file.exists():
-        audit_file.parent.mkdir(parents=True, exist_ok=True)
-        audit_file.touch()
-    os.chown(str(audit_file), -1, sift_gid)
-    os.chmod(str(audit_file), 0o664)
+    root = os.path.realpath(case_dir)
+
+    def inside(path: Path) -> bool:
+        real = os.path.realpath(path)
+        return os.path.commonpath([real, root]) == root
+
+    def share_with_group(path: Path, mode: int, directory: bool = False) -> str | None:
+        """Give `path` to the group: only a regular file or folder (as asked)
+        inside the case, never through a link, and never waiting on a pipe."""
+        kind = stat.S_ISDIR if directory else stat.S_ISREG
+        refused = (
+            f"Group permissions not applied: {path} is not a "
+            f"{'folder' if directory else 'regular file'} inside the case."
+        )
+        if not kind(os.lstat(path).st_mode) or not inside(path):
+            return refused
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(path, flags | (os.O_DIRECTORY if directory else 0))
+            try:
+                if not kind(os.fstat(fd).st_mode):  # replaced since the check
+                    return refused
+                os.fchown(fd, -1, sift_gid)
+                os.fchmod(fd, mode)
+            finally:
+                os.close(fd)
+        except OSError as e:
+            e.filename = str(path)
+            raise
+        return None
+
+    def group_step() -> str | None:
+        try:
+            # Create extractions/wintools/ with setgid + group-writable
+            wintools_dir = case_dir / "extractions" / "wintools"
+            if not inside(wintools_dir):
+                return f"Group permissions not applied: {wintools_dir} leads outside the case."
+            wintools_dir.mkdir(parents=True, exist_ok=True)
+            warning = share_with_group(wintools_dir, 0o2775, directory=True)
+            if warning:
+                return warning
+
+            # Create audit/wintools-mcp.jsonl with group-writable
+            audit_file = case_dir / "audit" / "wintools-mcp.jsonl"
+            if not inside(audit_file):
+                return f"Group permissions not applied: {audit_file} leads outside the case."
+            if not audit_file.exists() and not audit_file.is_symlink():
+                audit_file.parent.mkdir(parents=True, exist_ok=True)
+                audit_file.touch()
+            return share_with_group(audit_file, 0o664)
+        except OSError as e:
+            return (
+                f"Group permissions not applied to {e.filename or case_dir}: "
+                f"{e.strerror or e}." + ("" if own_share else f" {remedy}")
+            )
+
+    return "; ".join(w for w in (opened, group_step()) if w) or None
 
 
 def _wintools_configured() -> bool:
@@ -978,6 +1321,13 @@ def _gateway_has_wintools() -> bool:
         return bool(doc and doc.get("backends", {}).get("wintools-mcp"))
     except Exception:
         return False
+
+
+# Said at intake while a case has no host list (case-mcp's case_init says the same)
+HOST_LIST_HINT = (
+    "If you have an inventory of the machines in scope, upload it in the Hosts tab "
+    "before ingesting; matching hosts then confirm automatically."
+)
 
 
 def _case_init(args, identity: dict) -> None:
@@ -1037,8 +1387,27 @@ def _case_init(args, identity: dict) -> None:
     print(f"  Name: {name}")
     print(f"  Examiner: {data['examiner']}")
     print(f"  Path: {data['case_dir']}")
+    activation = data.get("activation")
+    if activation:
+        was = f" (was {activation['previous']})" if activation["previous"] else ""
+        print(f"Active case is now {activation['active']}{was}")
+        override = os.environ.get("VHIR_CASE_DIR")
+        try:  # the case is made and active: an unresolvable override can't undo that
+            elsewhere = (
+                override
+                and Path(override).resolve() != Path(data["case_dir"]).resolve()
+            )
+        except (OSError, RuntimeError):
+            elsewhere = True  # can't tell it's the new case, so say it's set
+        if elsewhere:
+            print(
+                f"  VHIR_CASE_DIR={override} is set and still overrides it in this shell"
+            )
+    else:
+        print("Warning: the new case could not be made the active case")
     if data.get("fs_warning"):
         print(f"  WARNING: {data['fs_warning']}")
+    print(HOST_LIST_HINT)  # a case just made has no host list
 
     # Wintools sharing (after case creation succeeds)
     if _wintools_configured():
@@ -1053,10 +1422,13 @@ def _case_init(args, identity: dict) -> None:
                     notify_wintools_case_activated,
                 )
 
-                _set_case_wintools_permissions(Path(data["case_dir"]))
+                warning = _set_case_wintools_permissions(Path(data["case_dir"]))
                 _repoint_samba_share(Path(data["case_dir"]))
                 notify_wintools_case_activated(data["case_id"])
-                print("Case permissions set for wintools")
+                if warning:
+                    print(f"  WARNING: {warning}")
+                else:
+                    print("Case permissions set for wintools")
             except Exception as e:
                 print(
                     f"Warning: Failed to set up wintools sharing: {e}",
@@ -1107,11 +1479,54 @@ def _case_activate_data(case_id: str, cases_dir=None) -> dict:
     if not case_dir.exists():
         raise ValueError(f"Case not found: {case_id}")
 
+    # An older case gets its identity now; a copy of another case is refused
+    from vhir_cli.case_identity import ensure_identity, record_case_path
+
+    ensure_identity(case_dir)
+    record_case_path(case_dir)
+
     vhir_dir = Path.home() / ".vhir"
     vhir_dir.mkdir(exist_ok=True)
     _atomic_write(vhir_dir / "active_case", str(case_dir.resolve()))
 
     return {"case_id": case_id, "case_dir": str(case_dir)}
+
+
+def _case_new_identity(args) -> None:
+    """CLI: give a copied case (cp -r of another) its own identity."""
+    import os
+    from pathlib import Path
+
+    from vhir_cli.case_identity import new_identity
+
+    cases_dir = Path(
+        getattr(args, "cases_dir", None)
+        or os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR)
+    )
+    case_id = args.case_id
+    if not case_id or ".." in case_id or "/" in case_id or "\\" in case_id:
+        print(f"Error: Invalid case ID: {case_id}", file=sys.stderr)
+        sys.exit(1)
+    case_dir = cases_dir / case_id
+    if not (case_dir / "CASE.yaml").is_file():
+        print(f"Error: Case not found: {case_id}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        new = new_identity(case_dir)
+    except (ValueError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(f"{case_dir} now has its own identity: {new}")
+    print("Its records will be stored under it; the original's are unchanged.")
+    from vhir_cli import ledger
+    from vhir_cli.case_io import case_id_of
+
+    signed_as = case_id_of(case_dir)
+    if ledger.chain_path(signed_as).exists():
+        print(
+            "It can be read and verified, but can't sign: this box's signed chain "
+            f"for {signed_as} belongs to the original folder."
+        )
 
 
 def _case_activate(args, identity: dict) -> None:
@@ -1141,8 +1556,11 @@ def _case_activate(args, identity: dict) -> None:
                 notify_wintools_case_activated,
             )
 
+            warning = _set_case_wintools_permissions(case_path)
             _repoint_samba_share(case_path)
             notify_wintools_case_activated(args.case_id)
+            if warning:
+                print(f"  WARNING: {warning}")
         except Exception as e:
             print(
                 f"Warning: wintools share update failed: {e}",
@@ -1178,8 +1596,25 @@ def _case_close(args, identity: dict) -> None:
     with open(meta_file) as f:
         meta = yaml.safe_load(f) or {}
 
-    if meta.get("status") == "closed":
-        print(f"Case {case_id} is already closed.")
+    from vhir_cli import case_copies
+
+    # The case's copies of its signed history first: a case is marked closed
+    # only once it can be verified on another box
+    try:
+        copied = case_copies.write_case_copies(case_id, case_dir)
+    except case_copies.CopyFailed as e:
+        print(f"Error: {e}. The case was not closed.", file=sys.stderr)
+        sys.exit(1)
+    for what, path in copied["copies"]:
+        if what == "moved beside":
+            print(
+                f"  A different file was where this box's copy goes; it was moved beside it: {path}"
+            )
+    for line in case_copies.summary_lines(case_id, copied):
+        print(line)
+
+    if meta.get("status") == "closed":  # a retry of the copy
+        print(f"Case {case_id} is already closed; its ledger copies are up to date.")
         return
 
     meta["status"] = "closed"
@@ -1204,14 +1639,6 @@ def _case_close(args, identity: dict) -> None:
             notify_wintools_case_deactivated()
         except Exception as e:
             print(f"Warning: failed to clear wintools share: {e}", file=sys.stderr)
-
-    # Copy verification ledger into case directory
-    try:
-        from vhir_cli.verification import copy_ledger_to_case
-
-        copy_ledger_to_case(case_id, case_dir)
-    except (ImportError, OSError):
-        pass  # Non-fatal — ledger may not exist
 
     # Clear active case pointer if this was the active case
     active_file = Path.home() / ".vhir" / "active_case"
@@ -1256,6 +1683,18 @@ def _case_reopen(args, identity: dict) -> None:
         )
         return
 
+    # As at activation: an older case gets its identity, a copy is refused
+    from vhir_cli.case_identity import ensure_identity, record_case_path
+
+    try:
+        ensure_identity(case_dir)
+        record_case_path(case_dir)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    with open(meta_file) as f:  # the mint may have added keys
+        meta = yaml.safe_load(f) or {}
+
     meta["status"] = "open"
     meta.pop("closed", None)
     meta.pop("close_summary", None)
@@ -1277,8 +1716,11 @@ def _case_reopen(args, identity: dict) -> None:
                 notify_wintools_case_activated,
             )
 
+            warning = _set_case_wintools_permissions(case_dir)
             _repoint_samba_share(case_dir)
             notify_wintools_case_activated(case_id)
+            if warning:
+                print(f"  WARNING: {warning}")
         except Exception as e:
             print(f"Warning: wintools share update failed: {e}", file=sys.stderr)
 

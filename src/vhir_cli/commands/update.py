@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Install order matches setup-sift.sh dependency chain.
 # vhir-cli must come before case-mcp/report-mcp.
@@ -153,9 +154,11 @@ def _ensure_bwrap_profile() -> None:
 
 
 def _ensure_password_dir() -> None:
-    """Ensure /var/lib/vhir/passwords/ exists, migrating from pins/ if needed."""
+    """Ensure /var/lib/vhir/passwords/ exists, migrating from pins/ if needed,
+    and the signing folders keys/ and ledger/ (the case lock lives there)."""
     passwords_dir = Path("/var/lib/vhir/passwords")
     pins_dir = Path("/var/lib/vhir/pins")
+    _ensure_signing_dirs()
 
     if passwords_dir.is_dir():
         return
@@ -163,7 +166,9 @@ def _ensure_password_dir() -> None:
     # Migrate pins/ → passwords/ (requires sudo because parent is root-owned)
     if pins_dir.is_dir():
         print(
-            "  Migrating password storage (pins/ → passwords/)... ", end="", flush=True
+            "  Migrating passphrase storage (pins/ → passwords/)... ",
+            end="",
+            flush=True,
         )
         result = subprocess.run(
             ["sudo", "mv", str(pins_dir), str(passwords_dir)],
@@ -181,7 +186,7 @@ def _ensure_password_dir() -> None:
     import getpass
 
     user = getpass.getuser()
-    print("  Creating password storage directory... ", end="", flush=True)
+    print("  Creating passphrase storage directory... ", end="", flush=True)
     result = subprocess.run(
         [
             "sudo",
@@ -203,6 +208,59 @@ def _ensure_password_dir() -> None:
             f"sudo chmod 700 {passwords_dir}",
             file=sys.stderr,
         )
+
+
+def _ensure_signing_dirs() -> None:
+    """/var/lib/vhir/keys/ and /var/lib/vhir/ledger/ (the case lock lives
+    there), owned by this user, 0700. The name also marks this update as one
+    that makes them (client_setup._under_an_older_update)."""
+    from vhir_cli.commands.client_setup import ensure_signing_dirs
+
+    ensure_signing_dirs()
+
+
+def _offer_signing_key(identity: dict) -> None:
+    """After an update: the examiner's signing credential, as the installer
+    reports it. A 0.6 password is offered the upgrade; none is told how to
+    set one up; a signing key's fingerprint is printed."""
+    from vhir_cli import credentials, keys
+
+    examiner = identity.get("examiner", "")
+    config_path = Path.home() / ".vhir" / "config.yaml"
+    try:
+        current = credentials.state(examiner, config_path)
+    except (credentials.CredentialError, keys.KeysFileInvalid) as e:
+        print(
+            f"  Signing key: can't be read ({e}); run `vhir config --forgot-password`."
+        )
+        return
+    if current == "schema3":
+        fp = keys.key_fingerprint(keys.active(keys.load(examiner)))
+        print(f"  Signing key for {examiner}: {fp}")
+        return
+    if current == "none":
+        print(
+            f"  No signing passphrase for {examiner}: set one with `vhir config --setup-password`."
+        )
+        return
+    print(f"  {examiner} has a 0.6 passphrase: approvals now need a signing key.")
+    answer = ""
+    if sys.stdin.isatty():
+        try:
+            answer = (
+                input("  Upgrade it now (vhir config --upgrade-key)? [Y/n] ")
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            answer = "n"
+    if not sys.stdin.isatty() or answer in ("n", "no"):
+        print("  Run `vhir config --upgrade-key` when you're ready.")
+        return
+    try:
+        credentials.upgrade(examiner, config_path)
+    except credentials.CredentialError as e:
+        print(f"  {e} Run `vhir config --upgrade-key` to try again.", file=sys.stderr)
 
 
 def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
@@ -258,6 +316,254 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
         if resolved.is_dir() and (resolved / ".git").is_dir():
             return resolved
     return None
+
+
+def _module_installed(module: str) -> bool:
+    """True when the package is in this venv (vhir runs from it). The
+    manifest can't say: the installer never recorded opensearch-mcp, and
+    OpenCTI's client may have been added after it was written."""
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec(module) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# 0.6.9 is the first with --torch-backend, which the CPU PyTorch lock needs;
+# hash checks of the lock need 0.6.0.
+_UV_FLOOR = (0, 6, 9)
+
+_TORCH_INDEX_HINT = (
+    "  CPU PyTorch comes from download.pytorch.org; if you use a package mirror,"
+    " re-run with --gpu."
+)
+
+
+def _uv_version() -> tuple[int, int, int] | None:
+    """uv's version, or None when it can't be read."""
+    import re
+
+    try:
+        out = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"uv (\d+)\.(\d+)\.(\d+)", out.stdout or "")
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
+def _stop_part_way(args) -> NoReturn:
+    """Exit after the pull: say what state that leaves and how to finish."""
+    flag = " --cpu" if args.cpu else " --gpu" if args.gpu else ""
+    print(
+        "\n  Update stopped part-way: the code was pulled and packages may have"
+        " changed, but the forensic controls weren't redeployed and the gateway"
+        " wasn't restarted.\n  Fix the problem above, then finish with:"
+        f" vhir update{flag}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _check_lock(args, venv_python: str, checker: Path, lock: Path, mode: str) -> None:
+    """Run the venv against the lock (deps/check-lock.py, from the pulled
+    sift-mcp); it prints what it finds. Stops the update when the check fails."""
+    try:
+        result = subprocess.run(
+            [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        print("  The dependency check timed out after 120 seconds.", file=sys.stderr)
+        _stop_part_way(args)
+    if result.returncode != 0:
+        print(
+            "  The installed packages don't match the dependency lock (above).",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
+
+
+def _torch_installed(venv_python: str) -> str:
+    """The venv's torch version ("2.14.0+cpu" for the CPU build), or ""."""
+    try:
+        out = subprocess.run(
+            [
+                venv_python,
+                "-I",
+                "-c",
+                'import importlib.metadata as m; print(m.version("torch"))',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
+    """(the build to install, the record to keep). The flag, else the build
+    already in the venv, else CPU. Asked only on a terminal, with no flag,
+    when the venv has torch but was never asked (no record), or forensic-rag
+    is to be installed without it. macOS has one build (PyPI's) and no record."""
+    flag = "cpu" if args.cpu else "gpu" if args.gpu else ""
+    record = manifest.get("torch_variant", "")
+    if sys.platform == "darwin":
+        if flag:
+            print(
+                f"  --{flag} is not applicable on macOS (PyPI's PyTorch has no CUDA)."
+            )
+        return "pypi", record
+    if flag:
+        return flag, flag
+    variant = "cpu" if installed.endswith("+cpu") or not installed else "gpu"
+    rag = "rag-mcp" in manifest.get("packages", {})
+    if sys.stdin.isatty() and ((installed and not record) or (rag and not installed)):
+        import shutil
+
+        found = "no NVIDIA GPU was found"
+        if shutil.which("nvidia-smi"):
+            try:
+                smi = subprocess.run(
+                    ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
+                )
+                if smi.returncode == 0 and smi.stdout.startswith("GPU"):
+                    found = "an NVIDIA GPU was found"
+            except (OSError, subprocess.SubprocessError):
+                pass  # a probe that fails or hangs: no GPU detected
+        print(f"\n  PyTorch for knowledge search ({found}):")
+        if installed:
+            print(
+                f"    Installed now: the {variant.upper()} build (torch {installed})."
+            )
+            print(
+                "    Choosing the other build replaces it; CUDA packages it leaves"
+                " are listed after the install."
+            )
+        print("    cpu  about 0.2 GB download, 0.7 GB on disk; slower index builds")
+        print(
+            "    gpu  about 3 GB download, 5.4 GB on disk; much faster index"
+            " builds; needs an NVIDIA GPU"
+        )
+        while True:
+            try:
+                answer = input("    PyTorch build (cpu/gpu) [cpu]: ")
+            except EOFError:  # no answer mustn't become a silent swap to CPU
+                print(
+                    "\nNo answer to the PyTorch question; nothing installed."
+                    " Re-run with: vhir update --cpu or --gpu",
+                    file=sys.stderr,
+                )
+                _stop_part_way(args)
+            answer = answer.strip().lower() or "cpu"
+            if answer in ("cpu", "gpu"):
+                return answer, answer
+            print("    Please enter cpu or gpu.")
+    print(f"  PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)")
+    return variant, record
+
+
+def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    """After the CPU build is in and --final passed: offer to remove the CUDA
+    packages it doesn't use. Asks first, loudly; the default is No. Nothing
+    here stops the update: no answer, a timeout or a failed step leaves the
+    commands it printed to finish by hand."""
+    try:
+        _cleanup(venv_python, checker, lock)
+    except (EOFError, OSError, subprocess.SubprocessError):
+        print("\n  Clean-up not finished; the commands above complete it.")
+
+
+def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    out = subprocess.run(
+        [venv_python, str(checker), "--cuda-leftovers", "--lock", str(lock)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    rows = [line.split() for line in out.stdout.splitlines() if line.strip()]
+    if out.returncode != 0 or not rows:
+        return
+    names = [r[0] for r in rows]
+    total = sum(int(r[1]) for r in rows)
+    print("\n  " + "=" * 66)
+    print(
+        "  CUDA-family packages the chosen lock doesn't install (check none are yours):"
+    )
+    for name, size in rows:
+        print(f"    {name:<34} {int(size) / 1e9:6.2f} GB")
+    print(f"    {'total in the venv':<34} {total / 1e9:6.2f} GB")
+    print("  Removing them runs:")
+    print(f"    uv pip uninstall --python {venv_python} {' '.join(names)}")
+    print(f"    uv cache clean {' '.join(names)}")
+    print(
+        "  This changes only Valhuntir's environment and uv's download cache,\n"
+        "  and any other uv environment installed with --link-mode symlink that\n"
+        "  uses these packages: such an environment would need a reinstall.\n"
+        "  The disk comes back only with the cache clean (the venv's files are\n"
+        "  links into it). A later GPU install downloads them again (~3 GB)."
+    )
+    print("  " + "=" * 66)
+    if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("  Kept. The commands above remove them later.")
+        return
+    py = ["--python", venv_python]
+    # check=True: a failed uninstall must not reach the cache clean, which
+    # would break a venv that links those files from the cache.
+    subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
+    subprocess.run(["uv", "cache", "clean", *names], timeout=600)
+    check = subprocess.run(
+        ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
+    )
+    if check.returncode != 0:
+        print(
+            f"  The removal didn't finish ({(check.stdout + check.stderr).strip()}).\n"
+            f"  Finish it: uv pip uninstall --python {venv_python} {' '.join(names)}",
+            file=sys.stderr,
+        )
+
+
+def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
+    """After --final passed: offer to remove pycti, OpenCTI's old client, and
+    what only it brought in (check-lock's list). Asks first; the default is No.
+    Nothing here stops the update."""
+    try:
+        out = subprocess.run(
+            [venv_python, str(checker), "--opencti-leftovers", "--lock", str(lock)],
+            capture_output=True, text=True, timeout=120,
+        )  # fmt: skip
+        names = out.stdout.split() if out.returncode == 0 else []
+        if not names:
+            return
+        remove = f"uv pip uninstall --python {venv_python} {' '.join(names)}"
+        print("\n  " + "=" * 66)
+        print("  Left by an earlier OpenCTI install; Valhuntir no longer uses them:")
+        print(f"    {' '.join(names)}\n  Removing them runs:\n    {remove}")
+        print(
+            "  This changes only Valhuntir's environment. The optional standalone\n"
+            "  opencti_query.py script (sift-mcp packages/opencti) needs pycti; to\n"
+            f"  use it again: uv pip install --python {venv_python} pycti"
+        )
+        print("  " + "=" * 66)
+        if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("  Kept. The command above removes them later.")
+            return
+        py = ["--python", venv_python]
+        subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
+        check = subprocess.run(
+            ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
+        )
+        if check.returncode == 0:
+            print("  Removed; the dependency check is clean.")
+        else:
+            print(
+                f"  Removed; the check reports: {(check.stdout + check.stderr).strip()}"
+            )
+    except (EOFError, OSError, subprocess.SubprocessError):
+        print("\n  Clean-up not finished; the command above completes it.")
 
 
 def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
@@ -329,6 +635,52 @@ def _check_opensearch_version(source: Path) -> None:
         else:
             print(f"  Skipped. To upgrade later: bash {setup_script}")
         print()
+
+
+def _redeploy_clients(manifest: dict) -> list[str]:
+    """Step 5: redeploy each client's local controls; returns the clients."""
+    from vhir_cli.commands.codex_controls import manifest_clients
+
+    clients = manifest_clients(manifest)
+    if "claude-desktop" in clients:
+        from vhir_cli.commands.client_setup import DESKTOP_DROPPED
+
+        print(f"  {DESKTOP_DROPPED}")
+    from vhir_cli.controls import MCP, print_block
+
+    if "claude-code" in clients:
+        from vhir_cli.commands.client_setup import _deploy_claude_code_assets
+
+        print("  Redeploying forensic controls...")
+        settings = _deploy_claude_code_assets()
+        path = settings[0] if isinstance(settings, tuple) else None
+        if isinstance(settings, tuple) and settings[1] == "kept":
+            print(f"  Forensic controls NOT applied to {path}; see above.")
+        print_block("claude-code", path)  # what the file holds now
+    if "codex" in clients:
+        from vhir_cli.commands.client_setup import deploy_codex_assets
+        from vhir_cli.commands.codex_controls import (
+            codex_controls_state,
+            deploy_codex_controls,
+            state_lines,
+        )
+
+        print("  Redeploying Codex's profile, skills and managed requirements...")
+        deploy_codex_assets()
+        if codex_controls_state(clients) == "off":  # the opt-out: said, not undone
+            for line in state_lines(clients):
+                print(line)
+        else:
+            deploy_codex_controls()
+        print_block("codex")
+    for other in [
+        c for c in clients if c not in ("claude-code", "codex", "claude-desktop")
+    ]:
+        print(f"  Client: {other} (no local controls to redeploy)")
+        print_block(MCP)
+    if not clients:
+        print("  No client type in manifest. Run 'vhir setup client' to configure.")
+    return clients
 
 
 def cmd_update(args, identity: dict) -> None:
@@ -414,8 +766,7 @@ def cmd_update(args, identity: dict) -> None:
         )
         if result.returncode != 0:
             print(
-                f"Cannot reach remote for {name}: {result.stderr.strip()}\n"
-                "Check network and try again.",
+                f"git fetch failed for {name}: {result.stderr.strip()}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -443,17 +794,29 @@ def cmd_update(args, identity: dict) -> None:
         print("\n  Run 'vhir update' to apply.")
         return
 
+    # Older uv installs from the lock without checking its hashes, and says
+    # nothing. (A failed `uv self update` above is otherwise ignored.)
+    uv_version = _uv_version()
+    if uv_version is None or uv_version < _UV_FLOOR:
+        shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
+        print(
+            f"uv {shown} is older than 0.6.9, which vhir update needs for"
+            " --torch-backend and hash checks.\n"
+            "Update it: uv self update   (or reinstall: "
+            "curl -LsSf https://astral.sh/uv/install.sh | sh)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Step 3: Record pre-update state + pull
     pre_update_git = {}
     for name, path in repos:
         if path.is_dir():
             pre_update_git[name] = _git_head(path)
 
+    # Every repo's branch before any pull, so a wrong one changes nothing.
     for name, path in repos:
-        if not path.is_dir():
-            continue
-        # Verify on main branch before pulling
-        branch = _git_branch(path)
+        branch = _git_branch(path) if path.is_dir() else ""
         if branch and branch != "main":
             print(
                 f"{name} is on branch '{branch}', expected 'main'.\n"
@@ -461,23 +824,43 @@ def cmd_update(args, identity: dict) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        result = subprocess.run(
-            ["git", "-C", str(path), "pull", "--ff-only"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+    pulled = False  # a repo's HEAD moved in this run
+    for name, path in repos:
+        if not path.is_dir():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(path), "pull", "--ff-only"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Pulling {name} timed out after 60 seconds.", file=sys.stderr)
+            # this repo too: a pull can merge, then fail or hang in a hook
+            if pulled or _git_head(path) not in (
+                "unknown",
+                pre_update_git.get(name, ""),
+            ):
+                _stop_part_way(args)
+            sys.exit(1)
         if result.returncode != 0:
             print(
                 f"Failed to pull {name}: {result.stderr.strip()}\n"
                 f"Resolve conflicts in {path} or re-run setup-sift.sh.",
                 file=sys.stderr,
             )
+            if pulled or _git_head(path) not in (
+                "unknown",
+                pre_update_git.get(name, ""),
+            ):
+                _stop_part_way(args)
             sys.exit(1)
         # Count new commits
         old = pre_update_git.get(name, "")
         new = _git_head(path)
         if old and old != new:
+            pulled = True
             count_result = subprocess.run(
                 ["git", "-C", str(path), "rev-list", f"{old}..{new}", "--count"],
                 capture_output=True,
@@ -489,11 +872,28 @@ def cmd_update(args, identity: dict) -> None:
         else:
             print(f"  Pulling {name}... already up to date")
 
-    # Step 4: Reinstall packages (batched for unified dependency resolution)
+    # Step 4: Reinstall packages (batched for unified dependency resolution).
+    # Every third-party package comes from the lock in the freshly pulled
+    # sift-mcp.
+    torch_installed = _torch_installed(venv_python)
+    variant, torch_record = _torch_variant(args, manifest, torch_installed)
+    lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
+    checker = source / "deps" / "check-lock.py"
+    if not lock.is_file() or not checker.is_file():
+        print(
+            f"Dependency lock not found in {source / 'deps'}.\n"
+            "The sift-mcp checkout is older than this vhir-cli; pull it to main.",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
     installed = manifest.get("packages", {})
     pkg_paths = []
     for pkg_name in _INSTALL_ORDER:
-        if pkg_name not in installed:
+        # Installed but not in the manifest still counts (an earlier install).
+        unrecorded = {"opensearch-mcp": "opensearch_mcp", "opencti-mcp": "opencti_mcp"}
+        if pkg_name not in installed and not (
+            pkg_name in unrecorded and _module_installed(unrecorded[pkg_name])
+        ):
             continue
         if pkg_name == "vhir-cli":
             pkg_path = str(vhir_dir)
@@ -517,32 +917,68 @@ def cmd_update(args, identity: dict) -> None:
         pkg_paths.append(pkg_path)
 
     cmd = ["uv", "pip", "install", "--python", venv_python, "--quiet"]
+    cmd += ["-c", str(lock), "-b", str(lock)]
+    # The CPU lock's torch is on the PyTorch index, which only --torch-backend
+    # reaches; 2.14.0+cpu satisfies the GPU lock's ==2.14.0, so a switch to GPU
+    # has to reinstall it.
+    if variant == "cpu":
+        cmd += ["--torch-backend", "cpu"]
+    elif variant == "gpu" and torch_installed.endswith("+cpu"):
+        cmd += ["--reinstall-package", "torch"]
     # Auto-detect dependencies whose version constraints changed in
     # the pulled commits and mark them for --reinstall-package so the
     # resolver honors tightened pins (e.g. `uv pip` otherwise leaves
     # a package already installed at a version the new constraint
     # forbids). UAT 2026-04-23 B81.
     reinstall = _detect_constraint_changed_packages(repos, pre_update_git)
-    # Belt-and-suspenders: the opentelemetry exporter's sdk/exporter
-    # version mismatch is driven by the combination of RAG + opencti
-    # both being installed, NOT by a constraint line change in our
-    # pyproject.toml — so it won't be caught by the auto-detector.
-    # Keep the hand-maintained case.
-    if "rag-mcp" in installed and "opencti-mcp" in installed:
-        reinstall.add("opentelemetry-exporter-otlp-proto-grpc")
+    # OpenCTI's old client is no longer a dependency: a leftover is left
+    # alone, and the dependency check says how to remove it.
+    reinstall.discard("pycti")
     for pkg in sorted(reinstall):
         cmd.extend(["--reinstall-package", pkg])
+    # Packages already in the venv that the lock names (pip's seeds, what an
+    # earlier OpenCTI install pulled in) join the install, so -c moves them too.
+    try:
+        held = subprocess.run(
+            [venv_python, str(checker), "--installed", "--lock", str(lock)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "  Reading the venv's packages timed out after 120 seconds.",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
+    if held.returncode != 0:
+        print(
+            f"  Cannot read the venv's packages against the dependency lock: "
+            f"{held.stderr.strip()}",
+            file=sys.stderr,
+        )
+        _stop_part_way(args)
+    cmd.extend(held.stdout.split())
     for p in pkg_paths:
         cmd.extend(["-e", p])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(
             f"  Package install failed: {result.stderr.strip()}",
             file=sys.stderr,
         )
-        sys.exit(1)
+        if variant == "cpu":
+            print(_TORCH_INDEX_HINT, file=sys.stderr)
+        _stop_part_way(args)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
+    _check_lock(args, venv_python, checker, lock, "--strict")
+
+    _check_lock(args, venv_python, checker, lock, "--final")
+    if variant == "cpu" and sys.stdin.isatty():
+        _offer_cuda_cleanup(venv_python, checker, lock)
+    if sys.stdin.isatty():  # with no terminal, --final's note names them
+        _offer_opencti_cleanup(venv_python, checker, lock)
 
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
@@ -557,22 +993,25 @@ def cmd_update(args, identity: dict) -> None:
             pass  # non-fatal
 
     # Step 5: Redeploy forensic controls
-    client = manifest.get("client")
-    if client == "claude-code":
-        from vhir_cli.commands.client_setup import _deploy_claude_code_assets
+    from vhir_cli.commands import client_setup
 
-        print("  Redeploying forensic controls...")
-        _deploy_claude_code_assets()
-    elif client:
-        print(f"  Client: {client} (no local controls to redeploy)")
-    else:
-        print("  No client type in manifest. Run 'vhir setup client' to configure.")
+    client_setup._LAUNCHERS_UPDATED.clear()  # what this update rewrites
+    client_setup._LAUNCHERS_NOTED.clear()
+    clients = _redeploy_clients(manifest)
 
     # Step 5.5: Fix sandbox if bwrap profile missing (Ubuntu 23.10+)
-    if client == "claude-code":
+    if "claude-code" in clients or "codex" in clients:
         _ensure_bwrap_profile()
 
-    # Step 6: Update manifest
+    # Step 6: Update manifest, as Step 5 left it: its deploys record their own
+    # keys there (the Codex profile's hash), which the copy read at the start
+    # doesn't hold
+    try:
+        reread = json.loads(manifest_path.read_text())
+        if isinstance(reread, dict):
+            manifest = reread
+    except (OSError, ValueError):
+        pass  # the copy read at the start
     manifest["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     manifest["pre_update_git"] = pre_update_git
     git_hashes = {}
@@ -580,15 +1019,28 @@ def cmd_update(args, identity: dict) -> None:
         if path.is_dir():
             git_hashes[name] = _git_head(path)
     manifest["git"] = git_hashes
+    if torch_record:  # the user chose (asked, or --cpu/--gpu)
+        manifest["torch_variant"] = torch_record
     try:
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         print("  Updating manifest... done")
     except OSError as e:
         print(f"  Warning: could not update manifest: {e}", file=sys.stderr)
 
+    # Step 6.5: the gateway's own launch lines run python -I (other clients;
+    # claude-code installs had it at Step 5, so this finds nothing to do)
+    client_setup._isolate_gateway_launchers()
+    if client_setup._LAUNCHERS_UPDATED and no_restart:
+        print("  The updated launch line takes effect at the next gateway restart.")
+
     # Step 7: Restart gateway
     if no_restart:
-        print("  Gateway restart skipped (--no-restart)")
+        print(
+            "  Gateway restart skipped (--no-restart): portal approvals and portal saves "
+            "must wait for the gateway restart. Until then, a commit through the old "
+            "gateway applies every staged entry as the committer's decision, and a save "
+            "through it can be refused or can remove other examiners' staged entries."
+        )
     else:
         print("  Restarting gateway... ", end="", flush=True)
         result = subprocess.run(
@@ -626,8 +1078,32 @@ def cmd_update(args, identity: dict) -> None:
     hashes = manifest.get("git", {})
     parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
-    if client == "claude-code":
+    if "claude-code" in clients or "codex" in clients:
         print("  Restart your LLM client to pick up new rules.")
+    _offer_signing_key(identity)
+    _print_share_rejoin_notice()
+    if not no_restart and restart_ok:
+        from vhir_cli.gateway import RECONNECT_HINT
+
+        print(f"  {RECONNECT_HINT}")
+
+
+def _print_share_rejoin_notice() -> None:
+    """A box joined before vhir had its own share name: say how wintools
+    moves to it. Update adds no Samba changes; join makes them."""
+    from vhir_cli.commands.join import SHARE_NAME, share_needs_rejoin
+
+    if share_needs_rejoin():
+        print(
+            f"\n  wintools: vhir now shares the case as //SIFT/{SHARE_NAME}. This box still"
+            " shares it as [cases], which also covers SIFT's own [cases] share.\n"
+            "  Join wintools again to move to the new share: on SIFT run"
+            " 'vhir setup join-code', then on Windows run setup-windows.ps1 with the new"
+            " join code. The active case stays shared through the move.\n"
+            "  Re-join before updating wintools on Windows: an updated wintools writes"
+            " nothing to the case until SIFT re-joins (or until the case is activated"
+            " again here, 'vhir case activate <case>')."
+        )
 
 
 def _git_head(path: Path) -> str:
@@ -651,9 +1127,7 @@ def _detect_constraint_changed_packages(
     force-downgrade a package already installed at a version the
     updated pyproject.toml now forbids. Adding `--reinstall-package
     <name>` for every dep whose line changed makes the resolver
-    re-evaluate that package and honor the new constraint. The
-    existing hand-maintained case for `opentelemetry-exporter-otlp-
-    proto-grpc` is kept as belt-and-suspenders in cmd_update.
+    re-evaluate that package and honor the new constraint.
 
     Approach: for each repo that advanced during `git pull`, diff
     pyproject.toml files old..new and collect package names from
