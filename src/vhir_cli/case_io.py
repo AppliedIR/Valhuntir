@@ -933,21 +933,85 @@ _TAIL_OVERREAD = 4
 _TAIL_MIN = 2000
 
 
+class _ReadWhole(Exception):
+    """The tail can't be read as the full reader reads the file: read it whole."""
+
+
 def _iter_lines_reversed(fh, block: int = _TAIL_BLOCK):
-    """Yield the raw lines of an open binary file from last to first."""
-    fh.seek(0, os.SEEK_END)
-    pos = fh.tell()
-    carry = b""
+    """Yield the raw lines of an open binary file from last to first, split at
+    \\n as `case_lines` splits them (without the \\n). A line longer than
+    LINE_CAP raises _ReadWhole once its length is past the cap, so a line with
+    no \\n is never held whole; its pieces are joined once, when it ends."""
+    fd = fh.fileno()
+    pos = os.fstat(fd).st_size
+    pieces: list[bytes] = []  # the line being read, its last piece first
+    held = 0
     while pos > 0:
         step = min(block, pos)
         pos -= step
-        fh.seek(pos)
-        chunk = fh.read(step) + carry
+        chunk = os.pread(fd, step, pos)
+        if len(chunk) != step:  # cut short while read
+            raise _ReadWhole
         parts = chunk.split(b"\n")
-        carry = parts.pop(0)
-        yield from reversed(parts)
-    if carry:
-        yield carry
+        pieces.append(parts[-1])
+        held += len(parts[-1])
+        if len(parts) > 1:
+            yield _whole(pieces)  # emptied, so the line isn't held twice
+            yield from (_capped(p) for p in reversed(parts[1:-1]))
+            pieces.append(parts[0])
+            held = len(parts[0])
+        if held > LINE_CAP + 1:  # past the cap even counting a \r before its \n
+            raise _ReadWhole
+    if pieces:
+        yield _whole(pieces)
+
+
+def _whole(pieces: list[bytes]) -> bytes:
+    """The line held in `pieces` (its last piece first), which are cleared."""
+    line = b"".join(reversed(pieces))
+    pieces.clear()
+    return _capped(line)
+
+
+def _capped(line: bytes) -> bytes:
+    """`line`, unless it is longer than LINE_CAP not counting a \\r that ends
+    it (the full reader refuses it, naming its number)."""
+    if len(line) - line.endswith(b"\r") > LINE_CAP:
+        raise _ReadWhole
+    return line
+
+
+def _iter_entries(path: Path, keep=None):
+    """Every entry of a case log in file order, read forwards by
+    `open_regular`, each as it is read; None for each corrupt line."""
+    with open_regular(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                yield None
+                continue
+            if keep is None or keep(entry):
+                yield entry
+
+
+def iter_jsonl_entries(path: Path, limit: int | None, keep=None):
+    """The entries `tail_jsonl_entries` returns, in file order, and None for
+    each corrupt line it counts. A full read yields each entry as it is read,
+    so a caller keeps what came before a line the reader refuses."""
+    if limit is not None:
+        try:
+            entries, corrupt = _read_tail(path, limit, keep)
+        except _ReadWhole:
+            pass
+        else:
+            yield from entries
+            yield from [None] * corrupt
+            return
+    yield from _iter_entries(path, keep)
 
 
 def tail_jsonl_entries(
@@ -967,14 +1031,41 @@ def tail_jsonl_entries(
     `limit=None` reads the whole file forwards (used by `vhir audit summary`,
     which aggregates every line anyway).
 
+    The file is opened and checked as `case_lines` opens a case log (only under
+    its own name, a regular file within FILE_BUDGET), and its lines are split
+    and capped as `open_regular` reads them. Whatever the tail can't read as
+    that full reader would (a line over LINE_CAP, one that isn't UTF-8 or
+    isn't an object, a ts that isn't text, or disorder) is read by it instead,
+    so the file is refused or read exactly as a full read would.
+
     Returns (entries in file order, count of corrupt lines in the region read).
     """
     entries: list[dict] = []
     corrupt = 0
+    for entry in iter_jsonl_entries(path, limit, keep):
+        if entry is None:
+            corrupt += 1
+        else:
+            entries.append(entry)
+    return entries, corrupt
 
-    if limit is None:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
+
+def _read_tail(path: Path, limit: int, keep) -> tuple[list[dict], int]:
+    want = max(limit * _TAIL_OVERREAD, _TAIL_MIN)
+    entries: list[dict] = []
+    corrupt = 0
+    later_ts: str | None = None
+    with os.fdopen(_open_regular_fd(path, log=True), "rb") as fh:
+        for raw in _iter_lines_reversed(fh):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                raise _ReadWhole from None
+            del raw
+            # a lone \r ends a line too, as open_regular splits it; last first
+            lines = list(io.StringIO(text, newline=None)) if "\r" in text else [text]
+            del text
+            for line in reversed(lines):
                 line = line.strip()
                 if not line:
                     continue
@@ -983,32 +1074,15 @@ def tail_jsonl_entries(
                 except json.JSONDecodeError:
                     corrupt += 1
                     continue
+                ts = entry.get("ts", "") if isinstance(entry, dict) else None
+                if not isinstance(ts, str) or (later_ts is not None and ts > later_ts):
+                    raise _ReadWhole  # the full read decides, as it would alone
+                later_ts = ts
                 if keep is None or keep(entry):
                     entries.append(entry)
-        return entries, corrupt
-
-    want = max(limit * _TAIL_OVERREAD, _TAIL_MIN)
-    later_ts: str | None = None
-    ordered = True
-    with open(path, "rb") as fh:
-        for raw in _iter_lines_reversed(fh):
-            line = raw.decode("utf-8").strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                corrupt += 1
-                continue
-            ts = entry.get("ts", "")
-            if later_ts is not None and ts > later_ts:
-                ordered = False
-            later_ts = ts
-            if keep is None or keep(entry):
-                entries.append(entry)
-                if ordered and len(entries) >= want:
-                    break
-
+                    if len(entries) >= want:
+                        entries.reverse()
+                        return entries, corrupt
     entries.reverse()
     return entries, corrupt
 

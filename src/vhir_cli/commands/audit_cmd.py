@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir, tail_jsonl_entries
+from vhir_cli.case_io import get_case_dir, iter_jsonl_entries
 from vhir_cli.display import display_safe, one_line
 
 
@@ -85,8 +85,17 @@ def _load_audit_entries(
         for jsonl_file in sorted(audit_dir.glob("*.jsonl")):
             stem = jsonl_file.stem
             file_keep = _make_keep(mcp_filter, tool_filter, stem, "")
-            try:
-                found, corrupt = tail_jsonl_entries(jsonl_file, limit, file_keep)
+            try:  # each entry as it is read, so those before a refusal are kept
+                for entry in iter_jsonl_entries(jsonl_file, limit, file_keep):
+                    if entry is None:
+                        corrupt_lines += 1
+                        continue
+                    # Derive mcp name from filename if not present
+                    if "mcp" not in entry:
+                        entry["mcp"] = stem
+                    _check_ts(entry)  # as the sort would, kept or not
+                    if keep is None or keep(entry):
+                        entries.append(entry)
             except OSError as e:  # the name and the error, controls shown
                 print(
                     f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
@@ -94,21 +103,20 @@ def _load_audit_entries(
                 )
                 if unread is not None:
                     unread.append(one_line(f"audit/{jsonl_file.name} ({_why(e)})"))
-                continue
-            corrupt_lines += corrupt
-            for entry in found:
-                # Derive mcp name from filename if not present
-                if "mcp" not in entry:
-                    entry["mcp"] = stem
-                _check_ts(entry)  # as the sort would, kept or not
-                if keep is None or keep(entry):
-                    entries.append(entry)
 
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
         file_keep = _make_keep(mcp_filter, tool_filter, "vhir-cli", "approval")
         try:
-            found, corrupt = tail_jsonl_entries(approvals_file, limit, file_keep)
+            for entry in iter_jsonl_entries(approvals_file, limit, file_keep):
+                if entry is None:
+                    corrupt_lines += 1
+                    continue
+                entry.setdefault("tool", "approval")
+                entry.setdefault("mcp", "vhir-cli")
+                _check_ts(entry)
+                if keep is None or keep(entry):
+                    entries.append(entry)
         except OSError as e:  # named, as an audit log is
             print(
                 f"  Warning: could not read {one_line(f'{approvals_file}: {e}')}",
@@ -116,14 +124,6 @@ def _load_audit_entries(
             )
             if unread is not None:
                 unread.append(one_line(f"approvals.jsonl ({_why(e)})"))
-            found, corrupt = [], 0
-        corrupt_lines += corrupt
-        for entry in found:
-            entry.setdefault("tool", "approval")
-            entry.setdefault("mcp", "vhir-cli")
-            _check_ts(entry)
-            if keep is None or keep(entry):
-                entries.append(entry)
 
     if corrupt_lines:
         print(

@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-import vhir_cli.commands.audit_cmd as audit_cmd
+import vhir_cli.case_io as case_io
 import vhir_cli.commands.review as review
 from vhir_cli.case_io import load_withdrawals
 
@@ -42,9 +42,9 @@ def case(tmp_path, monkeypatch):
 
 def test_only_withdrawals_are_kept_and_each_log_is_read_line_by_line(case, monkeypatch):
     opened = []
-    real = audit_cmd.open_regular
+    real = case_io.open_regular
     monkeypatch.setattr(
-        audit_cmd, "open_regular", lambda p: opened.append(p.name) or real(p)
+        case_io, "open_regular", lambda p: opened.append(p.name) or real(p)
     )
     assert [w["audit_id"] for w in load_withdrawals(case)] == ["forensic-tester-001"]
     assert opened == ["forensic-mcp.jsonl", "sift-mcp.jsonl"]
