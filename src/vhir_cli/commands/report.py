@@ -31,7 +31,13 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
 )
-from vhir_cli.defang import defang_iocs, network_ioc, refang
+from vhir_cli.defang import (
+    _NETWORK_TYPES,
+    defang_iocs,
+    network_ioc,
+    refang,
+    structured_iocs,
+)
 from vhir_cli.display import cited_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ledger_verify import (
@@ -116,14 +122,12 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
         _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
-_NETWORK_TYPES = ("domain", "ipv4", "url")  # an IOC type naming one of these
-
-
 def _report_iocs(case_dir: Path, view: dict) -> list[str]:
-    """The domains, URLs and IPv4 addresses of the case's approved findings,
-    live, longest first (a URL before the host it holds): from their text and
-    IOC fields, and the case's IOCs typed so whose source is one of them, as
-    report-mcp gathers them. Hashes, paths and the rest aren't."""
+    """The IOCs of the case that are domains, URLs or IPv4 addresses, live,
+    longest first (a URL before the host it holds): the values in the approved
+    findings' `iocs` fields, and the case's IOC records approved or cited by
+    an approved finding, as report-mcp gathers them. A name a finding's text
+    merely mentions isn't one. Hashes, paths and the rest aren't."""
     findings = view.get("findings") or []
     approved = {f.get("id") for f in findings}
     kept: set[str] = set()
@@ -132,15 +136,8 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
         if (v := network_ioc(value, typed)) is not None:
             kept.add(v)
 
-    for kind, values in _extract_all_iocs(findings).items():
-        typed = any(t in kind.lower() for t in _NETWORK_TYPES)
-        for value in values:
-            take(value, typed)
-    for f in findings:  # a field's plain values, untyped
-        field = f.get("iocs")
-        for value in field if isinstance(field, list) else ():
-            if isinstance(value, str):
-                take(value, False)
+    for value, typed in structured_iocs(findings):
+        take(value, typed)
     case_iocs = [  # the case's IOCs that one of the approved findings cites
         i for i in load_iocs(case_dir)
         if isinstance(i, dict) and isinstance(i.get("source_findings"), list)

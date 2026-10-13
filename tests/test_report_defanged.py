@@ -1,8 +1,10 @@
-"""`vhir report --save` writes every domain, URL and IPv4 address of the
-case's approved findings defanged (evil[.]com, hxxp://bad[.]example[.]com/x,
-185[.]220[.]101[.]45), in the report and its block, as report-mcp's saved
-reports do. Other URLs and names stay live, a name that is only part of a
-longer one isn't touched, and a defanged one isn't twice."""
+"""`vhir report --save` writes every IOC of the case that is a domain, URL or
+IPv4 address (evil[.]com, hxxp://bad[.]example[.]com/x, 185[.]220[.]101[.]45)
+defanged, in the report and its block, as report-mcp's saved reports do. The
+case's IOCs are its approved findings' IOC fields and the IOC records they
+cite; a name a finding's text merely mentions isn't one. Other URLs and names
+stay live, a name that is only part of a longer one isn't touched, and a
+defanged one isn't twice."""
 
 from __future__ import annotations
 
@@ -18,10 +20,12 @@ APPROVED = {
               "sub.evil.com, evil.com.au, 185.220.101.450)"),
     "observation": ("Beacon to evil.com and EVIL.COM from 185.220.101.45; payload "
                     "http://bad.example.com/x.php. Hash d41d8cd98f00b204e9800998ecf8427e, "
-                    "file C:\\Tools\\drop.exe, a.exe. Already evil[.]com; relay.example.dev; "
+                    "file C:\\Tools\\drop.exe, a.exe. Already evil[.]com; tool from "
+                    "download.vendor.com; relay.example.dev; "
                     "stage.example.dev."),
     "interpretation": "i", "confidence": "HIGH",
-    "iocs": [{"type": "url", "value": "http://bad.example.com/x.php"}, "a.exe"],
+    "iocs": [{"type": "domain", "value": "evil.com"}, "185.220.101.45",
+             {"type": "url", "value": "http://bad.example.com/x.php"}, "a.exe"],
 }  # fmt: skip
 
 
@@ -81,4 +85,12 @@ def test_the_full_json_report_is_saved_defanged(case_dir, identity):  # noqa: F8
     saved = _saved(case_dir, identity, [APPROVED], full=True)
     assert json.loads(saved)["approved_findings"][0]["title"].startswith(
         "C2 at evil[.]com (see"
+    )
+
+
+def test_a_name_an_approved_finding_only_mentions_stays_live(case_dir, identity):  # noqa: F811
+    """download.vendor.com is in the finding's text, not among its IOCs."""
+    saved = _saved(case_dir, identity, [APPROVED], report_findings="F-tester-001")
+    assert (
+        "tool from download.vendor.com;" in saved and "download[.]vendor" not in saved
     )

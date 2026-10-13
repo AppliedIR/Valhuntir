@@ -70,6 +70,7 @@ _URL = re.compile(r"(?i)(https?)://([^/\s:?#]+)(\S*)")
 _DOMAIN = re.compile(
     r"(?i)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]"
 )
+_NETWORK_TYPES = ("domain", "ipv4", "url")  # an IOC type naming one of these
 
 
 def _defanged(text: str) -> str:
@@ -102,3 +103,28 @@ def network_ioc(value, typed: bool) -> str | None:
     if _URL.fullmatch(v) or _IPV4.fullmatch(v) or (typed and _DOMAIN.fullmatch(v)):
         return v
     return None
+
+
+def structured_iocs(findings: list) -> list[tuple]:
+    """Each value in the findings' `iocs` fields, with whether its IOC type
+    names a domain, an IPv4 address or a URL (a plain value has no type)."""
+    out = []
+    for f in findings:
+        field = f.get("iocs") if isinstance(f, dict) else None
+        if isinstance(field, dict):
+            for kind, values in field.items():
+                typed = any(t in str(kind).lower() for t in _NETWORK_TYPES)
+                out += [
+                    (v, typed)
+                    for v in (values if isinstance(values, list) else [values])
+                ]
+        elif isinstance(field, list):
+            for ioc in field:
+                if isinstance(ioc, dict):
+                    kind = str(ioc.get("type", "")).lower()
+                    out.append(
+                        (ioc.get("value", ""), any(t in kind for t in _NETWORK_TYPES))
+                    )
+                else:
+                    out.append((ioc, False))
+    return out
