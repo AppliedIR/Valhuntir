@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli import case_io, credentials, keys, ledger
+from vhir_cli import approval_auth, case_io, credentials, keys, ledger
 from vhir_cli.case_io import (
     case_id_of,
     compute_content_hash,
@@ -426,7 +426,13 @@ def sign_and_commit(
              "after `vhir config --forgot-password`")  # fmt: skip
     except credentials.AttemptsExhausted:
         keep("attempts", "No attempts are left.", "after the lockout ends")
-    except Exception as e:  # noqa: BLE001 - a keys file damaged, no terminal, …
+    except approval_auth.NoTerminal:  # no examiner here (an AI's run): nothing saved
+        refused = direct + planned
+        action = "reject" if all(d.decision == "reject" for d in refused) else "approve"
+        case_io.record_no_terminal(case_dir, examiner, action, [d.id for d in refused])
+        print(case_io.NO_TERMINAL_REFUSAL, file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - a keys file damaged, …
         keep(
             type(e).__name__,
             f"The passphrase prompt couldn't go ahead: {one_line(str(e))}",

@@ -704,6 +704,88 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     return withdrawals
 
 
+NO_TERMINAL = "NO_TERMINAL"
+NO_TERMINAL_REFUSAL = (
+    "Approving and rejecting need the examiner at a terminal (/dev/tty isn't "
+    "available). Nothing was signed or saved."
+)
+
+
+def record_no_terminal(
+    case_dir: Path, examiner: str, action: str, ids: list[str]
+) -> None:
+    """One audit line for an approve or reject refused for want of a terminal,
+    written as `vhir exec` writes its lines (no audit id): the examiner sees
+    it at the next approve and review, and in `vhir audit`."""
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "mcp": "cli-approve",
+        "tool": action,
+        "examiner": examiner,
+        "case_id": case_id_of(case_dir),
+        "source": "cli",
+        "params": {"ids": list(ids)},
+        "result_summary": {"status": NO_TERMINAL, "reason": "no terminal"},
+    }
+    try:
+        (case_dir / "audit").mkdir(parents=True, exist_ok=True)
+        with open(case_dir / "audit" / "cli-approve.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        print(
+            f"WARNING: the refusal wasn't written to the audit trail: {e}",
+            file=sys.stderr,
+        )
+
+
+def load_no_terminal(case_dir: Path) -> list[dict]:
+    """The approve and reject attempts refused for want of a terminal, oldest
+    first, each once (by its time and its ids)."""
+    from vhir_cli.commands.audit_cmd import _load_audit_entries
+
+    seen: set[str] = set()
+    out = []
+    for entry in _load_audit_entries(case_dir):
+        if not isinstance(entry, dict) or entry.get("tool") not in (
+            "approve",
+            "reject",
+        ):
+            continue
+        result = entry.get("result_summary")
+        if not isinstance(result, dict) or result.get("status") != NO_TERMINAL:
+            continue
+        key = json.dumps(
+            [entry.get("ts"), entry.get("params")], default=str, sort_keys=True
+        )
+        if key not in seen:
+            seen.add(key)
+            out.append(entry)
+    return out
+
+
+def no_terminal_line(case_dir: Path) -> str:
+    """ "<n> approve/reject attempt(s) refused: no terminal (latest <time>,
+    <ids>) …", or "" when there are none. Information: never blocks."""
+    from vhir_cli.display import one_line
+
+    try:
+        refused = load_no_terminal(case_dir)
+    except Exception as e:  # noqa: BLE001 - a bad line mustn't block the command
+        return f"  Warning: refused approve/reject attempts not counted: {one_line(str(e))}"
+    if not refused:
+        return ""
+    latest = refused[-1]
+    params = latest.get("params") if isinstance(latest.get("params"), dict) else {}
+    ids = params.get("ids") if isinstance(params.get("ids"), list) else []
+    return (
+        f"  {len(refused)} approve/reject attempt(s) refused: no terminal (latest "
+        f"{one_line(latest.get('ts', '?'))}, {one_line(', '.join(map(str, ids)))}) "
+        "— not you? see `vhir audit`"
+    )
+
+
 def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str, dict]:
     """Scan audit/*.jsonl and build {audit_id: {**entry, "_source_file": filename}}.
 

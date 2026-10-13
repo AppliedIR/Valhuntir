@@ -47,6 +47,7 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
     load_withdrawals,
+    no_terminal_line,
     save_todos,
     signed_text,
 )
@@ -60,6 +61,10 @@ def cmd_approve(args, identity: dict) -> None:
     case_dir = get_case_dir(getattr(args, "case", None))
     config_path = Path.home() / ".vhir" / "config.yaml"
     show_signed = getattr(args, "show_signed", False)
+
+    refused = no_terminal_line(case_dir)
+    if refused:  # attempts with no examiner at a terminal (an AI's run)
+        print(refused)
 
     review = getattr(args, "review", False)
     if review and args.ids:

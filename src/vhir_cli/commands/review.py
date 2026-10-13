@@ -31,6 +31,7 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
     load_withdrawals,
+    no_terminal_line,
 )
 from vhir_cli.display import display_safe, one_line
 from vhir_cli.display import lines as indent_lines
@@ -109,6 +110,9 @@ def _show_summary(case_dir: Path) -> None:
     open_t = sum(1 for t in todos if t.get("status") == "open")
     completed_t = sum(1 for t in todos if t.get("status") == "completed")
     print(f"TODOs: {len(todos)} total ({open_t} open, {completed_t} completed)")
+    refused = no_terminal_line(case_dir)
+    if refused:
+        print(refused)
 
 
 def _show_todos(case_dir: Path, open_only: bool = False) -> None:
