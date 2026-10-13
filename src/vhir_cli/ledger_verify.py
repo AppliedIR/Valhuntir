@@ -1496,7 +1496,7 @@ def render(result: Result) -> str:
             last = c.lines[-1]
             head = (last.seq, ledger.body_hash(ledger.body_of(last.obj)))
             out.append(
-                f"  {format_head(s(result.case_id), head, f'chain {c.chain_id}')} ({', '.join(c.sources)})"
+                f"  {format_head(s(result.case_id), head, f'chain {c.chain_id}')} ({s(', '.join(c.sources))})"
             )
     out.append("Signing keys:")
     for k in result.keys:

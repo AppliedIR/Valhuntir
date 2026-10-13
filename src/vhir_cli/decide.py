@@ -492,7 +492,7 @@ def sign_and_commit(
             sys.exit(130)
         print(
             "\nInterrupted after the decisions were signed; case data may not be "
-            f"saved. Re-run the same command for: {', '.join(d.id for d in every)}",
+            f"saved. Re-run the same command for: {', '.join(one_line(d.id) for d in every)}",
             file=sys.stderr,
         )
         sys.exit(130)
@@ -516,7 +516,7 @@ def sign_and_commit(
                         file=sys.stderr,
                     )
             print(
-                f"{e}\nSome of these decisions may already be signed. "
+                f"{one_line(str(e))}\nSome of these decisions may already be signed. "
                 "`vhir review --verify` lists each one as a failure, with its fix. If it "
                 "reports UNPARSEABLE_LINE on the last line, restore the chain from a copy first.",
                 file=sys.stderr,
@@ -550,7 +550,7 @@ def sign_and_commit(
                 f"(head seq {r['head_seq']} sha256:{r['head_hash']})"
             )
         for note in ref_notes:
-            print(f"  WARNING: {note}", file=sys.stderr)
+            print(f"  WARNING: {one_line(note)}", file=sys.stderr)
     if todo_error is not None:
         try:
             save_unsigned(case_dir, examiner, [], "TODO not written", todos)
@@ -564,8 +564,8 @@ def sign_and_commit(
         )
     if save_error is not None:
         print(
-            f"Signed decisions were recorded; case data was not saved ({save_error}); "
-            f"re-run the same command for: {', '.join(d.id for d in every)}",
+            f"Signed decisions were recorded; case data was not saved ({one_line(str(save_error))}); "
+            f"re-run the same command for: {', '.join(one_line(d.id) for d in every)}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -700,7 +700,7 @@ def _activity_log(case_dir, identity, every, items, mode) -> None:
     if failed:
         print(
             f"  WARNING: the activity log (approvals.jsonl, unsigned) wasn't written for: "
-            f"{', '.join(failed)}. The signed decisions stand.",
+            f"{', '.join(map(one_line, failed))}. The signed decisions stand.",
             file=sys.stderr,
         )
 
@@ -718,7 +718,7 @@ def _report(case_id, every, head, examiner, public) -> None:
                 f"  cascade from {one_line(c.coupled_from)}: {c.decision} {one_line(c.id)}"
             )
     fp = keys.fingerprint(keys.unb64(public))
-    print(f"{ledger.format_head(case_id, head)} | {examiner} {fp}")
+    print(f"{ledger.format_head(one_line(case_id), head)} | {examiner} {fp}")
     print(
         f"  Optional, to anchor later: --expect-head {head[0]}:{head[1]} --expect-key {examiner}={fp}"
     )

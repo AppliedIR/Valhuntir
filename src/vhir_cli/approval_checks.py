@@ -28,6 +28,7 @@ from vhir_cli.case_io import (
     CaseFileTooLarge,
     case_lines,
 )
+from vhir_cli.display import one_line
 from vhir_cli.provenance_view import roots_of
 
 # A root bigger than this whose stat fields don't vouch for it is hashed in
@@ -319,7 +320,7 @@ class AuditUnreadable(CaseError):
 
     def __init__(self, unread: list[str]):
         super().__init__(
-            f"The approval checks couldn't read {', '.join(unread)}: an entry there "
+            f"The approval checks couldn't read {', '.join(map(one_line, unread))}: an entry there "
             "could change their result. Nothing was signed. Make each log a readable "
             "regular file, then approve again."
         )

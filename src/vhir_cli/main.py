@@ -892,10 +892,12 @@ def _case_status(args, identity: dict) -> None:
         print(str(e), file=sys.stderr)
         return
 
-    print(f"Case: {data['case_id']}")
-    print(f"  Name:     {data['name']}")
-    print(f"  Status:   {data['status']}")
-    print(f"  Examiner: {data['examiner']}")
+    from vhir_cli.display import one_line  # CASE.yaml's values are the case's data
+
+    print(f"Case: {one_line(data['case_id'])}")
+    print(f"  Name:     {one_line(data['name'])}")
+    print(f"  Status:   {one_line(data['status'])}")
+    print(f"  Examiner: {one_line(data['examiner'])}")
     print(f"  Path:     {data['path']}")
     print(
         f"  Findings: {data['finding_count']} ({data['finding_draft']} draft, {data['finding_approved']} approved)"
@@ -986,11 +988,15 @@ def _case_list(args, identity: dict) -> None:
         print("No cases found.")
         return
 
+    from vhir_cli.display import one_line  # each CASE.yaml's values are its case's data
+
     print(f"{'Case ID':<25} {'Status':<10} Name")
     print("-" * 65)
     for c in cases:
         marker = " (active)" if c["active"] else ""
-        print(f"{c['id']:<25} {c['status']:<10} {c['name']}{marker}")
+        print(
+            f"{one_line(c['id']):<25} {one_line(c['status']):<10} {one_line(c['name'])}{marker}"
+        )
 
 
 def _case_init_data(

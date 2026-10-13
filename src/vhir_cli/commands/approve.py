@@ -172,7 +172,7 @@ def _preflight(identity: dict, config_path: Path, case_dir: Path) -> bool:
         sys.exit(1)
     copy = decide.copy_problem(case_dir)
     if copy:  # signing would extend another folder's chain
-        print(copy, file=sys.stderr)
+        print(_one_line(copy), file=sys.stderr)  # names the case's folders and id
         sys.exit(1)
     return new_passphrase
 
@@ -771,15 +771,35 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
     save_todos(case_dir, todos)
 
 
-def _challenge_line(challenged) -> str:
+def _challenge_is_clean(challenged, prior) -> bool:
+    """Upheld, with no contradiction, no check that contradicts or didn't run,
+    and no earlier challenge of what the finding ran: the one challenge that
+    needs no more than its line."""
+    if not isinstance(challenged, dict) or challenged.get("outcome") != "stands":
+        return False
+    if challenged.get("contradiction") or prior:
+        return False
+    checks = challenged.get("checks", [])
+    return isinstance(checks, list) and not any(
+        not isinstance(c, dict) or c.get("result") in ("contradicts", "not run")
+        for c in checks
+    )
+
+
+def _challenge_line(challenged, item=None) -> str:
     """The finding's challenge state, in one line."""
+    item = item if isinstance(item, dict) else {}
     if not isinstance(challenged, dict):
-        return "Not challenged"
+        return (
+            "Not challenged (imported)"
+            if item.get("imported_from")
+            else "Not challenged"
+        )
     ids = challenged.get("skeptic_audit_ids") or []
     ids = ", ".join(str(i) for i in ids) if isinstance(ids, list) else str(ids)
     outcome = challenged.get("outcome")
     if outcome == "stands":
-        return f"Challenged (client-reported): stands — skeptic: {ids}"
+        return f"Challenged (client-reported): upheld — skeptic: {ids}"
     if outcome == "revised":
         return f"Challenged (client-reported): revised after challenge — skeptic: {ids}"
     if outcome == "withdrawn":
@@ -787,18 +807,56 @@ def _challenge_line(challenged) -> str:
             "Challenged (client-reported): withdrawn, not applied, staged for "
             f"your decision — skeptic: {ids or 'none'}"
         )
+    if outcome == "contested":
+        return f"Challenged (client-reported): contested — skeptic: {ids or 'none'}"
+    if outcome == "not_challenged":
+        return f"Not challenged: {challenged.get('reason', '')}"
     return f"Challenged (client-reported): {outcome}"
 
 
-def _challenge_reasons(challenged) -> list[str]:
-    """The marker's stated contradiction and the server's refusal, escaped."""
-    if not isinstance(challenged, dict):
+def _challenge_reasons(challenged, item=None) -> list[str]:
+    """What the examiner should look at under the challenge line, escaped:
+    each check (with what its ids ran, so an author's own `date` run shows),
+    the stated contradiction, the server's refusal, and an earlier challenge
+    of what the finding ran. Nothing for a clean upheld challenge."""
+    item = item if isinstance(item, dict) else {}
+    prior = item.get("prior_challenge")
+    prior = prior if isinstance(prior, list) else []
+    marker = challenged if isinstance(challenged, dict) else {}
+    if _challenge_is_clean(challenged, prior):
         return []
     lines = []
-    if challenged.get("contradiction"):
-        lines.append(f"Contradiction (client-reported): {challenged['contradiction']}")
-    if challenged.get("refused"):
-        lines.append(f"Server: {challenged['refused']}")
+    checks = marker.get("checks")
+    for c in checks if isinstance(checks, list) else []:
+        if not isinstance(c, dict):
+            continue
+        ran = c.get("ran") if isinstance(c.get("ran"), dict) else {}
+        ids = c.get("audit_ids") if isinstance(c.get("audit_ids"), list) else []
+        cited = ", ".join(
+            f"{a} (ran: {ran[a]})" if isinstance(a, str) and a in ran else str(a)
+            for a in ids
+        )
+        line = f"Check {c.get('name', '')}: {c.get('result', '')}"
+        line += f" — {c['reason']}" if c.get("reason") else ""
+        line += f" — {cited}" if cited else ""
+        lines.append(line)
+    if marker.get("contradiction"):
+        lines.append(f"Contradiction (client-reported): {marker['contradiction']}")
+    if marker.get("refused"):
+        lines.append(f"Server: {marker['refused']}")
+    for p in prior:
+        if not isinstance(p, dict):
+            continue
+        new = p.get("new_since") if isinstance(p.get("new_since"), list) else []
+        since = (
+            "new since: " + ", ".join(
+                f"{n.get('ran', '')} ({n.get('audit_id', '')})" for n in new if isinstance(n, dict))
+            if new else "no new evidence"
+        )  # fmt: skip
+        lines.append(
+            f"Previously {p.get('kind', '')} ({p.get('ref', '')}): "
+            f"{p.get('contradiction', '')} — {since}"
+        )
     return [_safe(line) for line in lines]
 
 
@@ -927,8 +985,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
     """Everything the examiner decides on, before the password prompt."""
     print(f"{'─' * 60}")
     if "title" in item:
-        print(f"  {_safe(_challenge_line(item.get('challenged')))}")
-        for line in _challenge_reasons(item.get("challenged")):
+        print(f"  {_safe(_challenge_line(item.get('challenged'), item))}")
+        for line in _challenge_reasons(item.get("challenged"), item):
             print(f"    {line}")
         print(f"  [{_safe(item['id'])}]  {_safe(item.get('title', 'Untitled'))}")
         meta = [
@@ -998,8 +1056,8 @@ def _display_item(item: dict) -> None:
     title = item.get("title", item.get("description", "Untitled"))
     print(f"  [{_one_line(item['id'])}]  {_one_line(title)}")
     if "title" in item:  # under the title, which can't hide it
-        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
-        for line in _challenge_reasons(item.get("challenged")):
+        print(f"  {_one_line(_challenge_line(item.get('challenged'), item))}")
+        for line in _challenge_reasons(item.get("challenged"), item):
             print(f"    {line}")
     if examiner:
         print(f"  Examiner: {_one_line(examiner)}", end="")
@@ -1109,8 +1167,8 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
             _render_field("Title", item, modifications, "title")
         else:
             print(f"  Title:          {_one_line(item.get('title', ''))}")
-        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
-        for line in _challenge_reasons(item.get("challenged")):
+        print(f"  {_one_line(_challenge_line(item.get('challenged'), item))}")
+        for line in _challenge_reasons(item.get("challenged"), item):
             print(f"    {line}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
@@ -1152,7 +1210,7 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     for field in sorted(set(body) - shown):
         value = body[field]
         text = value if isinstance(value, str) else json.dumps(value, default=str)
-        label = field.replace("_", " ").capitalize()
+        label = _one_line(field.replace("_", " ").capitalize())  # a key is case data
         print(f"  {label}:{' ' * max(1, 15 - len(label))}{_one_line(text)}")
 
     # Note

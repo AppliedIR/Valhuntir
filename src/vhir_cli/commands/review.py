@@ -573,13 +573,16 @@ def _show_audit(case_dir: Path, limit: int) -> None:
                 for entry in iter_jsonl_entries(jsonl_file, want):
                     if entry is CORRUPT_LINE:
                         print(
-                            f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
+                            f"  Warning: skipping corrupt audit line in {one_line(jsonl_file.name)}",
                             file=sys.stderr,
                         )
                     else:
                         entries.append(entry)
             except OSError as e:
-                print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
+                print(
+                    f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                    file=sys.stderr,
+                )
 
     # Read approvals
     approvals_file = case_dir / "approvals.jsonl"
