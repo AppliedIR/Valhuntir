@@ -415,7 +415,7 @@ def test_a_0_6_source_padded_with_newlines_costs_about_its_size(tmp_path, source
     """One 0.6 record and 16 MiB of newlines: the same record comes out, and
     the read costs about the file's size (measured 15 MiB). The source is read
     whole so the frozen prefix is cut from its bytes before any line is split,
-    and its lines are taken one at a time: a whole split into 16 million empty
+    and its lines are split a chunk at a time: a whole split into 16 million empty
     lines cost 143 MiB, a join of read lines 1.4 GB."""
     import subprocess
     import sys
@@ -435,6 +435,52 @@ def test_a_0_6_source_padded_with_newlines_costs_about_its_size(tmp_path, source
     got = json.loads(p.stdout)
     assert got["counted"] == {"F-tester-001": [record]} and got["sources"] == 1
     assert got["grew_mib"] <= 32, got["grew_mib"]
+
+
+def test_a_sources_lines_are_those_splitlines_gives_at_every_chunk_size():
+    """Lines split a chunk at a time are those a whole split gives, whatever
+    falls at a chunk's end: a \\n, a \\r, a \\r\\n, or the end of the data."""
+    import random
+
+    from vhir_cli.ledger_verify import _lines
+
+    rng = random.Random(7)
+    for _ in range(5000):
+        data = bytes(rng.choice(b"\n\r ab{}") for _ in range(rng.randrange(60)))
+        for chunk in (1, 2, 3, 1 << 20):
+            assert list(_lines(data, chunk)) == data.splitlines(), (chunk, data)
+
+
+_LINES_TIME = """
+import time
+from vhir_cli.ledger_verify import _lines
+data = b'{"finding_id": "F-1"}\\n' + b"\\n" * (64 << 20)
+
+
+def walk(split):  # the split and a pass over its lines, as records() makes
+    t = time.perf_counter()
+    for raw in split():
+        raw.strip()
+    return time.perf_counter() - t
+
+
+whole = walk(data.splitlines)
+print(walk(lambda: _lines(data)) / whole)
+"""
+
+
+@POSIX
+def test_a_source_padded_with_newlines_is_split_about_as_fast_as_a_whole_split():
+    """64 MiB of newlines: split a chunk at a time, within twice the time a
+    whole split (the base's) takes in the same process. A split in Python, a
+    line at a time, took about 9 times as long."""
+    import subprocess
+    import sys
+
+    p = subprocess.run([sys.executable, "-c", _LINES_TIME], capture_output=True,
+                       text=True, timeout=300)  # fmt: skip
+    assert p.returncode == 0, p.stderr[-500:]
+    assert float(p.stdout) <= 2.0, p.stdout
 
 
 def test_a_genesis_prefix_reads_as_a_whole_read_did_at_every_cut(tmp_path):

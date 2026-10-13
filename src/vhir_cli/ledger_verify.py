@@ -734,23 +734,19 @@ def _legacy(
     return counted, uncounted, problems
 
 
-def _lines(data: bytes):
-    """The lines `data.splitlines()` gives (split at \\n, \\r and \\r\\n), one at
-    a time: a list of millions of empty lines is never built."""
+_CHUNK = 1 << 20
+
+
+def _lines(data: bytes, chunk: int = _CHUNK):
+    """The lines `data.splitlines()` gives (split at \\n, \\r and \\r\\n), split
+    a chunk at a time: each chunk ends just past a \\n, so a \\r\\n is never cut,
+    and a list of millions of empty lines is never built whole."""
     i, n = 0, len(data)
-    nl, cr = data.find(b"\n"), data.find(b"\r")
     while i < n:
-        if nl != -1 and nl < i:
-            nl = data.find(b"\n", i)
-        if cr != -1 and cr < i:
-            cr = data.find(b"\r", i)
-        ends = [x for x in (nl, cr) if x != -1]
-        if not ends:
-            yield data[i:]
-            return
-        j = min(ends)
-        yield data[i:j]
-        i = j + 2 if data[j : j + 2] == b"\r\n" else j + 1
+        j = data.find(b"\n", min(i + chunk, n) - 1)
+        j = n if j == -1 else j + 1
+        yield from data[i:j].splitlines()
+        i = j
 
 
 def _genesis(chain: Chain | None) -> dict | None:
