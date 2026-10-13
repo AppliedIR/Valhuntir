@@ -86,7 +86,7 @@ def test_a_finding_shows_its_challenge_under_its_title_then_its_alternatives(cap
     _display_item(_finding(alternatives=ALTERNATIVES, challenged=STANDS))
     lines = capsys.readouterr().out.splitlines()
     challenge = (
-        "  Challenged (client-reported): stands — skeptic: sift-tester-20261007-002"
+        "  Challenged (client-reported): upheld — skeptic: sift-tester-20261007-002"
     )
     title = next(i for i, line in enumerate(lines) if "[F-tester-001]" in line)
     assert lines[title + 1] == challenge  # which finding it is, then its challenge
@@ -373,7 +373,7 @@ def test_a_title_can_t_hide_the_challenge_line_under_it(capsys):
     lines = capsys.readouterr().out.splitlines()
     (line,) = [i for i, text in enumerate(lines) if "[F-tester-001]" in text]
     assert lines[line] == "  [F-tester-001]  Benign?[8m?Not challenged?2K?more"
-    assert lines[line + 1].startswith("  Challenged (client-reported): stands")
+    assert lines[line + 1].startswith("  Challenged (client-reported): upheld")
 
 
 def test_review_shows_the_challenge_under_the_title(capsys):
@@ -384,7 +384,7 @@ def test_review_shows_the_challenge_under_the_title(capsys):
     )
     lines = capsys.readouterr().out.splitlines()
     (title,) = [i for i, text in enumerate(lines) if text.startswith("  Title:")]
-    assert lines[title + 1].startswith("  Challenged (client-reported): stands")
+    assert lines[title + 1].startswith("  Challenged (client-reported): upheld")
 
 
 def test_an_escape_in_any_field_can_t_rewrite_the_challenge_line(capsys):
@@ -400,7 +400,7 @@ def test_an_escape_in_any_field_can_t_rewrite_the_challenge_line(capsys):
     out = capsys.readouterr().out
     assert "\x1b" not in out and "\x9b" not in out and "\r" not in out
     assert "  Interpretation: benign?[3A?[2KNot challenged" in out.splitlines()
-    assert "  Challenged (client-reported): stands" in out
+    assert "  Challenged (client-reported): upheld" in out
 
 
 def test_review_shows_a_control_character_title_escaped(capsys):
@@ -412,7 +412,7 @@ def test_review_shows_a_control_character_title_escaped(capsys):
     lines = capsys.readouterr().out.splitlines()
     (title,) = [i for i, text in enumerate(lines) if text.startswith("  Title:")]
     assert lines[title] == "  Title:          Benign?[8m?Not challenged"
-    assert lines[title + 1].startswith("  Challenged (client-reported): stands")
+    assert lines[title + 1].startswith("  Challenged (client-reported): upheld")
     assert any("Note: ok?[1A" in text for text in lines)
 
 
@@ -452,7 +452,7 @@ def test_a_review_file_can_t_clear_the_challenge_line(
     out = _review_output(case, monkeypatch, capsys, finding_id, action)
     assert "\x1b[2J" not in out
     assert "?[2J" in out
-    assert "Challenged (client-reported): stands" in out
+    assert "Challenged (client-reported): upheld" in out
     assert "changed after you reviewed it" in out  # stale: refused, not signed
 
 
@@ -540,3 +540,78 @@ def test_a_todo_description_is_shown_by_the_same_rule(case, capsys):
     lines = capsys.readouterr().out.splitlines()
     at = lines.index("  Created TODO-tester-001: Check WKS01")
     assert lines[at + 1] == " " * len("  Created TODO-tester-001: ") + "and SRV01?[2J"
+
+
+# --- what the approve screen shows of a challenge (0.6.5) --------------------------
+
+RUN = "sift-tester-20261013-001"
+CHECK = {"name": "prefetch re-parsed", "result": "consistent", "audit_ids": [RUN],
+         "ran": {RUN: "PECmd -f EVIL.EXE-1.pf"}}  # fmt: skip
+UPHELD = {"outcome": "stands", "checks": [CHECK], "skeptic_audit_ids": [RUN]}
+
+
+def _shown(capsys, **fields) -> list[str]:
+    _display_item(_finding(**fields))
+    lines = capsys.readouterr().out.splitlines()
+    title = next(i for i, text in enumerate(lines) if "[F-tester-001]" in text)
+    return lines[title + 1 :]
+
+
+def test_a_clean_upheld_challenge_is_its_line_alone(capsys):
+    shown = _shown(capsys, challenged=UPHELD)
+    assert shown[0] == f"  Challenged (client-reported): upheld — skeptic: {RUN}"
+    assert not any(line.startswith(("  Check ", "  Contradiction")) for line in shown)
+
+
+@pytest.mark.parametrize(
+    "fields, first, detail",
+    [
+        ({"challenged": {**UPHELD, "contradiction": "Run count is 3, not 1."}},
+         f"Challenged (client-reported): upheld — skeptic: {RUN}",
+         "Contradiction (client-reported): Run count is 3, not 1."),
+        ({"challenged": {**UPHELD, "checks": [{**CHECK, "result": "contradicts"}]}},
+         f"Challenged (client-reported): upheld — skeptic: {RUN}",
+         f"Check prefetch re-parsed: contradicts — {RUN} (ran: PECmd -f EVIL.EXE-1.pf)"),
+        ({"challenged": {**UPHELD, "checks": [CHECK, {"name": "event logs", "result": "not run",
+                                                      "audit_ids": [], "reason": "no evtx"}]}},
+         f"Challenged (client-reported): upheld — skeptic: {RUN}",
+         "Check event logs: not run — no evtx"),
+        ({"challenged": {"outcome": "contested", "checks": [], "skeptic_audit_ids": [],
+                         "contradiction": "Fits the admin's jump host."}},
+         "Challenged (client-reported): contested — skeptic: none",
+         "Contradiction (client-reported): Fits the admin's jump host."),
+        ({"challenged": UPHELD, "prior_challenge": [
+            {"kind": "withdrawn", "ref": "a-1", "contradiction": "installer path",
+             "new_since": [{"audit_id": "x-2", "ran": "date"}]}]},
+         f"Challenged (client-reported): upheld — skeptic: {RUN}",
+         "Previously withdrawn (a-1): installer path — new since: date (x-2)"),
+    ],
+    ids=["upheld with a contradiction", "a check that contradicts", "a skipped check",
+         "contested", "an earlier challenge"],
+)  # fmt: skip
+def test_a_challenge_that_needs_a_look_shows_its_detail(capsys, fields, first, detail):
+    shown = _shown(capsys, **fields)
+    assert shown[0] == f"  {first}"
+    assert f"    {detail}" in shown, shown  # under the line
+
+
+@pytest.mark.parametrize(
+    "fields, line",
+    [
+        ({"challenged": {"outcome": "not_challenged", "reason": "no subagent", "checks": []}},
+         "Not challenged: no subagent"),
+        ({"imported_from": {"case_id": "c"}}, "Not challenged (imported)"),
+    ],
+    ids=["not challenged, with its reason", "an imported finding"],
+)  # fmt: skip
+def test_a_finding_without_a_skeptic_says_why(capsys, fields, line):
+    assert _shown(capsys, **fields)[0] == f"  {line}"
+
+
+def test_a_check_s_command_shows_an_author_s_own_run(capsys):
+    marker = {"outcome": "stands", "skeptic_audit_ids": [RUN], "checks": [
+        {"name": "re-run", "result": "not run", "audit_ids": [RUN], "reason": "x",
+         "ran": {RUN: "date"}}]}  # fmt: skip
+    assert f"    Check re-run: not run — x — {RUN} (ran: date)" in _shown(
+        capsys, challenged=marker
+    )
