@@ -152,3 +152,55 @@ def test_hxxp_is_a_scheme_only_before_its_separator(text, kind, value):
     for got in (collected, report):
         assert value in got[kind]
         assert not any("http" in v for v in got.get(kind, ())), got
+
+
+# --- writing the case's IOCs defanged in a saved report -------------------------
+
+IOCS = ["https://evil.com/payload", "evil.com"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "evil.com", "https://evil.com/x", "hxxp://evil.com", r"\\evil.com\share",
+        r"\\evil.com@SSL\DavWWWRoot\x.dll", "//evil.com/x", "mail@evil.com",
+        "https://web.archive.org/web/2026/https://evil.com/payload",
+    ],
+)  # fmt: skip
+def test_an_ioc_where_it_names_a_host_is_defanged(text):
+    from vhir_cli.defang import defang_iocs
+
+    got = defang_iocs(text, IOCS)
+    assert "evil[.]com" in got and "evil.com" not in got, got
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ("https://vendor.example/download/evil.com/tool", "/download/evil.com/tool"),
+        (r"C:\Users\x\evil.com\a", r"\x\evil.com\a"),
+        ("https://evil.com/evil.com/payload", "/evil.com/payload"),
+    ],
+)
+def test_a_domain_after_a_single_separator_is_a_path_and_stays(text, kept):
+    """After one / or \\ a domain is a path component; after // or \\\\ a host."""
+    from vhir_cli.defang import defang_iocs
+
+    assert defang_iocs(text, IOCS).endswith(kept)
+
+
+def test_a_range_counts_as_its_base_address():
+    from vhir_cli.defang import defang_iocs, network_ioc
+
+    assert network_ioc("185.220.101.0/24", False) == "185.220.101.0"
+    assert network_ioc("185.220.101.45/32", False) == "185.220.101.45"
+    got = defang_iocs("185.220.101.0/24 via http://185.220.101.0/24", ["185.220.101.0"])
+    assert got == "185[.]220[.]101[.]0/24 via http://185[.]220[.]101[.]0/24"
+
+
+def test_a_typed_domain_with_its_root_dot_counts_without_it():
+    from vhir_cli.defang import defang_iocs, network_ioc
+
+    assert network_ioc("evil.com.", True) == "evil.com"
+    got = defang_iocs("evil.com. and https://evil.com./x", ["evil.com"])
+    assert got == "evil[.]com. and https://evil[.]com./x"

@@ -88,10 +88,20 @@ def defang_iocs(text: str, iocs: list[str]) -> str:
     """`text` with every whole occurrence of each IOC defanged. A whole
     occurrence is never part of a longer name or address: no name character
     or dot before it, and no name character, or dot and label, after it. A
-    defanged form no longer holds the live value, so it isn't defanged twice."""
+    domain right after a single / or \\ is a path component, left as written
+    (after // or \\\\ it is a host). A defanged form no longer holds the live
+    value, so it isn't defanged twice."""
+
+    def one(m: re.Match, name: bool) -> str:
+        s, i = m.string, m.start()
+        if name and i and s[i - 1] in "/\\" and (i < 2 or s[i - 2] != s[i - 1]):
+            return m.group(0)  # a path component, not a host
+        return _defanged(m.group(0))
+
     for v in iocs:
+        name = not (_URL.fullmatch(v) or _IPV4.fullmatch(v))
         whole = re.compile(r"(?<![\w.-])" + re.escape(v) + r"(?![\w-]|\.[\w-])", re.I)
-        text = whole.sub(lambda m: _defanged(m.group(0)), text)
+        text = whole.sub(lambda m, name=name: one(m, name), text)
     return text
 
 
@@ -100,6 +110,11 @@ def network_ioc(value, typed: bool) -> str | None:
     names a domain) a domain name; else None. An untyped name like a.exe could
     be a file."""
     v = re.sub(r"\[(\W)\]", r"\1", refang(str(value).strip()))
+    base, _, prefix = v.partition("/")
+    if prefix.isdigit() and len(prefix) <= 2 and _IPV4.fullmatch(base):
+        v = base  # a range (a.b.c.d/nn): its base address
+    if typed and v.endswith(".") and _DOMAIN.fullmatch(v[:-1]):
+        v = v[:-1]  # the root dot
     if _URL.fullmatch(v) or _IPV4.fullmatch(v) or (typed and _DOMAIN.fullmatch(v)):
         return v
     return None
