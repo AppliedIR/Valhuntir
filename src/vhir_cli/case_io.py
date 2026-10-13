@@ -740,6 +740,21 @@ def record_no_terminal(
         )
 
 
+def refuse_without_terminal(case_dir: Path, examiner: str, action: str, ids) -> None:
+    """At an approve or reject's start, before any preflight: with no
+    examiner at a terminal, record the attempt, say so, and exit 1. Nothing
+    is read from the signing folders, so a sandbox that hides them still gets
+    the notice."""
+    from vhir_cli import approval_auth
+
+    try:
+        approval_auth.require_terminal()
+    except approval_auth.NoTerminal:
+        record_no_terminal(case_dir, examiner, action, [str(i) for i in ids or []])
+        print(NO_TERMINAL_REFUSAL, file=sys.stderr)
+        sys.exit(1)
+
+
 def load_no_terminal(case_dir: Path) -> list[dict]:
     """The approve and reject attempts refused for want of a terminal, oldest
     first, each once (by its time and its ids)."""

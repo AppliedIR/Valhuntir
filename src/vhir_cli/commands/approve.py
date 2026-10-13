@@ -48,6 +48,7 @@ from vhir_cli.case_io import (
     load_todos,
     load_withdrawals,
     no_terminal_line,
+    refuse_without_terminal,
     save_todos,
     signed_text,
 )
@@ -59,6 +60,7 @@ from vhir_cli.display import one_line as _one_line
 def cmd_approve(args, identity: dict) -> None:
     """Approve findings/timeline events (or re-attest 0.6 approvals)."""
     case_dir = get_case_dir(getattr(args, "case", None))
+    refuse_without_terminal(case_dir, identity["examiner"], "approve", args.ids)
     config_path = Path.home() / ".vhir" / "config.yaml"
     show_signed = getattr(args, "show_signed", False)
 

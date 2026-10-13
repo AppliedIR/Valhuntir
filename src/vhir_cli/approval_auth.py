@@ -339,6 +339,16 @@ class NoTerminal(RuntimeError):
     terminal (an AI's shell, a pipe). Signing refuses and saves nothing."""
 
 
+def require_terminal() -> None:
+    """Raise NoTerminal unless the passphrase prompt could open /dev/tty."""
+    if not _HAS_TERMIOS:
+        raise NoTerminal("Passphrase entry requires a terminal with termios support.")
+    try:
+        open("/dev/tty").close()
+    except OSError as err:
+        raise NoTerminal("Passphrase entry requires /dev/tty.") from err
+
+
 def getpass_prompt(prompt: str) -> str:
     """Read password from /dev/tty with masked input (shows * per keystroke).
 

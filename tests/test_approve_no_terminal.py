@@ -67,11 +67,13 @@ def case(tmp_path, monkeypatch):
     return d
 
 
-def _vhir(tmp_path, *argv, stdin=subprocess.DEVNULL):
-    """The CLI with no controlling terminal; this test's state folders."""
+def _vhir(tmp_path, *argv, stdin=subprocess.DEVNULL, state=None):
+    """The CLI with no controlling terminal; this test's state folders, or
+    `state` for the keys and ledger folders."""
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    cfg = {"keys": str(keys.KEYS_DIR), "ledger": str(ledger.LEDGER_DIR),
+    keys_dir, ledger_dir = state or (keys.KEYS_DIR, ledger.LEDGER_DIR)
+    cfg = {"keys": str(keys_dir), "ledger": str(ledger_dir),
            "verification": str(verification.VERIFICATION_DIR),
            "passwords": str(approval_auth._PASSWORDS_DIR), "argv": list(argv)}  # fmt: skip
     env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "VHIR_EXAMINER": "tester",
@@ -89,14 +91,15 @@ def _notices(case) -> list[dict]:
 
 
 @pytest.mark.parametrize(
-    "argv, stdin, action",
-    [(["approve", "F-tester-001"], subprocess.DEVNULL, "approve"),
-     (["reject", "F-tester-001", "--reason", "wrong host"], subprocess.DEVNULL, "reject"),
-     (["approve"], "piped", "approve")],
+    "argv, stdin, action, ids",
+    [(["approve", "F-tester-001"], subprocess.DEVNULL, "approve", ["F-tester-001"]),
+     (["reject", "F-tester-001", "--reason", "wrong host"], subprocess.DEVNULL, "reject",
+      ["F-tester-001"]),
+     (["approve"], "piped", "approve", [])],
     ids=["approve ids", "reject ids", "interactive approve, stdin piped"],
 )  # fmt: skip
 def test_with_no_terminal_nothing_is_saved_and_one_notice_is_written(
-    case, tmp_path, argv, stdin, action
+    case, tmp_path, argv, stdin, action, ids
 ):
     before = {
         n: (case / n).read_bytes() for n in ("pending-reviews.json", "findings.json")
@@ -117,7 +120,7 @@ def test_with_no_terminal_nothing_is_saved_and_one_notice_is_written(
         assert (case / name).read_bytes() == data, name
     (notice,) = _notices(case)
     assert notice["tool"] == action and notice["examiner"] == "tester"
-    assert "F-tester-001" in notice["params"]["ids"]
+    assert notice["params"]["ids"] == ids
     assert notice["result_summary"] == {
         "status": "NO_TERMINAL",
         "reason": "no terminal",
@@ -154,3 +157,23 @@ def test_a_case_with_no_refused_attempts_prints_no_line(case):
     from vhir_cli.case_io import no_terminal_line
 
     assert no_terminal_line(case) == ""
+
+
+def test_a_sandbox_that_hides_the_signing_folders_still_gets_the_refusal(
+    case, tmp_path
+):
+    """As Claude Code's analyst sandbox runs it: the signing folders can't be
+    read. The refusal comes first, with its notice, and no traceback."""
+    hidden = tmp_path / "hidden"
+    (hidden / "keys").mkdir(parents=True)
+    (hidden / "ledger").mkdir()
+    hidden.chmod(0)
+    try:
+        r = _vhir(tmp_path, "approve", "F-tester-001",
+                  state=(hidden / "keys", hidden / "ledger"))  # fmt: skip
+    finally:
+        hidden.chmod(0o700)
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "Nothing was signed or saved." in r.stderr
+    assert [n["tool"] for n in _notices(case)] == ["approve"]
