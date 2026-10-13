@@ -1993,10 +1993,14 @@ def _codex_config_conflicts() -> None:
             break  # top-level keys come before the first table
         m = re.match(r"(sandbox_mode|approval_policy)\s*=\s*\"([^\"]*)\"", stripped)
         if m and m.group(2) not in allowed[m.group(1)]:
+            what = (  # a sandbox mode gives way to the managed permissions profile
+                "replace with their own (the workspace, ~/.vhir read-only)"
+                if m.group(1) == "sandbox_mode"
+                else "refuse: Codex stops with an error until it is changed"
+            )
             print(
                 f'  Note: {cfg} sets {m.group(1)} = "{m.group(2)}", which '
-                "Valhuntir's managed Codex settings refuse: Codex stops with an "
-                "error until it is changed. vhir doesn't edit that file."
+                f"Valhuntir's managed Codex settings {what}. vhir doesn't edit that file."
             )
 
 

@@ -242,6 +242,8 @@ def test_config_toml_is_never_written_and_a_refused_value_is_named(box, capsys):
     assert box.config.read_text() == text
     out = capsys.readouterr().out
     assert 'sets sandbox_mode = "danger-full-access"' in out
+    assert "replace with their own (the workspace, ~/.vhir read-only)" in out
+    assert "stops with an error" not in out  # Codex replaces it: measured, no error
     assert "vhir doesn't edit that file" in out
 
 
