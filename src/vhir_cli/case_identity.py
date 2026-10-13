@@ -17,12 +17,19 @@ import contextlib
 import importlib.util
 import json
 import os
+import sys
 import uuid
 from pathlib import Path
 
 import yaml
 
-from vhir_cli.case_io import _atomic_write, case_file_there
+from vhir_cli.case_io import (
+    CaseFileNotRegular,
+    CaseFileNotText,
+    _atomic_write,
+    case_file_there,
+    not_text,
+)
 
 
 def host_identity():
@@ -40,11 +47,16 @@ def host_identity():
 
 
 def case_uuid(case_dir: Path) -> str:
-    """The case's UUID from CASE.yaml, or "" when it has none."""
-    if not case_file_there(Path(case_dir) / "CASE.yaml"):
+    """The case's UUID from CASE.yaml, or "" when it has none. A CASE.yaml
+    that is there but can't be read as one raises CaseFileNotRegular (a pipe,
+    socket or device) or CaseFileNotText (not UTF-8)."""
+    path = Path(case_dir) / "CASE.yaml"
+    if not case_file_there(path):
         return ""
     try:
-        meta = yaml.safe_load((Path(case_dir) / "CASE.yaml").read_text()) or {}
+        meta = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except UnicodeDecodeError:
+        raise not_text(path) from None
     except (OSError, yaml.YAMLError):
         return ""
     raw = (
@@ -112,8 +124,20 @@ def _read_paths() -> dict:
 
 
 def _holds(folder: str, identity: str) -> bool:
-    """True when `folder` is a case whose CASE.yaml has `identity`."""
-    return Path(folder).is_dir() and case_uuid(Path(folder)) == identity
+    """True when `folder` is a case whose CASE.yaml has `identity`. One whose
+    CASE.yaml can't be read doesn't hold it, and is named: a folder this box
+    recorded once never blocks, or hangs, the case's command."""
+    if not Path(folder).is_dir():
+        return False
+    try:
+        return case_uuid(Path(folder)) == identity
+    except (CaseFileNotRegular, CaseFileNotText) as e:
+        print(
+            f"  Warning: a folder this box recorded for a case can't be read, so it "
+            f"isn't taken as holding it: {e}",
+            file=sys.stderr,
+        )
+        return False
 
 
 def recorded_folder(identity: str | None) -> str | None:

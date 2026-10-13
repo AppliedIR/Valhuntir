@@ -475,6 +475,9 @@ def _create_backup_data(
     for root, _dirs, files in os.walk(backup_dir / "ledger"):
         point_in_time += [os.path.relpath(Path(root, f), backup_dir) for f in files]
     point_in_time += [n for n in _WRITER_SET if (backup_dir / n).is_file()]
+    # the case's own 0.6 copy, copied under the lock and then moved beside the box's
+    point_in_time += [os.path.relpath(path, backup_dir) for what, path in copied.get("copies", [])
+                      if what in ("moved beside", "kept beside") and Path(path).parent == backup_dir]  # fmt: skip
     # the copies may have rewritten or moved any of these: hashed from disk
     for rel in [r for r in copied_hashes if r.startswith("ledger/")]:
         del copied_hashes[rel]
@@ -556,7 +559,12 @@ def _create_backup_data(
         "includes_opensearch": bool(
             opensearch_snapshot_info and not opensearch_snapshot_info.get("error")
         ),
-        "notes": ["approvals.jsonl is an archival copy, not used for verification"],
+        # the archival note only where the backup holds the file
+        "notes": [
+            "approvals.jsonl is an archival copy, not used for verification"
+            for e in manifest_files
+            if e["path"] == "approvals.jsonl"
+        ],
         # copied or written in one hold of the writers' lock: the case's state
         # at one moment; every other file was copied after it
         "point_in_time": {"files": sorted(point_in_time)},
@@ -1089,6 +1097,8 @@ def _detect_opensearch(case_dir: Path) -> dict:
             "size_bytes": total_bytes,
             "size_human": human_size(total_bytes),
         }
+    except CaseError:
+        raise  # a bad CASE.yaml (a pipe, not UTF-8) is named, never read as no OpenSearch
     except Exception:
         return {"available": False}
 
@@ -1470,8 +1480,11 @@ def _repoint_evidence(
                 absent += os.path.normpath(rel) not in restored
             break
         else:
+            # a case-relative path is read against the restored case: inside it
+            # only while it stays there (evidence/../../x leaves it)
+            where = os.path.normpath(os.path.join(new_root, path))
             try:
-                Path(path).relative_to(new_root)
+                Path(where).relative_to(new_root)
             except ValueError:
                 outside.append(path)
     if moved:
@@ -1642,6 +1655,16 @@ def cmd_restore(args, identity: dict) -> None:
     )
     if not backup_uuid and not alongside:
         _name_identity_left_behind(source_path)
+    # beside an original that got its identity after this backup was made: a
+    # copy all the same, told so (it takes its own identity when activated)
+    older_beside = (
+        not backup_uuid
+        and not alongside
+        and target_dir.resolve() != Path(source_path).resolve()
+        and isinstance(original, dict)
+        and original.get("case_id") == case_id
+        and bool(_case_uuid(Path(source_path)))
+    )
     if restore_opensearch:
         problem = _snapshot_identity_problem(snap_info, backup_path)
         if not problem and (backup_path / "opensearch-snapshot").is_symlink():
@@ -1885,7 +1908,12 @@ def cmd_restore(args, identity: dict) -> None:
         failed = _finish_restore(
             target_dir, backup_path, case_id, snap_info, want, ledger_data, progress
         )
-    if alongside and ledger_path_of(case_id).exists():
+    if integrity_ok and older_beside:
+        print(
+            "  Restored beside the original, which got its case identity after this "
+            "backup was made: this copy takes its own identity when it is activated."
+        )
+    if (alongside or older_beside) and ledger_path_of(case_id).exists():
         print(f"  {cannot_sign_text(case_id, source_path)}")
 
     # Evidence registered in the backed-up case is re-pointed at the restored
@@ -2313,8 +2341,8 @@ def _new_identity_for_copy(target_dir: Path, case_id: str, snap_info: dict):
     if module is None:
         print(
             "  Restored beside the original: this copy still has the original's "
-            "identity. Give it its own with `vhir case new-identity` before "
-            "using it.",
+            "identity, so both folders read the same indices. Giving it its own "
+            "needs the SIFT workstation's sift-common package.",
             file=sys.stderr,
         )
         return None

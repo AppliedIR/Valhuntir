@@ -7,7 +7,6 @@ source="cli_exec" and audit IDs (cliexec-{examiner}-{YYYYMMDD}-{NNN}).
 from __future__ import annotations
 
 import errno
-import io
 import json
 import os
 import subprocess
@@ -17,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
-from vhir_cli.case_io import NotRegularFile, get_case_dir, read_regular
+from vhir_cli.case_io import (
+    CaseFileNotRegular,
+    CaseFileTooLarge,
+    get_case_dir,
+    open_regular,
+)
 from vhir_cli.display import one_line
 
 _MCP_NAME = "cli-exec"
@@ -74,7 +78,7 @@ def cmd_exec(args, identity: dict) -> None:
             raise OSError(errno.EMLINK, "another name links to it")
     except OSError as e:
         print(f"Not run: vhir exec can't write this command's audit entry ({_why(log_file, e)}). "
-              "Make the case's audit/ folder writable, then run it again.", file=sys.stderr)  # fmt: skip
+              f"{_advice(e)}", file=sys.stderr)  # fmt: skip
         sys.exit(1)
 
     # Execute. Once it has started, the command is audited whatever happens:
@@ -145,8 +149,32 @@ def cmd_exec(args, identity: dict) -> None:
     print(f"Audit ID: {audit_id}")
 
 
+_WRITABLE = "Make the case's audit/ folder writable, then run it again."
+_PUT_BACK = "Move it aside and put the case's own log back as a regular file, then run it again."
+_ADVICE = {  # what the log is -> the step that recovers
+    "not a regular file": _PUT_BACK,
+    "a folder": _PUT_BACK,
+    "a symbolic link": "Put the case's own audit/ folder and log back in place of the link, "
+    "then run it again.",
+    "another name links to it": "Replace it with a copy of its own, not a second name for "
+    "another file, then run it again.",
+}
+
+
+def _advice(e: OSError) -> str:
+    """The step for the log's shape; for a log too large, keep a copy of what
+    it holds first; for anything else (a permission, a full disk), the folder's."""
+    if isinstance(e, CaseFileTooLarge):
+        return ("It holds the case's vhir exec audit entries: keep a copy of it before "
+                "you move it out of the case, then run it again.")  # fmt: skip
+    why = e.why if isinstance(e, CaseFileNotRegular) else (
+        "a symbolic link" if e.errno == errno.ELOOP else
+        "another name links to it" if e.errno == errno.EMLINK else "")  # fmt: skip
+    return _ADVICE.get(why, _WRITABLE)
+
+
 def _why(log_file: Path, e: OSError) -> str:
-    why = ("not a regular file" if isinstance(e, NotRegularFile) else
+    why = (e.why if isinstance(e, (CaseFileNotRegular, CaseFileTooLarge)) else
            "a symbolic link" if e.errno == errno.ELOOP else e.strerror)  # fmt: skip
     return one_line(f"{log_file}: {why or type(e).__name__}")
 
@@ -164,24 +192,24 @@ def _next_audit_id(case_dir: Path, examiner: str) -> str:
     max_seq = 0
     if log_file.exists():
         pattern = f"{_EVIDENCE_PREFIX}-{examiner}-{today}-"
-        # a regular file only (NotRegularFile); any read error refuses the run
-        with io.BytesIO(read_regular(log_file)) as raw:
-            with io.TextIOWrapper(raw, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        eid = entry.get("audit_id", "")
-                        if eid.startswith(pattern):
-                            try:
-                                seq = int(eid[len(pattern) :])
-                                max_seq = max(max_seq, seq)
-                            except ValueError:
-                                pass
-                    except json.JSONDecodeError:
-                        continue
+        # a regular file only, line by line with each line capped; any read
+        # error refuses the run
+        with open_regular(log_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    eid = entry.get("audit_id", "")
+                    if eid.startswith(pattern):
+                        try:
+                            seq = int(eid[len(pattern) :])
+                            max_seq = max(max_seq, seq)
+                        except ValueError:
+                            pass
+                except json.JSONDecodeError:
+                    continue
     return f"{_EVIDENCE_PREFIX}-{examiner}-{today}-{max_seq + 1:03d}"
 
 

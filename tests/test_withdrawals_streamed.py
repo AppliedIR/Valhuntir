@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-import vhir_cli.commands.audit_cmd as audit_cmd
+import vhir_cli.case_io as case_io
 import vhir_cli.commands.review as review
 from vhir_cli.case_io import load_withdrawals
 
@@ -42,9 +42,9 @@ def case(tmp_path, monkeypatch):
 
 def test_only_withdrawals_are_kept_and_each_log_is_read_line_by_line(case, monkeypatch):
     opened = []
-    real = audit_cmd.open_regular
+    real = case_io.open_regular
     monkeypatch.setattr(
-        audit_cmd, "open_regular", lambda p: opened.append(p.name) or real(p)
+        case_io, "open_regular", lambda p: opened.append(p.name) or real(p)
     )
     assert [w["audit_id"] for w in load_withdrawals(case)] == ["forensic-tester-001"]
     assert opened == ["forensic-mcp.jsonl", "sift-mcp.jsonl"]
@@ -60,16 +60,24 @@ def test_a_log_that_isnt_a_regular_file_is_named_and_skipped(case, capsys, bad, 
         lambda: review._show_withdrawn(case))  # fmt: skip
 
     def run():  # in a child with memory capped; its output kept for the check
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            result = fn()
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            try:
+                result = fn()
+            except SystemExit as e:  # the view never says "none" past an unread log
+                result = ("exit", e.code)
+        what = ("isn't a regular file (a named pipe, socket or device)." if bad == "fifo"
+                else "is a symbolic link, so it wasn't read: a case log is read only "
+                "under its own name.")  # fmt: skip
         return (
             result,
-            f"Warning: could not read {path}: {path} is not a regular file"
-            in err.getvalue(),
+            f"Warning: could not read {path}: {path} {what} Put the case's own file "
+            "back, then try again." in err.getvalue(),
+            "Couldn't read audit/wintools-mcp.jsonl (" in out.getvalue(),
         )
 
-    assert _within(run) == ("ok", (1 if reader == "count" else None, True))
+    viewed = reader != "count"
+    assert _within(run) == ("ok", (("exit", 1) if viewed else 1, True, viewed))
 
 
 @POSIX
@@ -83,12 +91,65 @@ def test_a_log_named_with_terminal_controls_is_named_with_them_shown(case, reade
         lambda: review._show_withdrawn(case))  # fmt: skip
 
     def run():
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            fn()
-        return err.getvalue()
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            with contextlib.suppress(SystemExit):
+                fn()
+        return err.getvalue() + out.getvalue()
 
     status, err = _within(run)
     assert status == "ok"
     assert "\x1b" not in err
     assert f"could not read {case}/audit/wintools-?[2J?[H.jsonl: " in err
+
+
+def _over_cap_line(case):
+    """forensic-mcp.jsonl, where withdrawals are written, with one line over
+    the cap after a withdrawal: the log isn't read past it."""
+    with open(case / "audit" / "forensic-mcp.jsonl", "ab") as f:
+        f.write(b'{"pad": "' + b"x" * (16 << 20) + b'"}\n')
+
+
+def test_the_withdrawn_view_names_an_unread_log_and_exits_1_never_none(case):
+    _over_cap_line(case)
+
+    def run():
+        out = io.StringIO()
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(out):
+            try:
+                review._show_withdrawn(case)
+            except SystemExit as e:
+                return e.code, out.getvalue()
+        return None, out.getvalue()
+
+    status, (code, out) = _within(run)
+    assert (status, code) == ("ok", 1)
+    assert "No candidate findings withdrawn" not in out
+    assert "1 candidate finding(s) withdrawn after challenge" in out  # read before it
+    assert (
+        "Couldn't read audit/forensic-mcp.jsonl (line 2 is longer than 16 MiB): "
+        "a candidate withdrawn there isn't shown." in out
+    )
+
+
+def test_approves_count_says_a_log_went_unread(case, monkeypatch, capsys):
+    from argparse import Namespace
+
+    import vhir_cli.commands.approve as approve_mod
+
+    _over_cap_line(case)
+    monkeypatch.setattr(approve_mod, "_preflight", lambda *a: True, raising=False)
+    monkeypatch.setattr(
+        approve_mod,
+        "_interactive_review",
+        lambda *a, withdrawn_line="", **k: print(withdrawn_line),
+    )
+    monkeypatch.setattr(approve_mod, "get_case_dir", lambda *a: case, raising=False)
+    approve_mod.cmd_approve(
+        Namespace(case=None, ids=[], review=False), {"examiner": "tester"}
+    )
+    assert (
+        "1 candidate finding(s) withdrawn after challenge counted; audit/forensic-mcp.jsonl "
+        "(line 2 is longer than 16 MiB) couldn't be read, so there may be more — "
+        "`vhir review --withdrawn`" in capsys.readouterr().out
+    )

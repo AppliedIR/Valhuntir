@@ -5,7 +5,9 @@ Local-first: flat case directory. Collaboration via export/merge.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import io
 import json
 import os
 import re
@@ -28,7 +30,36 @@ class CaseError(Exception):
 
 class CaseFileNotRegular(CaseError, OSError):
     """A case file that is there but isn't a regular file: reading a named
-    pipe would block, so it is refused by name."""
+    pipe would block, so it is refused by name. `why` says what it is."""
+
+    def __init__(self, text: str, why: str = "not a regular file"):
+        super().__init__(text)
+        self.why = why
+
+
+class CaseFileNotText(CaseError, ValueError):
+    """A case file that isn't UTF-8 text: refused by name, never read as an
+    empty file (an empty CASE.yaml would read as no case at all)."""
+
+
+def not_text(path) -> CaseFileNotText:
+    return CaseFileNotText(
+        f"{path} isn't UTF-8 text. Put the case's own file back, then try again."
+    )
+
+
+_BACK = "Put the case's own file back, then try again."
+_NOT_REGULAR = {  # what the file is -> what the refusal says it is
+    "not a regular file": "isn't a regular file (a named pipe, socket or device).",
+    "a folder": "is a folder, not a file.",
+    "a symbolic link": "is a symbolic link, so it wasn't read: a case log is read "
+    "only under its own name.",
+    "another name links to it": "has another name linking to it, so it wasn't read.",
+}
+
+
+def _not_regular(path, why: str = "not a regular file") -> CaseFileNotRegular:
+    return CaseFileNotRegular(f"{path} {_NOT_REGULAR[why]} {_BACK}", why)
 
 
 def case_file_there(path: Path) -> bool:
@@ -38,44 +69,151 @@ def case_file_there(path: Path) -> bool:
     if not path.exists():
         return False
     if not path.is_file():
-        raise CaseFileNotRegular(
-            f"{path} isn't a regular file (a named pipe, socket or device). Put "
-            "the case's own file back, then try again."
-        )
+        raise _not_regular(path)
     return True
 
 
-class NotRegularFile(OSError):
-    """A FIFO, device or socket where a case file should be: refused unread.
-    An OSError, so every handler of a read error handles it."""
+# The longest line, and the most bytes, one case log may hold. A line is
+# parsed whole, and a parse costs up to about 34 times the line.
+LINE_CAP = 16 << 20
+FILE_BUDGET = 256 << 20
+DOC_CAP = 16 << 20  # a case document (findings.json, keys.json, ...), read whole
+_HOLDS = {  # a case file's name -> what it holds, as the refusal names it
+    "approvals.jsonl": "approval records",
+    "findings.json": "findings",
+    "timeline.json": "timeline events",
+    "iocs.json": "IOCs",
+    "keys.json": "signing-key records",
+    "verification.jsonl": "0.6 approval records",
+}
+
+
+def holds(path) -> str:
+    """What a case file holds, in words: an audit/ log holds audit entries."""
+    p = Path(path)
+    if p.name in _HOLDS:
+        return _HOLDS[p.name]
+    return "audit entries" if p.parent.name == "audit" else "case records"
+
+
+class CaseFileTooLarge(CaseError, OSError):
+    """A case log with a line longer than LINE_CAP, or more than FILE_BUDGET
+    bytes: refused by name, never held whole. `why` says which; `line` is
+    the line's number, or None for the whole file."""
+
+    def __init__(self, path, line: int | None = None, limit: int | None = None):
+        limit = FILE_BUDGET if limit is None else limit
+        self.why = (f"line {line} is longer than {LINE_CAP >> 20} MiB" if line
+                    else f"larger than {limit >> 20} MiB")  # fmt: skip
+        what = (f"{path} line {line} is longer than {LINE_CAP >> 20} MiB, so the file "
+                "wasn't read past it." if line else
+                f"{path} is larger than {limit >> 20} MiB, so it wasn't read.")  # fmt: skip
+        super().__init__(
+            f"{what} It holds the case's {holds(path)}: keep a copy of it before "
+            "you move it out of the case, then try again."
+        )
+        self.line = line
+
+
+def _open_regular_fd(path, log: bool = False, budget: int | None = None) -> int:
+    """Opened non-blocking and checked on the open descriptor before any read,
+    so a FIFO (or a link to one) never blocks and a device is never read. A
+    log (`log`) is also opened only under its own name (no symbolic link, no
+    second name) and only while it is within FILE_BUDGET."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if log else 0)
+    try:
+        fd = os.open(os.fspath(path), flags)
+    except OSError as e:
+        if log and e.errno == errno.ELOOP:
+            raise _not_regular(path, "a symbolic link") from None
+        raise
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            raise _not_regular(path, "a folder")
+        if not stat.S_ISREG(st.st_mode):
+            raise _not_regular(path)
+        if log and st.st_nlink != 1:
+            raise _not_regular(path, "another name links to it")
+        budget = FILE_BUDGET if budget is None else budget
+        if log and st.st_size > budget:
+            raise CaseFileTooLarge(path, limit=budget)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def read_regular(path) -> bytes:
-    """A regular file's bytes: opened non-blocking and checked on the open
-    descriptor before any read, so a FIFO (or a link to one) never blocks."""
-    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise NotRegularFile(f"{path} is not a regular file")
-    except BaseException:
-        os.close(fd)
-        raise
-    with os.fdopen(fd, "rb") as f:
+    """A regular file's bytes, for a case file read as one document."""
+    with os.fdopen(_open_regular_fd(path), "rb") as f:
         return f.read()
 
 
-def open_regular(path):
-    """A regular file opened for reading text line by line, checked as
-    `read_regular` checks it, so a FIFO never blocks and a large file is
-    never held whole."""
-    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_NONBLOCK)
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise NotRegularFile(f"{path} is not a regular file")
-    except BaseException:
-        os.close(fd)
-        raise
-    return os.fdopen(fd, encoding="utf-8")
+def case_lines(path):
+    """Each line of a case log, as bytes with its newline; the file is checked
+    now (`_open_regular_fd`). A line longer than LINE_CAP, or more than
+    FILE_BUDGET bytes in all, raises CaseFileTooLarge naming it: a line is
+    never held whole, and never split into records."""
+    return _capped_lines(os.fdopen(_open_regular_fd(path, log=True), "rb"), path)
+
+
+def _read_whole(path, limit: int) -> bytes:
+    """A case file's bytes, checked as a log is and read in one read, up to
+    `limit` by its size when opened and as it is read; never split into lines."""
+    with os.fdopen(_open_regular_fd(path, log=True, budget=limit), "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:  # it grew while read
+        raise CaseFileTooLarge(path, limit=limit)
+    return data
+
+
+def read_case_document(path) -> bytes:
+    """A case document's bytes (findings.json, timeline.json, iocs.json,
+    keys.json), read whole up to DOC_CAP."""
+    return _read_whole(path, DOC_CAP)
+
+
+def read_case_log_whole(path) -> bytes:
+    """A case log's bytes, read whole up to FILE_BUDGET: only for a reader that
+    must select a prefix of the bytes before it splits them into lines (the
+    0.6 approval sources, whose prefix a genesis froze). Any other log is read
+    with `case_lines`, a line at a time."""
+    return _read_whole(path, FILE_BUDGET)
+
+
+def _capped_lines(f, path):
+    with f:
+        n = total = 0
+        while raw := f.readline(LINE_CAP + 2):
+            n += 1
+            total += len(raw)
+            # the cap counts a line's content, not its \n or \r\n
+            end = 2 if raw.endswith(b"\r\n") else 1 if raw.endswith(b"\n") else 0
+            if len(raw) - end > LINE_CAP:
+                raise CaseFileTooLarge(path, n)
+            if total > FILE_BUDGET:  # it grew while read
+                raise CaseFileTooLarge(path)
+            yield raw
+
+
+class open_regular:  # noqa: N801 - used as open() is
+    """A case log read as text (UTF-8) line by line, as `case_lines` reads it:
+    `with open_regular(p) as f: for line in f`. Lines end at \\n, \\r\\n or a
+    lone \\r, as a file opened in text mode splits them (each given with \\n)."""
+
+    def __init__(self, path):
+        self._lines = case_lines(path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._lines.close()
+
+    def __iter__(self):
+        for raw in self._lines:
+            yield from io.StringIO(raw.decode("utf-8"), newline=None)
 
 
 def _validate_case_id(case_id: str) -> None:
@@ -196,8 +334,10 @@ def load_case_meta(case_dir: Path) -> dict:
     if not case_file_there(meta_file):
         return {}
     try:
-        with open(meta_file) as f:
+        with open(meta_file, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
+    except UnicodeDecodeError:
+        raise not_text(meta_file) from None
     except (yaml.YAMLError, OSError):
         return {}
 
@@ -370,7 +510,7 @@ def load_approval_log(case_dir: Path) -> list[dict]:
         return []
     entries = []
     corrupt_lines = 0
-    with open(log_file, encoding="utf-8") as f:
+    with open_regular(log_file) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -714,8 +854,9 @@ def verify_approval_integrity(case_dir: Path) -> list[dict]:
 # --- Audit Index ---
 
 
-def load_withdrawals(case_dir: Path) -> list[dict]:
-    """The candidate findings withdrawn after challenge, oldest first.
+def load_withdrawals(case_dir: Path, unread: list | None = None) -> list[dict]:
+    """The candidate findings withdrawn after challenge, oldest first. `unread`
+    gets each audit log that couldn't be read (a withdrawal there isn't seen).
 
     Each is a record_finding audit entry whose result is WITHDRAWN. An entry
     repeated in the trail counts once, by audit id and time together, so two
@@ -732,7 +873,7 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     seen: set[tuple] = set()
     withdrawals = []
     # only the withdrawals are kept while the trail is read, never the whole trail
-    for entry in _load_audit_entries(case_dir, keep=withdrawn):
+    for entry in _load_audit_entries(case_dir, keep=withdrawn, unread=unread):
         key = (entry.get("audit_id"), entry.get("ts"))
         if key not in seen:
             seen.add(key)
@@ -768,7 +909,7 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
                             index[eid] = entry
                     except json.JSONDecodeError:
                         continue
-        except NotRegularFile as e:
+        except (CaseFileNotRegular, CaseFileTooLarge) as e:
             from vhir_cli.display import one_line  # a file name is the case's data
 
             print(
@@ -778,6 +919,177 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
         except OSError:
             continue
     return index
+
+
+# --- Audit trail tails ---
+
+_TAIL_BLOCK = 65536
+# A page of `limit` rows needs at most `limit` entries per file, but audit files
+# are ordered by their writer's own clock and some are appended over SMB from a
+# Windows host, so read a wide margin: enough that a run of out-of-order appends
+# has to be very long before it can push a newer entry out of the window, and
+# short enough to stay flat in the size of the trail.
+_TAIL_OVERREAD = 4
+_TAIL_MIN = 2000
+
+
+class _ReadWhole(Exception):
+    """The tail can't be read as the full reader reads the file: read it whole."""
+
+
+def _iter_lines_reversed(fh, block: int = _TAIL_BLOCK):
+    """Yield the raw lines of an open binary file from last to first, split at
+    \\n as `case_lines` splits them (without the \\n). A line longer than
+    LINE_CAP raises _ReadWhole once its length is past the cap, so a line with
+    no \\n is never held whole; its pieces are joined once, when it ends."""
+    fd = fh.fileno()
+    pos = os.fstat(fd).st_size
+    pieces: list[bytes] = []  # the line being read, its last piece first
+    held = 0
+    while pos > 0:
+        step = min(block, pos)
+        pos -= step
+        chunk = os.pread(fd, step, pos)
+        if len(chunk) != step:  # cut short while read
+            raise _ReadWhole
+        parts = chunk.split(b"\n")
+        pieces.append(parts[-1])
+        held += len(parts[-1])
+        if len(parts) > 1:
+            yield _whole(pieces)  # emptied, so the line isn't held twice
+            yield from (_capped(p) for p in reversed(parts[1:-1]))
+            pieces.append(parts[0])
+            held = len(parts[0])
+        if held > LINE_CAP + 1:  # past the cap even counting a \r before its \n
+            raise _ReadWhole
+    if pieces:
+        yield _whole(pieces)
+
+
+def _whole(pieces: list[bytes]) -> bytes:
+    """The line held in `pieces` (its last piece first), which are cleared."""
+    line = b"".join(reversed(pieces))
+    pieces.clear()
+    return _capped(line)
+
+
+def _capped(line: bytes) -> bytes:
+    """`line`, unless it is longer than LINE_CAP not counting a \\r that ends
+    it (the full reader refuses it, naming its number)."""
+    if len(line) - line.endswith(b"\r") > LINE_CAP:
+        raise _ReadWhole
+    return line
+
+
+CORRUPT_LINE = object()  # what iter_jsonl_entries gives for a line that isn't JSON
+
+
+def _iter_entries(path: Path, keep=None):
+    """Every entry of a case log in file order, read forwards by
+    `open_regular`, each as it is read; CORRUPT_LINE for each corrupt line.
+    `keep` tests objects only: any other value is given to the caller, whose
+    read it stops as a whole read's does."""
+    with open_regular(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                yield CORRUPT_LINE
+                continue
+            if keep is None or not isinstance(entry, dict) or keep(entry):
+                yield entry
+
+
+def iter_jsonl_entries(path: Path, limit: int | None, keep=None):
+    """The entries `tail_jsonl_entries` returns, in file order, and
+    CORRUPT_LINE for each corrupt line it counts. A full read yields each entry as it is read,
+    so a caller keeps what came before a line the reader refuses."""
+    if limit is not None:
+        try:
+            entries, corrupt = _read_tail(path, limit, keep)
+        except _ReadWhole:
+            pass
+        else:
+            yield from entries
+            yield from [CORRUPT_LINE] * corrupt
+            return
+    yield from _iter_entries(path, keep)
+
+
+def tail_jsonl_entries(
+    path: Path, limit: int | None, keep=None
+) -> tuple[list[dict], int]:
+    """Read the newest entries of an append-ordered JSONL file.
+
+    With `limit` set, the file is read backwards and only enough of its tail is
+    parsed to cover a page of `limit` rows, so cost is proportional to the page
+    rather than to the whole trail. `keep(entry)` restricts which entries count
+    towards that page; entries it rejects are dropped. If the region read turns
+    out not to be in non-decreasing `ts` order the rest of the file is read too,
+    so a file written by a skewed clock falls back to a full scan. Disorder
+    entirely outside that region cannot be seen: an entry stamped far in the
+    future but written long ago would show up in a full scan and not here.
+
+    `limit=None` reads the whole file forwards (used by `vhir audit summary`,
+    which aggregates every line anyway).
+
+    The file is opened and checked as `case_lines` opens a case log (only under
+    its own name, a regular file within FILE_BUDGET), and its lines are split
+    and capped as `open_regular` reads them. Whatever the tail can't read as
+    that full reader would (a line over LINE_CAP, one that isn't UTF-8 or
+    isn't an object, a ts that isn't text, or disorder) is read by it instead,
+    so the file is refused or read exactly as a full read would.
+
+    Returns (entries in file order, count of corrupt lines in the region read).
+    """
+    entries: list[dict] = []
+    corrupt = 0
+    for entry in iter_jsonl_entries(path, limit, keep):
+        if entry is CORRUPT_LINE:
+            corrupt += 1
+        else:
+            entries.append(entry)
+    return entries, corrupt
+
+
+def _read_tail(path: Path, limit: int, keep) -> tuple[list[dict], int]:
+    want = max(limit * _TAIL_OVERREAD, _TAIL_MIN)
+    entries: list[dict] = []
+    corrupt = 0
+    later_ts: str | None = None
+    with os.fdopen(_open_regular_fd(path, log=True), "rb") as fh:
+        for raw in _iter_lines_reversed(fh):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                raise _ReadWhole from None
+            del raw
+            # a lone \r ends a line too, as open_regular splits it; last first
+            lines = list(io.StringIO(text, newline=None)) if "\r" in text else [text]
+            del text
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    corrupt += 1
+                    continue
+                ts = entry.get("ts", "") if isinstance(entry, dict) else None
+                if not isinstance(ts, str) or (later_ts is not None and ts > later_ts):
+                    raise _ReadWhole  # the full read decides, as it would alone
+                later_ts = ts
+                if keep is None or keep(entry):
+                    entries.append(entry)
+                    if len(entries) >= want:
+                        entries.reverse()
+                        return entries, corrupt
+    entries.reverse()
+    return entries, corrupt
 
 
 # --- Export / Merge ---

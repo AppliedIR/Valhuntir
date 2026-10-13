@@ -30,7 +30,14 @@ with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execut
     execute.cmd_exec(A(), {"examiner": "tester"})
 """
 PRIOR = '{"audit_id": "cliexec-tester-20000101-001", "tool": "exec"}\n'
-NOT_RUN = "Not run: vhir exec can't write this command's audit entry ({}: {}). Make the case's audit/ folder writable, then run it again."
+NOT_RUN = "Not run: vhir exec can't write this command's audit entry ({}: {}). {}"
+WRITABLE = "Make the case's audit/ folder writable, then run it again."
+ADVICE = {  # the log's shape -> the step the refusal gives for it
+    "Permission denied": WRITABLE,
+    "not a regular file": "Move it aside and put the case's own log back as a regular file, then run it again.",
+    "a symbolic link": "Put the case's own audit/ folder and log back in place of the link, then run it again.",
+    "another name links to it": "Replace it with a copy of its own, not a second name for another file, then run it again.",
+}  # fmt: skip
 RAN = "WARNING: the command ran, but its audit entry couldn't be written ({}: {}), so it is not in the case's audit trail."
 
 
@@ -83,7 +90,7 @@ REFUSED = {
     "log read-only": (lambda c: _prior(c, 0o444), "Permission denied"),
     "log write-only": (lambda c: _prior(c, 0o200), "Permission denied"),
     "no audit folder, case read-only": (_no_audit, "Permission denied"),
-    "log is /dev/zero": (lambda c: _log(c).symlink_to("/dev/zero"), "not a regular file"),
+    "log is /dev/zero": (lambda c: _log(c).symlink_to("/dev/zero"), "a symbolic link"),
     "log is a FIFO": (lambda c: os.mkfifo(_log(c)), "not a regular file"),
     "log links out of the case": (
         lambda c: (_log(c).symlink_to(c.parent / "out.jsonl"), (c.parent / "out.jsonl").write_text(PRIOR)),
@@ -105,7 +112,7 @@ def test_a_log_it_cant_write_to_refuses_the_run_by_name(case, shape):
               if p.is_file()}  # fmt: skip
     rc, out, err, ran = _exec(case)
     assert (rc, ran) == (1, False)
-    assert err == NOT_RUN.format(_log(case), why)
+    assert err == NOT_RUN.format(_log(case), why, ADVICE[why])  # fmt: skip
     assert "Audit ID" not in out
     assert not (case.parent / "nowhere.jsonl").exists()
     assert before == {p.name: p.read_bytes() for p in (case.parent, case / "evidence") for p in p.iterdir()
@@ -136,7 +143,8 @@ def test_an_audit_folder_that_links_to_another_case_refuses_the_run(case):
     (case / "audit").symlink_to(other)
     rc, out, err, ran = _exec(case)
     assert (rc, ran) == (1, False)
-    assert err == NOT_RUN.format(_log(case), "a symbolic link")
+    link = "a symbolic link"
+    assert err == NOT_RUN.format(_log(case), link, ADVICE[link])
     assert (other / "cli-exec.jsonl").read_text() == PRIOR
 
 

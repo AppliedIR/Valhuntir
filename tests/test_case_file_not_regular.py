@@ -1,9 +1,9 @@
 """A case data file that isn't a regular file is refused unread.
 
 `evidence.json` as a FIFO: `vhir evidence list` and `verify` exit 1 with
-"Failed to read evidence registry: <path> is not a regular file" instead of
+"Failed to read evidence registry: <path> isn't a regular file ..." instead of
 waiting for a writer. The case loaders (findings, timeline, todos, IOCs)
-refuse a FIFO or a link to /dev/zero with NotRegularFile, an OSError, rather
+refuse a FIFO or a link to /dev/zero with CaseFileNotRegular, an OSError, rather
 than blocking or reading without end. Each call runs in a forked child with a
 hard join timeout and its address space capped.
 """
@@ -101,7 +101,11 @@ def test_a_fifo_registry_gives_the_cli_an_error_at_once(case_dir, cmd):
     os.mkfifo(reg)
     assert _cli(cmd) == (
         "ok",
-        (1, f"Failed to read evidence registry: {reg} is not a regular file\n"),
+        (
+            1,
+            f"Failed to read evidence registry: {reg} isn't a regular file (a named "
+            "pipe, socket or device). Put the case's own file back, then try again.\n",
+        ),
     )
     assert stat.S_ISFIFO(os.lstat(reg).st_mode)
 
@@ -126,7 +130,8 @@ def test_a_case_file_that_isnt_regular_is_refused_by_its_loader(
         path.symlink_to("/dev/zero")
     assert _within(lambda: load(tmp_path)) == (
         "raised",
-        f"NotRegularFile: {path} is not a regular file",
+        f"CaseFileNotRegular: {path} isn't a regular file (a named pipe, socket or "
+        "device). Put the case's own file back, then try again.",
     )
 
 

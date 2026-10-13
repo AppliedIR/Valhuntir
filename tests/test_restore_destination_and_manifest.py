@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 import types
 from pathlib import Path
 
@@ -276,8 +275,3 @@ def test_a_merge_into_an_absent_or_empty_file_still_merges(tmp_path, local):
     assert [t["id"] for t in json.loads((case / "timeline.json").read_text())] == [
         "T-x-099"
     ]
-
-
-def test_restore_runs_its_checks_with_this_interpreter():
-    # the restore rows above drive cmd_restore in-process
-    assert B.sys is sys

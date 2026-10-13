@@ -7,11 +7,10 @@ Read and summarize audit entries from the case directory:
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
-from vhir_cli.case_io import get_case_dir, open_regular
+from vhir_cli.case_io import CORRUPT_LINE, get_case_dir, iter_jsonl_entries
 from vhir_cli.display import display_safe, one_line
 
 
@@ -34,58 +33,100 @@ def _check_ts(entry) -> None:
         raise TypeError(f"an audit entry's ts isn't text: {entry.get('ts')!r}")
 
 
-def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
-    """Load all audit entries from audit/*.jsonl and approvals.jsonl. `keep`:
+def _why(e: OSError) -> str:
+    """What made a log unreadable, in the refusal's own words."""
+    return getattr(e, "why", None) or e.strerror or str(e)
+
+
+def _make_keep(mcp_filter, tool_filter, mcp_default: str, tool_default: str):
+    """Build the tail-read predicate matching the --mcp/--tool filters, or None.
+
+    Applied to the raw entry, so it has to reproduce the defaults that
+    _load_audit_entries fills in afterwards.
+    """
+    if not mcp_filter and not tool_filter:
+        return None
+
+    def keep(entry: dict) -> bool:
+        _check_ts(
+            entry
+        )  # every entry's time is checked, kept or not, as a full read does
+        if mcp_filter and entry.get("mcp", mcp_default) != mcp_filter:
+            return False
+        if tool_filter:
+            return entry.get("tool", tool_default) == tool_filter
+        return True
+
+    return keep
+
+
+def _load_audit_entries(
+    case_dir: Path,
+    limit: int | None = None,
+    mcp_filter: str | None = None,
+    tool_filter: str | None = None,
+    keep=None,
+    unread: list | None = None,
+) -> list[dict]:
+    """Load audit entries from audit/*.jsonl and approvals.jsonl. `keep`:
     a test of each parsed entry; only those it passes are kept, so a caller
-    that wants a few entries never holds the whole trail."""
+    that wants a few entries never holds the whole trail. `unread` gets each
+    log that couldn't be read, as "audit/<name> (<why>)".
+
+    With `limit` set, only each file's tail is read — enough to cover a page of
+    `limit` rows — instead of the whole append-only trail. The filters are
+    pushed into that read, so a filtered page costs no more than the full scan
+    it replaces and much less when the matches are recent; a filter with no
+    recent match still reads the file out. `limit=None` loads everything, as
+    the summary needs.
+    """
     entries: list[dict] = []
     corrupt_lines = 0
 
     audit_dir = case_dir / "audit"
     if audit_dir.is_dir():
         for jsonl_file in sorted(audit_dir.glob("*.jsonl")):
-            try:
-                with open_regular(jsonl_file) as f:  # read line by line
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            # Derive mcp name from filename if not present
-                            if "mcp" not in entry:
-                                entry["mcp"] = jsonl_file.stem
-                            _check_ts(entry)  # as the sort would, kept or not
-                            if keep is None or keep(entry):
-                                entries.append(entry)
-                        except json.JSONDecodeError:
-                            corrupt_lines += 1
+            stem = jsonl_file.stem
+            file_keep = _make_keep(mcp_filter, tool_filter, stem, "")
+            try:  # each entry as it is read, so those before a refusal are kept
+                for entry in iter_jsonl_entries(jsonl_file, limit, file_keep):
+                    if entry is CORRUPT_LINE:
+                        corrupt_lines += 1
+                        continue
+                    # Derive mcp name from filename if not present
+                    if "mcp" not in entry:
+                        entry["mcp"] = stem
+                    _check_ts(entry)  # as the sort would, kept or not
+                    if keep is None or keep(entry):
+                        entries.append(entry)
             except OSError as e:  # the name and the error, controls shown
                 print(
                     f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
                     file=sys.stderr,
                 )
-                continue
+                if unread is not None:
+                    unread.append(one_line(f"audit/{jsonl_file.name} ({_why(e)})"))
 
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
+        file_keep = _make_keep(mcp_filter, tool_filter, "vhir-cli", "approval")
         try:
-            with open_regular(approvals_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        entry.setdefault("tool", "approval")
-                        entry.setdefault("mcp", "vhir-cli")
-                        _check_ts(entry)
-                        if keep is None or keep(entry):
-                            entries.append(entry)
-                    except json.JSONDecodeError:
-                        corrupt_lines += 1
-        except OSError:
-            pass
+            for entry in iter_jsonl_entries(approvals_file, limit, file_keep):
+                if entry is CORRUPT_LINE:
+                    corrupt_lines += 1
+                    continue
+                entry.setdefault("tool", "approval")
+                entry.setdefault("mcp", "vhir-cli")
+                _check_ts(entry)
+                if keep is None or keep(entry):
+                    entries.append(entry)
+        except OSError as e:  # named, as an audit log is
+            print(
+                f"  Warning: could not read {one_line(f'{approvals_file}: {e}')}",
+                file=sys.stderr,
+            )
+            if unread is not None:
+                unread.append(one_line(f"approvals.jsonl ({_why(e)})"))
 
     if corrupt_lines:
         print(
@@ -100,7 +141,6 @@ def _load_audit_entries(case_dir: Path, keep=None) -> list[dict]:
 def _audit_log(args) -> None:
     """Show audit log entries with optional filters."""
     case_dir = get_case_dir(getattr(args, "case", None))
-    entries = _load_audit_entries(case_dir)
 
     mcp_filter = getattr(args, "mcp", None)
     tool_filter = getattr(args, "tool", None)
@@ -109,11 +149,7 @@ def _audit_log(args) -> None:
         print("Error: --limit must be a positive integer.", file=sys.stderr)
         sys.exit(1)
 
-    if mcp_filter:
-        entries = [e for e in entries if e.get("mcp", "") == mcp_filter]
-    if tool_filter:
-        entries = [e for e in entries if e.get("tool", "") == tool_filter]
-
+    entries = _load_audit_entries(case_dir, limit, mcp_filter, tool_filter)
     entries = entries[-limit:]
 
     if not entries:

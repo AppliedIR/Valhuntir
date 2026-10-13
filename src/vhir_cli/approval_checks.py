@@ -22,7 +22,12 @@ import threading
 import time
 from pathlib import Path
 
-from vhir_cli.case_io import CaseError, NotRegularFile, read_regular
+from vhir_cli.case_io import (
+    CaseError,
+    CaseFileNotRegular,
+    CaseFileTooLarge,
+    case_lines,
+)
 from vhir_cli.provenance_view import roots_of
 
 # A root bigger than this whose stat fields don't vouch for it is hashed in
@@ -334,25 +339,25 @@ def audit_lines(case_dir) -> dict[str, list[bytes]]:
         names = []
     except OSError as e:
         names, unread = [], [f"audit/ ({e.strerror or type(e).__name__})"]
-    logs: list[bytes] = []
+    by_id: dict[str, list[bytes]] = {}
     for name in names:
-        try:
-            logs.append(read_regular(audit / name))
-        except NotRegularFile:
-            unread.append(f"audit/{name} (not a regular file)")
+        try:  # line by line, each line capped; a line is split as before
+            for raw in case_lines(audit / name):
+                for line in raw.splitlines():
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict) and isinstance(
+                        entry.get("audit_id"), str
+                    ):
+                        by_id.setdefault(entry["audit_id"], []).append(line)
+        except (CaseFileNotRegular, CaseFileTooLarge) as e:  # what it is, in words
+            unread.append(f"audit/{name} ({e.why})")
         except OSError as e:
             unread.append(f"audit/{name} ({e.strerror or type(e).__name__})")
     if unread:
         raise AuditUnreadable(unread)
-    by_id: dict[str, list[bytes]] = {}
-    for data in logs:
-        for line in data.splitlines():
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(entry, dict) and isinstance(entry.get("audit_id"), str):
-                by_id.setdefault(entry["audit_id"], []).append(line)
     return by_id
 
 

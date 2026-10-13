@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
-from vhir_cli.case_io import get_case_dir, read_regular
+from vhir_cli.case_io import CaseError, case_lines, get_case_dir, read_regular
 from vhir_cli.display import display_safe
 from vhir_cli.display import lines as indent_lines
 
@@ -403,18 +403,23 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
     except OSError as e:
         logs, unread = [], [f"audit/ can't be listed ({type(e).__name__})"]
     for log in logs:
-        try:
-            lines = read_regular(log).decode("utf-8", errors="replace").splitlines()
+        got = []  # a log read in part counts as unread, as before
+        try:  # line by line, each line capped: never the whole log at once
+            for raw in case_lines(log):
+                for line in raw.decode("utf-8", errors="replace").splitlines():
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict):
+                        got.append(entry)
+        except CaseError as e:  # not a regular file, or a line over the cap: its text
+            unread.append(f"audit/{log.name} can't be read ({e})")
+            continue
         except OSError as e:
             unread.append(f"audit/{log.name} can't be read ({type(e).__name__})")
             continue
-        for line in lines:
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(entry, dict):
-                entries.append(entry)
+        entries.extend(got)
     closed, failed = _closed_hashes(entries)
     for entry in entries:
         for p, h in _outputs_of(case_dir, entry):

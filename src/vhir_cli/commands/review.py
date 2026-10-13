@@ -20,10 +20,12 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    CORRUPT_LINE,
     _at_or_after,
     _at_or_before,
     display_instant,
     get_case_dir,
+    iter_jsonl_entries,
     load_audit_index,
     load_case_meta,
     load_findings,
@@ -190,13 +192,25 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
 
 def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
+    unread: list[str] = []
     try:
-        withdrawals = load_withdrawals(case_dir)
+        withdrawals = load_withdrawals(case_dir, unread)
     except Exception as e:  # a damaged audit line: say so, never "none"
         print(f"Withdrawn candidates couldn't be read: {e}")
         sys.exit(1)
+    if unread:  # never "none" while a log holding withdrawals went unread
+        _print_withdrawn(case_dir, withdrawals)
+        for log in unread:
+            print(f"Couldn't read {log}: a candidate withdrawn there isn't shown.")
+        sys.exit(1)
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
+        return
+    _print_withdrawn(case_dir, withdrawals)
+
+
+def _print_withdrawn(case_dir: Path, withdrawals: list[dict]) -> None:
+    if not withdrawals:
         return
     # Only the skeptic's calls are resolved below: index just those.
     wanted = {
@@ -547,47 +561,37 @@ def _show_evidence(case_dir: Path) -> None:
 def _show_audit(case_dir: Path, limit: int) -> None:
     """Show audit trail entries from audit/."""
     entries = []
+    # A page of `limit` rows only needs each file's tail; a limit below 1 keeps
+    # its old meaning of "everything" (entries[-0:] is the whole list).
+    want = limit if limit >= 1 else None
 
     # Read from audit/
     audit_dir = case_dir / "audit"
     if audit_dir.is_dir():
         for jsonl_file in audit_dir.glob("*.jsonl"):
-            try:
-                with open(jsonl_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            print(
-                                f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
-                                file=sys.stderr,
-                            )
+            try:  # each entry as it is read, so those before a refusal are kept
+                for entry in iter_jsonl_entries(jsonl_file, want):
+                    if entry is CORRUPT_LINE:
+                        print(
+                            f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        entries.append(entry)
             except OSError as e:
                 print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
-                continue
 
     # Read approvals
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
         try:
-            with open(approvals_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        print(
-                            "  Warning: skipping corrupt approval line", file=sys.stderr
-                        )
-                        continue
-                    entry["tool"] = "approval"
-                    entry["mcp"] = "vhir-cli"
-                    entries.append(entry)
+            for entry in iter_jsonl_entries(approvals_file, want):
+                if entry is CORRUPT_LINE:
+                    print("  Warning: skipping corrupt approval line", file=sys.stderr)
+                    continue
+                entry["tool"] = "approval"
+                entry["mcp"] = "vhir-cli"
+                entries.append(entry)
         except OSError as e:
             print(f"  Warning: could not read {approvals_file}: {e}", file=sys.stderr)
 
