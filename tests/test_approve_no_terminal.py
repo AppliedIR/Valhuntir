@@ -177,3 +177,22 @@ def test_a_sandbox_that_hides_the_signing_folders_still_gets_the_refusal(
     assert "Traceback" not in r.stderr, r.stderr
     assert "Nothing was signed or saved." in r.stderr
     assert [n["tool"] for n in _notices(case)] == ["approve"]
+
+
+def test_a_terminal_lost_at_the_prompt_saves_nothing(case, monkeypatch):
+    """The catch in signing, reached past the entry check (a terminal lost
+    mid-run): exit 1, pending-reviews.json byte-identical, one notice."""
+    from vhir_cli.commands.approve import cmd_approve
+
+    def no_tty(prompt=""):
+        raise approval_auth.NoTerminal("Passphrase entry requires /dev/tty.")
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", no_tty)
+    before = (case / "pending-reviews.json").read_bytes()
+    with pytest.raises(SystemExit) as e:
+        cmd_approve(Namespace(case=None, ids=["F-tester-001"], review=False),
+                    {"examiner": "tester"})  # fmt: skip
+    assert e.value.code == 1
+    assert (case / "pending-reviews.json").read_bytes() == before
+    (notice,) = _notices(case)
+    assert (notice["tool"], notice["params"]["ids"]) == ("approve", ["F-tester-001"])
