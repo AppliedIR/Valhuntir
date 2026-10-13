@@ -22,11 +22,14 @@ import re
 import shutil
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 
+from vhir_cli import ledger
 from vhir_cli.case_io import (
     _atomic_write,
+    case_id_of,
     get_case_dir,
     get_examiner,
 )
@@ -42,6 +45,16 @@ def cmd_migrate(args, identity: dict) -> None:
     if not examiners_root.is_dir():
         print("No examiners/ directory found. Case may already be in flat layout.")
         return
+    case_id = case_id_of(case_dir)
+    if _has_signed_lines(case_dir, case_id):
+        # migrate re-ids items and sets their examiner: signed decisions
+        # would no longer match the items they were made on
+        print(
+            f"Case {case_id} has signed decisions; migrate would change the items they "
+            "were made on. Nothing was changed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     exam_dir = examiners_root / examiner
     if not exam_dir.is_dir():
@@ -196,25 +209,29 @@ def cmd_migrate(args, identity: dict) -> None:
     # --- Phase 3: Write flat files to case root ---
     print("\nWriting flat case directory...")
 
-    # Check for existing flat files (don't overwrite)
-    for fname in ("findings.json", "timeline.json", "todos.json"):
-        existing = case_dir / fname
-        if existing.exists():
-            data = json.loads(existing.read_text())
-            if data:
-                print(
-                    f"  WARNING: {fname} already has data at case root. Skipping migration.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+    # Under the case lock, as every writer of the case files: check for
+    # existing flat files (don't overwrite), then write them
+    with ledger.case_lock(case_id):
+        for fname in ("findings.json", "timeline.json", "todos.json"):
+            existing = case_dir / fname
+            if existing.exists():
+                data = json.loads(existing.read_text())
+                if data:
+                    print(
+                        f"  WARNING: {fname} already has data at case root. Skipping migration.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
-    _atomic_write(
-        case_dir / "findings.json", json.dumps(all_findings, indent=2, default=str)
-    )
-    _atomic_write(
-        case_dir / "timeline.json", json.dumps(all_timeline, indent=2, default=str)
-    )
-    _atomic_write(case_dir / "todos.json", json.dumps(all_todos, indent=2, default=str))
+        _atomic_write(
+            case_dir / "findings.json", json.dumps(all_findings, indent=2, default=str)
+        )
+        _atomic_write(
+            case_dir / "timeline.json", json.dumps(all_timeline, indent=2, default=str)
+        )
+        _atomic_write(
+            case_dir / "todos.json", json.dumps(all_todos, indent=2, default=str)
+        )
 
     # Merge actions
     if all_actions:
@@ -290,6 +307,13 @@ def cmd_migrate(args, identity: dict) -> None:
     print(f"  Actions: {len(all_actions)}")
     print(f"  Approvals: {len(all_approvals)}")
     print(f"  ID mappings: {len(id_map)}")
+
+
+def _has_signed_lines(case_dir: Path, case_id: str) -> bool:
+    """Any signed ledger line for the case: the box chain or a case copy."""
+    paths = [ledger.chain_path(case_id)]
+    paths += sorted((case_dir / "ledger" / "chains").glob("*.jsonl"))
+    return any(ledger.read_lines(p) for p in paths)
 
 
 def _re_id(old_id: str, prefix: str, examiner: str) -> str:

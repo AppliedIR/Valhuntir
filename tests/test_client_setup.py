@@ -8,6 +8,7 @@ import pytest
 
 from vhir_cli.commands.client_setup import (
     _MSLEARN_MCP,
+    DESKTOP_DROPPED,
     _claude_mcp_add,
     _cmd_setup_client_remote,
     _ensure_mcp_path,
@@ -111,6 +112,43 @@ class TestMergeAndWrite:
         _merge_and_write(path, config)
         assert path.is_file()
 
+    def test_unreadable_existing_file_is_not_clobbered(self, tmp_path):
+        path = tmp_path / "config.json"
+        existing = {"mcpServers": {"custom": {"type": "stdio", "command": "test"}}}
+        path.write_text(json.dumps(existing))
+
+        config = {
+            "mcpServers": {
+                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+            }
+        }
+        raised = False
+        with patch.object(
+            Path, "read_text", side_effect=PermissionError(13, "Permission denied")
+        ):
+            try:
+                _merge_and_write(path, config)
+            except OSError:
+                raised = True
+
+        assert json.loads(path.read_text()) == existing
+        assert raised
+
+    def test_invalid_json_existing_file_is_backed_up(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("{not json")
+
+        config = {
+            "mcpServers": {
+                "vhir": {"type": "streamable-http", "url": "http://localhost:4508/mcp"}
+            }
+        }
+        _merge_and_write(path, config)
+
+        backup = path.with_name(path.name + ".bak")
+        assert backup.read_text() == "{not json"
+        assert "vhir" in json.loads(path.read_text())["mcpServers"]
+
 
 class TestIsSift:
     def test_true_when_gateway_yaml_exists(self, tmp_path, monkeypatch):
@@ -192,7 +230,7 @@ class TestCmdSetupClient:
 
         defaults = {
             "client": "claude-code",
-            "sift": "http://127.0.0.1:4508",
+            "sift": "http://127.0.0.1:9",  # nothing listens: never a live gateway
             "windows": None,
             "windows_token": None,
             "remnux": None,
@@ -220,7 +258,7 @@ class TestCmdSetupClient:
         assert config_path.is_file()
         data = json.loads(config_path.read_text())
         assert "vhir" in data["mcpServers"]
-        assert data["mcpServers"]["vhir"]["url"] == "http://127.0.0.1:4508/mcp"
+        assert data["mcpServers"]["vhir"]["url"] == "http://127.0.0.1:9/mcp"
         assert data["mcpServers"]["vhir"]["type"] == "http"
         # Zeltser included by default
         assert "zeltser-ir-writing" in data["mcpServers"]
@@ -281,16 +319,17 @@ class TestCmdSetupClient:
         }
         mock_test.assert_called_once_with("http://10.0.0.5:3000", "test_token_123")
 
-    def test_claude_desktop_config(self, tmp_path, monkeypatch):
+    def test_claude_desktop_is_refused_with_the_way_forward(
+        self, tmp_path, monkeypatch, capsys
+    ):
         monkeypatch.chdir(tmp_path)
-        # Redirect home to tmp_path so we don't write to real home
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         args = self._make_args(client="claude-desktop")
-        identity = {"examiner": "testuser"}
-        cmd_setup_client(args, identity)
-
-        config_path = tmp_path / ".config" / "claude" / "claude_desktop_config.json"
-        assert config_path.is_file()
+        with pytest.raises(SystemExit) as e:
+            cmd_setup_client(args, {"examiner": "testuser"})
+        assert e.value.code == 1
+        assert DESKTOP_DROPPED in capsys.readouterr().err
+        assert not (tmp_path / ".config" / "claude").exists()
 
     def test_merge_preserves_existing(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -352,7 +391,7 @@ class TestCmdSetupClient:
         content = config_path.read_text()
         assert "mcpServers:" in content
         assert 'type: "streamable-http"' in content
-        assert 'url: "http://127.0.0.1:4508/mcp"' in content
+        assert 'url: "http://127.0.0.1:9/mcp"' in content
         assert 'url: "https://192.168.1.20:4624/mcp"' in content
         assert "timeout: 60000" in content
         assert "zeltser-ir-writing" in content
@@ -368,6 +407,41 @@ class TestCmdSetupClient:
 
         content = (tmp_path / "librechat_mcp.yaml").read_text()
         assert "serverInstructions: true" in content
+
+    def test_librechat_allows_only_valhuntir_s_private_addresses_and_no_user_servers(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """allowedAddresses opens the gateway and wintools (host:port) and
+        leaves the internet MCPs reachable; allowedDomains, a whitelist,
+        blocked them. Users can't add their own MCP servers."""
+        import yaml
+
+        monkeypatch.chdir(tmp_path)
+        self._isolate_home(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "vhir_cli.commands.client_setup._prompt_windows_token", lambda: "wt"
+        )
+        args = self._make_args(client="librechat", windows="192.168.1.20:4624")
+        cmd_setup_client(args, {"examiner": "testuser"})
+        doc = yaml.safe_load((tmp_path / "librechat_mcp.yaml").read_text())
+        assert doc["mcpSettings"] == {
+            "allowedAddresses": ["127.0.0.1:9", "192.168.1.20:4624"]
+        }
+        assert doc["interface"] == {"mcpServers": {"create": False}}
+        assert all(e["requiresOAuth"] is False for e in doc["mcpServers"].values())
+        assert "zeltser-ir-writing" in doc["mcpServers"]
+        assert "Admin Panel" in capsys.readouterr().out
+
+    def test_other_prints_the_supported_shell_client_notice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from vhir_cli.commands.client_setup import OTHER_CLIENT_NOTICE
+
+        monkeypatch.chdir(tmp_path)
+        self._isolate_home(monkeypatch, tmp_path)
+        cmd_setup_client(self._make_args(client="other"), {"examiner": "t"})
+        assert OTHER_CLIENT_NOTICE in capsys.readouterr().out
+        assert (tmp_path / "vhir-mcp-config.json").is_file()
 
     def test_librechat_no_json_merge(self, tmp_path, monkeypatch):
         """LibreChat writes YAML, not JSON — no .mcp.json created."""
@@ -386,8 +460,12 @@ class TestWizardClient:
         monkeypatch.setattr("builtins.input", lambda _: "3")
         assert _wizard_client() == "librechat"
 
-    def test_choice_4_maps_to_other(self, monkeypatch):
+    def test_choice_4_maps_to_open_webui(self, monkeypatch):
         monkeypatch.setattr("builtins.input", lambda _: "4")
+        assert _wizard_client() == "open-webui"
+
+    def test_choice_5_maps_to_other(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "5")
         assert _wizard_client() == "other"
 
     def test_unrecognized_falls_back_to_other(self, monkeypatch):
@@ -407,30 +485,10 @@ class TestFormatServerEntry:
         assert entry["url"] == "https://sift:4508/mcp"
         assert entry["headers"]["Authorization"] == "Bearer tok123"
 
-    def test_claude_desktop_uses_mcp_remote(self):
-        with patch(
-            "vhir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx"
-        ):
-            entry = _format_server_entry(
-                "claude-desktop", "https://sift:4508/mcp", "tok123"
-            )
-        assert entry["command"] == "npx"
-        assert "mcp-remote" in entry["args"]
-        assert "https://sift:4508/mcp" in entry["args"]
-        assert entry["env"]["AUTH_HEADER"] == "Bearer tok123"
-
     def test_no_token(self):
         entry = _format_server_entry("claude-code", "https://sift:4508/mcp", None)
         assert entry["type"] == "streamable-http"
         assert "headers" not in entry
-
-    def test_claude_desktop_requires_npx(self):
-        """Verify SystemExit raised when npx is not installed."""
-        with patch("vhir_cli.commands.client_setup.shutil.which", return_value=None):
-            with pytest.raises(SystemExit, match="npx"):
-                _format_server_entry(
-                    "claude-desktop", "https://sift:4508/mcp", "tok123"
-                )
 
 
 class TestRemoteSetup:
@@ -535,28 +593,14 @@ class TestRemoteSetup:
             "https://sift.example.com:4508", "vhir_gw_abc123"
         )
 
-    @patch("vhir_cli.commands.client_setup.shutil.which", return_value="/usr/bin/npx")
-    @patch("vhir_cli.commands.client_setup._probe_health_with_auth")
-    @patch("vhir_cli.commands.client_setup._discover_services")
-    @patch("vhir_cli.commands.client_setup._save_gateway_config")
-    def test_remote_claude_desktop_uses_mcp_remote(
-        self, mock_save, mock_discover, mock_probe, mock_which, tmp_path, monkeypatch
-    ):
+    def test_remote_claude_desktop_is_refused(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        mock_probe.return_value = {"status": "ok"}
-        mock_discover.return_value = [{"name": "forensic-mcp", "started": True}]
         args = self._make_args(client="claude-desktop")
-        identity = {"examiner": "testuser"}
-        _cmd_setup_client_remote(args, identity)
-
-        config_path = tmp_path / ".config" / "claude" / "claude_desktop_config.json"
-        assert config_path.is_file()
-        data = json.loads(config_path.read_text())
-        # Claude Desktop entries use mcp-remote bridge
-        entry = data["mcpServers"]["forensic-mcp"]
-        assert entry["command"] == "npx"
-        assert "mcp-remote" in entry["args"]
+        with pytest.raises(SystemExit) as e:
+            _cmd_setup_client_remote(args, {"examiner": "testuser"})
+        assert e.value.code == 1 and DESKTOP_DROPPED in capsys.readouterr().err
+        assert not (tmp_path / ".config" / "claude").exists()
 
 
 class TestSaveGatewayConfig:
@@ -728,7 +772,10 @@ class TestUninstallHelpers:
                     {
                         "matcher": "Bash",
                         "hooks": [
-                            {"type": "command", "command": "/path/forensic-audit.sh"}
+                            {
+                                "type": "command",
+                                "command": f"{Path.home()}/.vhir/hooks/forensic-audit.sh",
+                            }
                         ],
                     },
                     {
@@ -866,3 +913,10 @@ class TestClaudeMcpAddArgvOrder:
         with patch("subprocess.run", side_effect=fake_run):
             _claude_mcp_add("some-stdio", {"headers": {}})
         assert calls == []  # no subprocess invocation at all
+
+
+def test_readme_and_getting_started_name_neither_desktop_nor_cherry_studio():
+    repo = Path(__file__).resolve().parents[1]
+    for doc in ("README.md", "docs/getting-started.md"):
+        text = (repo / doc).read_text()
+        assert "Claude Desktop" not in text and "Cherry" not in text, doc

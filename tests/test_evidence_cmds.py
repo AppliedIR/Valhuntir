@@ -12,7 +12,16 @@ from vhir_cli.commands.evidence import (
     cmd_lock_evidence,
     cmd_register_evidence,
     cmd_verify_evidence,
+    register_evidence_data,
 )
+
+
+@pytest.fixture(autouse=True)
+def _examiner_confirms(monkeypatch):
+    """CLI registration asks at the terminal; here the examiner says yes."""
+    monkeypatch.setattr(
+        "vhir_cli.commands.evidence.require_tty_confirmation", lambda prompt: True
+    )
 
 
 @pytest.fixture
@@ -43,12 +52,14 @@ class FakeArgs:
         description="",
         evidence_action=None,
         path_filter=None,
+        force_reregister=False,
     ):
         self.case = case
         self.path = path
         self.description = description
         self.evidence_action = evidence_action
         self.path_filter = path_filter
+        self.force_reregister = force_reregister
 
 
 class TestLockEvidence:
@@ -73,6 +84,68 @@ class TestRegisterEvidence:
         assert len(reg["files"]) == 1
         assert reg["files"][0]["sha256"]
         assert reg["files"][0]["description"] == "Test malware"
+
+    def test_reregister_changed_file_refuses(self, case_dir, identity):
+        ev_file = case_dir / "evidence" / "memdump.raw"
+        ev_file.write_bytes(b"original acquisition")
+        first = register_evidence_data(
+            case_dir=case_dir, path=str(ev_file), examiner="analyst1"
+        )
+        ev_file.write_bytes(b"modified after registration")
+        with pytest.raises(ValueError, match="changed since registration"):
+            register_evidence_data(
+                case_dir=case_dir, path=str(ev_file), examiner="analyst1"
+            )
+        reg = json.loads((case_dir / "evidence.json").read_text())
+        assert reg["files"][0]["sha256"] == first["sha256"]
+
+    def test_force_reregister_keeps_prior_hash(self, case_dir, identity, monkeypatch):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        ev_file = case_dir / "evidence" / "memdump.raw"
+        ev_file.write_bytes(b"original acquisition")
+        cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
+        reg = json.loads((case_dir / "evidence.json").read_text())
+        original_hash = reg["files"][0]["sha256"]
+        ev_file.write_bytes(b"re-acquired image")
+        cmd_register_evidence(
+            FakeArgs(path=str(ev_file), force_reregister=True), identity
+        )
+        reg = json.loads((case_dir / "evidence.json").read_text())
+        assert len(reg["files"]) == 1
+        assert reg["files"][0]["sha256"] != original_hash
+        assert reg["files"][0]["previous_hashes"][0]["sha256"] == original_hash
+
+    def test_a_file_the_ai_registers_is_marked_and_the_cli_never_marks(self, case_dir):
+        from vhir_cli.commands.evidence import register_evidence_data
+
+        ai = case_dir / "evidence" / "a.csv"
+        ai.write_text("Computer\nWKS01\n")
+        mine = case_dir / "evidence" / "b.csv"
+        mine.write_text("Computer\nWKS02\n")
+        register_evidence_data(case_dir, str(ai), "analyst1", registered_via="mcp")
+        register_evidence_data(case_dir, str(mine), "analyst1")
+        files = json.loads((case_dir / "evidence.json").read_text())["files"]
+        assert [f.get("registered_via") for f in files] == ["mcp", None]
+
+    def test_a_changed_file_takes_the_way_it_was_registered_again(self, case_dir):
+        from vhir_cli.commands.evidence import register_evidence_data
+
+        f = case_dir / "evidence" / "a.csv"
+        f.write_text("one\n")
+        register_evidence_data(case_dir, str(f), "analyst1")
+        f.write_text("two\n")
+        out = register_evidence_data(
+            case_dir, str(f), "analyst1", force_reregister=True, registered_via="mcp"
+        )
+        assert out["note"] == "updated (same path, hash changed)"
+        assert out["registered_via"] == "mcp"
+        f.write_text("three\n")  # the examiner registers it again, from the CLI
+        out = register_evidence_data(
+            case_dir, str(f), "analyst1", force_reregister=True
+        )
+        assert "registered_via" not in out
+        (entry,) = json.loads((case_dir / "evidence.json").read_text())["files"]
+        assert "registered_via" not in entry
 
 
 class TestListEvidence:
@@ -148,10 +221,42 @@ class TestVerifyEvidence:
         ev_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
         ev_file.unlink()
 
-        cmd_verify_evidence(FakeArgs(), identity)
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_verify_evidence(FakeArgs(), identity)
+        assert exc_info.value.code == 1
         output = capsys.readouterr().out
         assert "MISSING" in output
         assert "1 missing" in output
+        assert "1 evidence file(s) missing" in output
+
+    def test_verify_unreadable_exits_non_zero(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        ev_file = case_dir / "evidence" / "locked.bin"
+        ev_file.write_bytes(b"data")
+        cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
+        capsys.readouterr()
+
+        ev_file.chmod(0)
+        try:
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_verify_evidence(FakeArgs(), identity)
+        finally:
+            ev_file.chmod(stat.S_IRUSR)
+        assert exc_info.value.code == 1
+        output = capsys.readouterr().out
+        assert "ERROR" in output and "1 errors" in output
+
+    def test_anchor_verify_all_ok_exits_zero(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        ev_file = case_dir / "evidence" / "fine.bin"
+        ev_file.write_bytes(b"data")
+        cmd_register_evidence(FakeArgs(path=str(ev_file)), identity)
+        cmd_verify_evidence(FakeArgs(), identity)  # returns: exit status 0
+        assert "ALERT" not in capsys.readouterr().out
 
     def test_verify_empty_registry(self, case_dir, identity, monkeypatch, capsys):
         monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))

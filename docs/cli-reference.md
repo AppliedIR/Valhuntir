@@ -108,8 +108,9 @@ vhir review --todos --open               # Open TODOs only
 vhir review --audit                      # Audit trail
 vhir review --evidence                   # Evidence integrity
 vhir review --iocs                       # IOCs from findings
-vhir review --verify                     # Cross-check findings vs approvals + HMAC verification
-vhir review --verify --mine              # HMAC verification for current examiner only
+vhir review --findings --verify          # Verify every signed decision (no passphrase)
+vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored
+vhir review --findings --verify --mine   # Show only your items
 ```
 
 | Option | Description |
@@ -122,8 +123,11 @@ vhir review --verify --mine              # HMAC verification for current examine
 | `--audit` | Show audit log |
 | `--evidence` | Show evidence integrity |
 | `--iocs` | Extract IOCs from findings grouped by status |
-| `--verify` | Cross-check findings against approval records and HMAC verification ledger |
-| `--mine` | Filter HMAC verification to current examiner only (with --verify) |
+| `--verify` | Verify every signed decision against the case (with `--findings`). No passphrase or terminal needed. Exit 0: every approved item verifies (or was approved before 0.6.4), with no failure; 2: a failure; 5: a usage error. Prints every signing key with its full fingerprint and each chain's head, and "anchored" or "Not anchored" |
+| `--expect-key` | `NAME=SHA256:<fingerprint>[:FROM-TO]`: a fingerprint you kept off this machine (repeatable) |
+| `--expect-head` | `[CHAIN@]SEQ:HASH`: a head you kept off this machine (repeatable) |
+| `--ledger` | Verify against this chain copy instead of the box's ledger and the case's copies (repeatable) |
+| `--mine` | With `--verify`, show only your items (the exit code still covers the case) |
 | `--status` | Filter by status: DRAFT, APPROVED, REJECTED |
 | `--start` | Start date filter (ISO format) |
 | `--end` | End date filter (ISO format) |
@@ -134,7 +138,7 @@ vhir review --verify --mine              # HMAC verification for current examine
 
 ### `vhir approve`
 
-Approve staged findings and/or timeline events. Requires password confirmation.
+Approve staged findings and/or timeline events. Every item, and each item decided with it ("cascade from F-…"), is shown first; then your passphrase signs exactly those decisions. A 0.6 passphrase is upgraded to a signing key at the first signed decision.
 
 ```bash
 vhir approve                                    # Interactive review
@@ -144,7 +148,9 @@ vhir approve F-alice-004 --edit                 # Edit in $EDITOR first
 vhir approve --findings-only                    # Review only findings
 vhir approve --timeline-only                    # Review only timeline
 vhir approve --by bob                           # Review items by examiner
-vhir approve --review                           # Apply pending portal edits
+vhir approve --review                           # Sign reviews staged in the portal
+vhir approve --reattest F-alice-005             # Sign a fresh approval of an item approved before 0.6.4
+vhir approve F-alice-006 --show-signed          # Also print the full signed view
 ```
 
 | Option | Description |
@@ -156,11 +162,13 @@ vhir approve --review                           # Apply pending portal edits
 | `--by` | Filter items by creator examiner |
 | `--findings-only` | Review only findings |
 | `--timeline-only` | Review only timeline events |
-| `--review` | Apply pending portal edits from `pending-reviews.json`, recompute hashes and HMAC signatures |
+| `--review` | Sign the reviews staged in the Examiner Portal (`pending-reviews.json`). Your own entries are selected; another examiner's are shown and included only if you say so |
+| `--reattest` | Sign a fresh approval of APPROVED items with no signed line (approved before 0.6.4), dated now; the original record is unchanged |
+| `--show-signed` | Also print each item's full signed view |
 
 ### `vhir reject`
 
-Reject staged findings or timeline events.
+Reject findings or timeline events (an APPROVED one too). A rejection is signed like an approval.
 
 ```bash
 vhir reject F-alice-004 --reason "Insufficient evidence"
@@ -171,6 +179,7 @@ vhir reject T-alice-007 --reason "Timestamp unreliable"
 |--------|-------------|
 | `ids` | Finding/event IDs to reject (required) |
 | `--reason` | Reason for rejection |
+| `--review` | Walk through DRAFT items interactively |
 
 ## Evidence
 
@@ -197,6 +206,8 @@ Re-hash registered evidence files and report any modifications.
 ```bash
 vhir evidence verify
 ```
+
+Exits 0 only when every registered file verifies: 2 when any file was modified, 1 when any is missing or can't be read.
 
 ### `vhir evidence log`
 
@@ -338,25 +349,27 @@ vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
 | `--all` | Include evidence + extractions + OpenSearch (if available) |
 | `--verify BACKUP_PATH` | Verify an existing backup's integrity |
 
-Creates a timestamped directory with all case metadata, findings, timeline, audit trails, and a `backup-manifest.json` with SHA-256 hashes. Password hash files are always included for HMAC verification on restore. The `--verify` option re-hashes every file and reports mismatches or missing files.
+Creates a timestamped directory with all case metadata, findings, timeline, audit trails, and a `backup-manifest.json` with SHA-256 hashes. The case's copies of its signed history (`ledger/`: its chains, its 0.6 records and the public signing keys) are written first and carried; no passphrase verifier or signing-key file is. The printout lists every signing key with its full fingerprint and each chain's head. The `--verify` option re-hashes every file and reports mismatches or missing files.
 
 ### `vhir restore`
 
-Restore a case from a backup directory. Enforces the original case path for audit trail integrity.
+Restore a case from a backup directory, into a folder you confirm.
 
 ```bash
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Full restore
 vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch index restore
-vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger + password hash
+vhir restore /path/to/backup/... --skip-ledger           # Skip restoring the 0.6 approval records
+vhir restore /path/to/backup/... --target /cases/INC-1   # Restore here, without asking
 ```
 
 | Argument/Option | Description |
 |-----------------|-------------|
 | `backup_path` | Path to backup directory (contains backup-manifest.json) |
 | `--skip-opensearch` | Skip OpenSearch index restore |
-| `--skip-ledger` | Skip verification ledger and password hash restore |
+| `--skip-ledger` | Skip restoring the case's 0.6 approval records to this box |
+| `--target DIR` | Restore into `DIR` instead of being asked. Required without a terminal |
 
-Restore always uses the original case path from the backup manifest. If the path can't be created (permission denied), prints exact `mkdir`/`chown` commands to fix it. Never auto-activates the case — prints activation instructions after restore. Prompts for the examiner password to verify HMAC integrity.
+Restore asks `Restore case <id> to [<folder it was backed up from>]:`; Enter accepts that folder, or type another path. Without a terminal (scripts, agents), `--target` is required and restore refuses without it. If the folder holds an interrupted restore (`.restore-in-progress`), restore names it and asks before removing it, defaulting to no; without a terminal it refuses, and you remove the folder yourself. An existing folder without that marker is never overwritten. If the folder can't be created (permission denied), prints exact `mkdir`/`chown` commands to fix it. Never auto-activates the case — prints activation instructions after restore. No credential is restored: each signing key the case's chains hold that this box doesn't is added as a retired public key ("KEY ADDED"), so the case verifies here; a chain of another case is refused. Examiners enrol on this box with `vhir config --setup-password`.
 
 ## Execution
 
@@ -387,7 +400,7 @@ vhir setup client --remote --token=vhir_gw_...       # Remote with auth
 
 | Option | Description |
 |--------|-------------|
-| `--client` | Target client: claude-code, claude-desktop, librechat, other |
+| `--client` | Target client: claude-code, codex, librechat, other (claude-desktop is refused) |
 | `--sift` | SIFT gateway URL |
 | `--windows` | Windows wintools-mcp endpoint |
 | `--remnux` | REMnux endpoint |
@@ -411,7 +424,10 @@ Generate a join code for remote machines.
 
 ```bash
 vhir setup join-code --expires 2
+vhir setup join-code --name lab2   # A code that joins as lab2 only, ending lab2's earlier gateway tokens
 ```
+
+A code bound with `--name` lets a LAN examiner re-join under their own name; their passphrase, signing key and ledger lines are unchanged. It can't take the box owner's own name.
 
 ## Service Management
 
@@ -429,7 +445,7 @@ Manage backend services through the gateway API.
 
 ```bash
 vhir service start forensic-mcp
-vhir service stop opencti-mcp
+vhir service stop threatintel-mcp
 vhir service restart                   # All backends
 ```
 
@@ -442,8 +458,10 @@ Manage Valhuntir settings.
 ```bash
 vhir config --show                     # Show current config
 vhir config --examiner alice           # Set examiner identity
-vhir config --setup-password           # Set approval password (min 8 chars)
-vhir config --reset-password           # Reset password (requires current)
+vhir config --setup-password           # Passphrase and signing key (at least 8 characters; 15+ recommended)
+vhir config --reset-password           # Change the passphrase (same key, requires the current one)
+vhir config --forgot-password          # New key under a new passphrase; the old key is kept as retired
+vhir config --upgrade-key              # Signing key for a 0.6 passphrase (prints the fingerprint if you have one)
 ```
 
 ## Join (Remote Setup)
@@ -455,4 +473,14 @@ Join a SIFT gateway from a remote machine using a join code.
 ```bash
 vhir join --sift 10.0.0.5 --code ABC123
 vhir join --sift 10.0.0.5:4508 --code ABC123 --ca-cert ca-cert.pem
+vhir join --sift 10.0.0.5 --code ABC123 --name lab2   # Join under a chosen examiner name
+```
+
+The gateway names the joining examiner after this machine's host name (lower case, the part before the first dot, at most 20 characters), or `--name`. A name another token or an enrolled examiner already holds is refused. The join prints the name it got and the command to enrol it for approvals, which the person named runs once at the SIFT terminal:
+
+```bash
+vhir enrol --name lab2              # Passphrase and signing key for lab2 (at least 8 characters; 15+ recommended)
+vhir enrol --name lab2 --reset      # Change lab2's passphrase
+vhir enrol --name lab2 --forgot     # New key for lab2; the old one is kept as retired
+vhir enrol --name lab2 --upgrade    # Signing key for lab2's 0.6 passphrase
 ```

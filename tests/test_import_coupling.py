@@ -19,8 +19,11 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from vhir_cli import ledger
 from vhir_cli.case_io import import_bundle
 from vhir_cli.commands import approve
+
+from .signing import PASSPHRASE, enrol
 
 IDENTITY = {"examiner": "steve", "os_user": "steve", "analyst": "steve"}
 NOW = "2026-01-01T00:00:00+00:00"
@@ -75,19 +78,14 @@ def _timeline(case):
     return {t["id"]: t for t in json.loads((case / "timeline.json").read_text())}
 
 
-def _signed_by(run):
-    signed = []
-
-    def ledger(case_dir, items, *a, **kw):
-        signed.extend(i["id"] for i in items)
-        return []
-
-    with (
-        patch.object(approve, "require_confirmation", return_value=("pw", "pw")),
-        patch.object(approve, "_write_verification_entries", side_effect=ledger),
-    ):
+def _signed_by(run, case_id="INC-2026-1571"):
+    """The ids `run` signed into the case's ledger."""
+    enrol(IDENTITY["examiner"])
+    before = len(ledger.read_lines(ledger.chain_path(case_id)))
+    with patch("vhir_cli.approval_auth.getpass_prompt", return_value=PASSPHRASE):
         run()
-    return signed
+    lines = ledger.read_lines(ledger.chain_path(case_id))[before:]
+    return [o["item_id"] for _, _, o in lines if o]
 
 
 R1_R2 = {
@@ -162,7 +160,9 @@ def test_a_bundle_carrying_its_own_finding_and_event_signs_only_the_finding(case
         json.dumps(
             {
                 "case_id": case.name,
-                "items": [{"id": "F-mallory-001", "action": "approve"}],
+                "items": [
+                    {"id": "F-mallory-001", "action": "approve", "staged_by": "steve"}
+                ],
             }
         )
     )

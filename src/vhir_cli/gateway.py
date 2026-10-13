@@ -13,6 +13,13 @@ from __future__ import annotations
 import ssl
 from pathlib import Path
 
+# Said after vhir restarts the gateway: a running Claude Code session's tool
+# connections don't come back by themselves
+RECONNECT_HINT = (
+    "Open Claude Code sessions lose their tool connections when the gateway "
+    "restarts: run /mcp in each (or restart it)."
+)
+
 
 def _read_gateway_config() -> dict:
     """Load ~/.vhir/gateway.yaml, returning empty dict on failure."""
