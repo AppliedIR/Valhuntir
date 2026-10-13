@@ -702,7 +702,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # portal / dashboard
     sub.add_parser("portal", help="Open the Examiner Portal in your browser")
-    sub.add_parser("dashboard", help="Open the legacy dashboard (v1)")
+    sub.add_parser(
+        "dashboard", help="Retired: opens the Examiner Portal (use `vhir portal`)"
+    )
 
     # Plugin discovery — external packages register subcommands
     from importlib.metadata import entry_points
