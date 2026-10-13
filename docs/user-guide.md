@@ -387,13 +387,9 @@ When a finding is recorded, `record_finding()` classifies its provenance by scan
 | **SHELL** | Not in audit trail — provided via `supporting_commands` | Self-reported |
 | **NONE** | Not found anywhere | **Rejected** by hard gate |
 
-The finding is stamped with its provenance tier. Findings with NONE provenance and no supporting commands are automatically rejected.
+The tier is a gate, not stored on the finding: findings with NONE provenance and no supporting commands are automatically rejected.
 
 The **Evidence Provenance Chain** — visible in the Examiner Portal on each finding — traces the full path from finding back to registered evidence: which evidence file was input, which tool processed it, and what output was extracted. This lets the examiner verify any claim back to its source.
-
-### Grounding Score
-
-When a finding is staged, forensic-mcp checks whether the investigation consulted authoritative reference sources (forensic-rag, windows-triage, opencti). Findings are scored STRONG (2+ sources), PARTIAL (1 source or evidence chain to registered files), or WEAK (none). The score is advisory — it nudges the LLM to cross-reference but does not block the finding.
 
 ### IOC Auto-Extraction
 

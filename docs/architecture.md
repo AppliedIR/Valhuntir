@@ -260,7 +260,6 @@ When the LLM records a finding via `record_finding()`, forensic-mcp validates it
 - Enforces audit_id on each artifact and verifies it exists in the audit trail
 - Rejects artifacts whose source files are not in the evidence registry
 - Classifies provenance tier (MCP > HOOK > SHELL > NONE, with NONE rejected)
-- Scores grounding based on whether reference sources (RAG, triage, threat intel) were consulted
 
 This is structural enforcement, not prompt-based — the tool itself enforces quality standards.
 
@@ -310,22 +309,6 @@ Nine layers of defense-in-depth protect the integrity of forensic findings. See 
 | L9 | Kernel sandbox (bubblewrap namespaces) | Kernel |
 
 The signed ledger (L2) records every decision with the examiner's signature, which `vhir review --verify` checks; what a verified result does and doesn't show is in the [stated limits](security.md#stated-limits). The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
-
-## Grounding Score
-
-Grounding measures whether the investigation consulted authoritative reference sources before making a claim. It's separate from provenance (which tracks where the evidence came from) — grounding tracks whether you checked your work against external knowledge.
-
-When a finding is staged, forensic-mcp checks the audit trail for usage of three reference backends:
-
-| Level | Criteria | Meaning |
-|-------|----------|---------|
-| **STRONG** | 2+ reference sources consulted | Claim is cross-referenced against authoritative knowledge |
-| **PARTIAL** | 1 source consulted, or finding traces to registered evidence | Some external validation performed |
-| **WEAK** | No reference sources consulted, no evidence chain | Claim lacks external validation |
-
-Reference sources: forensic-rag (Sigma rules, MITRE ATT&CK, forensic artifacts), windows-triage (known-good baseline), opencti (threat intelligence).
-
-Grounding is advisory — it does not block a finding. It's returned in the `record_finding()` response so the analyst and examiner can assess how well-supported a claim is. A WEAK finding may be perfectly valid, but the examiner knows the investigator didn't cross-reference it.
 
 ## Case Directory Structure
 
