@@ -62,6 +62,10 @@ _FORENSIC_DENY_RULES = {
     "Edit(**/iocs.json)",
     "Read(//var/lib/vhir/**)",
     "Edit(//var/lib/vhir/**)",
+    # The gateway's tokens and Claude Code's own state, as Codex's shell is denied them
+    "Read(**/.vhir/gateway.yaml)",
+    "Read(~/.vhir/gateway.yaml)",
+    "Read(~/.claude.json)",
     "Bash(vhir approve*)",
     "Bash(*vhir approve*)",
     "Bash(vhir reject*)",
