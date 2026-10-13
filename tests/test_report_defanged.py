@@ -93,3 +93,11 @@ def test_the_full_json_report_keeps_its_iocs_live_and_the_text_report_doesnt(  #
     assert "http://bad.example.com/x.php" in saved and "hxxp" not in saved
     text = _saved(case_dir, identity, [APPROVED], report_findings="F-tester-001")
     assert "C2 at evil[.]com (see" in text
+
+
+def test_a_name_an_approved_finding_only_mentions_stays_live(case_dir, identity):  # noqa: F811
+    """download.vendor.com is in the finding's text, not among its IOCs."""
+    saved = _saved(case_dir, identity, [APPROVED], report_findings="F-tester-001")
+    assert (
+        "tool from download.vendor.com;" in saved and "download[.]vendor" not in saved
+    )
