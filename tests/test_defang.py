@@ -152,3 +152,13 @@ def test_hxxp_is_a_scheme_only_before_its_separator(text, kind, value):
     for got in (collected, report):
         assert value in got[kind]
         assert not any("http" in v for v in got.get(kind, ())), got
+
+
+def test_a_findings_defanged_iocs_are_read_live_as_forensic_mcp_stores_them():
+    """The cascade planner reads a finding's cited IOCs by the same notations."""
+    from vhir_cli.case_io import ioc_values
+
+    got = ioc_values(["bad(dot)example.com", "evil{.}org", "185(.)220(.)101(.)46",
+                      "hxxps[://]x[.]com/p", "mail[@]evil.com", r"C:\Tools\hxxp\a.exe"])  # fmt: skip
+    assert got == {"bad.example.com", "evil.org", "185.220.101.46", "https://x.com/p",
+                   "mail@evil.com", r"c:\tools\hxxp\a.exe"}  # fmt: skip
