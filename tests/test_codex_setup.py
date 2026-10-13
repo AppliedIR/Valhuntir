@@ -204,6 +204,7 @@ def test_the_profile_holds_every_backend_with_its_token_and_no_tool_prompt(box, 
     p = _profile(box)
     assert p["sandbox_mode"] == "workspace-write"
     assert p["approval_policy"] == "on-request"
+    assert p["web_search"] == "disabled"  # hosted tools fire no hooks
     assert p["project_doc_max_bytes"] == 0
     for name in BACKENDS:
         assert p["mcp_servers"][name] == {
@@ -429,6 +430,8 @@ def test_remote_codex_writes_the_profile_and_prints_the_limits(laptop, capsys):
     _remote()
     p = tomllib.loads(laptop.profile.read_text())
     assert laptop.profile.stat().st_mode & 0o777 == 0o600
+    # no managed requirements here: the profile's own lines are the controls
+    assert p["sandbox_mode"] == "workspace-write" and p["web_search"] == "disabled"
     assert p["mcp_servers"]["forensic-mcp"] == {
         "url": "https://sift.example:4508/mcp/forensic-mcp",
         "http_headers": {"Authorization": f"Bearer {TOKEN}"},

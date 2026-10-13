@@ -1845,6 +1845,7 @@ def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> st
         "# gateway token, so only you can read it.\n"
         'sandbox_mode = "workspace-write"\n'
         'approval_policy = "on-request"\n'
+        'web_search = "disabled"\n'
         "project_doc_max_bytes = 0\n"
         f"developer_instructions = {body}\n"
     )
