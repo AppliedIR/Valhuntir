@@ -2037,6 +2037,15 @@ def _merge_keys(case_dir: Path) -> None:
     except (OSError, ValueError) as e:
         print(f"  Signing keys: not merged ({e})", file=sys.stderr)
         return
+    carried = sorted(
+        {(str(k.get("examiner")), str(k.get("fingerprint"))) for k in record["keys"]}
+    )
+    if carried:  # every key the case carries, held here already or not; once each
+        from vhir_cli.display import one_line
+
+        print("  Signing keys in the restored case:")
+        for examiner, fp in carried:
+            print(f"    {one_line(examiner)} {one_line(fp)}")
     by_examiner: dict[str, list[str]] = {}
     for k in record["keys"]:
         if isinstance(k.get("public_key"), str):
