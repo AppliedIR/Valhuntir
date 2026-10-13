@@ -615,3 +615,13 @@ def test_a_check_s_command_shows_an_author_s_own_run(capsys):
     assert f"    Check re-run: not run — x — {RUN} (ran: date)" in _shown(
         capsys, challenged=marker
     )
+
+
+@pytest.mark.parametrize("bad", [{"a": 1}, ["x"]], ids=["object", "list"])
+def test_a_check_id_of_any_shape_is_shown_not_raised(capsys, bad):
+    """A marker is case data: an id that isn't text is shown as it is."""
+    marker = {"outcome": "stands", "skeptic_audit_ids": [], "checks": [
+        {"name": "re-run", "result": "not run", "audit_ids": [bad, RUN], "reason": "x",
+         "ran": {RUN: "date"}}]}  # fmt: skip
+    shown = _shown(capsys, challenged=marker)
+    assert any(f"{RUN} (ran: date)" in line for line in shown), shown

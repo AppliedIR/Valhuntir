@@ -825,7 +825,10 @@ def _challenge_reasons(challenged, item=None) -> list[str]:
             continue
         ran = c.get("ran") if isinstance(c.get("ran"), dict) else {}
         ids = c.get("audit_ids") if isinstance(c.get("audit_ids"), list) else []
-        cited = ", ".join(f"{a} (ran: {ran[a]})" if a in ran else str(a) for a in ids)
+        cited = ", ".join(
+            f"{a} (ran: {ran[a]})" if isinstance(a, str) and a in ran else str(a)
+            for a in ids
+        )
         line = f"Check {c.get('name', '')}: {c.get('result', '')}"
         line += f" — {c['reason']}" if c.get("reason") else ""
         line += f" — {cited}" if cited else ""
