@@ -165,6 +165,7 @@ IOCS = ["https://evil.com/payload", "evil.com"]
         "evil.com", "https://evil.com/x", "hxxp://evil.com", r"\\evil.com\share",
         r"\\evil.com@SSL\DavWWWRoot\x.dll", "//evil.com/x", "mail@evil.com",
         "https://web.archive.org/web/2026/https://evil.com/payload",
+        r"https:/\evil.com/x", r"http:\/evil.com",  # a mixed pair is a host too
     ],
 )  # fmt: skip
 def test_an_ioc_where_it_names_a_host_is_defanged(text):
