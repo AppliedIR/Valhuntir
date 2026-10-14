@@ -173,7 +173,7 @@ Typical full deployment with three VMs on a single host.
         ▼                           ▼
 ┌── REMnux VM (optional) ─┐  ┌── Windows VM (optional) ──────────────┐
 │  remnux-mcp :3000        │  │  wintools-mcp :4624                   │
-│  200+ analysis tools     │  │  31 cataloged tools                   │
+│  200+ analysis tools     │  │  25 cataloged tools                   │
 └──────────────────────────┘  │  SMB ──► Case Directory (on SIFT)     │
                               └───────────────────────────────────────┘
 ```

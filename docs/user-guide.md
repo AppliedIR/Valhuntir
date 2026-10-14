@@ -234,11 +234,11 @@ Examples of what you can ask the LLM:
 
 ### Windows Tools (via wintools-mcp)
 
-wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 31 cataloged tools across 7 categories: Zimmerman suite (14), Sysinternals (5), memory analysis (4), timeline (3), malware analysis (3), collection (1), and scripts (1).
+wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It runs them on evidence already collected into the case; it doesn't collect.
 
 Additional capabilities:
 - `batch_scan` — run a tool against all files in a directory with safety bounds
-- `list_kape_targets` — list KAPE targets/modules for evidence parsing
+- `list_kape_targets` — list the KAPE modules, which process files already collected into the case (KAPE targets aren't run)
 - `get_share_info` — get SMB share paths for evidence access
 
 **Evidence access:** Valhuntir configures an authenticated SMB share from the Windows workstation to the case directory on SIFT. This allows wintools-mcp to read evidence files, write parsed output to the extractions directory, and record audit trail entries — all without manually copying files between systems. The gateway proxies tool calls to wintools-mcp over HTTPS with Bearer token authentication. See the [Deployment Guide](deployment.md) for SMB setup and firewall configuration, or the [wintools-mcp README](https://github.com/AppliedIR/wintools-mcp) for detailed configuration.

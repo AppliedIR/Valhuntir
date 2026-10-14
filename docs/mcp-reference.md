@@ -401,7 +401,7 @@ Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
-| `list_kape_targets` | `list_type` ("targets" or "modules") | List KAPE targets/modules in structured categories | When planning evidence parsing with KAPE |
+| `list_kape_targets` | `list_type` ("modules", the only listing) | List the KAPE modules in structured categories; targets aren't run, so aren't listed | When planning a KAPE module run over files collected into the case |
 
 ### Batch Execution (1)
 
@@ -415,17 +415,16 @@ Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML
 |------|-----------|-------------|---------------------|
 | `run_windows_command` | `command` (list), `purpose`, `timeout`, `save_output`, `input_files` | Execute a cataloged forensic tool | Core tool — every Windows forensic analysis action |
 
-### Tool Catalog (31 entries)
+### Tool Catalog (25 entries)
 
 | File | Count | Tools |
 |------|-------|-------|
 | `zimmerman.yaml` | 14 | AmcacheParser, AppCompatCacheParser, EvtxECmd, JLECmd, LECmd, MFTECmd, PECmd, RBCmd, RECmd, SBECmd, SQLECmd, SrumECmd, WxTCmd, bstrings |
-| `sysinternals.yaml` | 5 | autorunsc, sigcheck, strings, handle, procdump |
-| `memory.yaml` | 4 | winpmem, dumpit, moneta, hollows_hunter |
+| `sysinternals.yaml` | 3 | autorunsc, sigcheck, strings |
+| `memory.yaml` | 1 | winpmem |
 | `timeline.yaml` | 3 | Hayabusa, chainsaw, mactime |
 | `analysis.yaml` | 3 | capa, yara, densityscout |
 | `collection.yaml` | 1 | KAPE |
-| `scripts.yaml` | 1 | Get-InjectedThreadEx |
 
 ### Security Model
 
