@@ -5,12 +5,16 @@ Every module-level path into it points at a temporary directory for each
 test, and the two that are built inside functions are skipped. A guard
 records any access under /var/lib/vhir anyway: it refuses the access and
 fails the test, even where the code under test swallows the OSError.
+
+The examiner's record of case folders (~/.vhir/case-paths.json) is kept
+out the same way: a test with the real HOME records into a temporary folder.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -109,3 +113,23 @@ def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
     # Built inside functions: the legacy pins/ migration and update's check.
     monkeypatch.setattr(approval_auth, "_maybe_migrate_pin_dir", lambda: None)
     monkeypatch.setattr(update, "_ensure_password_dir", lambda: None)
+
+
+_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_case_paths(tmp_path_factory, monkeypatch):
+    """The record of which folder holds each case (~/.vhir/case-paths.json,
+    and its lock beside it) is the examiner's own: a test that runs with the
+    real HOME records into a temporary folder instead. A test that sets HOME
+    keeps its own."""
+    from vhir_cli import case_identity
+
+    real = case_identity._paths_file
+    spare = tmp_path_factory.mktemp("home") / ".vhir" / "case-paths.json"
+    monkeypatch.setattr(
+        case_identity,
+        "_paths_file",
+        lambda: spare if Path.home() == _HOME else real(),
+    )
