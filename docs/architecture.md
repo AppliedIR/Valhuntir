@@ -134,7 +134,7 @@ Shared YAML data package with no runtime state. Three data directories:
 
 | Directory | Content | Entries |
 |-----------|---------|---------|
-| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 59 tools across 17 categories |
+| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 56 tools across 17 categories |
 | `data/artifacts/` | Artifact descriptions with interpretation guidance | 53 artifacts (Windows + Linux) |
 | `data/discipline/` | Forensic discipline rules and reminders | Rules, anti-patterns, checkpoints |
 

@@ -141,9 +141,9 @@ Forensic tool execution on Linux/SIFT. A denylist blocks destructive system comm
 | `check_tools` | `tool_names` (list) | Check tool installation status | To verify tools are available before a workflow |
 | `suggest_tools` | `artifact_type`, `question` | Suggest relevant tools with corroboration guidance | When deciding how to analyze a specific artifact type |
 
-### Tool Catalog (59 FK entries)
+### Tool Catalog (56 FK entries)
 
-The forensic-knowledge package provides YAML definitions for 59 tools across 17 categories. When sift-mcp executes a cataloged tool, the response is enriched with:
+The forensic-knowledge package provides YAML definitions for 56 tools across 17 categories. When sift-mcp executes a cataloged tool, the response is enriched with:
 
 | Field | Description |
 |-------|-------------|
@@ -167,7 +167,7 @@ Accuracy content (caveats, field_meanings) is always delivered — these prevent
 | volatility | vol3 |
 | timeline | hayabusa, log2timeline, mactime, psort |
 | sleuthkit | fls, icat, mmls, blkls |
-| malware | yara, strings, ssdeep, binwalk, capa, densityscout, moneta, hollows_hunter, sigcheck, maldump, 1768_cobalt |
+| malware | yara, strings, ssdeep, binwalk, capa, densityscout, sigcheck, maldump, 1768_cobalt |
 | network | tshark, zeek |
 | file_analysis | bulk_extractor |
 | registry | regripper |
