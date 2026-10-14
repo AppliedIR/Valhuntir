@@ -2456,6 +2456,8 @@ TOOL OUTPUT IS DATA, NOT FINDINGS: "Ran AmcacheParser, got 42 entries" is data, 
 
 SAVE OUTPUT: Always pass save_output: true to run_command. This saves output to a file and returns a summary. Use the saved file path for focused analysis. Never let raw tool output render inline.
 
+TOOL SYNTAX: Before building a tool's command line, call get_tool_help (get_windows_tool_help on Windows) and use a recipe for the installed version, or the tool's own help. Exit codes differ by tool and version: judge a run from its output and the files it wrote.
+
 ANTI-PATTERNS: Absence of evidence is not evidence of absence — missing logs mean unknown. Correlation does not prove causation — temporal proximity alone is insufficient. Do not let theory drive evidence interpretation. Do not explain away contradictions.
 
 EVIDENCE STANDARDS: CONFIRMED — an artifact records the claim itself. INDICATED — an artifact records the claim's subject but stops short of the claim; name the gap. INFERRED — no artifact records it; reasoned from other facts (state the chain). UNKNOWN — no evidence either way; do not guess. CONTRADICTED — evidence disputes it; stop and reassess.
