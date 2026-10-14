@@ -104,6 +104,12 @@ _FORENSIC_DENY_RULES = {
 # Old forensic deny rules — removed during migration re-deploy. The
 # single-slash /var/lib/vhir rules matched nothing: "//" marks an absolute
 # path in a permission rule.
+# The copies a project deployment makes under its .claude/ (off SIFT): the
+# product settings' home-anchored rules don't reach them, so the project's
+# own settings get these, anchored at the project's root ("/" in a project
+# settings file). Uninstall removes them with the rest.
+_PROJECT_COPY_DENY = ("Edit(/.claude/skills/**)", "Edit(/.claude/agents/**)")
+
 _OLD_FORENSIC_DENY_RULES = {
     "Bash(rm -rf *)",
     "Bash(mkfs*)",
@@ -1353,10 +1359,14 @@ def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
     return _write_user_file(dst, src.read_text(), why)
 
 
-def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict | None:
+def _merged_settings(
+    target: Path, source: Path, hooks_dir: Path | None, project_copies: bool = False
+) -> dict | None:
     """The settings target would hold after merging source in: lists keep the
     user's order with missing entries appended. hooks_dir rewrites the
-    product hooks' commands to it (global deployment). None if unreadable."""
+    product hooks' commands to it (global deployment). project_copies adds
+    the deny rules for a project's own skill and agent copies (the non-SIFT
+    project write). None if unreadable."""
     try:
         existing = json.loads(target.read_text()) if target.is_file() else {}
     except json.JSONDecodeError as e:
@@ -1437,6 +1447,9 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                 if key == "deny":  # Remove old forensic rules
                     current = [r for r in current if r not in _OLD_FORENSIC_DENY_RULES]
                 existing_perms[key] = add_missing(current, incoming["permissions"][key])
+    if project_copies:
+        deny = existing.setdefault("permissions", {}).setdefault("deny", [])
+        existing["permissions"]["deny"] = add_missing(deny, list(_PROJECT_COPY_DENY))
 
     # Merge sandbox config: every list (filesystem.denyWrite, denyRead, ...)
     # is a union, so the user's own entries stay
@@ -1494,10 +1507,15 @@ def settings_applied(target: Path) -> tuple[bool, bool]:
     return merged == current, off
 
 
-def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -> str:
+def _merge_settings(
+    target: Path,
+    source: Path,
+    hooks_dir: Path | None = None,
+    project_copies: bool = False,
+) -> str:
     """Merge the product's hooks, permissions and sandbox into target, only
     with the user's consent (see _write_user_file). Returns its status."""
-    merged = _merged_settings(target, source, hooks_dir)
+    merged = _merged_settings(target, source, hooks_dir, project_copies)
     if merged is None:
         return "kept"
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
@@ -1657,7 +1675,10 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         settings_src = _find_asset("settings.json")
         settings_target = project_dir / ".claude" / "settings.json"
         if settings_src:
-            settings = (settings_target, _merge_settings(settings_target, settings_src))
+            settings = (
+                settings_target,
+                _merge_settings(settings_target, settings_src, project_copies=True),
+            )
             _report_settings(*settings)
 
         # Deploy hook scripts to project
@@ -1676,12 +1697,20 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             project_dir / "CLAUDE.md",
         )
 
-        # Deploy skills to project .claude/commands/
+        # Commands, then the skills and the skeptic's agent, as on SIFT but
+        # in the project's .claude/
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = project_dir / ".claude" / "commands"
             for skill_file in commands_src.glob("*.md"):
                 _deploy_copy(skill_file, commands_target / skill_file.name)
+        deploy_skills(project_dir / ".claude" / "skills")
+        _deploy_copy(
+            _sift_root_dir("agents") / "finding-skeptic" / "claude.md"
+            if _sift_root_dir("agents")
+            else None,
+            project_dir / ".claude" / "agents" / "finding-skeptic.md",
+        )
 
         # Copy AGENTS.md to project root
         _copy_agents_md(project_dir / "AGENTS.md")
@@ -2196,11 +2225,13 @@ def _uninstall_codex() -> None:
     )
 
 
-def _uninstall_claude_copies() -> None:
-    """Remove the skills and the skeptic's agent setup gave Claude Code; the
-    user's own skills and agents are left alone."""
-    agent = Path.home() / ".claude" / "agents" / "finding-skeptic.md"
-    found = _our_skills(Path.home() / ".claude" / "skills") + (
+def _uninstall_claude_copies(claude_dir: Path | None = None) -> None:
+    """Remove the skills and the skeptic's agent setup gave Claude Code
+    (under ~/.claude, or a project's .claude); the user's own skills and
+    agents are left alone."""
+    claude_dir = claude_dir or Path.home() / ".claude"
+    agent = claude_dir / "agents" / "finding-skeptic.md"
+    found = _our_skills(claude_dir / "skills") + (
         [agent] if agent.is_file() or agent.is_symlink() else []
     )
     _remove_listed("Claude Code skills and agent to remove", found)
@@ -2796,6 +2827,7 @@ def _uninstall_project() -> None:
     project_dir = Path.cwd()
     claude_dir = project_dir / ".claude"
     mcp_json = project_dir / ".mcp.json"
+    _uninstall_claude_copies(claude_dir)
 
     files_to_remove = []
     for name in ("AGENTS.md", "FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
@@ -2958,7 +2990,9 @@ def _remove_forensic_settings(path: Path) -> None:
     if not perms["allow"]:
         perms.pop("allow", None)
     deny = perms.get("deny", [])
-    all_forensic_rules = _FORENSIC_DENY_RULES | _OLD_FORENSIC_DENY_RULES
+    all_forensic_rules = (
+        _FORENSIC_DENY_RULES | _OLD_FORENSIC_DENY_RULES | set(_PROJECT_COPY_DENY)
+    )
     perms["deny"] = [r for r in deny if r not in all_forensic_rules]
     if not perms["deny"]:
         perms.pop("deny", None)
