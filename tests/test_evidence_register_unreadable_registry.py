@@ -123,3 +123,41 @@ def test_a_valid_registry_keeps_its_entries(case):
     (case / "evidence.json").write_bytes(TWO)
     register_evidence_data(case, _new(case), "analyst1")
     assert _entries(case) == 3
+
+
+# --- a registry that isn't a regular file: its refusal's own advice, once ------
+
+
+@pytest.mark.parametrize("what", ["fifo", "folder"])
+def test_a_registry_that_isnt_a_regular_file_gives_its_advice_once(case, what):
+    reg = case / "evidence.json"
+    os.mkfifo(reg) if what == "fifo" else reg.mkdir()
+    said = {
+        "fifo": "isn't a regular file (a named pipe, socket or device).",
+        "folder": "is a folder, not a file.",
+    }[what]
+    with pytest.raises(ValueError) as e:
+        register_evidence_data(case_dir=case, path=_new(case), examiner="analyst1")
+    assert str(e.value) == (
+        f"{reg} {said} Put the case's own file back, then try again. "
+        "Nothing was registered."
+    )
+
+
+def test_the_cli_gives_a_fifo_registrys_advice_once(case, capsys):
+    os.mkfifo(case / "evidence.json")
+    with pytest.raises(SystemExit):
+        cmd_register_evidence(Args(_new(case)), IDENTITY)
+    err = capsys.readouterr().err
+    assert err.count("then try again") == 1 and "as JSON" not in err, err
+    assert "Nothing was registered." in err
+
+
+def test_a_registry_that_isnt_json_keeps_its_text(case):
+    (case / "evidence.json").write_bytes(b"{garbage")
+    with pytest.raises(ValueError) as e:
+        register_evidence_data(case_dir=case, path=_new(case), examiner="analyst1")
+    assert str(e.value).startswith(f"{case / 'evidence.json'} can't be read as JSON (")
+    assert str(e.value).endswith(
+        "); nothing was registered. Fix or restore it, then register again."
+    )
