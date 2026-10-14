@@ -69,9 +69,9 @@ ROWS = (
         (CLAUDE, CODEX),
         "the listed ways to delete or overwrite case records with a shell command",
         "interpreters, editors, tee and scripts: a best-effort check, not a boundary; "
-        "for Codex, apply_patch edits aren't checked, and a relative path is read "
-        "against the session's folder, so a command run in another folder isn't "
-        "checked correctly",
+        "for Codex, an apply_patch is checked by the paths its headers name, and a "
+        "relative path is read against the session's folder, so a command run in "
+        "another folder isn't checked correctly",
     ),
     (
         "Start-up check",

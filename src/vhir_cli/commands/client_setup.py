@@ -62,6 +62,10 @@ _FORENSIC_DENY_RULES = {
     "Edit(**/iocs.json)",
     "Read(//var/lib/vhir/**)",
     "Edit(//var/lib/vhir/**)",
+    # The gateway's tokens and Claude Code's own state, as Codex's shell is denied them
+    "Read(**/.vhir/gateway.yaml)",
+    "Read(~/.vhir/gateway.yaml)",
+    "Read(~/.claude.json)",
     "Bash(vhir approve*)",
     "Bash(*vhir approve*)",
     "Bash(vhir reject*)",
@@ -1845,6 +1849,7 @@ def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> st
         "# gateway token, so only you can read it.\n"
         'sandbox_mode = "workspace-write"\n'
         'approval_policy = "on-request"\n'
+        'web_search = "disabled"\n'
         "project_doc_max_bytes = 0\n"
         f"developer_instructions = {body}\n"
     )
@@ -1993,10 +1998,14 @@ def _codex_config_conflicts() -> None:
             break  # top-level keys come before the first table
         m = re.match(r"(sandbox_mode|approval_policy)\s*=\s*\"([^\"]*)\"", stripped)
         if m and m.group(2) not in allowed[m.group(1)]:
+            what = (  # a sandbox mode gives way to the managed permissions profile
+                "replace with their own (the workspace, ~/.vhir read-only)"
+                if m.group(1) == "sandbox_mode"
+                else "refuse: Codex stops with an error until it is changed"
+            )
             print(
                 f'  Note: {cfg} sets {m.group(1)} = "{m.group(2)}", which '
-                "Valhuntir's managed Codex settings refuse: Codex stops with an "
-                "error until it is changed. vhir doesn't edit that file."
+                f"Valhuntir's managed Codex settings {what}. vhir doesn't edit that file."
             )
 
 
