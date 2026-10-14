@@ -129,7 +129,9 @@ def test_each_reader_refuses_by_name_with_the_one_class(case, reader, bad):
             f"raised AuditUnreadable: The approval checks couldn't read {rel} ({why})"
         )
     elif reader == "evidence register":
-        assert got == [f"{rel} can't be read ({text})"]
+        assert got == [
+            f"{rel} can't be read ({why})"
+        ]  # stored: what it is, no path or advice
     else:  # named on stderr, the rest of the case still read
         assert f"Warning: could not read {path}: {text}" in err
         assert "Traceback" not in err
