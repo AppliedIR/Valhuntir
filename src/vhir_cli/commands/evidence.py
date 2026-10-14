@@ -413,8 +413,9 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
                         continue
                     if isinstance(entry, dict):
                         got.append(entry)
-        except CaseError as e:  # not a regular file, or a line over the cap: its text
-            unread.append(f"audit/{log.name} can't be read ({e})")
+        except CaseError as e:  # not a regular file, or a line over the cap: what it is
+            why = getattr(e, "why", type(e).__name__)  # stored: no path, no advice
+            unread.append(f"audit/{log.name} can't be read ({why})")
             continue
         except OSError as e:
             unread.append(f"audit/{log.name} can't be read ({type(e).__name__})")
