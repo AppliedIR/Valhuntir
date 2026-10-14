@@ -104,7 +104,7 @@ Forensic tool execution on Linux/SIFT. 5 tools — 4 discovery plus `run_command
 
 ### wintools-mcp
 
-Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (31 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
+Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
 
 ### opensearch-mcp
 
@@ -134,7 +134,7 @@ Shared YAML data package with no runtime state. Three data directories:
 
 | Directory | Content | Entries |
 |-----------|---------|---------|
-| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 59 tools across 17 categories |
+| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 56 tools across 17 categories |
 | `data/artifacts/` | Artifact descriptions with interpretation guidance | 53 artifacts (Windows + Linux) |
 | `data/discipline/` | Forensic discipline rules and reminders | Rules, anti-patterns, checkpoints |
 
@@ -173,7 +173,7 @@ Typical full deployment with three VMs on a single host.
         ▼                           ▼
 ┌── REMnux VM (optional) ─┐  ┌── Windows VM (optional) ──────────────┐
 │  remnux-mcp :3000        │  │  wintools-mcp :4624                   │
-│  200+ analysis tools     │  │  31 cataloged tools                   │
+│  200+ analysis tools     │  │  25 cataloged tools                   │
 └──────────────────────────┘  │  SMB ──► Case Directory (on SIFT)     │
                               └───────────────────────────────────────┘
 ```
