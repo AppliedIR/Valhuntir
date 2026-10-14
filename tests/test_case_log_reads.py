@@ -454,9 +454,22 @@ def test_a_sources_lines_are_those_splitlines_gives_at_every_chunk_size():
 
 
 _LINES_TIME = """
+import json
 import time
-from vhir_cli.ledger_verify import _lines
-data = b'{"finding_id": "F-1"}\\n' + b"\\n" * (64 << 20)
+from vhir_cli.ledger_verify import _CHUNK, _lines
+
+
+class Counted(bytes):  # counts the searches for a line's end in the data itself
+    finds = 0
+
+    def find(self, *a):
+        Counted.finds += 1
+        return super().find(*a)
+
+
+data = Counted(b'{"finding_id": "F-1"}\\n' + b"\\n" * (16 << 20))
+lines = sum(1 for _ in _lines(data))
+finds = Counted.finds
 
 
 def walk(split):  # the split and a pass over its lines, as records() makes
@@ -466,23 +479,34 @@ def walk(split):  # the split and a pass over its lines, as records() makes
     return time.perf_counter() - t
 
 
-whole = walk(data.splitlines)
-print(walk(lambda: _lines(data)) / whole)
+best = {"whole": float("inf"), "chunked": float("inf")}
+for _ in range(5):  # side by side, so a busy machine slows both
+    best["whole"] = min(best["whole"], walk(data.splitlines))
+    best["chunked"] = min(best["chunked"], walk(lambda: _lines(data)))
+print(json.dumps({"lines": lines, "whole_lines": len(data.splitlines()),
+                  "finds": finds, "chunks": len(data) // _CHUNK + 1,
+                  "ratio": best["chunked"] / best["whole"]}))
 """
 
 
 @POSIX
 def test_a_source_padded_with_newlines_is_split_about_as_fast_as_a_whole_split():
-    """64 MiB of newlines: split a chunk at a time, within twice the time a
-    whole split (the base's) takes in the same process. A split in Python, a
-    line at a time, took about 9 times as long."""
+    """16 MiB of newlines, split a chunk at a time: the lines a whole split
+    gives, one search for a line's end per chunk, never one per line, and
+    under 4 times the time a whole split (the base's) takes in the same
+    process (the best of 5 runs each, side by side, so a busy machine slows
+    both). A split in Python, a line at a time, took 13 to 16 times as long
+    and searched for each line's end."""
     import subprocess
     import sys
 
     p = subprocess.run([sys.executable, "-c", _LINES_TIME], capture_output=True,
                        text=True, timeout=300)  # fmt: skip
     assert p.returncode == 0, p.stderr[-500:]
-    assert float(p.stdout) <= 2.0, p.stdout
+    got = json.loads(p.stdout)
+    assert got["lines"] == got["whole_lines"] == (16 << 20) + 1, got
+    assert got["finds"] <= got["chunks"], got
+    assert got["ratio"] < 4, got
 
 
 def test_a_genesis_prefix_reads_as_a_whole_read_did_at_every_cut(tmp_path):
