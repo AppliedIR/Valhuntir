@@ -234,7 +234,7 @@ Examples of what you can ask the LLM:
 
 ### Windows Tools (via wintools-mcp)
 
-wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It runs them on evidence already collected into the case; it doesn't collect.
+wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
 
 Additional capabilities:
 - `batch_scan` — run a tool against all files in a directory with safety bounds

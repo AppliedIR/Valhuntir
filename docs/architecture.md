@@ -104,7 +104,7 @@ Forensic tool execution on Linux/SIFT. 5 tools — 4 discovery plus `run_command
 
 ### wintools-mcp
 
-Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (31 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
+Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
 
 ### opensearch-mcp
 
