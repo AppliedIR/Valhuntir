@@ -508,6 +508,8 @@ def _read_registry(reg_file: Path) -> dict:
         text = read_regular(reg_file).decode() if reg_file.exists() else ""
         if text.strip():
             registry = json.loads(text)
+    except CaseError as e:  # its text already names the file and what to do
+        raise ValueError(f"{e} Nothing was registered.") from e
     except (OSError, ValueError) as e:
         raise ValueError(
             f"{reg_file} can't be read as JSON ({e}); nothing was registered. "
