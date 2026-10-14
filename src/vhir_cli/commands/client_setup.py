@@ -2489,7 +2489,7 @@ _LIBRECHAT_POST_INSTALL = """\
      - get_findings         (forensic-mcp)
      - record_timeline_event (forensic-mcp)
      - log_reasoning        (case-mcp)
-     - get_case_status      (forensic-mcp)
+     - case_status          (case-mcp)
    This reduces per-request context from ~51K to ~5K tokens/turn.
    Tool Search discovers deferred tools on demand.
 

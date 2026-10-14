@@ -1,12 +1,14 @@
 """Tests for vhir setup client command."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from vhir_cli.commands.client_setup import (
+    _LIBRECHAT_POST_INSTALL,
     _MSLEARN_MCP,
     DESKTOP_DROPPED,
     _claude_mcp_add,
@@ -453,6 +455,19 @@ class TestCmdSetupClient:
 
         assert not (tmp_path / ".mcp.json").exists()
         assert (tmp_path / "librechat_mcp.yaml").is_file()
+
+    def test_librechat_next_steps_keep_the_setup_guide_s_six_tools_loaded(self):
+        """The printed next steps name the six tools the setup guide keeps
+        loaded, by their MCP names: case-mcp's case_status, not get_case_status."""
+        listed = re.findall(r"^     - (\w+) +\((\S+)\)$", _LIBRECHAT_POST_INSTALL, re.M)
+        assert listed == [
+            ("run_command", "sift-mcp"),
+            ("record_finding", "forensic-mcp"),
+            ("get_findings", "forensic-mcp"),
+            ("record_timeline_event", "forensic-mcp"),
+            ("log_reasoning", "case-mcp"),
+            ("case_status", "case-mcp"),
+        ]
 
 
 class TestWizardClient:
