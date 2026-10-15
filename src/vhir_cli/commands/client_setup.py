@@ -885,9 +885,9 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                     # Only the entries that change: an unchanged entry keeps
                     # any fields the user added to it.
                     todo = {n: servers[n] for n in plan[0] + plan[1]}
-                    _merge_and_write(global_config, {"mcpServers": todo})
-                    print(f"  Generated: {global_config} (global MCP servers)")
-                    print("  NOTE: If tools don't load, try: claude mcp add ...")
+                    if _merge_and_write(global_config, {"mcpServers": todo}):
+                        print(f"  Generated: {global_config} (global MCP servers)")
+                        print("  NOTE: If tools don't load, try: claude mcp add ...")
             # Clean up per-backend duplicates from prior installs
             _cleanup_duplicate_backends(servers)
         else:
@@ -895,9 +895,9 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             stale = _duplicate_backends(servers, output)
             if stale:  # backed up and announced, as ~/.claude.json is
                 _announce_claude_json(output, ([], []), stale)
-            _merge_and_write(output, {"mcpServers": servers})
-            _cleanup_duplicate_backends(servers, output)
-            print(f"  Generated: {output}")
+            if _merge_and_write(output, {"mcpServers": servers}):
+                _cleanup_duplicate_backends(servers, output)
+                print(f"  Generated: {output}")
 
         remote_ca = None
         if not sift and _gateway_uses_https(servers):
@@ -953,8 +953,8 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
     else:
         # Manual / other — just dump JSON
         output = Path.cwd() / "vhir-mcp-config.json"
-        _merge_and_write(output, config)
-        print(f"  Generated: {output}")
+        if _merge_and_write(output, config):
+            print(f"  Generated: {output}")
         print("")
         print(f"  NOTE: {OTHER_CLIENT_NOTICE}")
         _print_mcp_block()
@@ -2976,33 +2976,26 @@ def _report_settings(path: Path, status: str) -> None:
     # "kept": setup and update each say so once, beside the controls block
 
 
-def _merge_and_write(path: Path, config: dict) -> None:
-    """Write config, merging with existing file if present."""
+def _merge_and_write(path: Path, config: dict) -> bool:
+    """Write config, merging with existing file if present.
+
+    Returns False, leaving path unchanged, when it exists but can't be read
+    or isn't a JSON object: overwriting it would destroy MCP registrations
+    that can't be seen. Callers report the write only when this is True."""
     existing = {}
     if path.is_file():
         try:
-            raw = path.read_text()
-        except OSError as e:
-            # An unreadable file is not an empty one — overwriting it would
-            # destroy MCP registrations we cannot see. Abort instead.
-            print(f"Failed to read existing config {path}: {e}", file=sys.stderr)
-            raise
-        try:
-            existing = json.loads(raw)
-        except json.JSONDecodeError as e:
-            # Keep the unparseable original so the operator can recover any
-            # registrations it held.
-            backup = path.with_name(path.name + ".bak")
-            try:
-                _write_600(backup, raw)
-            except OSError as backup_err:
-                print(f"Failed to back up {path}: {backup_err}", file=sys.stderr)
-                raise
-            print(f"  Backed up: {path.name} -> {backup.name}", file=sys.stderr)
+            existing = json.loads(path.read_text())
+        except (ValueError, OSError) as e:
+            existing = e
+        if not isinstance(existing, dict):
+            why = existing if isinstance(existing, Exception) else "not a JSON object"
             print(
-                f"Warning: existing config {path} has invalid JSON ({e}), overwriting.",
+                f"  Not changed: {path} isn't valid JSON ({why}); MCP servers NOT "
+                "registered there. Fix it and re-run `vhir setup client`.",
                 file=sys.stderr,
             )
+            return False
 
     # Merge: existing servers are preserved, Valhuntir servers overwritten
     existing_servers = existing.get("mcpServers", {})
@@ -3015,6 +3008,7 @@ def _merge_and_write(path: Path, config: dict) -> None:
         print(f"Failed to create directory {path.parent}: {e}", file=sys.stderr)
         raise
     _write_600(path, json.dumps(existing, indent=2) + "\n")
+    return True
 
 
 # Per-backend timeout (ms) — forensic tools can run long
@@ -3741,7 +3735,8 @@ def _cmd_add_remnux(args) -> None:
     else:
         config_path = Path.cwd() / ".mcp.json"
 
-    _merge_and_write(config_path, {"mcpServers": {"remnux-mcp": remnux_entry}})
+    if not _merge_and_write(config_path, {"mcpServers": {"remnux-mcp": remnux_entry}}):
+        return
     print(f"  Added remnux-mcp to {config_path}")
     print(f"  Endpoint: {remnux_entry['url']}")
     if remnux_token:
