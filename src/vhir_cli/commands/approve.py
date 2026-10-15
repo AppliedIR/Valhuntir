@@ -277,6 +277,7 @@ def _approve_specific(
 
     new_passphrase = _preflight(identity, config_path, case_dir)
     direct = []
+    trail = approval_checks.PlanTrail(case_dir, [(i, decide.item_type(i["id"])) for i in picked])  # fmt: skip
     for item in picked:
         loaded = copy.deepcopy(item)
         _display_item(item)
@@ -297,7 +298,7 @@ def _approve_specific(
             item, kind, decision, _STATUS_AFTER[decision], loaded=loaded,
             reason=reason, note=note or "", modifications=_modifications(loaded, item),
         )  # fmt: skip
-        if not _approval_checked(case_dir, chosen):
+        if not _approval_checked(case_dir, chosen, trail):
             continue
         direct.append(chosen)
     if not direct:
@@ -361,6 +362,7 @@ def _interactive_review(
     skipped: set[str] = set()  # skipped by the examiner: never cascaded
     todos_to_create: list[dict] = []
     not_reviewed = 0
+    trail = approval_checks.PlanTrail(case_dir, [(i, decide.item_type(i["id"])) for i in all_items])  # fmt: skip
     for n, item in enumerate(all_items):
         _print_decision_header(item)
         choice = _prompt_choice(choices)
@@ -380,7 +382,7 @@ def _interactive_review(
             _show_as_signed(item, loaded, "approve", False)
             chosen = decide.Decision(item, kind, "approve", "APPROVED", loaded=loaded,
                                      note=note_text, modifications=_modifications(loaded, item))  # fmt: skip
-            if not _approval_checked(case_dir, chosen):
+            if not _approval_checked(case_dir, chosen, trail):
                 skipped.add(item["id"])
                 continue
             direct.append(chosen)
@@ -534,14 +536,16 @@ def _reattest(
     )
 
 
-def _approval_checked(case_dir: Path, d: decide.Decision) -> bool:
+def _approval_checked(case_dir: Path, d: decide.Decision, trail=None) -> bool:
     """Run the approval checks on a direct approval and show, before the
     passphrase, its roots, its grade and any failed check. A failed check
     needs a reason typed at the terminal; with none, the item stays DRAFT
     (False). Other decisions pass through."""
     if d.decision != "approve" or d.type not in ("finding", "timeline"):
         return True
-    d.checks = approval_checks.check_item(case_dir, d.item, d.type, note=_hashing_note)
+    d.checks = approval_checks.check_item(
+        case_dir, d.item, d.type, note=_hashing_note, trail=trail
+    )
     for line in _approval_lines(d.item, d.checks):
         print(line)
     if d.checks["result"] != "failed":
@@ -1423,6 +1427,8 @@ def _review_mode(
     direct: list[decide.Decision] = []
     todo_entries: list[dict] = []
     skipped: list[tuple[str, str]] = []
+    trail = approval_checks.PlanTrail(case_dir, [
+        (x, decide.item_type(x["id"])) for e in selected if (x := item_by_id.get(e.get("id", "")))])  # fmt: skip
     for entry in selected:
         item_id, action = entry.get("id", ""), str(entry.get("action", "")).lower()
         if action == "todo":
@@ -1482,7 +1488,7 @@ def _review_mode(
         chosen = decide.Decision(item, kind, action, after, loaded=loaded,
                                  reason=entry.get("rejection_reason", "") or entry.get("reason", ""),
                                  note=entry.get("note", ""), modifications=mods, delta_entry=entry)  # fmt: skip
-        if not _approval_checked(case_dir, chosen):
+        if not _approval_checked(case_dir, chosen, trail):
             skipped.append(
                 (item_id, "a check failed and no reason was typed; left DRAFT")
             )

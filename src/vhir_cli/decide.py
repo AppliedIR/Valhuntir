@@ -625,7 +625,7 @@ def _spliced(current: dict, d: Decision) -> dict:
     return out
 
 
-def _checks_as_shown(case_dir, d: Decision, item: dict) -> bool:
+def _checks_as_shown(case_dir, d: Decision, item: dict, trail=None) -> bool:
     """A direct decision's approval checks, run again on `item`, give the
     result and failed checks it was shown with (none were run: True). An audit
     log they can't read raises approval_checks.AuditUnreadable."""
@@ -633,7 +633,7 @@ def _checks_as_shown(case_dir, d: Decision, item: dict) -> bool:
         return True
     from vhir_cli import approval_checks
 
-    now = approval_checks.check_item(case_dir, item, d.type)
+    now = approval_checks.check_item(case_dir, item, d.type, trail=trail)
     return (now["result"], approval_checks.failed_items(now)) == (
         d.checks["result"],
         approval_checks.failed_items(d.checks),
@@ -647,6 +647,13 @@ def _still_as_shown(lists, direct, planned, skipped, case_dir=None):
     still holds), and a loud line for each one discarded. A cascade that only
     now appears wasn't shown, so it isn't signed."""
     discarded, kept = [], []
+    trail = None
+    if case_dir is not None:  # the trail read once for every item's checks
+        from vhir_cli import approval_checks
+
+        trail = approval_checks.PlanTrail(case_dir, [
+            (x, d.type) for d in direct
+            if d.checks is not None and isinstance(x := _find(lists, d.type, d.id), dict)])  # fmt: skip
     for d in direct:
         if _changed(d, _find(lists, d.type, d.id)):
             discarded.append(
@@ -659,7 +666,7 @@ def _still_as_shown(lists, direct, planned, skipped, case_dir=None):
             i for i, x in enumerate(lst) if isinstance(x, dict) and x.get("id") == d.id
         )
         spliced = _spliced(lst[at], d)
-        if not _checks_as_shown(case_dir, d, spliced):
+        if not _checks_as_shown(case_dir, d, spliced, trail):
             discarded.append(
                 f"  DISCARDED: {one_line(d.id)}: its approval checks changed after you saw "
                 f"them; your {d.decision} decision on it was not signed or saved. "

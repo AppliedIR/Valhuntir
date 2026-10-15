@@ -31,8 +31,17 @@ from .test_approval_checks import _within
 POSIX = pytest.mark.skipif(
     not hasattr(os, "mkfifo") or os.geteuid() == 0, reason="posix"
 )
-BACK = "Put the case's own file back, then try again."
-KEEP = "It holds the case's {h}: keep a copy of it before you move it out of the case, then try again."
+BACK = "{back}"  # an audit log is left as it is; other case files are put back
+KEEP = "{keep}"
+BACKS = {
+    "approval records": "Put the case's own file back, then try again.",
+    "audit entries": f"{case_io.KEPT} {case_io.REPORT}",
+}
+KEEPS = {
+    "approval records": "It holds the case's approval records: keep a copy of it "
+    "before you move it out of the case, then try again.",
+    "audit entries": "It holds the case's audit entries. " + case_io.KEPT,
+}
 TEXT = {  # input -> (why, the refusal's text)
     "fifo": ("not a regular file",
              "{p} isn't a regular file (a named pipe, socket or device). " + BACK),
@@ -120,10 +129,13 @@ def test_each_reader_refuses_by_name_with_the_one_class(case, reader, bad):
     status, (got, err) = _within(lambda: _quiet(lambda: call(case)), timeout=20.0)
     assert status == "ok"
     held = "approval records" if path.name == "approvals.jsonl" else "audit entries"
-    why, text = TEXT[bad][0], TEXT[bad][1].format(p=path, h=held)
+    why = TEXT[bad][0]
+    text = TEXT[bad][1].format(p=path, back=BACKS[held], keep=KEEPS[held])
     cls = CaseFileTooLarge if bad in ("over", "budget") else CaseFileNotRegular
     if reader in ("vhir exec", "load_approval_log"):
         assert got == f"raised {cls.__name__}: {text}"
+    elif reader == "approval checks" and bad in ("over", "budget"):
+        assert got == ["sift-tester-001"]  # a long line is read, not refused
     elif reader == "approval checks":
         assert got.startswith(
             f"raised AuditUnreadable: The approval checks couldn't read {rel} ({why})"
@@ -197,7 +209,10 @@ def test_verify_never_waits_on_a_case_file(case, name, swap, monkeypatch):
 
     status, *got = _within(run, timeout=10.0)
     assert status == "ok"
-    assert f"{name} couldn't be read ({TEXT['fifo'][1].format(p=path)})" in got[0]
+    assert (
+        f"{name} couldn't be read ({TEXT['fifo'][1].format(p=path, back=BACKS['approval records'])})"
+        in got[0]
+    )
 
 
 @POSIX
