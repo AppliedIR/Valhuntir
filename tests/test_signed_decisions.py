@@ -386,7 +386,7 @@ def test_a_short_0_6_password_is_replaced_inline_and_the_decision_signed(
                         lambda p="": prompts.append(p) or next(answers))  # fmt: skip
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", note="kept")
     # the 0.6 password and the new passphrase twice, before the item; then the final prompt
-    assert prompts[:3] == ["0.6 passphrase for steve: ", "New passphrase: ",
+    assert prompts[:3] == ["Current passphrase for steve: ", "New passphrase: ",
                            "Confirm new passphrase: "]  # fmt: skip
     assert len(prompts) == 4
     assert prompts[-1].startswith("Your new passphrase to sign 1 decisions")
