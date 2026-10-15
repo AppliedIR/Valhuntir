@@ -99,3 +99,13 @@ def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
     # Built inside functions: the legacy pins/ migration and update's check.
     monkeypatch.setattr(approval_auth, "_maybe_migrate_pin_dir", lambda: None)
     monkeypatch.setattr(update, "_ensure_password_dir", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_terminal_for_join_questions(monkeypatch):
+    """join-code asks on /dev/tty when stdout is captured; pytest captures
+    it, so a run from a terminal would wait there. No test may: they get
+    the no-terminal answers unless they set their own."""
+    from vhir_cli.commands import join
+
+    monkeypatch.setattr(join, "TTY", "/nonexistent/tty", raising=False)

@@ -15,8 +15,10 @@ import grp
 import ipaddress
 import json
 import os
+import shutil
 import ssl
 import stat
+import subprocess
 import threading
 import time
 import types
@@ -215,14 +217,19 @@ def test_a_refused_smb_credential_push_says_what_wintools_answered(
     err = capsys.readouterr().err
     assert "HTTP 503" in err and "SMB session failed: System error 86" in err
     assert "didn't confirm the new SMB credentials" in err
-    assert "Run the Windows installer with this join code" in err
+    assert (
+        "The Windows installer gives them to it when it runs with the join code "
+        "'vhir setup join-code' shows." in err
+    )
 
 
 def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(
     home, monkeypatch, capsys
 ):
     samba = []
-    monkeypatch.setattr(join, "_setup_samba_share", lambda code: samba.append(code))
+    monkeypatch.setattr(
+        join, "_setup_samba_share", lambda code: samba.append(code) or "192.0.2.20"
+    )
     monkeypatch.setattr(join, "_setup_firewall", lambda ip: None)
     monkeypatch.setattr(
         join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
@@ -230,13 +237,141 @@ def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(
     join._post_join_code_setup({"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5")
     out = capsys.readouterr().out
     lines = out.splitlines()
-    first = next(i for i, x in enumerate(lines) if "setup-windows.ps1 -JoinCode" in x)
-    assert "-NonInteractive -AcknowledgeSecurityHole" in lines[first + 1]
+    first = lines.index(
+        "On Windows, in PowerShell as Administrator, download the current "
+        "installer and run it (one line):"
+    )
+    assert lines[first + 1] == WINDOWS_LINE
+    assert lines[first + 2] == (
+        "  Unattended: add -NonInteractive -AcknowledgeSecurityHole after the port number"
+    )
     assert (
         "When the installer has finished: run 'vhir setup client' on each examiner "
         "machine, then /mcp in Claude Code" in out
     )
+    assert "already running" not in out  # that installer is the old script
     assert samba == ["ABCD-EFGH"]
+
+
+WINDOWS_LINE = (
+    "  cd $env:TEMP; Invoke-WebRequest "
+    "https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip "
+    "-OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip -DestinationPath . "
+    "-Force; if ($?) { .\\wintools-mcp-main\\scripts\\setup-windows.ps1 -JoinCode "
+    "ABCD-EFGH -GatewayHost 192.0.2.5 -GatewayPort 4508 } }"
+)
+
+
+def test_the_windows_line_runs_each_step_only_when_the_one_before_worked(
+    home, monkeypatch, capsys
+):
+    """A failed download keeps an older wintools.zip, and expanding that would
+    run the old installer: each step waits on the one before."""
+    monkeypatch.setattr(join, "_setup_samba_share", lambda code: "192.0.2.20")
+    monkeypatch.setattr(join, "_setup_firewall", lambda ip: None)
+    monkeypatch.setattr(
+        join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
+    )
+    join._post_join_code_setup({"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5")
+    line = next(x for x in capsys.readouterr().out.splitlines() if "main.zip" in x)
+    download, expand, run = line.split("if ($?) {")
+    assert "Invoke-WebRequest" in download and "Expand-Archive" not in download
+    assert "Expand-Archive" in expand and "setup-windows.ps1" not in expand
+    assert run.strip().startswith(".\\wintools-mcp-main\\scripts\\setup-windows.ps1")
+    assert line.endswith("} }")
+
+
+def _fail(message):
+    def step(arg):
+        raise RuntimeError(message)
+
+    return step
+
+
+@pytest.mark.parametrize(
+    "share, firewall, reason",
+    [
+        (
+            _fail("smbd restart failed"),
+            lambda ip: None,
+            "Samba share setup failed: smbd restart failed",
+        ),
+        (
+            lambda code: "192.0.2.20",
+            _fail("ufw not found"),
+            "Firewall setup failed: ufw not found",
+        ),
+        (  # the real firewall step, with sudo refusing `ufw status`
+            lambda code: "192.0.2.20",
+            None,
+            "Firewall setup failed: 'sudo ufw status' failed (exit 1): "
+            "sudo: a password is required",
+        ),
+    ],
+    ids=["share", "firewall", "ufw-status"],
+)
+def test_a_failed_setup_step_shows_no_join_code_and_exits_nonzero(
+    home, monkeypatch, capsys, share, firewall, reason
+):
+    monkeypatch.setattr(join, "_setup_samba_share", share)
+    if firewall:
+        monkeypatch.setattr(join, "_setup_firewall", firewall)
+    else:
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 1, "", "sudo: a password is required\n"
+            )
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/sbin/{name}")
+        monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(
+        join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
+    )
+    with pytest.raises(SystemExit) as stop:
+        join._post_join_code_setup(
+            {"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5"
+        )
+    assert stop.value.code not in (0, None)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "ABCD-EFGH" not in err
+    assert reason in err and "No join code was shown" in err
+    assert "run 'vhir setup join-code' again" in err
+    if reason.startswith("Firewall"):  # the rules by hand
+        assert (
+            "  Or add the rules by hand: sudo ufw allow from 192.0.2.20 "
+            "to any port 4508,445 proto tcp"
+        ) in err.splitlines()  # ufw refuses several ports without a protocol
+    if not firewall:
+        assert calls == [["sudo", "ufw", "status"]]  # nothing allowed or reloaded
+
+
+def test_the_real_share_setup_failing_part_way_shows_no_join_code(
+    home, monkeypatch, capsys
+):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["sudo", "groupadd"]:
+            raise subprocess.CalledProcessError(9, argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(join, "private_primary_group", lambda user: "ex1")
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as stop:
+        join._post_join_code_setup(
+            {"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5"
+        )
+    assert stop.value.code not in (0, None)
+    out, err = capsys.readouterr()
+    assert "ABCD-EFGH" not in out + err
+    assert "Samba share setup failed: Failed to create sift group" in err
+    assert "No join code was shown" in err
+    assert [a[:2] for a in calls] == [["sudo", "apt-get"], ["sudo", "groupadd"]]
 
 
 @pytest.mark.parametrize("status", [200, 403])

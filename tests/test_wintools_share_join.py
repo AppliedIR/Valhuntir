@@ -34,7 +34,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(
         join, "private_primary_group", lambda user: "examiner", raising=False
     )
-    monkeypatch.setattr("builtins.input", lambda prompt="": answers.pop(0))
+    monkeypatch.setattr(join, "_ask", lambda prompt, no_terminal: answers.pop(0))
     return types.SimpleNamespace(home=tmp_path, ran=ran, pushed=pushed, answers=answers)
 
 
