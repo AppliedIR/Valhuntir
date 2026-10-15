@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -686,7 +687,9 @@ def _redeploy_clients(manifest: dict) -> list[str]:
 def cmd_update(args, identity: dict) -> None:
     """Pull latest code and redeploy Valhuntir installation."""
     check_only = getattr(args, "check", False)
-    no_restart = getattr(args, "no_restart", False)
+    after_pull = getattr(args, "after_pull", None)
+    if not isinstance(after_pull, str):
+        after_pull = None
 
     # Step 1: Preflight
     manifest_path = Path.home() / ".vhir" / "manifest.json"
@@ -734,7 +737,10 @@ def cmd_update(args, identity: dict) -> None:
         sys.exit(1)
 
     # Keep uv current (handles stale installs and pre-existing user installs)
-    subprocess.run(["uv", "self", "update", "--quiet"], capture_output=True, timeout=60)
+    if after_pull is None:
+        subprocess.run(
+            ["uv", "self", "update", "--quiet"], capture_output=True, timeout=60
+        )
 
     repos = [("sift-mcp", source), ("vhir", vhir_dir)]
 
@@ -742,7 +748,7 @@ def cmd_update(args, identity: dict) -> None:
     os_repo = _resolve_opensearch_mcp_repo(source)
     if os_repo is not None:
         repos.append(("opensearch-mcp", os_repo))
-    elif _opensearch_mcp_installed_but_missing(source):
+    elif after_pull is None and _opensearch_mcp_installed_but_missing(source):
         # Package is installed in the venv but no git repo found anywhere.
         # Silent skip was the v0.6.1 bug — make it visibly actionable.
         print(
@@ -752,6 +758,21 @@ def cmd_update(args, identity: dict) -> None:
             "    cd <path-to-opensearch-mcp> && git pull && uv pip install -e .\n",
             file=sys.stderr,
         )
+
+    if after_pull is not None:  # Steps 1-4 ran in the process that started this one
+        pre_update_git, torch_record = _read_handoff(after_pull, repos)
+        _finish_update(
+            args,
+            identity,
+            manifest,
+            manifest_path,
+            venv,
+            source,
+            repos,
+            pre_update_git,
+            torch_record,
+        )
+        return
 
     # Step 2: Fetch + compare
     for name, path in repos:
@@ -824,6 +845,12 @@ def cmd_update(args, identity: dict) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    # The fetch (Step 2) has succeeded and the pull is next: record the update
+    # as started (version ""), so any stop before Step 9 keeps every command
+    # warning until a later run finishes. A stop at Step 2 (e.g. offline) never
+    # reaches here, so the record stays the last complete update's.
+    _write_update_state("", pre_update_git.get("vhir", ""))
     pulled = False  # a repo's HEAD moved in this run
     for name, path in repos:
         if not path.is_dir():
@@ -980,6 +1007,104 @@ def cmd_update(args, identity: dict) -> None:
     if sys.stdin.isatty():  # with no terminal, --final's note names them
         _offer_opencti_cleanup(venv_python, checker, lock)
 
+    # This process loaded vhir-cli before the pull: when the pull changed it,
+    # Steps 4.5-9 run in a new process, from the new code.
+    if "vhir" in pre_update_git and pre_update_git["vhir"] != _git_head(vhir_dir):
+        _reexec_after_pull(args, venv, venv_python, pre_update_git, torch_record)
+    _finish_update(
+        args,
+        identity,
+        manifest,
+        manifest_path,
+        venv,
+        source,
+        repos,
+        pre_update_git,
+        torch_record,
+    )
+
+
+def _reexec_after_pull(
+    args, venv: str, venv_python: str, pre_update_git: dict, torch_record: str
+) -> NoReturn:
+    """Replace this process with `vhir update --after-pull` from the new code."""
+    script = Path(venv) / "bin" / "vhir"
+    handoff = json.dumps(
+        {"pre_update_git": pre_update_git, "torch_record": torch_record}
+    )
+    argv = [venv_python, str(script), "update", "--after-pull", handoff]
+    if getattr(args, "no_restart", False):
+        argv.append("--no-restart")
+    if not script.is_file():
+        _update_incomplete(f"{script} was not found")
+    print("  Continuing the update with the new code...", flush=True)
+    sys.stderr.flush()
+    try:
+        os.execv(venv_python, argv)
+    except OSError as e:
+        _update_incomplete(f"Cannot start the new code: {e}")
+    sys.exit(1)  # execv returns only by raising
+
+
+def _update_incomplete(reason: str) -> NoReturn:
+    bar = "=" * 72
+    print(
+        f"\n{bar}\n"
+        "  UPDATE INCOMPLETE: run `vhir update` again\n"
+        f"  {reason}.\n"
+        "  The new code is installed, but the forensic controls, the manifest and\n"
+        "  the gateway restart were not done with it.\n"
+        f"{bar}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _read_handoff(text: str, repos: list[tuple[str, Path]]) -> tuple[dict, str]:
+    """The pre-pull heads and torch choice the first process passed on."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("pre_update_git"), dict):
+        record = data.get("torch_record")
+        return data["pre_update_git"], record if isinstance(record, str) else ""
+    return {name: _git_head(path) for name, path in repos if path.is_dir()}, ""
+
+
+def _write_update_state(version: str, vhir_commit: str) -> None:
+    """Record an update's progress; every vhir command compares it with the
+    installed code (main._warn_if_update_incomplete). version "" is written
+    just before the pull, so any stop before Step 9 keeps warning; the full
+    record (the running process's version) is written after Step 9."""
+    state = {
+        "version": version,
+        "vhir_commit": vhir_commit,
+        "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    path = Path.home() / ".vhir" / "update-state.json"
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"  Warning: could not record the update: {e}", file=sys.stderr)
+
+
+def _finish_update(
+    args,
+    identity: dict,
+    manifest: dict,
+    manifest_path: Path,
+    venv: str,
+    source: Path,
+    repos: list[tuple[str, Path]],
+    pre_update_git: dict,
+    torch_record: str,
+) -> None:
+    """Steps 4.5-9, after the pull and the install."""
+    no_restart = getattr(args, "no_restart", False)
+
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
 
@@ -1043,17 +1168,35 @@ def cmd_update(args, identity: dict) -> None:
         )
     else:
         print("  Restarting gateway... ", end="", flush=True)
-        result = subprocess.run(
-            ["systemctl", "--user", "restart", "vhir-gateway"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        restart_ok = result.returncode == 0
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "restart", "vhir-gateway"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            restart_ok = result.returncode == 0
+            failure = result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            # systemd carries on with the restart: report the state it reached
+            try:
+                state = (
+                    subprocess.run(
+                        ["systemctl", "--user", "is-active", "vhir-gateway"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    ).stdout.strip()
+                    or "unknown"
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                state = "unknown"
+            restart_ok = state == "active"
+            failure = f"no answer in 60 s; the gateway is {state}"
         if restart_ok:
             print("done")
         else:
-            print(f"failed ({result.stderr.strip()})")
+            print(f"failed ({failure})")
             print("  Check with: systemctl --user status vhir-gateway")
             restart_ok = False
 
@@ -1078,6 +1221,9 @@ def cmd_update(args, identity: dict) -> None:
     hashes = manifest.get("git", {})
     parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
+    from vhir_cli import __version__
+
+    _write_update_state(__version__, manifest.get("git", {}).get("vhir", ""))
     if "claude-code" in clients or "codex" in clients:
         print("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)
