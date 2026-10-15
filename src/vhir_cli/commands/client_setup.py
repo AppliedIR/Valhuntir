@@ -1379,17 +1379,23 @@ def _gateway_ca_for_settings(
     ca = local_gateway_ca_cert()
     if not ca:
         return None
-    settings_val = (
-        existing_env.get("NODE_EXTRA_CA_CERTS")
-        if isinstance(existing_env, dict)
-        else None
-    )
-    current = settings_val or os.environ.get("NODE_EXTRA_CA_CERTS")
-    if not current:
+    env_val = os.environ.get("NODE_EXTRA_CA_CERTS")
+    if isinstance(existing_env, dict) and "NODE_EXTRA_CA_CERTS" in existing_env:
+        # A settings value wins at runtime, so an explicit one (even "") decides,
+        # whatever the process environment holds. Presence, not truthiness: a
+        # deliberate "" still blocks trust, so keep it and say so.
+        value = existing_env["NODE_EXTRA_CA_CERTS"]
+        if value == ca:
+            # Ours already; warn only if a different shell value is overridden.
+            if env_val and env_val != ca:
+                return ("notice", ca, env_val)
+            return None
+        return ("notice", ca, value)
+    if not env_val:
         return ("add", ca, None)
-    if current == ca:
+    if env_val == ca:
         return None
-    return ("notice", ca, current)
+    return ("notice", ca, env_val)
 
 
 def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict | None:
@@ -1501,13 +1507,10 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
         if _ALLOW_UNSANDBOXED:  # confirmed with the typed phrase
             existing_sandbox["failIfUnavailable"] = False
 
-    # A local client must trust the gateway's self-signed CA under TLS
-    # (--remote). Add env.NODE_EXTRA_CA_CERTS only when the user hasn't set
-    # one of their own; the "notice" case is handled (and printed) in
-    # _merge_settings.
-    decision = _gateway_ca_for_settings(existing.get("env"))
-    if decision and decision[0] == "add":
-        existing.setdefault("env", {})["NODE_EXTRA_CA_CERTS"] = decision[1]
+    # The gateway-CA env (env.NODE_EXTRA_CA_CERTS) is NOT merged here: it is a
+    # client-connectivity convenience, not a forensic control, so settings_applied
+    # (which calls this) must not judge a box that lacks it. It is decided and
+    # written only on deploy, in _merge_settings.
     return existing
 
 
@@ -1548,7 +1551,19 @@ def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -
     if merged is None:
         return "kept"
     decision = _gateway_ca_for_settings(merged.get("env"))
-    if decision and decision[0] == "notice":
+    if decision and decision[0] == "add":
+        if "env" not in merged:
+            merged["env"] = {"NODE_EXTRA_CA_CERTS": decision[1]}
+        elif isinstance(merged["env"], dict):
+            merged["env"]["NODE_EXTRA_CA_CERTS"] = decision[1]
+        else:
+            print(
+                "  Note: env in settings.json isn't an object, so "
+                "NODE_EXTRA_CA_CERTS wasn't added. The gateway uses a "
+                f"self-signed CA, so add {decision[1]} to NODE_EXTRA_CA_CERTS "
+                "by hand or the local client can't verify the gateway."
+            )
+    elif decision and decision[0] == "notice":
         print(
             f"  Note: NODE_EXTRA_CA_CERTS is already set to {decision[2]}; "
             "left unchanged. The gateway uses a self-signed CA, so add "
