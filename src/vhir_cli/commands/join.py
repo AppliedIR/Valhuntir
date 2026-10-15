@@ -400,6 +400,35 @@ def _get_wintools_credentials() -> tuple[str | None, str | None]:
     return None, None
 
 
+TTY = "/dev/tty"
+
+
+def _ask(question: str, no_terminal: str | None) -> str | None:
+    """Ask a question on the terminal, even when stdout is captured.
+
+    setup-sift.sh captures join-code's output, so a question printed to
+    stdout is never seen: when stdout isn't a terminal, ask on /dev/tty.
+    With no terminal to ask on, return ``no_terminal``, the safe answer
+    (None for a question that has none).
+    """
+    if sys.stdout.isatty():
+        return input(question)
+    line = ""
+    try:
+        with open(TTY) as tty_in, open(TTY, "w") as tty_out:
+            tty_out.write(question)
+            tty_out.flush()
+            line = tty_in.readline()
+    except OSError:
+        pass
+    if line:
+        return line.rstrip("\n")
+    took = "no answer" if no_terminal is None else f"answered {no_terminal!r}"
+    asked = question.strip().splitlines()[-1]
+    print(f"No terminal to ask {asked!r}: {took}", file=sys.stderr)
+    return no_terminal
+
+
 def _ensure_remote_binding() -> None:
     """Check if gateway is localhost-only and offer to rebind for remote access.
 
@@ -788,13 +817,16 @@ def _setup_samba_share(join_code: str) -> str:
         try:
             doc = yaml.safe_load(samba_yaml.read_text()) or {}
             if doc.get("share_name") and doc.get("wintools_ip"):
-                print(f"Samba share already configured for {doc['wintools_ip']}")
+                configured = f"Samba share already configured for {doc['wintools_ip']}"
                 if doc["share_name"] != SHARE_NAME:
+                    print(configured)
                     print(
                         f"The share moves from [{doc['share_name']}] to [{SHARE_NAME}]."
                     )
-                elif input("Reconfigure? [y/N] ").strip().lower() not in ("y", "yes"):
-                    keep_ip = doc["wintools_ip"]
+                else:
+                    answer = _ask(f"{configured}\nReconfigure? [y/N] ", "n")
+                    if answer.strip().lower() not in ("y", "yes"):
+                        keep_ip = doc["wintools_ip"]
         except (yaml.YAMLError, OSError):
             pass
     if keep_ip:
@@ -880,7 +912,10 @@ def _setup_samba_share(join_code: str) -> str:
     # Prompt for wintools IP
     import ipaddress
 
-    wintools_ip = input("Enter the Windows machine's IP address: ").strip()
+    wintools_ip = _ask("Enter the Windows machine's IP address: ", None)
+    if wintools_ip is None:
+        raise RuntimeError("no terminal to ask for the Windows machine's IP address")
+    wintools_ip = wintools_ip.strip()
     try:
         addr = ipaddress.IPv4Address(wintools_ip)
     except (ipaddress.AddressValueError, ValueError) as e:
@@ -1388,8 +1423,12 @@ def _ensure_static_ip() -> str | None:
                 # Verify the interface actually has this IP
                 actual_ip = _detect_current_ip()
                 if actual_ip == existing_ip:
-                    print(f"Static IP configured and active: {existing_ip}")
-                    answer = input("Reconfigure? [y/N] ").strip().lower()
+                    answer = _ask(
+                        f"Static IP configured and active: {existing_ip}\n"
+                        "Reconfigure? [y/N] ",
+                        "n",
+                    )
+                    answer = answer.strip().lower()
                     if answer not in ("y", "yes"):
                         return existing_ip
                 else:
@@ -1400,13 +1439,15 @@ def _ensure_static_ip() -> str | None:
                     print(
                         "The static IP was stored but never applied to the interface."
                     )
-                    answer = input(f"Apply {existing_ip} now? [Y/n] ").strip().lower()
+                    answer = (
+                        _ask(f"Apply {existing_ip} now? [Y/n] ", "n").strip().lower()
+                    )
                     if answer in ("", "y", "yes"):
                         ip = existing_ip
                         # Fall through to apply logic below
                     else:
-                        answer2 = input(
-                            "Enter a different IP, or blank to skip: "
+                        answer2 = _ask(
+                            "Enter a different IP, or blank to skip: ", ""
                         ).strip()
                         if answer2:
                             ip = answer2
@@ -1425,14 +1466,16 @@ def _ensure_static_ip() -> str | None:
     )
     print()
     while True:
-        ip = input(f"Enter static IP for this machine [{detected_ip}]: ").strip()
+        ip = _ask(f"Enter static IP for this machine [{detected_ip}]: ", None)
+        if ip is None:  # no terminal: no static IP, no netplan change
+            return None
+        ip = ip.strip()
         if not ip:
             ip = detected_ip
         if not ip:
             print("No IP provided, skipping static IP configuration.", file=sys.stderr)
             return None
-        print(f"\n  Static IP: {ip}")
-        confirm = input("  Correct? [Y/n] ").strip().lower()
+        confirm = _ask(f"\n  Static IP: {ip}\n  Correct? [Y/n] ", "n").strip().lower()
         if confirm in ("", "y", "yes"):
             break
 
@@ -1555,10 +1598,13 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
         except (yaml.YAMLError, OSError):
             pass
     if conflicting:
-        print(f"Warning: existing netplan configs for {iface}:")
-        for c in conflicting:
-            print(f"  {c}")
-        answer = input("Override with Valhuntir static config? [y/N] ").strip().lower()
+        listed = "".join(f"  {c}\n" for c in conflicting)
+        answer = _ask(
+            f"Warning: existing netplan configs for {iface}:\n{listed}"
+            "Override with Valhuntir static config? [y/N] ",
+            "n",
+        )
+        answer = answer.strip().lower()
         if answer not in ("y", "yes"):
             print("Skipped static IP configuration.", file=sys.stderr)
             return None
