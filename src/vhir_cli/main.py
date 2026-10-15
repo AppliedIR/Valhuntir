@@ -731,7 +731,7 @@ def _warn_if_update_incomplete() -> None:
             state.get("version") != __version__ or state.get("vhir_commit") != commit
         )
     else:
-        # No record that counts: an updater before the hotfix wrote updated_at
+        # No record that counts: an updater before 0.6.4.1 wrote updated_at
         # and no record. (Every updater 0.6.0-0.6.4 writes updated_at.)
         stale = "updated_at" in manifest
     if stale:

@@ -137,7 +137,7 @@ def test_a_failed_new_process_is_loud_and_nonzero(manifest_dir, capsys):
     assert stop.value.code == 1
     assert INCOMPLETE in capsys.readouterr().err
     # Step 9's full record was never written, but the pre-pull record (version
-    # "") stays, so every command keeps warning until a run finishes (SPEC-004).
+    # "") stays, so every command keeps warning until a run finishes.
     state = json.loads((home / ".vhir" / "update-state.json").read_text())
     assert state["version"] == ""
 
@@ -277,7 +277,7 @@ def test_update_itself_is_not_warned_about(tmp_path, capsys):
 
 def test_config_is_not_warned_about(tmp_path, capsys):
     """setup-sift.sh runs `vhir config` mid-install, before it rewrites the
-    manifest, so config must not warn either (CR-f8 Q2)."""
+    manifest, so config must not warn either."""
     from vhir_cli import main as main_mod
 
     _manifest(tmp_path, updated_at="2026-10-03T00:00:00+00:00")
