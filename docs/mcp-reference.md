@@ -341,7 +341,7 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
-| `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | List Hayabusa/Sigma detection alerts | To review automated detections |
+| `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | Hayabusa detection alerts (count and query) | To review automated detections |
 
 ### Host Tools (2)
 
