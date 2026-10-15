@@ -29,6 +29,12 @@ TEXT = (
 )
 VOL = "Volatility 3 {}: memory analysis fails"
 HAYABUSA = "Hayabusa missing: no event-log detections"
+# either installer, the user's choice; only when Hayabusa is missing
+CHOICE = (
+    " For Hayabusa, either: `sudo cast install teamdfir/sift` (installs Hayabusa "
+    "3.8.1 with the rest of SIFT) or `vhir setup hayabusa` (installs the current "
+    "Hayabusa only)."
+)
 
 
 def _exe(path: Path, text: str) -> Path:
@@ -123,13 +129,25 @@ def test_volatility_2_28_is_not_named_even_with_root_owned_folders(box):
 def test_no_hayabusa_is_named(box):
     py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
     _vol(box, "vol", str(py))
-    assert sift_tools.warning() == TEXT.format(HAYABUSA)
+    assert sift_tools.warning() == TEXT.format(HAYABUSA) + CHOICE
 
 
 def test_both_are_named_in_one_warning(box):
     py = _python(box, "opt", "2.27.0", [_locked(box, "a")])
     _vol(box, "vol", str(py))
-    assert sift_tools.warning() == TEXT.format(f"{VOL.format('2.27.0')}; {HAYABUSA}")
+    assert (
+        sift_tools.warning()
+        == TEXT.format(f"{VOL.format('2.27.0')}; {HAYABUSA}") + CHOICE
+    )
+
+
+def test_the_hayabusa_choice_is_only_for_a_missing_hayabusa(box):
+    py = _python(box, "opt", "2.27.0", [_locked(box, "a")])
+    _vol(box, "vol", str(py))
+    _hayabusa(box, box.bin)
+    text = sift_tools.warning()
+    assert text == TEXT.format(VOL.format("2.27.0"))
+    assert "vhir setup hayabusa" not in text
 
 
 def test_hayabusa_in_local_bin_counts_though_not_on_path(box):
@@ -228,7 +246,7 @@ def test_the_module_prints_the_warning_or_nothing(box, capsys):
     assert sift_tools.main() == 0 and capsys.readouterr().out == ""
     (box.bin / "hayabusa").unlink()
     assert sift_tools.main() == 0
-    assert capsys.readouterr().out == TEXT.format(HAYABUSA) + "\n"
+    assert capsys.readouterr().out == TEXT.format(HAYABUSA) + CHOICE + "\n"
 
 
 def test_setup_test_prints_it_before_the_gateway_is_reached(monkeypatch, capsys):

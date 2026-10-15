@@ -504,6 +504,12 @@ def build_parser() -> argparse.ArgumentParser:
         "ends its earlier gateway tokens (for re-joining under one's own name)",
     )
 
+    setup_sub.add_parser(
+        "hayabusa",
+        help="Install the current Hayabusa release into ~/.local (no sudo); "
+        "sudo cast install teamdfir/sift installs 3.8.1 with the rest of SIFT",
+    )
+
     # export
     p_export = sub.add_parser("export", help="Export findings + timeline as JSON")
     p_export.add_argument("--file", required=True, help="Output file path")

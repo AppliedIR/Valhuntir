@@ -4,6 +4,7 @@ Subcommands:
 - vhir setup client   — Configure LLM client
 - vhir setup test     — Test connectivity
 - vhir setup join-code — Generate join code
+- vhir setup hayabusa  — Install the current Hayabusa release for this user
 """
 
 from __future__ import annotations
@@ -32,9 +33,15 @@ def cmd_setup(args, identity: dict) -> None:
         cmd_setup_join_code(args, identity)
         return
 
+    if action == "hayabusa":
+        from vhir_cli.commands.hayabusa import cmd_setup_hayabusa
+
+        cmd_setup_hayabusa(args, identity)
+        return
+
     # No subcommand — redirect to 'vhir setup client'
     print(
-        "Usage: vhir setup <client|test|join-code>\n"
+        "Usage: vhir setup <client|test|join-code|hayabusa>\n"
         "Run 'vhir setup client' to configure your LLM client.",
         file=sys.stderr,
     )
