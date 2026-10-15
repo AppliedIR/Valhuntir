@@ -304,9 +304,9 @@ def _approve_specific(
     if not direct:
         print("Nothing to sign.")
         return
-    planned = decide.cascades(direct, findings, timeline, iocs)
+    planned, held = decide.split_cascades(direct, findings, timeline, iocs)
     print(f"\n{len(direct)} item(s) to {decision}.")
-    decide.confirm_plan(direct, planned, _display_item)
+    decide.confirm_plan(direct, planned, _display_item, held=held)
     decide.sign_and_commit(
         case_dir, identity, direct, planned, new_passphrase=new_passphrase
     )
@@ -435,8 +435,8 @@ def _interactive_review(
             print(withdrawn_line)
         print("Nothing to sign.")
         return
-    planned = decide.cascades(direct, findings, timeline, iocs, skipped)
-    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line)
+    planned, held = decide.split_cascades(direct, findings, timeline, iocs, skipped)
+    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line, held=held)
     decide.sign_and_commit(
         case_dir,
         identity,
@@ -1541,13 +1541,13 @@ def _review_mode(
                 finish()
         print("Nothing to sign.")
         return
-    planned = decide.cascades(direct, findings, timeline, iocs)
+    planned, held = decide.split_cascades(direct, findings, timeline, iocs)
     print(f"\n{'=' * 60}")
     print(
         f"  Sign {len(direct)} decision(s) from pending reviews, {len(todo_entries)} TODO(s)"
     )
     print(f"{'=' * 60}")
-    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line)
+    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line, held=held)
     decide.sign_and_commit(
         case_dir, identity, direct, planned, new_passphrase=new_passphrase,
         inside_lock=finish,
