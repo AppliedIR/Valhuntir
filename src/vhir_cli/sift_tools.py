@@ -7,7 +7,9 @@ A SANS SIFT image can predate the tool releases Valhuntir needs:
   so every Windows plugin fails with "Cannot write necessary symbol file".
   2.28 added a per-user symbols folder. An older Volatility in a folder the
   user owns (a pipx install, for one) works and isn't reported.
-- Hayabusa missing means the event-log ingest runs no detections.
+- Hayabusa missing means the event-log ingest runs no detections. SANS's
+  installer brings 3.8.1; `vhir setup hayabusa` installs the current release
+  alone, so the warning names both.
 
 SANS's own installer brings both up to date, so the warning names it. This
 module only reports: setup-sift.sh, `vhir setup test` and `vhir update` print
@@ -153,6 +155,14 @@ def volatility_problem() -> str | None:
     return f"Volatility 3 {major}.{minor}.{patch}"
 
 
+# Either installer works; the user chooses
+HAYABUSA_CHOICE = (
+    " For Hayabusa, either: `sudo cast install teamdfir/sift` (installs Hayabusa "
+    "3.8.1 with the rest of SIFT) or `vhir setup hayabusa` (installs the current "
+    "Hayabusa only)."
+)
+
+
 def hayabusa_missing() -> bool:
     return _which("hayabusa") is None
 
@@ -163,7 +173,8 @@ def warning() -> str | None:
     vol = volatility_problem()
     if vol:
         problems.append(f"{vol}: memory analysis fails")
-    if hayabusa_missing():
+    hayabusa = hayabusa_missing()
+    if hayabusa:
         problems.append("Hayabusa missing: no event-log detections")
     if not problems:
         return None
@@ -172,6 +183,7 @@ def warning() -> str | None:
         f"({'; '.join(problems)}). Update SIFT with: `sudo cast install teamdfir/sift` "
         "(about 5 minutes on the SANS OVA; if it reports failed states, run it again, "
         "since a download outage can cause them), then re-run `./setup-sift.sh`."
+        + (HAYABUSA_CHOICE if hayabusa else "")
     )
 
 
