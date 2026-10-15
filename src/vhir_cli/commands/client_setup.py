@@ -1321,7 +1321,7 @@ def _write_user_file(
         return "kept"
     if _APPLIED is None and input(
         f"  Apply these changes to {path}? [Y/n] "
-    ).strip().lower() in ("n", "no"):
+    ).strip().lower() not in ("", "y", "yes"):
         print(f"  Kept: {path} unchanged.")
         return "kept"
     bak = _backup(path)

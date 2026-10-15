@@ -142,6 +142,14 @@ def test_answering_no_keeps_the_file(box):
     assert any("[Y/n]" in p for p in asked)
 
 
+def test_a_mistyped_refusal_keeps_the_file_and_writes_no_backup(box):
+    before = _write_user(box.settings)
+    _, asked = box.run("nope")
+    assert box.settings.read_bytes() == before
+    assert not list(box.settings.parent.glob("settings.json.vhir-backup-*"))
+    assert any("[Y/n]" in p for p in asked)
+
+
 def test_answering_yes_applies_after_a_backup(box, capsys):
     before = _write_user(box.settings)
     result, _ = box.run("y")
