@@ -516,15 +516,6 @@ def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     # would break a venv that links those files from the cache.
     subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
     subprocess.run(["uv", "cache", "clean", *names], timeout=600)
-    check = subprocess.run(
-        ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
-    )
-    if check.returncode != 0:
-        print(
-            f"  The removal didn't finish ({(check.stdout + check.stderr).strip()}).\n"
-            f"  Finish it: uv pip uninstall --python {venv_python} {' '.join(names)}",
-            file=sys.stderr,
-        )
 
 
 def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
