@@ -40,8 +40,11 @@ If you have a Windows forensic VM for Zimmerman tools and Hayabusa:
 ```powershell
 git clone https://github.com/AppliedIR/wintools-mcp.git
 cd wintools-mcp
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\setup-windows.ps1
 ```
+
+`Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default.
 
 The Windows installer generates a bearer token. Copy it to your SIFT gateway configuration or LLM client setup.
 

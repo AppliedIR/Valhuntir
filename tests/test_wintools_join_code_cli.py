@@ -253,13 +253,33 @@ def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(
     assert samba == ["ABCD-EFGH"]
 
 
-WINDOWS_LINE = (
-    "  cd $env:TEMP; Invoke-WebRequest "
+# The download and run steps, as printed before script running was turned on
+INSTALL_STEPS = (
+    "cd $env:TEMP; Invoke-WebRequest "
     "https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip "
     "-OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip -DestinationPath . "
     "-Force; if ($?) { .\\wintools-mcp-main\\scripts\\setup-windows.ps1 -JoinCode "
     "ABCD-EFGH -GatewayHost 192.0.2.5 -GatewayPort 4508 } }"
 )
+PROCESS_BYPASS = "Set-ExecutionPolicy -Scope Process Bypass -Force; "
+WINDOWS_LINE = "  " + PROCESS_BYPASS + INSTALL_STEPS
+
+
+def test_the_windows_line_first_allows_scripts_for_its_own_window_only(
+    home, monkeypatch, capsys
+):
+    """A Windows 10/11 client refuses to run any script by default: the line
+    allows them for this PowerShell window first, and is otherwise unchanged."""
+    monkeypatch.setattr(join, "_setup_samba_share", lambda code: "192.0.2.20")
+    monkeypatch.setattr(join, "_setup_firewall", lambda ip: None)
+    monkeypatch.setattr(
+        join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
+    )
+    join._post_join_code_setup({"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5")
+    line = next(x for x in capsys.readouterr().out.splitlines() if "main.zip" in x)
+    assert line.startswith("  " + PROCESS_BYPASS)
+    assert line[len("  " + PROCESS_BYPASS) :] == INSTALL_STEPS
+    assert line.count("ExecutionPolicy") == 1
 
 
 def test_the_windows_line_runs_each_step_only_when_the_one_before_worked(
