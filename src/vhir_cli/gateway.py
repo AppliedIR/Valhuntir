@@ -81,6 +81,29 @@ def get_local_ssl_context() -> ssl.SSLContext | None:
     return ctx
 
 
+def get_local_gateway_cert_sha256() -> str | None:
+    """SHA-256 (64 lowercase hex) of the first certificate's DER in
+    gateway.tls.certfile, the certificate the gateway presents. The Windows
+    installer pins it. None when the gateway has no TLS (the same test as
+    get_local_ssl_context). Raises OSError or ValueError when the file can't
+    be read or holds no certificate."""
+    import hashlib
+    import re
+
+    gw = _read_gateway_config().get("gateway", {})
+    tls = gw.get("tls", {}) if isinstance(gw, dict) else {}
+    if not isinstance(tls, dict) or not tls.get("certfile"):
+        return None
+    certfile = str(tls["certfile"])
+    pem = Path(certfile).read_text(encoding="ascii", errors="replace")
+    first = re.search(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", pem, re.S
+    )
+    if not first:
+        raise ValueError(f"no certificate in {certfile}")
+    return hashlib.sha256(ssl.PEM_cert_to_DER_cert(first.group(0))).hexdigest()
+
+
 def find_ca_cert() -> str | None:
     """Return ~/.vhir/tls/ca-cert.pem path if it exists, else None."""
     ca_path = Path.home() / ".vhir" / "tls" / "ca-cert.pem"

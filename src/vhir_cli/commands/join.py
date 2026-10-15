@@ -1115,6 +1115,16 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
         )
         return
 
+    # The installer pins a TLS gateway's certificate by this value: the
+    # gateway's CA isn't in the Windows trust store
+    from vhir_cli.gateway import get_local_gateway_cert_sha256
+
+    try:
+        cert_sha256 = get_local_gateway_cert_sha256()
+    except (OSError, ValueError) as e:
+        _stop_without_code("Reading the gateway's certificate", e)
+    pin = f" -GatewayCertSha256 {cert_sha256}" if cert_sha256 else ""
+
     try:
         wintools_ip = _setup_samba_share(join_code)
     except Exception as e:
@@ -1153,7 +1163,7 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
         "-OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip "
         "-DestinationPath . -Force; if ($?) { "
         f".\\wintools-mcp-main\\scripts\\setup-windows.ps1 -JoinCode {join_code} "
-        f"-GatewayHost {sift_host} -GatewayPort {gw_port} }} }}"
+        f"-GatewayHost {sift_host} -GatewayPort {gw_port}{pin} }} }}"
     )
     print(
         "  Unattended: add -NonInteractive -AcknowledgeSecurityHole after the port number"
