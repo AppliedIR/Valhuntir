@@ -1278,8 +1278,8 @@ def _write_user_file(
 
     Returns "created" (no file was there), "unchanged" (nothing would change),
     "written" (they said yes, or `vhir setup client -y`; a backup was made
-    first) or "kept". Asks only on a terminal (default No); otherwise prints
-    the change and keeps the file.
+    first) or "kept". Asks only on a terminal (default Yes; n/no keeps);
+    otherwise prints the change and keeps the file.
     """
     if not path.exists():
         if mode is None:
@@ -1320,8 +1320,8 @@ def _write_user_file(
         )
         return "kept"
     if _APPLIED is None and input(
-        f"  Apply these changes to {path}? [y/N] "
-    ).strip().lower() not in ("y", "yes"):
+        f"  Apply these changes to {path}? [Y/n] "
+    ).strip().lower() not in ("", "y", "yes"):
         print(f"  Kept: {path} unchanged.")
         return "kept"
     bak = _backup(path)
