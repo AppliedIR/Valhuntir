@@ -1367,6 +1367,8 @@ def _gateway_ca_for_settings(
                             settings env, else the process environment) to
                             `value` — keep it and tell the user to add the CA
                             to that bundle;
+      ("overridden", ca, value) the settings env holds the CA and the shell
+                            sets `value`, which the settings entry overrides;
       None                  no local TLS gateway/CA, or the CA is already it.
 
     The settings env wins over the process environment because Claude Code
@@ -1388,7 +1390,7 @@ def _gateway_ca_for_settings(
         if value == ca:
             # Ours already; warn only if a different shell value is overridden.
             if env_val and env_val != ca:
-                return ("notice", ca, env_val)
+                return ("overridden", ca, env_val)
             return None
         return ("notice", ca, value)
     if not env_val:
@@ -1569,6 +1571,13 @@ def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -
             "left unchanged. The gateway uses a self-signed CA, so add "
             f"{decision[1]} to that bundle or the local client can't verify "
             "the gateway."
+        )
+    elif decision and decision[0] == "overridden":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS in your shell is {decision[2]}, but "
+            f"the settings.json entry ({decision[1]}) overrides it. To use your "
+            "own bundle, add the gateway CA to it and remove the settings.json "
+            "entry."
         )
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
     return _write_user_file(

@@ -779,3 +779,19 @@ class TestLocalCaTrust:
         assert data["env"]["NODE_EXTRA_CA_CERTS"] == ca
         out = capsys.readouterr().out
         assert "/corp/bundle.pem" in out
+
+    def test_the_override_notice_names_removing_the_settings_entry(
+        self, box, monkeypatch, capsys
+    ):
+        # Adding the gateway CA to the shell bundle alone can't restore that
+        # bundle's trust: the settings entry still wins. The notice says so,
+        # and gives the step that does: remove the settings.json entry.
+        ca = _tls_box(box)
+        box.settings.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": ca}}))
+        monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/corp/bundle.pem")
+        capsys.readouterr()
+        box.run("y")
+        out = " ".join(capsys.readouterr().out.split())
+        assert "overrides it" in out
+        assert "remove the settings.json entry" in out
+        assert "left unchanged" not in out
