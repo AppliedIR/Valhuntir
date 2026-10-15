@@ -17,7 +17,7 @@ The recommended workflow uses OpenSearch for evidence indexing. Without OpenSear
 2. Register evidence         → evidence_register() or vhir evidence register
 3. Ingest and index          → idx_ingest() to parse evidence into OpenSearch
 4. Scope the investigation   → idx_case_summary() for hosts, artifacts, time ranges
-5. Check for detections      → idx_list_detections() for Hayabusa/Sigma alerts
+5. Check for detections      → idx_list_detections() for Hayabusa detection alerts (count and query)
 6. Enrich programmatically   → idx_enrich_triage() + idx_enrich_intel()
 7. Search and analyze        → idx_search(), idx_aggregate(), idx_timeline()
 8. Deep analysis             → run_command() with SIFT tools, run_windows_command()
