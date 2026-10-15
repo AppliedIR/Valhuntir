@@ -25,7 +25,8 @@ TEXT = (
     "Some SIFT tools are out of date and parts of Valhuntir won't work with them "
     "({}). Update SIFT with: `sudo cast install teamdfir/sift` "
     "(about 5 minutes on the SANS OVA; if it reports failed states, run it again, "
-    "since a download outage can cause them), then re-run `./setup-sift.sh`."
+    "since a download outage can cause them), then re-run `./setup-sift.sh` "
+    "with the options you installed with (for example `--remote`)."
 )
 VOL = "Volatility 3 {}: memory analysis fails"
 HAYABUSA = "Hayabusa missing: no event-log detections"
@@ -130,6 +131,17 @@ def test_no_hayabusa_is_named(box):
     py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
     _vol(box, "vol", str(py))
     assert sift_tools.warning() == TEXT.format(HAYABUSA) + CHOICE
+
+
+def test_the_rerun_advice_keeps_the_install_flags(box):
+    # Both `vhir update` and setup-sift.sh print this warning. A remote box
+    # re-run flagless reconfigures the gateway as a local install, so the
+    # re-run advice must not be the bare flagless `./setup-sift.sh`.
+    py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
+    _vol(box, "vol", str(py))
+    text = sift_tools.warning()
+    assert "with the options you installed with (for example `--remote`)" in text
+    assert "then re-run `./setup-sift.sh`." not in text
 
 
 def test_both_are_named_in_one_warning(box):

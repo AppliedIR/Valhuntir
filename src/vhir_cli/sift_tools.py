@@ -182,7 +182,8 @@ def warning() -> str | None:
         "Some SIFT tools are out of date and parts of Valhuntir won't work with them "
         f"({'; '.join(problems)}). Update SIFT with: `sudo cast install teamdfir/sift` "
         "(about 5 minutes on the SANS OVA; if it reports failed states, run it again, "
-        "since a download outage can cause them), then re-run `./setup-sift.sh`."
+        "since a download outage can cause them), then re-run `./setup-sift.sh` "
+        "with the options you installed with (for example `--remote`)."
         + (HAYABUSA_CHOICE if hayabusa else "")
     )
 
