@@ -39,10 +39,13 @@ _VOL_PROBE = (
 
 
 def _search_path() -> str:
-    """PATH as the gateway gives it to its backends: ~/.local/bin first."""
+    """PATH as the gateway gives it to its backends (sift_gateway's
+    prepend_local_bin): ~/.local/bin first when it's missing, else as it is."""
     local_bin = str(Path.home() / ".local" / "bin")
-    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
-    return os.pathsep.join([local_bin, *[p for p in parts if p != local_bin]])
+    path = os.environ.get("PATH", "")
+    if os.path.isdir(local_bin) and local_bin not in path.split(os.pathsep):
+        return os.pathsep.join(p for p in (local_bin, path) if p)
+    return path
 
 
 def _which(name: str) -> str | None:
@@ -74,14 +77,33 @@ def _interpreter(script: str) -> list[str] | None:
     return words[:1]
 
 
+def _is_volatility(cmd: list[str]) -> bool:
+    """Does it print Volatility 3's banner? Run bare, as the ingest checks it."""
+    try:
+        out = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd="/",
+            env={**os.environ, "PATH": _search_path()},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "Volatility 3" in out.stdout + out.stderr
+
+
 def _volatility_interpreter() -> list[str] | None:
-    """The Python the ingest's Volatility runs under, found as the ingest finds it."""
+    """The Python the ingest's Volatility runs under, found as the ingest finds it:
+    the first candidate that prints Volatility 3's banner."""
     for name in _VOL_NAMES:
         found = _which(name)
-        if found:
+        if found and _is_volatility([found]):
             return _interpreter(found)
     python3 = _which("python3")
-    return [python3] if python3 else None
+    if python3 and _is_volatility([python3, "-m", "volatility3"]):
+        return [python3]
+    return None
 
 
 def _writable(folder: str) -> bool:
@@ -123,7 +145,10 @@ def volatility_problem() -> str | None:
         return None
     if (major, minor) >= VOL_SYMBOLS_FIXED:
         return None
-    if any(_writable(folder) for folder in lines[1:] if folder):
+    # Before 2.28 it saves a Windows kernel's symbols in <basepath>/windows/<pdb>/
+    if any(
+        _writable(os.path.join(folder, "windows")) for folder in lines[1:] if folder
+    ):
         return None
     return f"Volatility 3 {major}.{minor}.{patch}"
 

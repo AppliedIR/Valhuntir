@@ -63,10 +63,15 @@ def box(tmp_path, monkeypatch):
 
 
 def _python(box, name: str, version: str, folders: list[Path], rc: int = 0) -> Path:
-    """A stub interpreter that answers the constants probe."""
+    """A stub interpreter that answers the constants probe (-E -c) and, running
+    Volatility bare, prints its banner and exits 2 as Volatility 3 does."""
     lines = [" ".join(version.split("."))] + [str(f) for f in folders]
     body = "".join(f"echo '{ln}'\n" for ln in lines)
-    return _exe(box.tmp / "py" / name / "python3", f"#!/bin/sh\n{body}exit {rc}\n")
+    return _exe(
+        box.tmp / "py" / name / "python3",
+        f'#!/bin/sh\nif [ "$1" = "-E" ]; then\n{body}exit {rc}\nfi\n'
+        f"echo 'Volatility 3 Framework {version}' >&2\nexit 2\n",
+    )
 
 
 def _vol(box, name: str, interp: str) -> Path:
@@ -135,6 +140,7 @@ def test_hayabusa_in_local_bin_counts_though_not_on_path(box):
 
 def test_local_bin_is_searched_with_the_real_path(tmp_path, monkeypatch):
     home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", f"/usr/bin{os.pathsep}/bin")
     assert sift_tools._search_path().split(os.pathsep) == [
@@ -142,6 +148,42 @@ def test_local_bin_is_searched_with_the_real_path(tmp_path, monkeypatch):
         "/usr/bin",
         "/bin",
     ]
+
+
+def test_local_bin_already_on_path_keeps_its_place(tmp_path, monkeypatch):
+    # the gateway adds ~/.local/bin only when it's missing (prepend_local_bin)
+    home = tmp_path / "home"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    path = os.pathsep.join(["/opt/x/bin", str(local_bin), "/usr/bin"])
+    monkeypatch.setenv("PATH", path)
+    assert sift_tools._search_path() == path
+
+
+def test_a_missing_local_bin_is_not_added(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", f"/usr/bin{os.pathsep}/bin")
+    assert sift_tools._search_path() == f"/usr/bin{os.pathsep}/bin"
+
+
+def test_a_vol3_that_is_not_volatility_is_skipped_as_the_ingest_does(box):
+    # the ingest runs each candidate bare and takes the first with the banner
+    _exe(box.bin / "vol3", "#!/bin/sh\necho 'some other tool'\n")
+    py = _python(box, "opt", "2.27.0", [_locked(box, "a")])
+    _vol(box, "vol", str(py))
+    assert sift_tools.volatility_problem() == "Volatility 3 2.27.0"
+
+
+def test_a_writable_basepath_whose_windows_folder_is_not_is_named(box):
+    # 2.27 saves a Windows kernel's symbols in <basepath>/windows/<pdb>/, and
+    # Volatility ships framework/symbols/windows: the basepath alone can be writable
+    base = box.tmp / "framework" / "symbols"
+    (base / "windows").mkdir(parents=True)
+    (base / "windows").chmod(0o555)
+    py = _python(box, "opt", "2.27.0", [_locked(box, "a"), base])
+    _vol(box, "vol", str(py))
+    assert sift_tools.volatility_problem() == "Volatility 3 2.27.0"
 
 
 def test_an_env_shebang_runs_the_python_on_path(box):
