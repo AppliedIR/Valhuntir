@@ -17,10 +17,10 @@ from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
 from vhir_cli.case_io import (
-    KEPT,
     CaseFileNotRegular,
     CaseFileTooLarge,
     get_case_dir,
+    kept,
     open_regular,
 )
 from vhir_cli.display import one_line
@@ -151,7 +151,8 @@ def cmd_exec(args, identity: dict) -> None:
 
 
 _WRITABLE = (
-    "Check the permissions of the case's audit/ folder and log, then run it again."
+    "Check that the case's disk has free space and that its audit/ folder and "
+    "log are writable, then run it again."
 )
 _LOG_SHAPES = (
     "not a regular file",
@@ -169,7 +170,7 @@ def _advice(e: OSError) -> str:
         "a symbolic link" if e.errno == errno.ELOOP else
         "another name links to it" if e.errno == errno.EMLINK else "")  # fmt: skip
     if isinstance(e, CaseFileTooLarge) or why in _LOG_SHAPES:
-        return KEPT
+        return kept(why)
     return _WRITABLE
 
 

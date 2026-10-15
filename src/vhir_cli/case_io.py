@@ -60,6 +60,14 @@ _NOT_REGULAR = {  # what the file is -> what the refusal says it is
 
 # An audit log is never to be changed: a refusal over one leaves it as it is
 KEPT = "The log was left unchanged: audit logs are evidence and stay as they are."
+# a log that isn't the one the case wrote (a FIFO, a folder, a link, a second
+# name): a next step that still leaves it as it is
+REPORT = "Keep the case as it is and report it to whoever manages this case."
+
+
+def kept(why: str = "") -> str:
+    """The step a refusal over an audit log gives: never a change to it."""
+    return f"{KEPT} {REPORT}" if why in _NOT_REGULAR else KEPT
 
 
 def is_audit_log(path) -> bool:
@@ -67,7 +75,7 @@ def is_audit_log(path) -> bool:
 
 
 def _not_regular(path, why: str = "not a regular file") -> CaseFileNotRegular:
-    step = KEPT if is_audit_log(path) else _BACK
+    step = kept(why) if is_audit_log(path) else _BACK
     return CaseFileNotRegular(f"{path} {_NOT_REGULAR[why]} {step}", why)
 
 

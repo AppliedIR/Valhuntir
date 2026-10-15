@@ -144,7 +144,7 @@ def verdict(d: Path, item_id: str = FID):
 ROUTES = ["ids", "interactive", "review"]
 
 
-def run(route, d, capsys, monkeypatch, reason: str | None = ""):
+def run(route, d, capsys, monkeypatch, reason: str | None = "", ids=(FID,)):
     """Approve the finding through one CLI path, the terminal answering
     `reason` (None: no terminal). Returns (what was printed before the
     passphrase, everything printed)."""
@@ -160,13 +160,13 @@ def run(route, d, capsys, monkeypatch, reason: str | None = ""):
     cfg = d.parent / "config.yaml"
     try:
         if route == "ids":
-            A._approve_specific(d, [FID], IDENT, cfg)
+            A._approve_specific(d, list(ids), IDENT, cfg)
         elif route == "interactive":
             A._interactive_review(d, IDENT, cfg)
         else:
             (d / "pending-reviews.json").write_text(json.dumps({"case_id": CASE_ID, "items": [
-                {"id": FID, "type": "finding", "action": "approve", "staged_by": "analyst1"}
-            ]}))  # fmt: skip
+                {"id": i, "type": "finding", "action": "approve", "staged_by": "analyst1"}
+                for i in ids]}))  # fmt: skip
             A._review_mode(d, IDENT, cfg)
     except SystemExit:
         pass
@@ -223,6 +223,21 @@ def _second_finding(d: Path) -> None:
     f2["content_hash"] = compute_content_hash(f2)
     (d / "findings.json").chmod(0o644)
     (d / "findings.json").write_text(json.dumps(fs + [f2], indent=2))
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_each_path_reads_the_audit_trail_once_to_show_and_once_to_sign(
+    case, capsys, monkeypatch, route
+):
+    """However many items: one read for what is shown, one under the lock."""
+    _second_finding(case)
+    made, real = [], approval_checks.audit_lines
+    monkeypatch.setattr(approval_checks, "audit_lines",
+                        lambda c, w=None: made.append(sorted(w)) or real(c, w))  # fmt: skip
+    run(route, case, capsys, monkeypatch, ids=(FID, "F-analyst1-002"))
+    got = {f["id"]: f["status"] for f in load_findings(case)}
+    assert got == {FID: "APPROVED", "F-analyst1-002": "APPROVED"}
+    assert made == [["sift-analyst1-001", "sift-analyst1-002"]] * 2
 
 
 def test_a_v4_line_after_v3_lines_verifies_with_both(case, monkeypatch):

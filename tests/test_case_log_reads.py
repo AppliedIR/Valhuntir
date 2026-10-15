@@ -35,7 +35,7 @@ BACK = "{back}"  # an audit log is left as it is; other case files are put back
 KEEP = "{keep}"
 BACKS = {
     "approval records": "Put the case's own file back, then try again.",
-    "audit entries": case_io.KEPT,
+    "audit entries": f"{case_io.KEPT} {case_io.REPORT}",
 }
 KEEPS = {
     "approval records": "It holds the case's approval records: keep a copy of it "

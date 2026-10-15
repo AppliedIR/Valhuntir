@@ -118,7 +118,88 @@ def test_lines_either_side_of_the_cap_read_alike(case, n):
     assert check(case, (G_ID, g))[0][:2] == ("failed", G_ID)
 
 
-# --- P1: the last top-level audit_id decides ---------------------------------
+# --- one read of the trail for a whole plan ----------------------------------
+
+
+def item_of(*chain):
+    return {"provenance_schema": 2, "artifacts": [{"provenance_chain": [
+        {"audit_id": i, "entry_sha256": sha(b)} for i, b in chain]}]}  # fmt: skip
+
+
+def got_of(result):
+    return sorted((i["status"], i["subject"], i["detail"]) for i in result["items"])
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    """The ids each read of the trail was made for."""
+    made, real = [], approval_checks.audit_lines
+    monkeypatch.setattr(approval_checks, "audit_lines",
+                        lambda c, w=None: made.append(set(w)) or real(c, w))  # fmt: skip
+    return made
+
+
+CHANGED = "the audit line changed since the chain was resolved"
+
+
+def test_a_plan_reads_the_trail_once_and_each_item_gets_what_it_gets_alone(case, reads):
+    fi(
+        case,
+        giant(b'{"audit_id": "' + A_ID.encode() + b'", ') + b"\n" + giant() + b"\n",
+    )
+    items = [item_of((A_ID, A)), item_of((B_ID, B)), item_of((G_ID, giant())),
+             item_of((B_ID, A)), {"provenance_schema": 1},
+             item_of((A_ID, A), (B_ID, B))]  # fmt: skip
+    alone = [got_of(approval_checks.check_item(case, i, "finding")) for i in items]
+    assert alone == [DUP_A, ok(B_ID), ok(G_ID), [("failed", B_ID, CHANGED)], [],
+                     DUP_A + ok(B_ID)]  # fmt: skip
+    reads.clear()
+    trail = approval_checks.PlanTrail(case, [(i, "finding") for i in items])
+    planned = [got_of(approval_checks.check_item(case, i, "finding", trail=trail))
+               for i in items]  # fmt: skip
+    assert planned == alone
+    assert reads == [{A_ID, B_ID, G_ID}] and trail.reads == 1
+
+
+def test_a_plan_with_nothing_chained_never_reads_the_trail(case, reads):
+    imported = {**item_of((A_ID, A)), "imported_from": {"case_id": "other"}}
+    items = [(item_of((A_ID, A)), "timeline"), (imported, "finding"),
+             ({"provenance_schema": 1}, "finding"), ({"artifacts": "x"}, "finding")]  # fmt: skip
+    trail = approval_checks.PlanTrail(case, items)
+    for item, kind in items:
+        approval_checks.check_item(case, item, kind, trail=trail)
+    assert reads == [] and trail.reads == 0
+
+
+def test_an_item_chaining_an_id_outside_the_plan_gets_a_read_of_its_own(case, reads):
+    trail = approval_checks.PlanTrail(case, [(item_of((A_ID, A)), "finding")])
+    for item in (item_of((A_ID, A)), item_of((B_ID, B)), item_of((A_ID, A))):
+        approval_checks.check_item(case, item, "finding", trail=trail)
+    assert reads == [{A_ID}, {B_ID}] and trail.reads == 2
+    got = approval_checks.check_item(case, item_of((B_ID, B)), "finding", trail=trail)
+    assert got_of(got) == ok(B_ID)
+
+
+def test_the_plans_longest_id_sets_how_far_a_giant_lines_values_are_read(case):
+    """A value longer than any wanted id is stepped over unread: what follows
+    it still decides. With a longer id in the plan the value is read, and a
+    bad escape in it drops the line, as json.loads drops it. Either way the
+    item fails closed (a duplicate) or is as json.loads counts it."""
+    bad = b'"\\x' + b"v" * 298 + b'"'  # 300 characters, an escape json refuses
+    g = giant(b'{"audit_id": ' + bad + b', "audit_id": "' + A_ID.encode() + b'", ')
+    fi(case, g + b"\n")
+    with pytest.raises(ValueError):
+        json.loads(g)
+    assert check(case, (A_ID, A)) == DUP_A  # its cap (12 x 17) is under 300
+    long_id = "sift-analyst1-" + "x" * 26  # 40: a cap of 480
+    trail = approval_checks.PlanTrail(
+        case, [(item_of((A_ID, A)), "finding"), (item_of((long_id, A)), "finding")]
+    )
+    got = approval_checks.check_item(case, item_of((A_ID, A)), "finding", trail=trail)
+    assert got_of(got) == ok(A_ID)
+
+
+# --- the last top-level audit_id decides -------------------------------------
 
 LAST = {
     "a string, then another": (b'"audit_id": "' + A_ID.encode() + b'", "audit_id": "x"', 0),
@@ -148,7 +229,7 @@ def test_the_last_audit_id_decides(case, ids, where):
     assert check(case, (A_ID, A)) == (DUP_A if counted else ok(A_ID))
 
 
-# --- P2: only an object at the top counts ------------------------------------
+# --- only an object at the top counts ----------------------------------------
 
 NOT_OBJECTS = {
     "an array": b'["audit_id", "' + A_ID.encode() + b'", "' + b"A" * PAD + b'"]',
@@ -166,7 +247,7 @@ def test_an_id_not_a_top_level_key_isnt_counted(case, shape):
     assert check(case, (A_ID, A)) == ok(A_ID)
 
 
-# --- P3: lines split as bytes.splitlines() splits ----------------------------
+# --- lines split as bytes.splitlines() splits --------------------------------
 
 
 def test_a_short_line_after_a_bare_cr_in_a_giant_raw_line_counts(case):
@@ -194,7 +275,7 @@ def test_a_short_line_crlf_over_a_chunk_boundary(case):
     assert check(case, (A_ID, A), (B_ID, B)) == ok(A_ID, B_ID)
 
 
-# --- P4: a line json.loads can't read is skipped, never refused --------------
+# --- a line json.loads can't read is skipped, never refused ------------------
 
 INVALID = {
     "cut in a string": giant(b'{"audit_id": "' + A_ID.encode() + b'", ', tail=b"")[:-1],
@@ -258,7 +339,7 @@ def test_a_short_line_too_deep_for_json_loads_is_counted_on_every_version(case):
     assert check(case, (A_ID, A)) == DUP_A
 
 
-# --- P5: keys and values decode their escapes in full ------------------------
+# --- keys and values decode their escapes in full ----------------------------
 
 ASTRAL = "\U0001f600" * 4  # each written 😀: 12 characters
 
@@ -313,6 +394,34 @@ def test_an_escape_split_over_a_chunk_boundary(case):
     )
     fi(case, g + b"\n")
     assert check(case, (A_ID, A)) == DUP_A
+
+
+# --- below the top level: strings and brackets stepped over whole -----------
+
+UNIT = (b'{"p": "a}]\\"[{", "h": ["\\\\", "x\\u005d{"], "audit_id": "'
+        + B_ID.encode() + b'"}, ')  # fmt: skip
+DEEP = (b'{"files": [' + UNIT + b'{"q": {"r": "\\"}"}}], "audit_id": "' + A_ID.encode()
+        + b'", "after": [[], {"s": "]"}]}')  # fmt: skip
+
+
+def test_a_line_is_skimmed_alike_wherever_a_piece_ends():
+    """Every cut: in a string below the top level, on its backslash, between
+    brackets, in the id."""
+    want = (json.loads(DEEP)["audit_id"], sha(DEEP))
+    for cut in range(len(DEEP) + 1):
+        skim = approval_checks._Skim(len(A_ID) * 12)
+        skim.feed(DEEP[:cut])
+        skim.feed(DEEP[cut:])
+        assert skim.end() == want, cut
+
+
+def test_strings_below_the_top_level_are_stepped_over_in_a_giant_line(case):
+    """Brackets, quotes and audit_id keys inside nested values don't count."""
+    g = (b'{"files": [' + UNIT * (PAD // len(UNIT) + 1) + b'{}], "audit_id": "'
+         + A_ID.encode() + b'"}')  # fmt: skip
+    assert len(g) > LINE_CAP and json.loads(g)["audit_id"] == A_ID
+    fi(case, g + b"\n")
+    assert check(case, (A_ID, A), (B_ID, B)) == DUP_A + ok(B_ID)
 
 
 # --- size and memory ---------------------------------------------------------
@@ -372,7 +481,7 @@ def test_other_readers_keep_the_file_budget(case):
     assert check(case, (A_ID, A)) == ok(A_ID)
 
 
-# --- item 3: no refusal tells the user to change an audit log ---------------
+# --- no refusal tells the user to change an audit log ----------------------
 
 # advice that would change the log: move, edit, delete, replace or put back
 _TAMPER = re.compile(
@@ -409,11 +518,19 @@ def test_no_refusal_over_an_audit_log_says_to_change_it(case):
     said = {k: _TAMPER.findall(v) for k, v in got.items()}
     assert {k: v for k, v in said.items() if v} == {}, got
     for k, text in got.items():
-        if "permissions" in k:
+        if k == "exec: permissions":
+            assert text == execute._WRITABLE and "are writable" in text, (k, text)
+        elif "permissions" in k:
             assert "Check the permissions of" in text, (k, text)
         else:
             assert "audit logs are evidence and stay as they are" in text, (k, text)
     assert "Nothing was signed" in got["approval: not regular"]
+    # a log that isn't the case's own: a next step that leaves it as it is
+    shapes = [k for k in got if k.startswith("not regular:") or k in (
+        "exec: link", "exec: second name") or k[6:] in case_io._NOT_REGULAR]  # fmt: skip
+    assert len(shapes) == 2 * len(case_io._NOT_REGULAR) + 2
+    for k in got:
+        assert got[k].endswith(case_io.REPORT) == (k in shapes), (k, got[k])
     assert got["approval: permissions"].endswith(
         "Check the permissions of audit/x.jsonl, audit/, then approve again."
     )

@@ -71,7 +71,7 @@ def test_a_log_that_isnt_a_regular_file_is_named_and_skipped(case, capsys, bad, 
                 "under its own name.")  # fmt: skip
         return (
             result,
-            f"Warning: could not read {path}: {path} {what} {case_io.KEPT}"
+            f"Warning: could not read {path}: {path} {what} {case_io.KEPT} {case_io.REPORT}"
             in err.getvalue(),
             "Couldn't read audit/wintools-mcp.jsonl (" in out.getvalue(),
         )

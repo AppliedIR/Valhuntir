@@ -57,14 +57,16 @@ _failed_hashes: dict[
 
 
 def check_item(
-    case_dir, item: dict, kind: str, *, client=None, background=False, note=None
-) -> dict:
+    case_dir, item: dict, kind: str, *, client=None, background=False, note=None,
+    trail: PlanTrail | None = None,
+) -> dict:  # fmt: skip
     """``{result, items}`` (and ``detail`` when nothing applies) for approving
     ``item`` (``kind``: finding, timeline or ioc). ``client``: an OpenSearch
     client for DOC, else the installed one, if any. ``background``: a root
     over the inline limit is hashed in a background thread (and is not yet
     verified meanwhile) rather than now; ``note(path, size)`` is called
-    before a root that size is hashed now."""
+    before a root that size is hashed now. ``trail``: the plan's one read of
+    the audit trail (`PlanTrail`), else the trail is read for this item."""
     case_dir = Path(case_dir)
     imported = item.get("imported_from")
     if isinstance(imported, dict):
@@ -89,22 +91,12 @@ def check_item(
     for key in sorted(roots):
         found.append(_root(case_dir, roots[key], background, note))
 
-    links = [
-        link
-        for a in artifacts
-        for link in a.get("provenance_chain") or []
-        if isinstance(link, dict)
-    ]
-    entries = sorted(
-        {
-            (str(x["audit_id"]), str(x.get("entry_sha256") or ""))
-            for x in links
-            if x.get("audit_id")
-        }
-    )
+    links = _links(artifacts)
+    entries = _entries(links)
     if entries:
-        trail = audit_lines(case_dir, {audit_id for audit_id, _ in entries})
-        found += [_entry(trail, audit_id, sha) for audit_id, sha in entries]
+        ids = {audit_id for audit_id, _ in entries}
+        lines = trail.lines(ids) if trail else audit_lines(case_dir, ids)
+        found += [_entry(lines, audit_id, sha) for audit_id, sha in entries]
 
     docs = sorted(
         {
@@ -121,6 +113,64 @@ def check_item(
     found.sort(key=lambda i: (i["check"], i["subject"], i["status"], i["detail"]))
     failed = any(i["status"] == "failed" for i in found)
     return {"result": "failed" if failed else "ok", "items": found}
+
+
+def _links(artifacts: list[dict]) -> list[dict]:
+    return [
+        link
+        for a in artifacts
+        for link in a.get("provenance_chain") or []
+        if isinstance(link, dict)
+    ]
+
+
+def _entries(links: list[dict]) -> list[tuple[str, str]]:
+    """(audit id, recorded SHA-256) of each chain link ENTRY checks."""
+    return sorted(
+        {
+            (str(x["audit_id"]), str(x.get("entry_sha256") or ""))
+            for x in links
+            if x.get("audit_id")
+        }
+    )
+
+
+def chained_ids(item: dict, kind: str) -> set[str]:
+    """The audit ids `check_item` looks up for `item`: none when it has
+    nothing to check."""
+    if isinstance(item.get("imported_from"), dict):
+        return set()
+    if kind != "finding" or item.get("provenance_schema") != 2:
+        return set()
+    artifacts = [a for a in item.get("artifacts") or [] if isinstance(a, dict)]
+    return {audit_id for audit_id, _ in _entries(_links(artifacts))}
+
+
+class PlanTrail:
+    """The audit trail read once for every item in a plan: the first item
+    that needs it reads it for the ids all of `items` ((item, kind) pairs)
+    chain, and each later one uses that read. Lines are counted per id as a
+    read for that item alone counts them, with one difference: a line over
+    LINE_CAP has its values read as far as the plan's longest id needs, so
+    one invalid only past the item's own limit is skipped, as json.loads
+    skips it. An item whose ids weren't among them (it was edited since)
+    gets a read of its own; one with no ids never reads the trail, as
+    before."""
+
+    def __init__(self, case_dir, items):
+        self.case_dir = Path(case_dir)
+        self.ids: set[str] = set().union(*(chained_ids(i, k) for i, k in items))
+        self.read: dict[str, list[str]] | None = None
+        self.reads = 0  # how many times the trail was read
+
+    def lines(self, ids: set[str]) -> dict[str, list[str]]:
+        if not ids <= self.ids:
+            self.reads += 1
+            return audit_lines(self.case_dir, ids)
+        if self.read is None:
+            self.reads += 1
+            self.read = audit_lines(self.case_dir, self.ids)
+        return self.read
 
 
 def failed_items(checks: dict | None) -> list[dict]:
@@ -436,6 +486,9 @@ def _line(line: bytes, cap: int):
 _STR = re.compile(r'[^"\\]*(?:\\[\s\S][^"\\]*)*')  # a string's text up to its end
 _TOP = re.compile(r'[{}\[\]",:]')  # what matters in the top-level object
 _DEEP = re.compile(r'[{}\[\]"]')  # what matters below it
+# below the top level: everything up to the next bracket, whole strings
+# included, in one step (a string a piece cuts off is left to _DEEP)
+_DEEP_RUN = re.compile(r'(?:[^"{}\[\]]+|"[^"\\]*(?:\\[\s\S][^"\\]*)*")*')
 _NOT_WS = re.compile(r"[^ \t\n\r]")  # json's whitespace
 _KEY_CAP = 48  # "audit_id" with every character escaped as \uXXXX
 _NOT_STR = object()  # an audit_id whose value isn't a string
@@ -571,6 +624,8 @@ class _Skim:
                     self.kind, i = "value", m.end()
                     continue
                 self.found, i = _NOT_STR, m.start()
+            if self.depth > 1:
+                i = _DEEP_RUN.match(t, i).end()
             m = (_TOP if self.depth == 1 else _DEEP).search(t, i)
             if m is None:
                 return
