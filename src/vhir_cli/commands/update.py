@@ -1185,7 +1185,7 @@ def cmd_update(args, identity: dict) -> None:
         print("  Running connectivity test...")
         from vhir_cli.commands.setup import _run_connectivity_test
 
-        _run_connectivity_test()
+        _run_connectivity_test(sift_tools=False)
 
     # Step 9: Summary
     hashes = manifest.get("git", {})
@@ -1199,6 +1199,11 @@ def cmd_update(args, identity: dict) -> None:
         from vhir_cli.gateway import RECONNECT_HINT
 
         print(f"  {RECONNECT_HINT}")
+
+    # Last, so it isn't scrolled away: SIFT tools too old for Valhuntir
+    from vhir_cli.commands.setup import _print_sift_tools_warning
+
+    _print_sift_tools_warning()
 
 
 def _print_share_rejoin_notice() -> None:

@@ -41,8 +41,24 @@ def cmd_setup(args, identity: dict) -> None:
     sys.exit(1)
 
 
-def _run_connectivity_test() -> None:
-    """Test connectivity to the gateway and all MCP backends."""
+def _print_sift_tools_warning() -> None:
+    """Print the out-of-date SIFT tools warning, if there is one."""
+    from vhir_cli.sift_tools import warning
+
+    try:
+        text = warning()
+    except Exception as e:  # noqa: BLE001 — the check itself couldn't run
+        print(f"\n  SIFT tools: couldn't check ({type(e).__name__}: {e})")
+        return
+    if text:
+        print("\n  WARNING: " + text)
+
+
+def _run_connectivity_test(sift_tools: bool = True) -> None:
+    """Test connectivity to the gateway and all MCP backends.
+
+    `sift_tools`: say which SIFT tools are out of date (vhir update says it at
+    its own end instead)."""
     import json
     import re
     import shutil
@@ -230,6 +246,10 @@ def _run_connectivity_test() -> None:
                     print(f"    {line}")
         else:
             print("\n  OpenSearch snapshots: OK (vhir backup can save the indices)")
+
+    # --- SIFT tools Valhuntir runs (a warning only) ---
+    if sift_tools:
+        _print_sift_tools_warning()
 
     # Resolve gateway URL
     from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
