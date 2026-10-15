@@ -133,3 +133,13 @@ def _isolate_case_paths(tmp_path_factory, monkeypatch):
         "_paths_file",
         lambda: spare if Path.home() == _HOME else real(),
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_terminal_for_join_questions(monkeypatch):
+    """join-code asks on /dev/tty when stdout is captured; pytest captures
+    it, so a run from a terminal would wait there. No test may: they get
+    the no-terminal answers unless they set their own."""
+    from vhir_cli.commands import join
+
+    monkeypatch.setattr(join, "TTY", "/nonexistent/tty", raising=False)

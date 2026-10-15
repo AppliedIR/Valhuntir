@@ -400,6 +400,35 @@ def _get_wintools_credentials() -> tuple[str | None, str | None]:
     return None, None
 
 
+TTY = "/dev/tty"
+
+
+def _ask(question: str, no_terminal: str | None) -> str | None:
+    """Ask a question on the terminal, even when stdout is captured.
+
+    setup-sift.sh captures join-code's output, so a question printed to
+    stdout is never seen: when stdout isn't a terminal, ask on /dev/tty.
+    With no terminal to ask on, return ``no_terminal``, the safe answer
+    (None for a question that has none).
+    """
+    if sys.stdout.isatty():
+        return input(question)
+    line = ""
+    try:
+        with open(TTY) as tty_in, open(TTY, "w") as tty_out:
+            tty_out.write(question)
+            tty_out.flush()
+            line = tty_in.readline()
+    except OSError:
+        pass
+    if line:
+        return line.rstrip("\n")
+    took = "no answer" if no_terminal is None else f"answered {no_terminal!r}"
+    asked = question.strip().splitlines()[-1]
+    print(f"No terminal to ask {asked!r}: {took}", file=sys.stderr)
+    return no_terminal
+
+
 def _ensure_remote_binding() -> None:
     """Check if gateway is localhost-only and offer to rebind for remote access.
 
@@ -556,6 +585,11 @@ def _setup_firewall(wintools_ip: str) -> None:
         text=True,
         timeout=10,
     )
+    if result.returncode != 0:  # sudo refused, say: whether UFW is active is unknown
+        raise RuntimeError(
+            f"'sudo ufw status' failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or 'no output'}"
+        )
     if "Status: active" not in result.stdout:
         print(
             "UFW is not active — skipping firewall rules. "
@@ -657,44 +691,17 @@ SHARE_NAME = (
     "vhir-cases"  # vhir's own section; SIFT's stock [cases] and [mnt] stay as shipped
 )
 SMB_CONF_PATH = "/etc/samba/smb.conf.d/vhir-cases.conf"
-NSSWITCH = "/etc/nsswitch.conf"
-_LOCAL_SOURCES = frozenset(
-    {"files", "compat", "systemd"}
-)  # every account they hold is listed
 
 
-def _nss_sources(database: str, path: str = NSSWITCH) -> list[str]:
-    """The sources nsswitch reads `database` from (glibc's local default
-    when the file or the line is missing)."""
-    try:
-        lines = Path(path).read_text().splitlines()
-    except FileNotFoundError:
-        return ["files"]
-    for line in lines:
-        key, _, rest = line.split("#", 1)[0].partition(":")
-        if key.strip() == database:
-            return [w for w in rest.split() if not w.startswith("[")] or ["files"]
-    return ["files"]
-
-
-def private_primary_group(username: str, nsswitch: str = NSSWITCH) -> str:
+def private_primary_group(username: str) -> str:
     """The name of `username`'s primary group, which the share writes files
-    with: only when no other account can be in it. Raises RuntimeError when
-    another account can, or when not every account can be listed to check."""
+    with: only when no other account NSS returns can be in it. Raises
+    RuntimeError when another can. The SIFT box is trusted, so accounts from
+    non-local sources (sss, ldap, ...) needn't all be listable: only what NSS
+    returns is checked."""
     import grp
     import pwd
 
-    for database in ("passwd", "group"):
-        remote = [
-            x for x in _nss_sources(database, nsswitch) if x not in _LOCAL_SOURCES
-        ]
-        if remote:
-            raise RuntimeError(
-                f"Accounts also come from {', '.join(remote)} ({nsswitch}, {database}), "
-                "which can't all be listed, so join can't check that the share's group "
-                f"is {username}'s alone. Give {username} a local primary group of its own "
-                "and list only local sources, or set up the share by hand."
-            )
     group = grp.getgrgid(pwd.getpwnam(username).pw_gid)
     others = set(group.gr_mem) | {
         p.pw_name for p in pwd.getpwall() if p.pw_gid == group.gr_gid
@@ -798,37 +805,49 @@ def share_needs_rejoin() -> bool:
     )
 
 
-def _setup_samba_share(join_code: str) -> str:
-    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP."""
+def _mark_case_for_kept_share() -> None:
+    active = _active_case_dir()
+    if active is not None:  # the kept share still points at it: mark it
+        warning = mark_case(active)
+        if warning:
+            print(
+                f"Warning: {warning}; wintools writes nothing to the case.",
+                file=sys.stderr,
+            )
+
+
+def _setup_samba_share(join_code: str) -> str | None:
+    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP.
+    A blank Windows IP keeps a configured share's IP (a share under an old
+    name still moves), and with none means no Windows machine: None, no share."""
     import subprocess
 
     # Idempotency: skip if already configured, but every join code still
     # sets the password Windows will derive from it
     samba_yaml = Path.home() / ".vhir" / "samba.yaml"
-    keep_ip = None
+    keep_ip = reconfigure_ip = moved_ip = None
     if samba_yaml.is_file():
         try:
             doc = yaml.safe_load(samba_yaml.read_text()) or {}
             if doc.get("share_name") and doc.get("wintools_ip"):
-                print(f"Samba share already configured for {doc['wintools_ip']}")
+                configured = f"Samba share already configured for {doc['wintools_ip']}"
                 if doc["share_name"] != SHARE_NAME:
+                    print(configured)
                     print(
                         f"The share moves from [{doc['share_name']}] to [{SHARE_NAME}]."
                     )
-                elif input("Reconfigure? [y/N] ").strip().lower() not in ("y", "yes"):
-                    keep_ip = doc["wintools_ip"]
+                    moved_ip = str(doc["wintools_ip"])
+                else:
+                    answer = _ask(f"{configured}\nReconfigure? [y/N] ", "n")
+                    if answer.strip().lower() not in ("y", "yes"):
+                        keep_ip = doc["wintools_ip"]
+                    else:
+                        reconfigure_ip = doc["wintools_ip"]
         except (yaml.YAMLError, OSError):
             pass
     if keep_ip:
         _set_smb_password(join_code)
-        active = _active_case_dir()
-        if active is not None:  # the kept share still points at it: mark it
-            warning = mark_case(active)
-            if warning:
-                print(
-                    f"Warning: {warning}; wintools writes nothing to the case.",
-                    file=sys.stderr,
-                )
+        _mark_case_for_kept_share()
         return keep_ip
     username = getpass.getuser()
     group = private_primary_group(username)  # before anything is installed or changed
@@ -902,7 +921,14 @@ def _setup_samba_share(join_code: str) -> str:
     # Prompt for wintools IP
     import ipaddress
 
-    wintools_ip = input("Enter the Windows machine's IP address: ").strip()
+    wintools_ip = _ask("Enter the Windows machine's IP address: ", "").strip()
+    if not wintools_ip:
+        if reconfigure_ip:  # the share stays as it is, as with "n"
+            _mark_case_for_kept_share()
+            return reconfigure_ip
+        if not moved_ip:
+            return None
+        wintools_ip = moved_ip  # the share moves with the IP it had
     try:
         addr = ipaddress.IPv4Address(wintools_ip)
     except (ipaddress.AddressValueError, ValueError) as e:
@@ -1043,6 +1069,25 @@ def _setup_samba_share(join_code: str) -> str:
     return wintools_ip
 
 
+def _stop_without_code(step: str, error: Exception, hint: str = "") -> None:
+    """A setup step failed: Windows can't use the share as it stands, so the
+    code is never shown. The gateway keeps only its hash, and it expires
+    unused."""
+    print(f"\nError: {step} failed: {error}", file=sys.stderr)
+    print(
+        "No join code was shown: the Windows installer can't use this SIFT "
+        "box until this step works.",
+        file=sys.stderr,
+    )
+    print(
+        "Fix the cause above, then run 'vhir setup join-code' again.",
+        file=sys.stderr,
+    )
+    if hint:
+        print(hint, file=sys.stderr)
+    sys.exit(1)
+
+
 def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     """Samba setup, firewall, and display — called after join code generation.
     A code bound to an examiner name joins only that examiner (never a
@@ -1070,22 +1115,20 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
         )
         return
 
-    wintools_ip = None
     try:
         wintools_ip = _setup_samba_share(join_code)
     except Exception as e:
-        print(f"\nWarning: Samba share setup failed: {e}", file=sys.stderr)
-        print("Complete later with 'vhir setup join-code'", file=sys.stderr)
+        _stop_without_code("Samba share setup", e)
 
     if wintools_ip:
         try:
             _setup_firewall(wintools_ip)
         except Exception as e:
-            print(f"\nWarning: Firewall setup failed: {e}", file=sys.stderr)
-            print(
-                "  Add rules manually: sudo ufw allow from "
-                f"{wintools_ip} to any port 4508,445",
-                file=sys.stderr,
+            _stop_without_code(
+                "Firewall setup",
+                e,
+                "  Or add the rules by hand: sudo ufw allow from "
+                f"{wintools_ip} to any port 4508,445 proto tcp",
             )
 
     from urllib.parse import urlparse
@@ -1094,19 +1137,31 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     gw_port = urlparse(gw_url).port or 4508
 
     print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
-    print("\nOn Windows, run:")
+    if not wintools_ip:
+        print(
+            "\nOn each examiner machine: run 'vhir setup client', then /mcp in Claude Code"
+        )
+        print("No Windows machine: run 'vhir setup join-code' again when you add one.")
+        return
     print(
-        f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host} -GatewayPort {gw_port}"
+        "\nOn Windows, in PowerShell as Administrator, download the current "
+        "installer and run it (one line):"
     )
-    print("  Unattended: add -NonInteractive -AcknowledgeSecurityHole")
+    print(
+        "  cd $env:TEMP; Invoke-WebRequest "
+        "https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip "
+        "-OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip "
+        "-DestinationPath . -Force; if ($?) { "
+        f".\\wintools-mcp-main\\scripts\\setup-windows.ps1 -JoinCode {join_code} "
+        f"-GatewayHost {sift_host} -GatewayPort {gw_port} }} }}"
+    )
+    print(
+        "  Unattended: add -NonInteractive -AcknowledgeSecurityHole after the port number"
+    )
     print(
         "\nWhen the installer has finished: run 'vhir setup client' on each "
         "examiner machine, then /mcp in Claude Code"
     )
-    print("\nOr if the installer is already running, enter when prompted:")
-    print(f"  Join code:  {join_code}")
-    print(f"  SIFT IP:    {sift_host}")
-    print(f"  Port:       {gw_port}")
 
 
 def _wintools_ssl_context():
@@ -1191,7 +1246,8 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
     # installer derives the same password from the join code.
     print(
         f"  Warning: wintools-mcp didn't confirm the new SMB credentials ({last}). "
-        "Run the Windows installer with this join code to give them to it.",
+        "The Windows installer gives them to it when it runs with the join code "
+        "'vhir setup join-code' shows.",
         file=sys.stderr,
     )
 
@@ -1386,25 +1442,29 @@ def _ensure_static_ip() -> str | None:
                 # Verify the interface actually has this IP
                 actual_ip = _detect_current_ip()
                 if actual_ip == existing_ip:
-                    print(f"Static IP configured and active: {existing_ip}")
-                    answer = input("Reconfigure? [y/N] ").strip().lower()
+                    answer = _ask(
+                        f"Static IP configured and active: {existing_ip}\n"
+                        "Reconfigure? [y/N] ",
+                        "n",
+                    )
+                    answer = answer.strip().lower()
                     if answer not in ("y", "yes"):
                         return existing_ip
                 else:
-                    print(
+                    answer = _ask(
                         f"Warning: network.yaml says {existing_ip} "
-                        f"but interface has {actual_ip or 'unknown'}"
+                        f"but interface has {actual_ip or 'unknown'}\n"
+                        "The static IP was stored but never applied to the interface.\n"
+                        f"Apply {existing_ip} now? [Y/n] ",
+                        "n",
                     )
-                    print(
-                        "The static IP was stored but never applied to the interface."
-                    )
-                    answer = input(f"Apply {existing_ip} now? [Y/n] ").strip().lower()
+                    answer = answer.strip().lower()
                     if answer in ("", "y", "yes"):
                         ip = existing_ip
                         # Fall through to apply logic below
                     else:
-                        answer2 = input(
-                            "Enter a different IP, or blank to skip: "
+                        answer2 = _ask(
+                            "Enter a different IP, or blank to skip: ", ""
                         ).strip()
                         if answer2:
                             ip = answer2
@@ -1417,20 +1477,23 @@ def _ensure_static_ip() -> str | None:
 
     detected_ip = _detect_current_ip() or ""
 
-    print("Remote machines (Windows workstation, LLM clients) connect to this")
-    print(
-        "SIFT workstation by IP. A static IP ensures they can reconnect after reboot."
+    intro = (  # shown with the first question only
+        "Remote machines (Windows workstation, LLM clients) connect to this\n"
+        "SIFT workstation by IP. A static IP ensures they can reconnect after reboot.\n"
+        "\n"
     )
-    print()
     while True:
-        ip = input(f"Enter static IP for this machine [{detected_ip}]: ").strip()
+        ip = _ask(f"{intro}Enter static IP for this machine [{detected_ip}]: ", None)
+        intro = ""
+        if ip is None:  # no terminal: no static IP, no netplan change
+            return None
+        ip = ip.strip()
         if not ip:
             ip = detected_ip
         if not ip:
             print("No IP provided, skipping static IP configuration.", file=sys.stderr)
             return None
-        print(f"\n  Static IP: {ip}")
-        confirm = input("  Correct? [Y/n] ").strip().lower()
+        confirm = _ask(f"\n  Static IP: {ip}\n  Correct? [Y/n] ", "n").strip().lower()
         if confirm in ("", "y", "yes"):
             break
 
@@ -1553,10 +1616,13 @@ def _apply_static_ip(ip: str, network_yaml: Path) -> str | None:
         except (yaml.YAMLError, OSError):
             pass
     if conflicting:
-        print(f"Warning: existing netplan configs for {iface}:")
-        for c in conflicting:
-            print(f"  {c}")
-        answer = input("Override with Valhuntir static config? [y/N] ").strip().lower()
+        listed = "".join(f"  {c}\n" for c in conflicting)
+        answer = _ask(
+            f"Warning: existing netplan configs for {iface}:\n{listed}"
+            "Override with Valhuntir static config? [y/N] ",
+            "n",
+        )
+        answer = answer.strip().lower()
         if answer not in ("y", "yes"):
             print("Skipped static IP configuration.", file=sys.stderr)
             return None

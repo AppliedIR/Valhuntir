@@ -699,6 +699,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Install GPU (CUDA) PyTorch for knowledge search (~5.4 GB)",
     )
+    # Set by update itself, when it runs Steps 4.5-9 from the code it pulled
+    p_update.add_argument("--after-pull", default=None, help=argparse.SUPPRESS)
 
     # portal / dashboard
     sub.add_parser("portal", help="Open the Examiner Portal in your browser")
@@ -720,6 +722,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _warn_if_update_incomplete() -> None:
+    """Warn when the installed code is newer than the last update that ran to
+    the end (an older vhir update ran its own steps after pulling this code)."""
+    import json
+
+    vhir = Path.home() / ".vhir"
+    try:
+        manifest = json.loads((vhir / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(manifest, dict):
+        return
+    try:
+        state = json.loads((vhir / "update-state.json").read_text())
+    except (OSError, ValueError):
+        state = None
+    installed_at = str(manifest.get("installed_at", ""))
+    if not isinstance(state, dict) or str(state.get("completed_at", "")) < installed_at:
+        state = None  # setup-sift.sh ran since
+    git = manifest.get("git")
+    commit = git.get("vhir", "") if isinstance(git, dict) else ""
+    if state is not None:
+        stale = (
+            state.get("version") != __version__ or state.get("vhir_commit") != commit
+        )
+    else:
+        # No record that counts: an updater before 0.6.4.1 wrote updated_at
+        # and no record. (Every updater 0.6.0-0.6.4 writes updated_at.)
+        stale = "updated_at" in manifest
+    if stale:
+        bar = "=" * 72
+        print(
+            f"{bar}\n"
+            "  UPDATE INCOMPLETE: run `vhir update` again\n"
+            f"  vhir {__version__} is installed, but the last update did not finish\n"
+            "  with it: the forensic controls, the manifest and the gateway may be\n"
+            "  from the older release.\n"
+            f"{bar}",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     parser = build_parser()
     argcomplete.autocomplete(parser)
@@ -728,6 +772,11 @@ def main() -> None:
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # config is skipped too: setup-sift.sh runs `vhir config` mid-install,
+    # before it rewrites the manifest, so the check would fire during a setup.
+    if args.command not in ("update", "config"):
+        _warn_if_update_incomplete()
 
     # Identity check on every command
     flag_override = getattr(args, "examiner_override", None)

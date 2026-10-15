@@ -508,7 +508,7 @@ def test_no_restart_says_what_the_old_gateway_still_does():
 
     from vhir_cli.commands import update
 
-    src = inspect.getsource(update.cmd_update)
+    src = inspect.getsource(update._finish_update)
     assert "must wait for the gateway restart" in src
     assert "gateway applies every staged entry as the committer's decision" in src
 

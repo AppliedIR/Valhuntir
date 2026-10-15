@@ -491,7 +491,6 @@ def test_yes_removes_them_after_the_final_check_and_cleans_the_cache(box, capsys
     # that links its CPU torch there (uv --link-mode symlink).
     assert calls[clean][3:] == NAMES and "--force" not in calls[clean]
     assert "check none are yours" in out
-    assert any(c[:3] == ["uv", "pip", "check"] for c in calls[clean:])
 
 
 @pytest.mark.parametrize("answer", ["", "n", "no"])
@@ -509,11 +508,15 @@ def test_no_terminal_or_the_gpu_build_never_offers(box, kw):
     assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
 
 
-def test_a_removal_that_did_not_finish_prints_how_to_finish(box, capsys):
-    _, exited = _cleanup(box, answers=["y"], after_check_rc=1)
+def test_after_yes_no_dependency_check_says_the_removal_did_not_finish(box, capsys):
+    """A failing `uv pip check` reports packages that were incompatible before
+    the removal; it says nothing about the removal, so none runs after it."""
+    calls, exited = _cleanup(box, answers=["y"], after_check_rc=1)
     assert exited is None
-    err = capsys.readouterr().err
-    assert "Finish it: uv pip uninstall" in err and "nvidia-cudnn-cu12" in err
+    uninstall = _index(calls, ["uv", "pip", "uninstall"])
+    assert not any(c[:3] == ["uv", "pip", "check"] for c in calls[uninstall:])
+    out, err = capsys.readouterr()
+    assert "didn't finish" not in out + err and "Finish it" not in out + err
 
 
 # --- Nothing in the new steps stops an update it shouldn't --------------------
