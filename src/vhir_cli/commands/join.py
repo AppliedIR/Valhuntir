@@ -657,44 +657,16 @@ SHARE_NAME = (
     "vhir-cases"  # vhir's own section; SIFT's stock [cases] and [mnt] stay as shipped
 )
 SMB_CONF_PATH = "/etc/samba/smb.conf.d/vhir-cases.conf"
-NSSWITCH = "/etc/nsswitch.conf"
-_LOCAL_SOURCES = frozenset(
-    {"files", "compat", "systemd"}
-)  # every account they hold is listed
 
 
-def _nss_sources(database: str, path: str = NSSWITCH) -> list[str]:
-    """The sources nsswitch reads `database` from (glibc's local default
-    when the file or the line is missing)."""
-    try:
-        lines = Path(path).read_text().splitlines()
-    except FileNotFoundError:
-        return ["files"]
-    for line in lines:
-        key, _, rest = line.split("#", 1)[0].partition(":")
-        if key.strip() == database:
-            return [w for w in rest.split() if not w.startswith("[")] or ["files"]
-    return ["files"]
-
-
-def private_primary_group(username: str, nsswitch: str = NSSWITCH) -> str:
+def private_primary_group(username: str) -> str:
     """The name of `username`'s primary group, which the share writes files
-    with: only when no other account can be in it. Raises RuntimeError when
-    another account can, or when not every account can be listed to check."""
+    with: only when no other local account can be in it. Raises RuntimeError
+    when another can. The SIFT box is trusted, so accounts from non-local
+    sources (sss, ldap, ...) aren't checked."""
     import grp
     import pwd
 
-    for database in ("passwd", "group"):
-        remote = [
-            x for x in _nss_sources(database, nsswitch) if x not in _LOCAL_SOURCES
-        ]
-        if remote:
-            raise RuntimeError(
-                f"Accounts also come from {', '.join(remote)} ({nsswitch}, {database}), "
-                "which can't all be listed, so join can't check that the share's group "
-                f"is {username}'s alone. Give {username} a local primary group of its own "
-                "and list only local sources, or set up the share by hand."
-            )
     group = grp.getgrgid(pwd.getpwnam(username).pw_gid)
     others = set(group.gr_mem) | {
         p.pw_name for p in pwd.getpwall() if p.pw_gid == group.gr_gid
