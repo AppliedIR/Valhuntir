@@ -17,6 +17,7 @@ from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
 from vhir_cli.case_io import (
+    KEPT,
     CaseFileNotRegular,
     CaseFileTooLarge,
     get_case_dir,
@@ -149,28 +150,27 @@ def cmd_exec(args, identity: dict) -> None:
     print(f"Audit ID: {audit_id}")
 
 
-_WRITABLE = "Make the case's audit/ folder writable, then run it again."
-_PUT_BACK = "Move it aside and put the case's own log back as a regular file, then run it again."
-_ADVICE = {  # what the log is -> the step that recovers
-    "not a regular file": _PUT_BACK,
-    "a folder": _PUT_BACK,
-    "a symbolic link": "Put the case's own audit/ folder and log back in place of the link, "
-    "then run it again.",
-    "another name links to it": "Replace it with a copy of its own, not a second name for "
-    "another file, then run it again.",
-}
+_WRITABLE = (
+    "Check the permissions of the case's audit/ folder and log, then run it again."
+)
+_LOG_SHAPES = (
+    "not a regular file",
+    "a folder",
+    "a symbolic link",
+    "another name links to it",
+)
 
 
 def _advice(e: OSError) -> str:
-    """The step for the log's shape; for a log too large, keep a copy of what
-    it holds first; for anything else (a permission, a full disk), the folder's."""
-    if isinstance(e, CaseFileTooLarge):
-        return ("It holds the case's vhir exec audit entries: keep a copy of it before "
-                "you move it out of the case, then run it again.")  # fmt: skip
+    """For a log too large, or one that isn't the case's own regular file: it
+    was left as it is (an audit log is evidence); for anything else (a
+    permission, a full disk), check the folder."""
     why = e.why if isinstance(e, CaseFileNotRegular) else (
         "a symbolic link" if e.errno == errno.ELOOP else
         "another name links to it" if e.errno == errno.EMLINK else "")  # fmt: skip
-    return _ADVICE.get(why, _WRITABLE)
+    if isinstance(e, CaseFileTooLarge) or why in _LOG_SHAPES:
+        return KEPT
+    return _WRITABLE
 
 
 def _why(log_file: Path, e: OSError) -> str:

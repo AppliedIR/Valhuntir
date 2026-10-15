@@ -15,6 +15,7 @@ import io
 import json
 import os
 import pickle
+import re
 import resource
 import select
 import signal
@@ -1129,11 +1130,14 @@ _NON_ROOT_POSIX = pytest.mark.skipif(
 
 
 def M(why: str) -> str:
+    denied = re.findall(r"(?:^|, )([^,(]+) \(Permission denied\)", why)
     return (
         f"The approval checks couldn't read {why}: an entry there could change their "
-        "result. Nothing was signed. Make each log a readable regular file, then "
-        "approve again."
-    )
+        "result. Nothing was signed, and nothing in audit/ was changed: audit logs "
+        "are evidence and stay as they are."
+        + (f" Check the permissions of {', '.join(denied)}, then approve again."
+           if denied else "")
+    )  # fmt: skip
 
 
 def _within(fn, timeout=8.0):

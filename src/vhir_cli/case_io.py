@@ -58,8 +58,17 @@ _NOT_REGULAR = {  # what the file is -> what the refusal says it is
 }
 
 
+# An audit log is never to be changed: a refusal over one leaves it as it is
+KEPT = "The log was left unchanged: audit logs are evidence and stay as they are."
+
+
+def is_audit_log(path) -> bool:
+    return Path(path).parent.name == "audit"
+
+
 def _not_regular(path, why: str = "not a regular file") -> CaseFileNotRegular:
-    return CaseFileNotRegular(f"{path} {_NOT_REGULAR[why]} {_BACK}", why)
+    step = KEPT if is_audit_log(path) else _BACK
+    return CaseFileNotRegular(f"{path} {_NOT_REGULAR[why]} {step}", why)
 
 
 def case_file_there(path: Path) -> bool:
@@ -108,10 +117,10 @@ class CaseFileTooLarge(CaseError, OSError):
         what = (f"{path} line {line} is longer than {LINE_CAP >> 20} MiB, so the file "
                 "wasn't read past it." if line else
                 f"{path} is larger than {limit >> 20} MiB, so it wasn't read.")  # fmt: skip
-        super().__init__(
-            f"{what} It holds the case's {holds(path)}: keep a copy of it before "
-            "you move it out of the case, then try again."
-        )
+        step = (f"It holds the case's audit entries. {KEPT}" if is_audit_log(path) else
+                f"It holds the case's {holds(path)}: keep a copy of it before you move "
+                "it out of the case, then try again.")  # fmt: skip
+        super().__init__(f"{what} {step}")
         self.line = line
 
 
@@ -148,6 +157,13 @@ def read_regular(path) -> bytes:
     """A regular file's bytes, for a case file read as one document."""
     with os.fdopen(_open_regular_fd(path), "rb") as f:
         return f.read()
+
+
+def open_log_unbudgeted(path):
+    """A case log opened as `case_lines` opens it (a regular file, under its
+    own name, with no second name), but with no FILE_BUDGET: only for a reader
+    whose memory doesn't grow with the log (the approval checks' scan)."""
+    return os.fdopen(_open_regular_fd(path, log=True, budget=sys.maxsize), "rb")
 
 
 def case_lines(path):

@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from vhir_cli.case_io import KEPT
+
 # cmd_exec in a child: confirmed at a fake terminal, subprocess.run faked (it
 # only leaves a marker), so no command runs and rlimits stay in the child
 CHILD = r"""
@@ -31,12 +33,14 @@ with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execut
 """
 PRIOR = '{"audit_id": "cliexec-tester-20000101-001", "tool": "exec"}\n'
 NOT_RUN = "Not run: vhir exec can't write this command's audit entry ({}: {}). {}"
-WRITABLE = "Make the case's audit/ folder writable, then run it again."
-ADVICE = {  # the log's shape -> the step the refusal gives for it
+WRITABLE = (
+    "Check the permissions of the case's audit/ folder and log, then run it again."
+)
+ADVICE = {  # the log's shape -> the step the refusal gives for it: never to change the log
     "Permission denied": WRITABLE,
-    "not a regular file": "Move it aside and put the case's own log back as a regular file, then run it again.",
-    "a symbolic link": "Put the case's own audit/ folder and log back in place of the link, then run it again.",
-    "another name links to it": "Replace it with a copy of its own, not a second name for another file, then run it again.",
+    "not a regular file": KEPT,
+    "a symbolic link": KEPT,
+    "another name links to it": KEPT,
 }  # fmt: skip
 RAN = "WARNING: the command ran, but its audit entry couldn't be written ({}: {}), so it is not in the case's audit trail."
 
