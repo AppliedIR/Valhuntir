@@ -666,9 +666,10 @@ SMB_CONF_PATH = "/etc/samba/smb.conf.d/vhir-cases.conf"
 
 def private_primary_group(username: str) -> str:
     """The name of `username`'s primary group, which the share writes files
-    with: only when no other local account can be in it. Raises RuntimeError
-    when another can. The SIFT box is trusted, so accounts from non-local
-    sources (sss, ldap, ...) aren't checked."""
+    with: only when no other account NSS returns can be in it. Raises
+    RuntimeError when another can. The SIFT box is trusted, so accounts from
+    non-local sources (sss, ldap, ...) needn't all be listable: only what NSS
+    returns is checked."""
     import grp
     import pwd
 
@@ -1191,7 +1192,8 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
     # installer derives the same password from the join code.
     print(
         f"  Warning: wintools-mcp didn't confirm the new SMB credentials ({last}). "
-        "Run the Windows installer with this join code to give them to it.",
+        "The Windows installer gives them to it when it runs with the join code "
+        "'vhir setup join-code' shows.",
         file=sys.stderr,
     )
 

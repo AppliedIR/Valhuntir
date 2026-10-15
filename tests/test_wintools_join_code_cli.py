@@ -217,7 +217,10 @@ def test_a_refused_smb_credential_push_says_what_wintools_answered(
     err = capsys.readouterr().err
     assert "HTTP 503" in err and "SMB session failed: System error 86" in err
     assert "didn't confirm the new SMB credentials" in err
-    assert "Run the Windows installer with this join code" in err
+    assert (
+        "The Windows installer gives them to it when it runs with the join code "
+        "'vhir setup join-code' shows." in err
+    )
 
 
 def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(
@@ -334,6 +337,8 @@ def test_a_failed_setup_step_shows_no_join_code_and_exits_nonzero(
     assert "ABCD-EFGH" not in err
     assert reason in err and "No join code was shown" in err
     assert "run 'vhir setup join-code' again" in err
+    if reason.startswith("Firewall"):  # the rules by hand
+        assert "sudo ufw allow from 192.0.2.20 to any port 4508,445" in err
     if not firewall:
         assert calls == [["sudo", "ufw", "status"]]  # nothing allowed or reloaded
 
