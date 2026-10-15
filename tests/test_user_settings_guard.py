@@ -4,8 +4,8 @@
 ~/.claude/settings.json (flipping the user's sandbox.enabled), overwrote
 ~/.claude/CLAUDE.md, the rules, commands and hooks, and wiped an unparseable
 settings.json: no prompt, no backup. Now an unchanged file isn't touched; a
-change is shown and asked about on a terminal (default No), with a backup
-first; without a terminal nothing changes. A product file still at a version
+change is shown and asked about on a terminal (default Yes; n/no keeps), with
+a backup first; without a terminal nothing changes. A product file still at a version
 vhir shipped is updated with a notice. Everything here is under tmp_path.
 """
 
@@ -139,7 +139,7 @@ def test_answering_no_keeps_the_file(box):
     before = _write_user(box.settings)
     _, asked = box.run("n")
     assert box.settings.read_bytes() == before
-    assert any("[y/N]" in p for p in asked)
+    assert any("[Y/n]" in p for p in asked)
 
 
 def test_answering_yes_applies_after_a_backup(box, capsys):
@@ -280,10 +280,14 @@ def test_uninstall_removes_a_shipped_claude_md_and_restores_the_backup(box):
     assert md.read_text() == "MINE\n" and not md.with_suffix(".md.bak").exists()
 
 
-def test_the_default_answer_is_no(box):
+def test_the_default_answer_is_yes(box):
+    # Enter applies the change (keeping a backup of the old file).
     before = _write_user(box.settings)
-    box.run("")
-    assert box.settings.read_bytes() == before
+    result, _ = box.run("")
+    assert json.loads(box.settings.read_text())["sandbox"]["enabled"] is True
+    baks = list(box.settings.parent.glob("settings.json.vhir-backup-*"))
+    assert len(baks) == 1 and baks[0].read_bytes() == before
+    assert result[1] == "written"
 
 
 # --- CORRECTION 1 -------------------------------------------------------------
@@ -560,7 +564,7 @@ def test_the_undo_block_prints_even_after_an_error(box, setup, monkeypatch, caps
 def test_ask_user_files_asks_on_a_terminal_even_with_y(box, setup, capsys):
     before = _write_user(box.settings)
     asked = setup("n", ask_user_files=True)
-    assert box.settings.read_bytes() == before and any("[y/N]" in p for p in asked)
+    assert box.settings.read_bytes() == before and any("[Y/n]" in p for p in asked)
     assert not _undo_lines(capsys.readouterr().out)
 
 
