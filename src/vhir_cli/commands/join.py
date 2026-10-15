@@ -1080,7 +1080,7 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
                 "Firewall setup",
                 e,
                 "  Or add the rules by hand: sudo ufw allow from "
-                f"{wintools_ip} to any port 4508,445",
+                f"{wintools_ip} to any port 4508,445 proto tcp",
             )
 
     from urllib.parse import urlparse

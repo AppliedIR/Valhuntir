@@ -338,7 +338,10 @@ def test_a_failed_setup_step_shows_no_join_code_and_exits_nonzero(
     assert reason in err and "No join code was shown" in err
     assert "run 'vhir setup join-code' again" in err
     if reason.startswith("Firewall"):  # the rules by hand
-        assert "sudo ufw allow from 192.0.2.20 to any port 4508,445" in err
+        assert (
+            "  Or add the rules by hand: sudo ufw allow from 192.0.2.20 "
+            "to any port 4508,445 proto tcp"
+        ) in err.splitlines()  # ufw refuses several ports without a protocol
     if not firewall:
         assert calls == [["sudo", "ufw", "status"]]  # nothing allowed or reloaded
 
