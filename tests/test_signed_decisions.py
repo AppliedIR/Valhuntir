@@ -136,8 +136,8 @@ def test_a_linked_event_of_a_finding_edited_here_is_not_signed(case, capsys, edi
     A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg", interpretation=text)
     out = capsys.readouterr().out
     held = (
-        "T-steve-001 is linked to F-steve-001, which you edited in this review. "
-        "It won't be signed. Decide it on its own: vhir approve T-steve-001"
+        "T-steve-001 is linked to F-steve-001, which was edited after the event was made "
+        "from it. It won't be signed. Decide it on its own: vhir approve T-steve-001"
     )
     if edited:
         assert _signed() == [("F-steve-001", "approve"), ("IOC-steve-001", "approve")]
@@ -171,9 +171,50 @@ def test_editing_an_approved_finding_in_review_signs_no_linked_event(
     assert ("F-steve-001", "edit") in _signed()
     assert ("T-steve-001", "approve") not in _signed()
     assert _status(case, "timeline.json", "T-steve-001") == "DRAFT"
-    assert (
-        "T-steve-001 is linked to F-steve-001, which you edited in this review." in out
+    assert "T-steve-001 is linked to F-steve-001, which was edited after" in out
+
+
+def _review(case, entry, monkeypatch):
+    (case / "pending-reviews.json").write_text(
+        json.dumps({"case_id": "C-9", "items": [entry]})
     )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    A._review_mode(case, IDENT, case / "cfg")
+
+
+def _edit(fid):
+    return {"id": fid, "type": "finding", "action": "edit", "examiner": "steve",
+            "modifications": {"title": {"original": "PsExec", "modified": "A backup agent"}}}  # fmt: skip
+
+
+@pytest.mark.parametrize("route", ["approve", "review"])
+def test_a_finding_edited_in_an_earlier_review_signs_no_linked_event(
+    case, capsys, monkeypatch, route
+):
+    """The edit was signed on its own; approving the finding later, with no
+    new edit, still leaves its event for its own decision."""
+    _review(case, _edit("F-steve-001"), monkeypatch)
+    assert _signed() == [("F-steve-001", "edit")]
+    capsys.readouterr()
+    if route == "approve":
+        A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    else:
+        _review(case, {"id": "F-steve-001", "type": "finding", "action": "approve",
+                       "examiner": "steve"}, monkeypatch)  # fmt: skip
+    out = capsys.readouterr().out
+    assert _status(case, "findings.json", "F-steve-001") == "APPROVED"
+    assert ("T-steve-001", "approve") not in _signed()
+    assert _status(case, "timeline.json", "T-steve-001") == "DRAFT"
+    assert "  T-steve-001 is linked to F-steve-001, which was edited after" in out
+    assert verify_case(case).exit_code == 0
+
+
+def test_an_earlier_edit_of_another_finding_holds_nothing(case, capsys, monkeypatch):
+    _review(case, _edit("F-steve-002"), monkeypatch)
+    capsys.readouterr()
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    assert ("T-steve-001", "approve") in _signed()
+    assert "which was edited after" not in capsys.readouterr().out
 
 
 def test_show_signed_prints_the_signed_view(case, capsys):

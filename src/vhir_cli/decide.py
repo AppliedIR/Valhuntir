@@ -92,7 +92,8 @@ def split_cascades(
     direct: list[Decision], findings, timeline, iocs, skipped=()
 ) -> tuple[list[Decision], list[tuple[str, str]]]:
     """The cascades of `direct`, and the timeline events held back from them:
-    `(event id, finding id)` for each event linked to a finding edited here.
+    `(event id, finding id)` for each event linked to a finding edited here or
+    in an earlier review.
 
     An event was made from its finding's text, so it would be signed with the
     text the edit replaced. It needs its own decision, and stays as it is until
@@ -105,6 +106,7 @@ def split_cascades(
         if d.type == "finding" and d.decision in ("approve", "reject", "edit")
     }
     changed = {d.id for d in direct if d.type == "finding" and d.modifications}
+    changed |= {f.get("id") for f in findings if f.get("examiner_modifications")}
     exclude = {d.id for d in direct} | set(skipped)
     planned, held = [], []
     for c in plan_cascades(decided, findings, timeline, iocs, exclude):
@@ -121,8 +123,8 @@ def split_cascades(
 def held_line(event_id: str, finding_id: str) -> str:
     """Why a linked event isn't signed, and what to do about it."""
     return (
-        f"{one_line(event_id)} is linked to {one_line(finding_id)}, which you edited in "
-        f"this review. It won't be signed. Decide it on its own: "
+        f"{one_line(event_id)} is linked to {one_line(finding_id)}, which was edited "
+        f"after the event was made from it. It won't be signed. Decide it on its own: "
         f"vhir approve {one_line(event_id)}"
     )
 
