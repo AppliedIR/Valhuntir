@@ -346,6 +346,31 @@ def test_a_failed_setup_step_shows_no_join_code_and_exits_nonzero(
         assert calls == [["sudo", "ufw", "status"]]  # nothing allowed or reloaded
 
 
+def test_the_real_share_setup_failing_part_way_shows_no_join_code(
+    home, monkeypatch, capsys
+):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["sudo", "groupadd"]:
+            raise subprocess.CalledProcessError(9, argv)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(join, "private_primary_group", lambda user: "ex1")
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit) as stop:
+        join._post_join_code_setup(
+            {"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5"
+        )
+    assert stop.value.code not in (0, None)
+    out, err = capsys.readouterr()
+    assert "ABCD-EFGH" not in out + err
+    assert "Samba share setup failed: Failed to create sift group" in err
+    assert "No join code was shown" in err
+    assert [a[:2] for a in calls] == [["sudo", "apt-get"], ["sudo", "groupadd"]]
+
+
 @pytest.mark.parametrize("status", [200, 403])
 def test_join_code_revoke_ends_unused_codes_and_does_nothing_else(
     home, tmp_path, monkeypatch, capsys, status
