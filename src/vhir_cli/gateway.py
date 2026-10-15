@@ -110,3 +110,22 @@ def find_ca_cert() -> str | None:
     if ca_path.exists():
         return str(ca_path)
     return None
+
+
+def local_gateway_ca_cert() -> str | None:
+    """Absolute path of the gateway CA a local client must trust, or None.
+
+    Returns ~/.vhir/tls/ca-cert.pem when the local gateway is configured for
+    TLS (gateway.tls.certfile) and that CA file exists. This is exactly
+    get_local_ssl_context's own precondition, exposed so a local client can
+    be told which CA to trust; a client that doesn't trust it fails every
+    gateway connection with UNABLE_TO_VERIFY_LEAF_SIGNATURE.
+    """
+    config = _read_gateway_config()
+    gw = config.get("gateway", {})
+    if not isinstance(gw, dict):
+        return None
+    tls = gw.get("tls", {})
+    if not isinstance(tls, dict) or not tls.get("certfile"):
+        return None
+    return find_ca_cert()

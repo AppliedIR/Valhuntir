@@ -1363,6 +1363,53 @@ def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
     return _write_user_file(dst, src.read_text(), why)
 
 
+def _gateway_ca_for_settings(
+    existing_env: dict | None,
+) -> tuple[str, str, str | None] | None:
+    """How a local Claude Code should trust the gateway's self-signed CA.
+
+    When the local gateway is configured for TLS and its CA file exists (the
+    precondition of get_local_ssl_context), a local client has to trust that
+    CA or every gateway MCP connection fails with
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE. Returns, with the CA's absolute path:
+      ("add", ca, None)     set env.NODE_EXTRA_CA_CERTS to the CA;
+      ("notice", ca, value) NODE_EXTRA_CA_CERTS is already set (in the
+                            settings env, else the process environment) to
+                            `value` — keep it and tell the user to add the CA
+                            to that bundle;
+      ("overridden", ca, value) the settings env holds the CA and the shell
+                            sets `value`, which the settings entry overrides;
+      None                  no local TLS gateway/CA, or the CA is already it.
+
+    The settings env wins over the process environment because Claude Code
+    honours settings env for HTTP MCP connections and it overrides the
+    process environment, so an unconditional write could silently replace a
+    user's own NODE_EXTRA_CA_CERTS (e.g. a corporate TLS-inspection CA).
+    """
+    from vhir_cli.gateway import local_gateway_ca_cert
+
+    ca = local_gateway_ca_cert()
+    if not ca:
+        return None
+    env_val = os.environ.get("NODE_EXTRA_CA_CERTS")
+    if isinstance(existing_env, dict) and "NODE_EXTRA_CA_CERTS" in existing_env:
+        # A settings value wins at runtime, so an explicit one (even "") decides,
+        # whatever the process environment holds. Presence, not truthiness: a
+        # deliberate "" still blocks trust, so keep it and say so.
+        value = existing_env["NODE_EXTRA_CA_CERTS"]
+        if value == ca:
+            # Ours already; warn only if a different shell value is overridden.
+            if env_val and env_val != ca:
+                return ("overridden", ca, env_val)
+            return None
+        return ("notice", ca, value)
+    if not env_val:
+        return ("add", ca, None)
+    if env_val == ca:
+        return None
+    return ("notice", ca, env_val)
+
+
 def _merged_settings(
     target: Path, source: Path, hooks_dir: Path | None, project_copies: bool = False
 ) -> dict | None:
@@ -1478,6 +1525,11 @@ def _merged_settings(
                 existing_sandbox[k] = v
         if _ALLOW_UNSANDBOXED:  # confirmed with the typed phrase
             existing_sandbox["failIfUnavailable"] = False
+
+    # The gateway-CA env (env.NODE_EXTRA_CA_CERTS) is NOT merged here: it is a
+    # client-connectivity convenience, not a forensic control, so settings_applied
+    # (which calls this) must not judge a box that lacks it. It is decided and
+    # written only on deploy, in _merge_settings.
     return existing
 
 
@@ -1522,6 +1574,33 @@ def _merge_settings(
     merged = _merged_settings(target, source, hooks_dir, project_copies)
     if merged is None:
         return "kept"
+    decision = _gateway_ca_for_settings(merged.get("env"))
+    if decision and decision[0] == "add":
+        if "env" not in merged:
+            merged["env"] = {"NODE_EXTRA_CA_CERTS": decision[1]}
+        elif isinstance(merged["env"], dict):
+            merged["env"]["NODE_EXTRA_CA_CERTS"] = decision[1]
+        else:
+            print(
+                "  Note: env in settings.json isn't an object, so "
+                "NODE_EXTRA_CA_CERTS wasn't added. The gateway uses a "
+                f"self-signed CA, so add {decision[1]} to NODE_EXTRA_CA_CERTS "
+                "by hand or the local client can't verify the gateway."
+            )
+    elif decision and decision[0] == "notice":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS is already set to {decision[2]}; "
+            "left unchanged. The gateway uses a self-signed CA, so add "
+            f"{decision[1]} to that bundle or the local client can't verify "
+            "the gateway."
+        )
+    elif decision and decision[0] == "overridden":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS in your shell is {decision[2]}, but "
+            f"the settings.json entry ({decision[1]}) overrides it. To use your "
+            "own bundle, add the gateway CA to it and remove the settings.json "
+            "entry."
+        )
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
     return _write_user_file(
         target, json.dumps(merged, indent=2) + "\n", why, as_json=True
