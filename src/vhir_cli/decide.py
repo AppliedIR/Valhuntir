@@ -85,6 +85,18 @@ def cascades(
     direct: list[Decision], findings, timeline, iocs, skipped=()
 ) -> list[Decision]:
     """The cascades of `direct`, planned from the post-edit items."""
+    return split_cascades(direct, findings, timeline, iocs, skipped)[0]
+
+
+def split_cascades(
+    direct: list[Decision], findings, timeline, iocs, skipped=()
+) -> tuple[list[Decision], list[tuple[str, str]]]:
+    """The cascades of `direct`, and the timeline events held back from them:
+    `(event id, finding id)` for each event linked to a finding edited here.
+
+    An event was made from its finding's text, so it would be signed with the
+    text the edit replaced. It needs its own decision, and stays as it is until
+    the examiner decides it."""
     edited = {d.id: d.item for d in direct}
     findings = [edited.get(f.get("id"), f) for f in findings if isinstance(f, dict)]
     decided = {
@@ -92,12 +104,27 @@ def cascades(
         for d in direct
         if d.type == "finding" and d.decision in ("approve", "reject", "edit")
     }
+    changed = {d.id for d in direct if d.type == "finding" and d.modifications}
     exclude = {d.id for d in direct} | set(skipped)
-    return [
-        Decision(c["item"], c["type"], "approve" if c["status_after"] == "APPROVED" else "reject",
-                 c["status_after"], loaded=copy.deepcopy(c["item"]), coupled_from=c["coupled_from"])
-        for c in plan_cascades(decided, findings, timeline, iocs, exclude)
-    ]  # fmt: skip
+    planned, held = [], []
+    for c in plan_cascades(decided, findings, timeline, iocs, exclude):
+        if c["type"] == "timeline" and c["coupled_from"] in changed:
+            held.append((c["item"]["id"], c["coupled_from"]))
+            continue
+        planned.append(
+            Decision(c["item"], c["type"], "approve" if c["status_after"] == "APPROVED" else "reject",
+                     c["status_after"], loaded=copy.deepcopy(c["item"]), coupled_from=c["coupled_from"])
+        )  # fmt: skip
+    return planned, held
+
+
+def held_line(event_id: str, finding_id: str) -> str:
+    """Why a linked event isn't signed, and what to do about it."""
+    return (
+        f"{one_line(event_id)} is linked to {one_line(finding_id)}, which you edited in "
+        f"this review. It won't be signed. Decide it on its own: "
+        f"vhir approve {one_line(event_id)}"
+    )
 
 
 def confirm_plan(
@@ -105,14 +132,19 @@ def confirm_plan(
     planned: list[Decision],
     display: Callable[[dict], None],
     lead: str = "",
+    held: list[tuple[str, str]] = (),
 ) -> None:
-    """Print every cascaded item, after the direct ones, then `lead` and the
-    ids to be signed, just above the prompt."""
+    """Print every cascaded item, after the direct ones, then the linked
+    events held back, `lead` and the ids to be signed, just above the prompt."""
     if planned:
         print(f"\n{len(planned)} item(s) decided with them:")
     for c in planned:
         display(c.item)
         print(f"  cascade from {one_line(c.coupled_from)}: {c.decision}")
+    if held:
+        print(f"\n{len(held)} linked item(s) not signed:")
+    for event_id, finding_id in held:
+        print(f"  {held_line(event_id, finding_id)}")
     ids = ", ".join(one_line(d.id) for d in direct + planned)
     if lead:
         print(lead)
