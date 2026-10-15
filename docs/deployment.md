@@ -113,6 +113,8 @@ This generates:
 - Bearer token (`vhir_gw_` prefix) in `gateway.yaml`
 - Gateway binds to `0.0.0.0:4508` with TLS
 
+A Claude Code running locally on the SIFT box is pointed at that CA automatically: `vhir setup client` and `vhir update` add `env.NODE_EXTRA_CA_CERTS` = `~/.vhir/tls/ca-cert.pem` to the managed `~/.claude/settings.json` so it trusts the self-signed gateway CA (unless you already set `NODE_EXTRA_CA_CERTS`, which is kept).
+
 The installer prints per-OS remote client setup commands with a join code.
 
 ### Remote Client Setup

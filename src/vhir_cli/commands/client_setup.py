@@ -1353,6 +1353,45 @@ def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
     return _write_user_file(dst, src.read_text(), why)
 
 
+def _gateway_ca_for_settings(
+    existing_env: dict | None,
+) -> tuple[str, str, str | None] | None:
+    """How a local Claude Code should trust the gateway's self-signed CA.
+
+    When the local gateway is configured for TLS and its CA file exists (the
+    precondition of get_local_ssl_context), a local client has to trust that
+    CA or every gateway MCP connection fails with
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE. Returns, with the CA's absolute path:
+      ("add", ca, None)     set env.NODE_EXTRA_CA_CERTS to the CA;
+      ("notice", ca, value) NODE_EXTRA_CA_CERTS is already set (in the
+                            settings env, else the process environment) to
+                            `value` — keep it and tell the user to add the CA
+                            to that bundle;
+      None                  no local TLS gateway/CA, or the CA is already it.
+
+    The settings env wins over the process environment because Claude Code
+    honours settings env for HTTP MCP connections and it overrides the
+    process environment, so an unconditional write could silently replace a
+    user's own NODE_EXTRA_CA_CERTS (e.g. a corporate TLS-inspection CA).
+    """
+    from vhir_cli.gateway import local_gateway_ca_cert
+
+    ca = local_gateway_ca_cert()
+    if not ca:
+        return None
+    settings_val = (
+        existing_env.get("NODE_EXTRA_CA_CERTS")
+        if isinstance(existing_env, dict)
+        else None
+    )
+    current = settings_val or os.environ.get("NODE_EXTRA_CA_CERTS")
+    if not current:
+        return ("add", ca, None)
+    if current == ca:
+        return None
+    return ("notice", ca, current)
+
+
 def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict | None:
     """The settings target would hold after merging source in: lists keep the
     user's order with missing entries appended. hooks_dir rewrites the
@@ -1461,6 +1500,14 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                 existing_sandbox[k] = v
         if _ALLOW_UNSANDBOXED:  # confirmed with the typed phrase
             existing_sandbox["failIfUnavailable"] = False
+
+    # A local client must trust the gateway's self-signed CA under TLS
+    # (--remote). Add env.NODE_EXTRA_CA_CERTS only when the user hasn't set
+    # one of their own; the "notice" case is handled (and printed) in
+    # _merge_settings.
+    decision = _gateway_ca_for_settings(existing.get("env"))
+    if decision and decision[0] == "add":
+        existing.setdefault("env", {})["NODE_EXTRA_CA_CERTS"] = decision[1]
     return existing
 
 
@@ -1500,6 +1547,14 @@ def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -
     merged = _merged_settings(target, source, hooks_dir)
     if merged is None:
         return "kept"
+    decision = _gateway_ca_for_settings(merged.get("env"))
+    if decision and decision[0] == "notice":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS is already set to {decision[2]}; "
+            "left unchanged. The gateway uses a self-signed CA, so add "
+            f"{decision[1]} to that bundle or the local client can't verify "
+            "the gateway."
+        )
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
     return _write_user_file(
         target, json.dumps(merged, indent=2) + "\n", why, as_json=True

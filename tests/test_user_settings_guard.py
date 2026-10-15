@@ -656,3 +656,71 @@ def test_anchor_no_deprecated_hook_no_backup_and_no_undo_line(box, setup, capsys
     out = capsys.readouterr().out
     assert "pre-bash-guard" not in out
     assert not list(box.home.rglob("pre-bash-guard.sh*"))
+
+
+def _tls_box(box):
+    """Make `box`'s local gateway use TLS with a CA present, keeping
+    sift_mcp_dir so the claude-code assets are still found. Returns the CA's
+    absolute path (what a local client must trust)."""
+    (box.home / ".vhir" / "gateway.yaml").write_text(
+        f"sift_mcp_dir: {box.repo}\n"
+        "gateway:\n  port: 4508\n  tls:\n    certfile: /x/server-cert.pem\n"
+    )
+    ca = box.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True, exist_ok=True)
+    ca.write_text("dummy")
+    return str(ca)
+
+
+class TestLocalCaTrust:
+    """A local Claude Code must trust the gateway's self-signed CA under a
+    TLS (--remote) gateway, or every gateway MCP connection fails with
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE. The deploy adds env.NODE_EXTRA_CA_CERTS
+    to settings.json when the local gateway uses TLS and the CA exists — but
+    never over a NODE_EXTRA_CA_CERTS the user already set (which Claude Code
+    honours and which overrides the process environment)."""
+
+    def test_update_adds_ca_env_on_tls_box(self, box, monkeypatch):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        box.run("y")  # the `vhir update` redeploy shape (no URL)
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == ca
+
+    def test_setup_client_adds_ca_env_on_tls_box(self, box, monkeypatch):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda p="": "y")
+        cs._deploy_claude_code_assets(box.home)  # the `vhir setup client` shape
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == ca
+
+    def test_no_ca_env_on_http_box(self, box, monkeypatch):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        box.run("y")  # box's default gateway.yaml has no tls block
+        data = json.loads(box.settings.read_text())
+        assert "NODE_EXTRA_CA_CERTS" not in data.get("env", {})
+
+    def test_existing_settings_ca_kept_with_notice(self, box, monkeypatch, capsys):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        box.settings.write_text(
+            json.dumps({"env": {"NODE_EXTRA_CA_CERTS": "/corp/ca.pem"}})
+        )
+        capsys.readouterr()
+        box.run("y")
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == "/corp/ca.pem" != ca
+        out = capsys.readouterr().out
+        assert "NODE_EXTRA_CA_CERTS" in out and ca in out
+
+    def test_process_env_ca_kept_with_notice(self, box, monkeypatch, capsys):
+        ca = _tls_box(box)
+        monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/proc/ca.pem")
+        capsys.readouterr()
+        box.run("y")
+        data = json.loads(box.settings.read_text())
+        assert "NODE_EXTRA_CA_CERTS" not in data.get("env", {})
+        out = capsys.readouterr().out
+        assert "/proc/ca.pem" in out and ca in out
