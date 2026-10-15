@@ -281,6 +281,81 @@ def test_the_windows_line_runs_each_step_only_when_the_one_before_worked(
     assert line.endswith("} }")
 
 
+def _gateway_yaml(home: Path, tls: dict | None) -> None:
+    gw = {"host": "0.0.0.0", "port": 4508}
+    if tls is not None:
+        gw["tls"] = tls
+    (home / ".vhir" / "gateway.yaml").write_text(yaml.safe_dump({"gateway": gw}))
+
+
+def _windows_line(monkeypatch, capsys) -> str:
+    monkeypatch.setattr(join, "_setup_samba_share", lambda code: "192.0.2.20")
+    monkeypatch.setattr(join, "_setup_firewall", lambda ip: None)
+    join._post_join_code_setup({"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5")
+    return next(x for x in capsys.readouterr().out.splitlines() if "main.zip" in x)
+
+
+def test_a_tls_gateway_puts_its_certificate_fingerprint_in_the_windows_line(
+    home, tmp_path, monkeypatch, capsys
+):
+    """The installer pins the gateway's cert by this value: it is the SHA-256
+    of the first certificate's DER in gateway.tls.certfile, as openssl gives
+    it. A second cert in the file (a chain) doesn't change it."""
+    cert, key = _cert(tmp_path)
+    (tmp_path / "other").mkdir()
+    other, _ = _cert(tmp_path / "other")
+    chain = home / ".vhir" / "tls" / "gateway-cert.pem"
+    chain.write_bytes(Path(cert).read_bytes() + Path(other).read_bytes())
+    _gateway_yaml(home, {"certfile": str(chain), "keyfile": key})
+    der = subprocess.run(
+        ["openssl", "x509", "-outform", "DER", "-in", str(chain)],
+        capture_output=True,
+        check=True,
+    ).stdout
+    expected = (
+        subprocess.run(["sha256sum"], input=der, capture_output=True, check=True)
+        .stdout.split()[0]
+        .decode()
+    )
+    assert len(expected) == 64
+
+    line = _windows_line(monkeypatch, capsys)
+    assert (
+        line == WINDOWS_LINE[: -len(" } }")] + f" -GatewayCertSha256 {expected} }} }}"
+    )
+
+
+def test_an_http_gateway_prints_no_fingerprint(home, monkeypatch, capsys):
+    _gateway_yaml(home, None)
+    assert _windows_line(monkeypatch, capsys) == WINDOWS_LINE
+
+
+def test_a_tls_gateway_whose_cert_cannot_be_read_shows_no_join_code(
+    home, monkeypatch, capsys
+):
+    """A line without the pin can't join a TLS gateway, so none is shown."""
+    _gateway_yaml(
+        home,
+        {
+            "certfile": str(home / ".vhir" / "tls" / "missing.pem"),
+            "keyfile": str(home / ".vhir" / "tls" / "missing.key"),
+        },
+    )
+    samba = []
+    monkeypatch.setattr(join, "_setup_samba_share", lambda code: samba.append(code))
+    with pytest.raises(SystemExit) as stop:
+        join._post_join_code_setup(
+            {"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5"
+        )
+    assert stop.value.code not in (0, None)
+    out, err = capsys.readouterr()
+    assert "ABCD-EFGH" not in out + err
+    assert "Reading the gateway's certificate failed:" in err
+    assert "missing.pem" in err
+    assert "No join code was shown" in err
+    assert samba == []
+
+
 def _fail(message):
     def step(arg):
         raise RuntimeError(message)
