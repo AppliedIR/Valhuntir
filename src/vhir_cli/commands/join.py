@@ -805,8 +805,9 @@ def share_needs_rejoin() -> bool:
     )
 
 
-def _setup_samba_share(join_code: str) -> str:
-    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP."""
+def _setup_samba_share(join_code: str) -> str | None:
+    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP,
+    or None when no Windows IP is given: no Windows machine, no share."""
     import subprocess
 
     # Idempotency: skip if already configured, but every join code still
@@ -912,10 +913,9 @@ def _setup_samba_share(join_code: str) -> str:
     # Prompt for wintools IP
     import ipaddress
 
-    wintools_ip = _ask("Enter the Windows machine's IP address: ", None)
-    if wintools_ip is None:
-        raise RuntimeError("no terminal to ask for the Windows machine's IP address")
-    wintools_ip = wintools_ip.strip()
+    wintools_ip = _ask("Enter the Windows machine's IP address: ", "").strip()
+    if not wintools_ip:
+        return None
     try:
         addr = ipaddress.IPv4Address(wintools_ip)
     except (ipaddress.AddressValueError, ValueError) as e:
@@ -1124,6 +1124,12 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     gw_port = urlparse(gw_url).port or 4508
 
     print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
+    if not wintools_ip:
+        print(
+            "\nOn each examiner machine: run 'vhir setup client', then /mcp in Claude Code"
+        )
+        print("No Windows machine: run 'vhir setup join-code' again when you add one.")
+        return
     print(
         "\nOn Windows, in PowerShell as Administrator, download the current "
         "installer and run it (one line):"
@@ -1432,16 +1438,14 @@ def _ensure_static_ip() -> str | None:
                     if answer not in ("y", "yes"):
                         return existing_ip
                 else:
-                    print(
+                    answer = _ask(
                         f"Warning: network.yaml says {existing_ip} "
-                        f"but interface has {actual_ip or 'unknown'}"
+                        f"but interface has {actual_ip or 'unknown'}\n"
+                        "The static IP was stored but never applied to the interface.\n"
+                        f"Apply {existing_ip} now? [Y/n] ",
+                        "n",
                     )
-                    print(
-                        "The static IP was stored but never applied to the interface."
-                    )
-                    answer = (
-                        _ask(f"Apply {existing_ip} now? [Y/n] ", "n").strip().lower()
-                    )
+                    answer = answer.strip().lower()
                     if answer in ("", "y", "yes"):
                         ip = existing_ip
                         # Fall through to apply logic below
@@ -1460,13 +1464,14 @@ def _ensure_static_ip() -> str | None:
 
     detected_ip = _detect_current_ip() or ""
 
-    print("Remote machines (Windows workstation, LLM clients) connect to this")
-    print(
-        "SIFT workstation by IP. A static IP ensures they can reconnect after reboot."
+    intro = (  # shown with the first question only
+        "Remote machines (Windows workstation, LLM clients) connect to this\n"
+        "SIFT workstation by IP. A static IP ensures they can reconnect after reboot.\n"
+        "\n"
     )
-    print()
     while True:
-        ip = _ask(f"Enter static IP for this machine [{detected_ip}]: ", None)
+        ip = _ask(f"{intro}Enter static IP for this machine [{detected_ip}]: ", None)
+        intro = ""
         if ip is None:  # no terminal: no static IP, no netplan change
             return None
         ip = ip.strip()

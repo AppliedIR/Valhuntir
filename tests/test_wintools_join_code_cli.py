@@ -227,7 +227,9 @@ def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(
     home, monkeypatch, capsys
 ):
     samba = []
-    monkeypatch.setattr(join, "_setup_samba_share", lambda code: samba.append(code))
+    monkeypatch.setattr(
+        join, "_setup_samba_share", lambda code: samba.append(code) or "192.0.2.20"
+    )
     monkeypatch.setattr(join, "_setup_firewall", lambda ip: None)
     monkeypatch.setattr(
         join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
@@ -265,7 +267,8 @@ def test_the_windows_line_runs_each_step_only_when_the_one_before_worked(
 ):
     """A failed download keeps an older wintools.zip, and expanding that would
     run the old installer: each step waits on the one before."""
-    monkeypatch.setattr(join, "_setup_samba_share", lambda code: None)
+    monkeypatch.setattr(join, "_setup_samba_share", lambda code: "192.0.2.20")
+    monkeypatch.setattr(join, "_setup_firewall", lambda ip: None)
     monkeypatch.setattr(
         join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
     )

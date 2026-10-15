@@ -6,7 +6,8 @@ rows run the real code in a child whose controlling terminal is a pty and
 whose stdout is a pipe: the question must show on the terminal and the
 typed answer must be used. With no terminal at all, each question takes
 its safe answer: no netplan change, the share kept, and no Windows IP
-stops the share setup. Values are synthetic; nothing runs.
+gives the code for the examiner machines only. Values are synthetic;
+nothing runs.
 """
 
 from __future__ import annotations
@@ -135,8 +136,13 @@ def test_with_stdout_captured_the_question_is_asked_on_the_terminal(
     for question, _ in steps:
         assert question in tty
         assert question not in out  # not lost in the capture
-    if kind == "y/N":  # the line saying what it asks about shows with it
-        assert "Static IP configured and active: 10.0.0.9" in tty
+    # the lines saying what it asks about show with it
+    context = {
+        "y/N": "Static IP configured and active: 10.0.0.9",
+        "Y/n": "The static IP was stored but never applied to the interface.",
+        "text": "A static IP ensures they can reconnect after reboot.",
+    }[kind]
+    assert context in tty and context not in out
 
 
 def test_with_no_terminal_at_all_no_static_ip_is_set(home):
@@ -234,20 +240,50 @@ def test_with_no_terminal_an_existing_share_is_kept(home, share):
     assert not [a for a in share if "apt-get" in a or "tee" in a]
 
 
-def test_with_no_terminal_no_windows_ip_stops_join_code_with_no_code(
-    home, share, capsys
+def _join_code(capsys):
+    join._post_join_code_setup({"code": "ABCD-EFGH", "expires_hours": 2}, "10.0.0.9")
+    out, err = capsys.readouterr()
+    return out, err
+
+
+def _setup_sift_reads(out):
+    """setup-sift.sh's own pipeline for the code: grep "Join code:" | awk."""
+    pipe = subprocess.Popen(  # noqa: S603
+        ["/bin/sh", "-c", "grep 'Join code:' | awk '{print $3}'"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+    return pipe.communicate(out.encode(), timeout=10)[0].decode().strip()
+
+
+@pytest.mark.parametrize("terminal", [True, False], ids=["blank-answer", "no-terminal"])
+def test_no_windows_ip_gives_the_code_with_no_share_and_no_windows_line(
+    home, share, capsys, monkeypatch, terminal
 ):
+    """No Windows machine is not a failed share: the code still prints, for
+    the examiner machines only (setup-sift --remote's LLM-client code)."""
+    if terminal:
+        monkeypatch.setattr(join, "_ask", lambda question, no_terminal: "  ")
+    out, err = _join_code(capsys)
+    assert _setup_sift_reads(out) == "ABCD-EFGH"
+    assert "vhir setup client" in out
+    assert "run 'vhir setup join-code' again when you add one" in out
+    assert "PowerShell" not in out and "setup-windows.ps1" not in out
+    assert not [a for a in share if a[-1:] == [join.SMB_CONF_PATH]]
+    assert not [a for a in share if "ufw" in a]
+    assert ("No terminal to ask" in err) is not terminal
+
+
+def test_an_invalid_windows_ip_still_stops_join_code_with_no_code(
+    home, share, capsys, monkeypatch
+):
+    monkeypatch.setattr(join, "_ask", lambda question, no_terminal: "10.0.0")
     with pytest.raises(SystemExit) as stop:
-        join._post_join_code_setup(
-            {"code": "ABCD-EFGH", "expires_hours": 2}, "10.0.0.9"
-        )
+        _join_code(capsys)
     assert stop.value.code not in (0, None)
     out, err = capsys.readouterr()
     assert "ABCD-EFGH" not in out + err
-    assert (
-        "Samba share setup failed: no terminal to ask for the Windows machine's IP address"
-        in err
-    )
+    assert "Samba share setup failed: Invalid IPv4 address: 10.0.0" in err
     assert not [a for a in share if a[-1:] == [join.SMB_CONF_PATH]]
 
 
@@ -267,3 +303,49 @@ def test_with_stdout_a_terminal_input_asks_as_before(home, monkeypatch, capsys):
     seen = sys.stdout.getvalue() + "".join(asked)
     assert "Static IP configured and active: 10.0.0.9\nReconfigure? [y/N] " in seen
     assert len(asked) == 1
+
+
+APPLY_TRANSCRIPT = (
+    "Warning: network.yaml says 10.0.0.5 but interface has 10.0.0.9\n"
+    "The static IP was stored but never applied to the interface.\n"
+    "Apply 10.0.0.5 now? [Y/n] "
+    "Enter a different IP, or blank to skip: "
+)
+INTRO_TRANSCRIPT = (
+    "Remote machines (Windows workstation, LLM clients) connect to this\n"
+    "SIFT workstation by IP. A static IP ensures they can reconnect after reboot.\n"
+    "\n"
+    "Enter static IP for this machine [10.0.0.9]: "
+)
+
+
+@pytest.mark.parametrize(
+    "stored, answers, transcript",
+    [
+        ("10.0.0.5", ["n", ""], APPLY_TRANSCRIPT),
+        (None, ["10.0.0.7", "n", "10.0.0.8", "y"], INTRO_TRANSCRIPT),
+    ],
+    ids=["stored-not-applied", "first-question"],
+)
+def test_on_a_terminal_the_folded_lines_read_as_before(
+    home, monkeypatch, stored, answers, transcript
+):
+    """The terminal shows the same text, in the same order, as when these
+    lines were printed before the question; the intro shows once."""
+    if stored:
+        _network(home, stored)
+    monkeypatch.setattr(join, "_detect_current_ip", lambda: "10.0.0.9")
+    monkeypatch.setattr(join, "_apply_static_ip", lambda ip, path: ip)
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdout", Terminal())
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt="": sys.stdout.write(prompt) and answers.pop(0)
+    )
+    join._ensure_static_ip()
+    seen = sys.stdout.getvalue()
+    assert seen.startswith(transcript), seen
+    assert seen.count("Remote machines") == (0 if stored else 1)
