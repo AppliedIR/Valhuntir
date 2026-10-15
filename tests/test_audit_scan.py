@@ -472,6 +472,23 @@ def test_a_log_over_the_file_budget_is_read_in_bounded_memory(case, tmp_path):
     assert hwm - base_hwm < 100 << 10, (hwm, base_hwm)  # KiB
 
 
+@pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="VmHWM")
+def test_one_id_on_many_lines_is_counted_in_flat_memory(tmp_path):
+    """A chained id on half a million lines: ENTRY_DUPLICATE with the count,
+    within 16 MiB of the same id on two lines (a hash kept per line was
+    about 60 MiB)."""
+    chain = [{"audit_id": A_ID, "entry_sha256": sha(A)}]
+    hwms = []
+    for n in (2, 500_000):
+        c = tmp_path / str(n)
+        (c / "audit").mkdir(parents=True)
+        (c / "audit" / "sift-mcp.jsonl").write_bytes((A + b"\n") * n)
+        got, hwm = _peak(c, chain)
+        assert got == [["failed", f"{n} audit lines have this id"]], got
+        hwms.append(hwm)
+    assert hwms[1] - hwms[0] < 16 << 10, hwms  # KiB
+
+
 def test_other_readers_keep_the_file_budget(case):
     (case / "audit" / "file-identity.jsonl").unlink()
     with open(case / "audit" / "file-identity.jsonl", "wb") as f:

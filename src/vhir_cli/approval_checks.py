@@ -160,10 +160,10 @@ class PlanTrail:
     def __init__(self, case_dir, items):
         self.case_dir = Path(case_dir)
         self.ids: set[str] = set().union(*(chained_ids(i, k) for i, k in items))
-        self.read: dict[str, list[str]] | None = None
+        self.read: dict[str, tuple[str, int]] | None = None
         self.reads = 0  # how many times the trail was read
 
-    def lines(self, ids: set[str]) -> dict[str, list[str]]:
+    def lines(self, ids: set[str]) -> dict[str, tuple[str, int]]:
         if not ids <= self.ids:
             self.reads += 1
             return audit_lines(self.case_dir, ids)
@@ -384,10 +384,11 @@ class AuditUnreadable(CaseError):
         self.unread = unread
 
 
-def audit_lines(case_dir, wanted=None) -> dict[str, list[str]]:
+def audit_lines(case_dir, wanted=None) -> dict[str, tuple[str, int]]:
     """Each audit id in the case's trail (only those in `wanted`, when given)
-    with the SHA-256 of every line that carries it, as written, without its
-    newline. Lines are counted as json.loads counts them, line by line; a line
+    with the SHA-256 of the first line that carries it, as written, without
+    its newline, and how many lines carry it: an id on a million lines holds
+    one hash and a count, not a million hashes. Lines are counted as json.loads counts them, line by line; a line
     longer than LINE_CAP is never held, and is read by `_Skim` instead. A
     folder that can't be listed, or a log that can't be read as a regular
     file, raises AuditUnreadable naming each one; a missing folder is an empty
@@ -403,13 +404,14 @@ def audit_lines(case_dir, wanted=None) -> dict[str, list[str]]:
     # the longest an id's string can be as written: a character escaped as a
     # surrogate pair (😀) is 12
     cap = 12 * max(map(len, wanted), default=0) if wanted is not None else LINE_CAP
-    by_id: dict[str, list[str]] = {}
+    by_id: dict[str, tuple[str, int]] = {}
     for name in names:
         try:
             with open_log_unbudgeted(audit / name) as f:
                 for audit_id, sha in _scan(f, cap):
                     if wanted is None or audit_id in wanted:
-                        by_id.setdefault(audit_id, []).append(sha)
+                        first, n = by_id.get(audit_id, (sha, 0))
+                        by_id[audit_id] = (first, n + 1)
         except CaseFileNotRegular as e:  # what it is, in words
             unread.append(f"audit/{name} ({e.why})")
         except OSError as e:
@@ -651,14 +653,14 @@ def entry_sha256(line: bytes) -> str:
     return hashlib.sha256(line).hexdigest()
 
 
-def _entry(trail: dict[str, list[str]], audit_id: str, sha: str) -> dict:
-    lines = trail.get(audit_id, [])
-    if not lines:
+def _entry(trail: dict[str, tuple[str, int]], audit_id: str, sha: str) -> dict:
+    first, n = trail.get(audit_id, ("", 0))
+    if not n:
         return _failed("ENTRY", "ENTRY_MISSING", audit_id, "no audit line has this id")
-    if len(lines) > 1:
+    if n > 1:
         return _failed("ENTRY", "ENTRY_DUPLICATE", audit_id,
-                       f"{len(lines)} audit lines have this id")  # fmt: skip
-    if lines[0] != sha:
+                       f"{n} audit lines have this id")  # fmt: skip
+    if first != sha:
         return _failed("ENTRY", "ENTRY_CHANGED", audit_id,
                        "the audit line changed since the chain was resolved")  # fmt: skip
     return _ok("ENTRY", audit_id, "unchanged")
