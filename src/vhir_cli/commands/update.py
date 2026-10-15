@@ -1138,17 +1138,35 @@ def cmd_update(args, identity: dict) -> None:
         )
     else:
         print("  Restarting gateway... ", end="", flush=True)
-        result = subprocess.run(
-            ["systemctl", "--user", "restart", "vhir-gateway"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        restart_ok = result.returncode == 0
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "restart", "vhir-gateway"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            restart_ok = result.returncode == 0
+            failure = result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            # systemd carries on with the restart: report the state it reached
+            try:
+                state = (
+                    subprocess.run(
+                        ["systemctl", "--user", "is-active", "vhir-gateway"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    ).stdout.strip()
+                    or "unknown"
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                state = "unknown"
+            restart_ok = state == "active"
+            failure = f"no answer in 60 s; the gateway is {state}"
         if restart_ok:
             print("done")
         else:
-            print(f"failed ({result.stderr.strip()})")
+            print(f"failed ({failure})")
             print("  Check with: systemctl --user status vhir-gateway")
             restart_ok = False
 
