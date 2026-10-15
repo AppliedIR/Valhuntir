@@ -1147,8 +1147,11 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
         "\nOn Windows, in PowerShell as Administrator, download the current "
         "installer and run it (one line):"
     )
+    # Windows clients ship with script running disabled. The Process scope
+    # lasts only for this PowerShell window and is not saved.
     print(
-        "  cd $env:TEMP; Invoke-WebRequest "
+        "  Set-ExecutionPolicy -Scope Process Bypass -Force; cd $env:TEMP; "
+        "Invoke-WebRequest "
         "https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip "
         "-OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip "
         "-DestinationPath . -Force; if ($?) { "

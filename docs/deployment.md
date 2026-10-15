@@ -51,8 +51,11 @@ The installer:
 ```powershell
 git clone https://github.com/AppliedIR/wintools-mcp.git
 cd wintools-mcp
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\setup-windows.ps1
 ```
+
+`Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default.
 
 The installer:
 1. Requires typing `security_hole` to acknowledge the security implications
