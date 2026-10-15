@@ -805,15 +805,27 @@ def share_needs_rejoin() -> bool:
     )
 
 
+def _mark_case_for_kept_share() -> None:
+    active = _active_case_dir()
+    if active is not None:  # the kept share still points at it: mark it
+        warning = mark_case(active)
+        if warning:
+            print(
+                f"Warning: {warning}; wintools writes nothing to the case.",
+                file=sys.stderr,
+            )
+
+
 def _setup_samba_share(join_code: str) -> str | None:
-    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP,
-    or None when no Windows IP is given: no Windows machine, no share."""
+    """Set up Samba share with PBKDF2-derived credentials. Returns wintools IP.
+    A blank Windows IP keeps a configured share's IP (a share under an old
+    name still moves), and with none means no Windows machine: None, no share."""
     import subprocess
 
     # Idempotency: skip if already configured, but every join code still
     # sets the password Windows will derive from it
     samba_yaml = Path.home() / ".vhir" / "samba.yaml"
-    keep_ip = None
+    keep_ip = reconfigure_ip = moved_ip = None
     if samba_yaml.is_file():
         try:
             doc = yaml.safe_load(samba_yaml.read_text()) or {}
@@ -824,22 +836,18 @@ def _setup_samba_share(join_code: str) -> str | None:
                     print(
                         f"The share moves from [{doc['share_name']}] to [{SHARE_NAME}]."
                     )
+                    moved_ip = str(doc["wintools_ip"])
                 else:
                     answer = _ask(f"{configured}\nReconfigure? [y/N] ", "n")
                     if answer.strip().lower() not in ("y", "yes"):
                         keep_ip = doc["wintools_ip"]
+                    else:
+                        reconfigure_ip = doc["wintools_ip"]
         except (yaml.YAMLError, OSError):
             pass
     if keep_ip:
         _set_smb_password(join_code)
-        active = _active_case_dir()
-        if active is not None:  # the kept share still points at it: mark it
-            warning = mark_case(active)
-            if warning:
-                print(
-                    f"Warning: {warning}; wintools writes nothing to the case.",
-                    file=sys.stderr,
-                )
+        _mark_case_for_kept_share()
         return keep_ip
     username = getpass.getuser()
     group = private_primary_group(username)  # before anything is installed or changed
@@ -915,7 +923,12 @@ def _setup_samba_share(join_code: str) -> str | None:
 
     wintools_ip = _ask("Enter the Windows machine's IP address: ", "").strip()
     if not wintools_ip:
-        return None
+        if reconfigure_ip:  # the share stays as it is, as with "n"
+            _mark_case_for_kept_share()
+            return reconfigure_ip
+        if not moved_ip:
+            return None
+        wintools_ip = moved_ip  # the share moves with the IP it had
     try:
         addr = ipaddress.IPv4Address(wintools_ip)
     except (ipaddress.AddressValueError, ValueError) as e:

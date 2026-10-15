@@ -274,6 +274,44 @@ def test_no_windows_ip_gives_the_code_with_no_share_and_no_windows_line(
     assert ("No terminal to ask" in err) is not terminal
 
 
+def test_reconfigure_then_a_blank_ip_keeps_the_configured_share(
+    home, share, capsys, monkeypatch
+):
+    """Blank means "no Windows machine" only when there is no share: after
+    "Reconfigure? y" it keeps the share and its IP, as "n" does."""
+    (home / ".vhir" / "samba.yaml").write_text(
+        yaml.dump({"share_name": join.SHARE_NAME, "wintools_ip": "10.0.0.20"})
+    )
+    answers = ["y", ""]
+    monkeypatch.setattr(join, "_ask", lambda question, no_terminal: answers.pop(0))
+    out, _ = _join_code(capsys)
+    assert answers == []
+    assert _setup_sift_reads(out) == "ABCD-EFGH"
+    assert "No Windows machine" not in out
+    assert "setup-windows.ps1 -JoinCode ABCD-EFGH" in out
+    assert not [a for a in share if a[-1:] == [join.SMB_CONF_PATH]]
+    assert (home / ".vhir" / "samba.yaml").read_text().count("10.0.0.20") == 1
+
+
+def test_a_share_under_the_old_name_moves_with_its_ip_on_a_blank_answer(
+    home, share, capsys, monkeypatch
+):
+    """The move asks no question: a blank IP keeps the IP the share had."""
+    (home / ".vhir" / "samba.yaml").write_text(
+        yaml.dump({"share_name": "cases", "wintools_ip": "10.0.0.21"})
+    )
+    answers = [""]
+    monkeypatch.setattr(join, "_ask", lambda question, no_terminal: answers.pop(0))
+    out, _ = _join_code(capsys)
+    assert answers == []
+    assert _setup_sift_reads(out) == "ABCD-EFGH"
+    assert "No Windows machine" not in out
+    assert "setup-windows.ps1 -JoinCode ABCD-EFGH" in out
+    assert [a for a in share if a[-1:] == [join.SMB_CONF_PATH]]
+    doc = yaml.safe_load((home / ".vhir" / "samba.yaml").read_text())
+    assert (doc["share_name"], doc["wintools_ip"]) == (join.SHARE_NAME, "10.0.0.21")
+
+
 def test_an_invalid_windows_ip_still_stops_join_code_with_no_code(
     home, share, capsys, monkeypatch
 ):
