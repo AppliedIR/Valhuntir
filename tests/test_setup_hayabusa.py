@@ -8,6 +8,7 @@ folder beside it, laid out as the real zips are.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -24,6 +25,7 @@ from vhir_cli.main import main
 VERSION = "4.2.0"
 TAG = f"v{VERSION}"
 BASE = f"https://github.com/Yamato-Security/hayabusa/releases/download/{TAG}/"
+RESTART = "restart it so ingest finds Hayabusa: systemctl --user restart vhir-gateway"
 
 
 def _zip(build: str, banner: str = f"Hayabusa v{VERSION} - Autumn Release", extra=()):
@@ -133,7 +135,8 @@ def test_the_build_follows_glibc_and_lands_linked_with_its_rules(
     assert os.access(binary, os.X_OK)
     assert (binary.parent / "rules" / "hayabusa" / "a.yml").is_file()
     assert (binary.parent / "config").is_dir()
-    assert f"runs v{VERSION}" in out and "restart the gateway" in out
+    assert f"runs v{VERSION}" in out and RESTART in out
+    assert f"If the gateway was started before {gh.home}/.local/bin existed" in out
     # nothing left from the download
     assert sorted(p.name for p in _folder(gh.home).parent.iterdir()) == [VERSION]
 
@@ -233,6 +236,42 @@ def test_no_network_says_so(gh, capsys, monkeypatch):
     assert rc == 1 and "couldn't reach GitHub" in out
 
 
+class _Broken(_Resp):
+    """An answer whose read ends early: the connection dropped mid-transfer."""
+
+    def read(self, n=-1):
+        data = super().read(n)
+        if n is None or n < 0 or len(data) < n:  # fewer bytes than the length said
+            raise http.client.IncompleteRead(data, 1024)
+        return data
+
+
+@pytest.mark.parametrize("target", ["api", "download"])
+@pytest.mark.parametrize("fault", ["truncated", "bad-status"])
+def test_a_broken_connection_says_so_and_leaves_nothing(
+    gh, capsys, monkeypatch, target, fault
+):
+    real = gh.get
+
+    def get(url, accept):
+        is_target = (url == hayabusa.API) == (target == "api")
+        if is_target and fault == "bad-status":
+            gh.fetched.append(url)
+            raise http.client.BadStatusLine("HTTP/1.1 ???")
+        resp = real(url, accept)
+        if is_target:
+            return _Broken(resp.getvalue()[:100])
+        return resp
+
+    monkeypatch.setattr(hayabusa, "_get", get)
+    rc, out = _run(capsys)
+    want = "couldn't reach GitHub" if target == "api" else "the download failed"
+    assert rc == 1 and want in out and "Traceback" not in out
+    assert not _link(gh.home).is_symlink()
+    share = _folder(gh.home).parent
+    assert not share.exists() or list(share.iterdir()) == []
+
+
 def _bad_member(name: str, link: bool = False):
     info = zipfile.ZipInfo(name)
     if link:
@@ -295,6 +334,61 @@ def test_an_installed_binary_that_answers_another_version_is_not_linked(gh, caps
     assert not _link(gh.home).is_symlink() and gh.fetched == [hayabusa.API]
 
 
+def _script_zip(script: bytes) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"hayabusa-{VERSION}-lin-x64-musl", script)
+        zf.writestr("rules/hayabusa/a.yml", "title: a\n")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "banner", ["Hayabusa v4.2.01", "Hayabusa xv4.2.0", "v4.2.0-dev"]
+)
+def test_a_banner_that_only_contains_the_version_is_not_linked(gh, capsys, banner):
+    gh.zips = {"lin-x64-musl": _zip("lin-x64-musl", banner=banner)}
+    gh.release = _release(gh.zips)
+    rc, out = _run(capsys)
+    assert rc == 1 and "not Hayabusa v4.2.0" in out
+    assert not _link(gh.home).is_symlink()
+    assert list(_folder(gh.home).parent.iterdir()) == []
+
+
+def test_a_banner_that_is_not_utf8_is_refused_without_a_traceback(gh, capsys):
+    gh.zips = {"lin-x64-musl": _script_zip(b'#!/bin/sh\nprintf "Hayabusa v\\377\\n"\n')}
+    gh.release = _release(gh.zips)
+    rc, out = _run(capsys)
+    assert rc == 1 and "not Hayabusa v4.2.0" in out and "Traceback" not in out
+    assert not _link(gh.home).is_symlink()
+
+
+def _bad_crc() -> bytes:
+    data = bytearray(_script_zip(b"#!/bin/sh\necho CRCMARK\n"))
+    i = data.index(b"CRCMARK")
+    data[i] ^= 0x01
+    return bytes(data)
+
+
+def _method_99() -> bytes:
+    data = bytearray(_zip("lin-x64-musl"))
+    for sig, off in ((b"PK\x03\x04", 8), (b"PK\x01\x02", 10)):
+        i = data.find(sig)
+        while i != -1:
+            data[i + off : i + off + 2] = (99).to_bytes(2, "little")
+            i = data.find(sig, i + 4)
+    return bytes(data)
+
+
+@pytest.mark.parametrize("make", [_bad_crc, _method_99], ids=["bad-crc", "method-99"])
+def test_a_zip_that_does_not_unpack_is_refused_and_leaves_nothing(gh, capsys, make):
+    gh.zips = {"lin-x64-musl": make()}
+    gh.release = _release(gh.zips)
+    rc, out = _run(capsys)
+    assert rc == 1 and "the zip didn't unpack" in out and "Traceback" not in out
+    assert not _link(gh.home).is_symlink()
+    assert list(_folder(gh.home).parent.iterdir()) == []
+
+
 @pytest.mark.parametrize(
     "cap", ["_MAX_ZIP_BYTES", "_MAX_UNPACKED_BYTES", "_MAX_MEMBERS"]
 )
@@ -313,7 +407,7 @@ def test_an_existing_link_is_replaced_and_named(gh, capsys):
     out = _ok(capsys)
     assert os.readlink(_link(gh.home)).endswith(f"hayabusa-{VERSION}-lin-x64-musl")
     assert f"it pointed at {old}" in out
-    assert "restart the gateway" not in out  # ~/.local/bin was there already
+    assert RESTART in out  # also when ~/.local/bin was there already
 
 
 def test_a_file_where_the_link_goes_is_never_replaced(gh, capsys):

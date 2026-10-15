@@ -17,6 +17,7 @@ Nothing outside those two places is changed, and nothing needs sudo.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -28,6 +29,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 REPO = "Yamato-Security/hayabusa"
@@ -85,7 +87,7 @@ def _latest_release() -> dict:
     try:
         with _get(API, "application/vnd.github+json") as resp:
             body = resp.read(_MAX_API_BYTES + 1)
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
         raise InstallError(f"couldn't reach GitHub ({e})") from e
     if len(body) > _MAX_API_BYTES:
         raise InstallError("GitHub's release answer was too large")
@@ -143,7 +145,7 @@ def _download(url: str, sha256: str, dest: Path) -> None:
                     raise InstallError(f"the download passed {_MAX_ZIP_BYTES} bytes")
                 h.update(chunk)
                 f.write(chunk)
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
         raise InstallError(f"the download failed ({e})") from e
     if h.hexdigest() != sha256:
         raise InstallError(
@@ -176,7 +178,10 @@ def _unpack(zip_path: Path, dest: Path, binary: str) -> None:
                 raise InstallError("the zip unpacks to more than the size cap")
         if binary not in {m.filename for m in members}:
             raise InstallError(f"the zip has no {binary}")
-        zf.extractall(dest)
+        try:
+            zf.extractall(dest)
+        except (zipfile.BadZipFile, NotImplementedError, zlib.error, EOFError) as e:
+            raise InstallError(f"the zip didn't unpack ({e})") from e
     (dest / binary).chmod(0o755)
 
 
@@ -205,13 +210,14 @@ def _check(binary: Path, version: str) -> None:
             [str(binary), "help"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=60,
             cwd="/",
         )
     except (OSError, subprocess.SubprocessError) as e:
         raise InstallError(f"{binary} help didn't run ({e})") from e
     first = (out.stdout + out.stderr).strip().splitlines()[:1]
-    if out.returncode != 0 or not first or f"v{version}" not in first[0]:
+    if out.returncode != 0 or not first or f"v{version}" not in first[0].split():
         raise InstallError(
             f"{binary} help gave rc {out.returncode} and {first[0] if first else 'no output'!r}, "
             f"not Hayabusa v{version}"
@@ -246,7 +252,6 @@ def install() -> list[str]:
             _check(staged / binary, version)  # before it takes the version's place
             os.replace(staged, folder)
         lines.append(f"Hayabusa {version} ({name}, sha256 {sha256}) is in {folder}.")
-    new_bin = not bin_dir.is_dir()
     bin_dir.mkdir(parents=True, exist_ok=True)
     link = bin_dir / "hayabusa"
     old = _link(link, folder / binary)
@@ -264,11 +269,10 @@ def install() -> list[str]:
             f"Note: {first} comes before {link} on the PATH Valhuntir's tools use, "
             "so the ingest runs that one. Remove it, or put ~/.local/bin first."
         )
-    if new_bin:
-        lines.append(
-            f"{bin_dir} is new: restart the gateway so its tools find Hayabusa "
-            "(systemctl --user restart vhir-gateway)."
-        )
+    lines.append(
+        f"If the gateway was started before {bin_dir} existed, restart it so "
+        "ingest finds Hayabusa: systemctl --user restart vhir-gateway"
+    )
     lines.append("Re-run the evtx ingest to add Hayabusa's detections.")
     return lines
 
