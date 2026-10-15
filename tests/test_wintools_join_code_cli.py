@@ -239,6 +239,49 @@ def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(
     assert samba == ["ABCD-EFGH"]
 
 
+def _fail(message):
+    def step(arg):
+        raise RuntimeError(message)
+
+    return step
+
+
+@pytest.mark.parametrize(
+    "share, firewall, reason",
+    [
+        (
+            _fail("smbd restart failed"),
+            lambda ip: None,
+            "Samba share setup failed: smbd restart failed",
+        ),
+        (
+            lambda code: "192.0.2.20",
+            _fail("ufw not found"),
+            "Firewall setup failed: ufw not found",
+        ),
+    ],
+    ids=["share", "firewall"],
+)
+def test_a_failed_setup_step_shows_no_join_code_and_exits_nonzero(
+    home, monkeypatch, capsys, share, firewall, reason
+):
+    monkeypatch.setattr(join, "_setup_samba_share", share)
+    monkeypatch.setattr(join, "_setup_firewall", firewall)
+    monkeypatch.setattr(
+        join, "_get_local_gateway_url", lambda: "https://127.0.0.1:4508"
+    )
+    with pytest.raises(SystemExit) as stop:
+        join._post_join_code_setup(
+            {"code": "ABCD-EFGH", "expires_hours": 2}, "192.0.2.5"
+        )
+    assert stop.value.code not in (0, None)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "ABCD-EFGH" not in err
+    assert reason in err and "No join code was shown" in err
+    assert "run 'vhir setup join-code' again" in err
+
+
 @pytest.mark.parametrize("status", [200, 403])
 def test_join_code_revoke_ends_unused_codes_and_does_nothing_else(
     home, tmp_path, monkeypatch, capsys, status

@@ -1043,6 +1043,25 @@ def _setup_samba_share(join_code: str) -> str:
     return wintools_ip
 
 
+def _stop_without_code(step: str, error: Exception, hint: str = "") -> None:
+    """A setup step failed: Windows can't use the share as it stands, so the
+    code is never shown. The gateway keeps only its hash, and it expires
+    unused."""
+    print(f"\nError: {step} failed: {error}", file=sys.stderr)
+    print(
+        "No join code was shown: the Windows installer can't use this SIFT "
+        "box until this step works.",
+        file=sys.stderr,
+    )
+    print(
+        "Fix the cause above, then run 'vhir setup join-code' again.",
+        file=sys.stderr,
+    )
+    if hint:
+        print(hint, file=sys.stderr)
+    sys.exit(1)
+
+
 def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     """Samba setup, firewall, and display — called after join code generation.
     A code bound to an examiner name joins only that examiner (never a
@@ -1070,22 +1089,20 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
         )
         return
 
-    wintools_ip = None
     try:
         wintools_ip = _setup_samba_share(join_code)
     except Exception as e:
-        print(f"\nWarning: Samba share setup failed: {e}", file=sys.stderr)
-        print("Complete later with 'vhir setup join-code'", file=sys.stderr)
+        _stop_without_code("Samba share setup", e)
 
     if wintools_ip:
         try:
             _setup_firewall(wintools_ip)
         except Exception as e:
-            print(f"\nWarning: Firewall setup failed: {e}", file=sys.stderr)
-            print(
-                "  Add rules manually: sudo ufw allow from "
+            _stop_without_code(
+                "Firewall setup",
+                e,
+                "  Or add the rules by hand: sudo ufw allow from "
                 f"{wintools_ip} to any port 4508,445",
-                file=sys.stderr,
             )
 
     from urllib.parse import urlparse
