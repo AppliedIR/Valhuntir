@@ -181,7 +181,14 @@ class TestJoinCodeCommand:
 
         captured = capsys.readouterr()
         assert "ABCD-EFGH" in captured.out
-        assert "setup-windows.ps1" in captured.out
+        assert (
+            "wintools-mcp/archive/refs/heads/main.zip -OutFile wintools.zip"
+            in captured.out
+        )
+        assert (
+            "scripts\\setup-windows.ps1 -JoinCode ABCD-EFGH -GatewayHost "
+            in captured.out
+        )
         assert "expires in 2 hours" in captured.out
 
 

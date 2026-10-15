@@ -95,7 +95,8 @@ def test_a_join_code_can_be_bound_to_a_name(monkeypatch, capsys):
     assert "This code joins as lab2 only, and ends lab2's earlier gateway tokens" in out
     # the gateway's own scheme (an http gateway refuses an https join)
     assert "  vhir join --sift http://10.0.0.5:4508 --code ABCD-EFGH" in out
-    assert "setup-windows.ps1" not in out and setup == []  # never a wintools join
+    assert "setup-windows.ps1" not in out and "main.zip" not in out
+    assert setup == []  # never a wintools join
 
 
 def test_an_unbound_code_sends_no_name(monkeypatch, capsys):

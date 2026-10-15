@@ -556,6 +556,11 @@ def _setup_firewall(wintools_ip: str) -> None:
         text=True,
         timeout=10,
     )
+    if result.returncode != 0:  # sudo refused, say: whether UFW is active is unknown
+        raise RuntimeError(
+            f"'sudo ufw status' failed (exit {result.returncode}): "
+            f"{result.stderr.strip() or 'no output'}"
+        )
     if "Status: active" not in result.stdout:
         print(
             "UFW is not active — skipping firewall rules. "
@@ -1083,19 +1088,25 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     gw_port = urlparse(gw_url).port or 4508
 
     print(f"\nJoin code: {join_code} (expires in {data['expires_hours']} hours)")
-    print("\nOn Windows, run:")
     print(
-        f"  .\\setup-windows.ps1 -JoinCode {join_code} -GatewayHost {sift_host} -GatewayPort {gw_port}"
+        "\nOn Windows, in PowerShell as Administrator, download the current "
+        "installer and run it (one line):"
     )
-    print("  Unattended: add -NonInteractive -AcknowledgeSecurityHole")
+    print(
+        "  cd $env:TEMP; Invoke-WebRequest "
+        "https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip "
+        "-OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip "
+        "-DestinationPath . -Force; if ($?) { "
+        f".\\wintools-mcp-main\\scripts\\setup-windows.ps1 -JoinCode {join_code} "
+        f"-GatewayHost {sift_host} -GatewayPort {gw_port} }} }}"
+    )
+    print(
+        "  Unattended: add -NonInteractive -AcknowledgeSecurityHole after the port number"
+    )
     print(
         "\nWhen the installer has finished: run 'vhir setup client' on each "
         "examiner machine, then /mcp in Claude Code"
     )
-    print("\nOr if the installer is already running, enter when prompted:")
-    print(f"  Join code:  {join_code}")
-    print(f"  SIFT IP:    {sift_host}")
-    print(f"  Port:       {gw_port}")
 
 
 def _wintools_ssl_context():
