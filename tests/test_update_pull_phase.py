@@ -11,6 +11,7 @@ stub keeping each repo's branch and HEAD.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -23,23 +24,22 @@ from vhir_cli.commands.update import _PACKAGE_PATHS, cmd_update
 PART_WAY = "Update stopped part-way"
 
 
-@pytest.fixture
-def world(tmp_path):
-    src = tmp_path / ".vhir" / "src" / "sift-mcp"
+def _build_world(home):
+    src = home / ".vhir" / "src" / "sift-mcp"
     for rel in _PACKAGE_PATHS.values():
         (src / rel).mkdir(parents=True, exist_ok=True)
     (src / "deps").mkdir()
     (src / "deps" / "vhir.lock").write_text("# lock\n")
     (src / "deps" / "vhir-cpu.lock").write_text("# variant cpu\n")
     (src / "deps" / "check-lock.py").write_text("")
-    vhir = tmp_path / ".vhir" / "src" / "vhir"
+    vhir = home / ".vhir" / "src" / "vhir"
     vhir.mkdir()
-    os_repo = tmp_path / "opensearch-mcp"
+    os_repo = home / "opensearch-mcp"
     os_repo.mkdir()
-    venv = tmp_path / "venv"
+    venv = home / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "python").write_text("#!/bin/sh\n")
-    (tmp_path / ".vhir" / "manifest.json").write_text(
+    (home / ".vhir" / "manifest.json").write_text(
         json.dumps(
             {"source": str(src), "venv": str(venv), "packages": {}, "client": ""}
         )
@@ -48,7 +48,12 @@ def world(tmp_path):
         str(p): {"name": n, "branch": "main", "head": f"{n}-old", "pull": "ok"}
         for n, p in (("sift-mcp", src), ("vhir", vhir), ("opensearch-mcp", os_repo))
     }
-    return SimpleNamespace(home=tmp_path, os_repo=os_repo, repos=repos)
+    return SimpleNamespace(home=home, os_repo=os_repo, repos=repos)
+
+
+@pytest.fixture
+def world(tmp_path):
+    return _build_world(tmp_path)
 
 
 def _run(world, *, fetch_err="", installed_timeout=False):
@@ -137,6 +142,24 @@ def test_a_failed_pull_after_another_moved_is_part_way(world, capsys):
     assert "Not possible to fast-forward" in err and "Resolve conflicts" not in err
     assert "stash push -u" in err and "stash pop" in err and "git -C" in err
     assert PART_WAY in err and err.rstrip().endswith("finish with: vhir update")
+
+
+def test_the_failed_pull_advice_is_conditional_and_quotes_the_path(tmp_path, capsys):
+    # The stash dance is advice only for the overwrite case git itself names, so
+    # it is gated on git's message rather than printed on every failed pull; and
+    # the repo path is shell-quoted once, so a space is safe.
+    world = _build_world(tmp_path / "dir with space")
+    _repo(world, "vhir")["pull"] = "fail"
+    code, _ = _run(world)
+    err = capsys.readouterr().err
+    assert code == 1
+    # The advice is conditional, keyed on git's own "would be overwritten".
+    assert "would be overwritten" in err and "status --short" in err
+    # The path contains a space, so it prints shlex-quoted, never bare.
+    vhir_path = str(world.home / ".vhir" / "src" / "vhir")
+    assert " " in vhir_path  # guard: the fixture gave us a genuinely spaced path
+    assert shlex.quote(vhir_path) in err
+    assert f"git -C {vhir_path} stash" not in err
 
 
 def test_a_pull_timeout_after_another_moved_is_part_way(world, capsys):

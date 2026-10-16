@@ -983,12 +983,14 @@ def cmd_update(args, identity: dict) -> None:
                 _stop_part_way(args)
             sys.exit(1)
         if result.returncode != 0:
+            quoted_path = shlex.quote(str(path))
             print(
                 f"Failed to pull {name}: {result.stderr.strip()}\n"
-                "  Set local changes aside, update, then bring them back:\n"
-                f"    git -C {path} stash push -u\n"
+                "  If the message above says your local changes would be overwritten\n"
+                f"  (git -C {quoted_path} status --short lists them):\n"
+                f"    git -C {quoted_path} stash push -u\n"
                 "    vhir update\n"
-                f"    git -C {path} stash pop",
+                f"    git -C {quoted_path} stash pop",
                 file=sys.stderr,
             )
             if pulled or _git_head(path) not in (
@@ -1361,7 +1363,10 @@ def _finish_update(
         else:
             print(f"failed ({failure})")
             print("  Check with: systemctl --user status vhir-gateway")
-            print("  Or, if you start it by hand: ~/.vhir/start-gateway.sh")
+            print(
+                "  Or, if you start it by hand: stop it, then run"
+                " ~/.vhir/start-gateway.sh"
+            )
             restart_ok = False
 
     # Step 7b: Check OpenSearch version mismatch

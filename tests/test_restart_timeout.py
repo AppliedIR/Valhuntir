@@ -64,6 +64,10 @@ def test_a_slow_restart_still_starting_says_so(manifest_dir, capsys):
     # A gateway started by hand has no systemd unit to restart; the hint also
     # names the manual launcher so that user isn't left at a dead end.
     assert "~/.vhir/start-gateway.sh" in out
+    # A hand-started gateway must be stopped before relaunch —
+    # start-gateway.sh is a bare exec that would collide on the port otherwise —
+    # so "stop" comes before the launcher in the hint.
+    assert "stop it, then run ~/.vhir/start-gateway.sh" in out
     assert "Skipping connectivity test" in out and not smoke.called
 
 
