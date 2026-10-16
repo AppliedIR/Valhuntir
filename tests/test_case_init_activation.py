@@ -160,14 +160,19 @@ def test_an_override_that_cannot_be_resolved_still_lets_init_finish(
 
 
 def test_init_encourages_a_host_list(home, capsys, monkeypatch):
-    """A new case has no host list: init says how to give it one, in the
-    words case-mcp's case_init uses."""
+    """A new case has no host list: init says how to give it one (the plain
+    format, an inventory export, or a draft the AI prepares), as case-mcp's
+    case_init does."""
     monkeypatch.setattr(main, "_wintools_configured", lambda: False)
     args = argparse.Namespace(
         name="d", case_id="CASE-D", description="", cases_dir=str(home / "cases")
     )
     main._case_init(args, {"examiner": "tester"})
+    out = " ".join(capsys.readouterr().out.split())
     assert (
-        "If you have an inventory of the machines in scope, upload it in the Hosts tab "
-        "before ingesting; matching hosts then confirm automatically."
-    ) in capsys.readouterr().out.splitlines()
+        "No host list yet. A list of the machines in scope, uploaded before ingesting, "
+        "confirms matching hosts automatically. Paste or upload one in the Hosts tab "
+        "(vhir portal): one name per line with an optional FQDN, or a CSV or TSV export "
+        "with a header row. Or give the AI any inventory (a PDF, spreadsheet or email) "
+        "to prepare as a draft there, then review and upload it."
+    ) in out

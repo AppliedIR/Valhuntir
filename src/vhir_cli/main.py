@@ -1397,8 +1397,11 @@ def _gateway_has_wintools() -> bool:
 
 # Said at intake while a case has no host list (case-mcp's case_init says the same)
 HOST_LIST_HINT = (
-    "If you have an inventory of the machines in scope, upload it in the Hosts tab "
-    "before ingesting; matching hosts then confirm automatically."
+    "No host list yet. A list of the machines in scope, uploaded before ingesting,\n"
+    "confirms matching hosts automatically. Paste or upload one in the Hosts tab\n"
+    "(vhir portal): one name per line with an optional FQDN, or a CSV or TSV export\n"
+    "with a header row. Or give the AI any inventory (a PDF, spreadsheet or email)\n"
+    "to prepare as a draft there, then review and upload it."
 )
 
 
