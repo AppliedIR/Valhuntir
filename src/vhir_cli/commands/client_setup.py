@@ -275,7 +275,9 @@ def _setup_client(args, identity: dict) -> None:
         if services:
             running = [s for s in services if s.get("started")]
             not_started = [s["name"] for s in services if not s.get("started")]
-            if not_started:
+            if client == "codex":  # Codex's profile keeps a backend not started yet
+                running = [{"name": n} for n in _codex_listed(services)]
+            elif not_started:
                 print(
                     f"Warning: {len(not_started)} backend(s) not started and excluded "
                     f"from config: {', '.join(not_started)}",
@@ -2047,14 +2049,73 @@ def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> st
     return head + "".join("\n" + x for x in sections)
 
 
+_SERVER_HEADER = r"\[mcp_servers\.(\"[^\"]*\"|[A-Za-z0-9_-]+)\]\s*$"
+# a TOML table header line ([tui], [[x]], [projects."/a b"]); a [-leading
+# line of text isn't one
+_TOML_KEY = r"""(?:[A-Za-z0-9_-]+|"(?:[^"\\\n]|\\.)*"|'[^'\n]*')"""
+_TABLE_HEADER = (
+    rf"\[\[?[ \t]*{_TOML_KEY}(?:[ \t]*\.[ \t]*{_TOML_KEY})*[ \t]*\]\]?[ \t]*(?:#.*)?$"
+)
+_MCP_TABLE = r"""\[\[?[ \t]*(?:mcp_servers|"mcp_servers"|'mcp_servers')[ \t]*[.\]]"""
+
+
+def _after_instructions(text: str) -> tuple[str, str]:
+    """A profile split where its developer_instructions value closes: the head
+    through that line, and the tables after it. vhir writes the value as a
+    ''' literal or a one-line string, so a [-leading line of the instructions
+    is never read as a table. No such key: all of it is tables; a ''' that
+    never closes: none is."""
+    import re
+
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        m = re.match(r"developer_instructions\s*=\s*", line)
+        if not m:
+            continue
+        end = i + 1
+        value = line[m.end() :]
+        if value.startswith("'''") and "'''" not in value[3:]:
+            closing = [j for j in range(i + 1, len(lines)) if "'''" in lines[j]]
+            if not closing:
+                return text, ""
+            end = closing[0] + 1
+        return "".join(lines[:end]), "".join(lines[end:])
+    return "", text
+
+
+def _client_tables(text: str) -> tuple[str, list[str]]:
+    """The part of a profile vhir owns, and the tables a client added after
+    the instructions (Codex's [tui], ...): every table that isn't an
+    mcp_servers one, from its header to the next header. The owned part is the
+    text with those cut out."""
+    import re
+
+    head, tail = _after_instructions(text)
+    owned, tables, table = [head], [], None
+    for line in tail.splitlines(keepends=True):
+        if re.match(_TABLE_HEADER, line) or re.match(_SERVER_HEADER, line):
+            if re.match(_MCP_TABLE, line):
+                table = None
+            else:
+                table = [line]
+                tables.append(table)
+                continue
+        (table if table is not None else owned).append(line)
+    if not tables:
+        return text, []
+    kept = ["".join(t).rstrip("\n") + "\n" for t in tables]
+    return "".join(owned).rstrip("\n") + "\n", kept
+
+
 def _profile_sections(text: str) -> dict[str, str]:
-    """The [mcp_servers.<name>] sections of a profile vhir wrote, by name."""
+    """The [mcp_servers.<name>] sections of a profile vhir wrote, by name;
+    only those after the instructions."""
     import re
 
     out: dict[str, str] = {}
     name = None
-    for line in text.splitlines(keepends=True):
-        m = re.match(r"\[mcp_servers\.(\"[^\"]*\"|[A-Za-z0-9_-]+)\]\s*$", line)
+    for line in _after_instructions(text)[1].splitlines(keepends=True):
+        m = re.match(_SERVER_HEADER, line)
         if m:
             key = m.group(1)
             name = json.loads(key) if key.startswith('"') else key
@@ -2066,10 +2127,25 @@ def _profile_sections(text: str) -> dict[str, str]:
     return {n: t.rstrip("\n") + "\n" for n, t in out.items()}
 
 
+def _codex_listed(services: list) -> list[str]:
+    """Every backend the gateway lists, started or not: a section for one not
+    started yet keeps Codex's profile whole. Those are named in one line."""
+    named = [
+        s for s in services if isinstance(s, dict) and isinstance(s.get("name"), str)
+    ]
+    down = [s["name"] for s in named if not s.get("started")]
+    if down:
+        print(
+            f"  Not started now: {', '.join(down)}. Kept in Codex's profile; "
+            "Codex may show a start error for each until it runs."
+        )
+    return [s["name"] for s in named]
+
+
 def _codex_servers_from_box(profile: Path) -> tuple[dict, dict[str, str]] | None:
-    """The gateway's backends as this box serves them now, plus opensearch-mcp,
-    and the profile's other server sections kept as they are. None if the
-    gateway can't be reached."""
+    """Every backend the gateway lists, started or not, as this box serves it
+    now, plus opensearch-mcp, and the profile's other server sections kept as
+    they are. None if the gateway can't be reached or lists none."""
     import importlib.util
 
     from vhir_cli.gateway import get_local_gateway_url
@@ -2077,11 +2153,11 @@ def _codex_servers_from_box(profile: Path) -> tuple[dict, dict[str, str]] | None
     url = get_local_gateway_url().rstrip("/")
     token = _read_local_token()
     services = _discover_services(url, token)
-    running = [s["name"] for s in services or [] if s.get("started")]
-    if not running:
+    listed = _codex_listed(services or [])
+    if not listed:
         return None
     servers: dict[str, dict] = {}
-    for name in running:
+    for name in listed:
         servers[name] = {"url": f"{url}/mcp/{name}"}
         if token:
             servers[name]["headers"] = {"Authorization": f"Bearer {token}"}
@@ -2130,7 +2206,10 @@ def _redact_tokens(text: str) -> str:
 
 def _write_codex_profile(path: Path, text: str) -> str:
     """Create, or replace a profile vhir wrote last (its sha256 is in the
-    manifest); anything else is the user's, changed only with consent."""
+    manifest); anything else is the user's, changed only with consent. A table
+    a client added after the instructions (Codex's [tui]) is carried into the
+    new text and left out of both checks, so it never makes the profile the
+    user's; the sha256 recorded is of vhir's part."""
     import hashlib
 
     def record():
@@ -2147,17 +2226,23 @@ def _write_codex_profile(path: Path, text: str) -> str:
     except OSError as e:
         print(f"  Not changed: {path} can't be read ({e}).")
         return "kept"
-    if current == text.encode():
+    try:
+        owned, tables = _client_tables(current.decode())
+        ours = owned.encode()
+    except UnicodeDecodeError:
+        ours, tables = current, []
+    full = text + "".join("\n" + t for t in tables)
+    if ours == text.encode():
         record()
         return "unchanged"
-    if hashlib.sha256(current).hexdigest() == _manifest_get("codex_profile_sha256"):
-        _replace_bytes(path, text.encode(), 0o600)
+    if hashlib.sha256(ours).hexdigest() == _manifest_get("codex_profile_sha256"):
+        _replace_bytes(path, full.encode(), 0o600)
         record()
         print(f"  Updated:   {path}")
         return "updated"
     status = _write_user_file(
         path,
-        text,
+        full,
         "it isn't the profile vhir wrote last, so it may hold your edits",
         mode=0o600,
         redact=_redact_tokens,
@@ -3575,8 +3660,11 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
     # 5. Build endpoint entries
     servers: dict[str, dict] = {}
 
-    # Per-backend endpoints
-    for s in running:
+    # Per-backend endpoints; Codex's profile keeps a backend not started yet
+    listed = (
+        [{"name": n} for n in _codex_listed(services)] if client == "codex" else running
+    )
+    for s in listed:
         name = s["name"]
         servers[name] = _format_server_entry(
             client,
