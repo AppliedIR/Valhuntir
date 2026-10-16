@@ -528,7 +528,9 @@ if ($clientType -eq "codex") {
     }
     # Codex trusts the gateway's self-signed CA only through its environment
     # (CODEX_CA_CERTIFICATE, else SSL_CERT_FILE): its profile can't name one.
-    if ($gatewayUrl -like "https://*" -and -not $env:CODEX_CA_CERTIFICATE) {
+    if ($gatewayUrl -like "https://*" -and -not $env:CODEX_CA_CERTIFICATE -and $env:SSL_CERT_FILE) {
+        Write-Warn "SSL_CERT_FILE is set to $env:SSL_CERT_FILE, which Codex uses instead of the gateway's CA. Add the SIFT's ~/.vhir/tls/ca-cert.pem to that bundle, or Codex can't connect to the gateway."
+    } elseif ($gatewayUrl -like "https://*" -and -not $env:CODEX_CA_CERTIFICATE) {
         Write-Warn "The gateway uses https. For Codex to connect, copy the SIFT's ~/.vhir/tls/ca-cert.pem to this machine, then run (with that copy's full path) and open a new terminal:"
         Write-Host "    [Environment]::SetEnvironmentVariable('CODEX_CA_CERTIFICATE', 'C:\path\to\ca-cert.pem', 'User')"
     }

@@ -649,3 +649,31 @@ def test_windows_tells_how_codex_trusts_an_https_gateway(run, tmp_path):
     )
     assert rc == 0, out
     assert "CODEX_CA_CERTIFICATE" not in out
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_windows_warns_codex_of_a_users_own_ssl_cert_file(run, tmp_path):
+    rc, out = _win_codex(
+        tmp_path, run, "https://sift.example:4508", {"SSL_CERT_FILE": "C:/corp.pem"}
+    )
+    assert rc == 0, out
+    assert "SetEnvironmentVariable" not in out
+    assert (
+        "WARN SSL_CERT_FILE is set to C:/corp.pem, which Codex uses instead of "
+        "the gateway's CA. Add the SIFT's ~/.vhir/tls/ca-cert.pem to that bundle"
+    ) in out
+    # CODEX_CA_CERTIFICATE comes first: nothing to say, as before
+    rc, out = _win_codex(
+        tmp_path,
+        run,
+        "https://sift.example:4508",
+        {"CODEX_CA_CERTIFICATE": "C:/ca.pem", "SSL_CERT_FILE": "C:/corp.pem"},
+    )
+    assert rc == 0, out
+    assert "SSL_CERT_FILE" not in out and "SetEnvironmentVariable" not in out
+    # over http, SSL_CERT_FILE is no matter
+    rc, out = _win_codex(
+        tmp_path, run, "http://sift.example:4508", {"SSL_CERT_FILE": "C:/corp.pem"}
+    )
+    assert rc == 0, out
+    assert "SSL_CERT_FILE" not in out
