@@ -800,6 +800,86 @@ def test_remote_claude_code_trusts_the_ca_without_the_assets_checkout(
     assert f"add {ca} to that bundle" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("assets", [False, True])
+def test_remote_claude_code_keeps_a_users_own_ca_in_user_settings(
+    laptop, monkeypatch, capsys, assets
+):
+    # Project settings override ~/.claude/settings.json, so a bundle the user
+    # set there gets the note and the project gets no NODE_EXTRA_CA_CERTS.
+    monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+    if not assets:
+        monkeypatch.setattr(cs, "_find_claude_code_assets", lambda: None)
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    user = laptop.home / ".claude" / "settings.json"
+    user.parent.mkdir(parents=True, exist_ok=True)
+    user.write_text('{"env": {"NODE_EXTRA_CA_CERTS": "/corp.pem"}}\n')
+    proj = laptop.home / "case"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    settings = proj / ".claude" / "settings.json"
+    capsys.readouterr()
+    if assets:  # the merge the assets checkout runs
+        src = laptop.home / "src-settings.json"
+        src.write_text('{"permissions": {"deny": ["Edit(x)"]}}\n')
+        cs._merge_settings(settings, src, project_copies=True, remote_ca=str(ca))
+    else:
+        _remote(client="claude-code")
+    out = capsys.readouterr().out
+    assert "NODE_EXTRA_CA_CERTS is already set to /corp.pem" in out
+    assert f"add {ca} to that bundle" in out
+    project_env = (
+        json.loads(settings.read_text()).get("env", {}) if settings.is_file() else {}
+    )
+    assert "NODE_EXTRA_CA_CERTS" not in project_env
+    assert json.loads(user.read_text()) == {"env": {"NODE_EXTRA_CA_CERTS": "/corp.pem"}}
+
+
+@pytest.mark.parametrize(
+    "user_text", ['{"env": {"A": "1"}}\n', "not json\n", '{"env": "x"}\n', None]
+)
+def test_remote_ca_is_added_when_user_settings_name_no_bundle(
+    laptop, monkeypatch, user_text
+):
+    # twins: user settings without the var, unreadable, or absent
+    monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+    monkeypatch.setattr(cs, "_find_claude_code_assets", lambda: None)
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    if user_text is not None:
+        user = laptop.home / ".claude" / "settings.json"
+        user.parent.mkdir(parents=True, exist_ok=True)
+        user.write_text(user_text)
+    proj = laptop.home / "case"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    _remote(client="claude-code")
+    settings = proj / ".claude" / "settings.json"
+    assert json.loads(settings.read_text()) == {"env": {"NODE_EXTRA_CA_CERTS": str(ca)}}
+
+
+def test_remote_ca_already_in_user_settings_writes_nothing(laptop, monkeypatch):
+    monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+    monkeypatch.setattr(cs, "_find_claude_code_assets", lambda: None)
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    user = laptop.home / ".claude" / "settings.json"
+    user.parent.mkdir(parents=True, exist_ok=True)
+    user.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": str(ca)}}))
+    proj = laptop.home / "case"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    _remote(client="claude-code")
+    settings = proj / ".claude" / "settings.json"
+    project_env = (
+        json.loads(settings.read_text()).get("env", {}) if settings.is_file() else {}
+    )
+    assert "NODE_EXTRA_CA_CERTS" not in project_env
+
+
 def test_remote_claude_code_over_http_writes_no_settings_without_assets(
     laptop, monkeypatch
 ):

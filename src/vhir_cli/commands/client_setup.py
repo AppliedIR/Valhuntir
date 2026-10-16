@@ -1398,7 +1398,9 @@ def _gateway_ca_for_settings(
 
     remote_ca is the CA a remote client was given (~/.vhir/tls/ca-cert.pem,
     copied from the SIFT) when its gateway uses https; without it, the CA is
-    the local gateway's.
+    the local gateway's. With remote_ca, a NODE_EXTRA_CA_CERTS in
+    ~/.claude/settings.json is the user's own as well: the project settings
+    written here would override it.
 
     The settings env wins over the process environment because Claude Code
     honours settings env for HTTP MCP connections and it overrides the
@@ -1411,6 +1413,14 @@ def _gateway_ca_for_settings(
     if not ca:
         return None
     env_val = os.environ.get("NODE_EXTRA_CA_CERTS")
+    if remote_ca and not (
+        isinstance(existing_env, dict) and "NODE_EXTRA_CA_CERTS" in existing_env
+    ):
+        # The remote write goes to the project's settings, which override
+        # ~/.claude/settings.json: a bundle the user set there decides too.
+        user_env = _user_settings_env()
+        if "NODE_EXTRA_CA_CERTS" in user_env:
+            existing_env = user_env
     if isinstance(existing_env, dict) and "NODE_EXTRA_CA_CERTS" in existing_env:
         # A settings value wins at runtime, so an explicit one (even "") decides,
         # whatever the process environment holds. Presence, not truthiness: a
@@ -1427,6 +1437,16 @@ def _gateway_ca_for_settings(
     if env_val == ca:
         return None
     return ("notice", ca, env_val)
+
+
+def _user_settings_env() -> dict:
+    """env of ~/.claude/settings.json, or {} when it has none or can't be read."""
+    try:
+        data = json.loads((Path.home() / ".claude" / "settings.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    env = data.get("env") if isinstance(data, dict) else None
+    return env if isinstance(env, dict) else {}
 
 
 def _merged_settings(
