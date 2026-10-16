@@ -1073,6 +1073,32 @@ def test_a_saved_todo_survives_a_later_saved_decision_for_the_same_item(case):
     ]  # fmt: skip
 
 
+def test_a_pending_iocs_modification_is_dropped_noted_and_never_signed(case):
+    """IOCs are structured {value, type} and read-only in the portal (no IOC
+    editor), so a modifications.iocs entry is dropped with a note that does NOT
+    say "enter it again", and never reaches the entry that gets signed. The
+    editable field in the same decision is kept."""
+    from vhir_cli.decide import Decision, save_unsigned
+
+    f = json.loads((case / "findings.json").read_text())[1]
+    d = Decision(f, "finding", "edit", "DRAFT", loaded=f, modifications={
+        "observation": "edited observation",
+        "iocs": [{"value": "9.9.9.9", "type": "ipv4"}],
+    })  # fmt: skip
+    not_saved, _left = save_unsigned(case, "steve", [d], "attempts")
+
+    assert any("iocs" in m for m in not_saved), not_saved
+    assert not any("enter it again" in m for m in not_saved), not_saved
+
+    (entry,) = [
+        e
+        for e in json.loads((case / "pending-reviews.json").read_text())["items"]
+        if e["id"] == f["id"]
+    ]
+    assert "observation" in entry["modifications"]
+    assert "iocs" not in entry["modifications"]
+
+
 def test_a_todo_that_can_t_be_written_is_kept_and_the_exit_is_1(
     case, monkeypatch, capsys
 ):

@@ -45,9 +45,9 @@ from vhir_cli.case_io import (
 from vhir_cli.display import one_line
 
 # Fields a pending-reviews entry can carry as modifications (as the portal).
-# "iocs" is excluded: IOCs are structured {value, type} and are not inline-
-# editable in the portal, so a modifications.iocs entry is dropped here (and
-# noted "enter it again") rather than overwriting the structured list.
+# "iocs" is excluded: IOCs are structured {value, type} and are read-only in
+# the portal (no IOC editor), so a modifications.iocs entry is dropped here
+# (and noted as not applied) rather than overwriting the structured list.
 DELTA_EDITABLE_FIELDS = frozenset(
     {
         "title", "observation", "interpretation", "confidence", "confidence_justification",
@@ -255,7 +255,9 @@ def save_unsigned(
                 continue
             dropped = sorted(set(d.modifications) - DELTA_EDITABLE_FIELDS)
             if dropped:
-                not_saved.append(f"{d.id}: {', '.join(dropped)}; enter it again")
+                not_saved.append(
+                    f"{d.id}: {', '.join(dropped)} not applied (not editable here)"
+                )
             entry = {
                 "id": d.id,
                 "type": d.type,
