@@ -31,4 +31,5 @@ jobs:
       - run: pip install -e ".[dev]"
       # The restore tests need the siblings; one command, so opensearch-mcp's sift-common comes from its branch
       - run: pip install "sift-common @ git+https://github.com/AppliedIR/sift-mcp.git#subdirectory=packages/sift-common" "opensearch-mcp @ git+https://github.com/AppliedIR/opensearch-mcp.git"
-      - run: pytest tests/ -v --tb=short
+      # A hang ends the step on its own: the log still uploads and faulthandler names the stuck test
+      - run: timeout 1200 pytest tests/ -v --tb=short -o faulthandler_timeout=300

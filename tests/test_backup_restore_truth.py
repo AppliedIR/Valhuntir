@@ -674,11 +674,17 @@ def _race(lock: Path, start: str | None, trials: int) -> list[str]:
             lock.write_text(start)
         barrier, out = ctx.Barrier(2), ctx.Queue()
         ps = [ctx.Process(target=_take, args=(lock, barrier, out)) for _ in range(2)]
-        for p in ps:
-            p.start()
-        got = sorted(out.get(timeout=30) for _ in ps)
-        for p in ps:
-            p.join(30)
+        try:
+            for p in ps:
+                p.start()
+            got = sorted(out.get(timeout=30) for _ in ps)
+            for p in ps:
+                p.join(30)
+        finally:  # a stuck taker fails the test; left alive, it would hold the run open at exit
+            for p in ps:
+                if p.is_alive():
+                    p.kill()
+                    p.join()
         if got != ["refused", "took"]:
             wrong.append(" / ".join(got))
     return wrong
