@@ -1124,6 +1124,31 @@ def test_review_mode_notes_a_pending_iocs_delta_and_leaves_the_iocs(
     assert f["observation"] == ("edited observation" if mixed else "o")
 
 
+def test_review_mode_sanitizes_a_hostile_dropped_field_name(case, capsys, monkeypatch):
+    """The dropped field names come from pending-reviews.json, which the Portal
+    writes. A hostile key carrying ESC sequences and a newline must not reach the
+    terminal raw in the "not applied" notice — one_line shows its control
+    characters as "?" so it can't move the cursor or forge a line."""
+    key = "iocs\x1b[2Jboom\nFAKE: all signed OK\x1b[0mX"
+    mods = {key: {"original": None, "modified": "x"}}  # not editable -> dropped
+    entry = {"id": "F-steve-001", "type": "finding", "action": "edit",
+             "examiner": "steve", "modifications": mods}  # fmt: skip
+    _review(case, entry, monkeypatch)
+    out = capsys.readouterr().out
+
+    # The notice is one line; its control chars are shown as "?" so a hostile key
+    # can't move the cursor or (via its newline) forge a second line. (The terminal
+    # diff renderer legitimately colours its own header, so scope to the notice.)
+    notice = next(
+        ln for ln in out.splitlines() if "not applied (not editable here)" in ln
+    )
+    assert "\x1b" not in notice  # no raw ESC in the notice
+    assert notice.strip() == (
+        "F-steve-001: iocs?[2Jboom?FAKE: all signed OK?[0mX not applied (not editable here)"
+    )
+    assert ("F-steve-001", "edit") in _signed()
+
+
 def test_a_todo_that_can_t_be_written_is_kept_and_the_exit_is_1(
     case, monkeypatch, capsys
 ):
