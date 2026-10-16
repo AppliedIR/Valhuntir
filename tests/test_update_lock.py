@@ -1,12 +1,12 @@
 """`vhir update` installs from the dependency lock in the pulled sift-mcp.
 
-Every package but OpenCTI's goes through one locked install (`-c`/`-b` with
-`deps/vhir.lock`), opensearch-mcp included whenever it's installed, even
-though the installer never put it in the manifest, and so are the installed
-packages the lock names (`check-lock.py --installed`), so that it moves them. The venv is checked
-against the lock (`deps/check-lock.py --strict`), OpenCTI's client is then
-installed unlocked, and the venv is checked again (`--final`). uv older than
-0.6.0 ignores the lock's hashes, so update refuses it before pulling.
+Every package goes through one locked install (`-c`/`-b` with
+`deps/vhir.lock`), opensearch-mcp and opencti-mcp included whenever they're
+installed, even if the manifest doesn't record them, and so are the installed
+packages the lock names (`check-lock.py --installed`), so that it moves them.
+The venv is then checked against the lock (`deps/check-lock.py --strict`) and
+for conflicts (`--final`). uv older than 0.6.0 ignores the lock's hashes, so
+update refuses it before pulling.
 subprocess is a stand-in that records each command.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -81,12 +82,14 @@ def _update(
     answers=(),
     platform="linux",
     leftovers="",
+    opencti_leftovers="",
     install_rc=0,
-    opencti_rc=0,
     hangs=(),
     after_check_rc=0,
     uninstall="ok",
     smi_hangs=False,
+    check=False,
+    no_restart=True,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
@@ -124,14 +127,12 @@ def _update(
             if kw.get("check"):  # as subprocess.run does with check=True
                 raise subprocess.CalledProcessError(2, cmd)
             result.returncode = 2
-        if len(cmd) > 2 and cmd[1] == "-c" and "torch" in cmd[2]:
+        if "-c" in cmd[1:3] and "torch" in cmd[-1]:  # the probe: python [-I] -c …
             result.returncode, result.stdout = (0, torch) if torch else (1, "")
         elif cmd[:3] == ["uv", "pip", "install"] and "-c" in cmd:
             result.returncode = install_rc
-        elif cmd[:3] == ["uv", "pip", "install"]:  # opencti-mcp, unlocked
-            if "opencti" in hangs:
-                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-            result.returncode = opencti_rc
+        elif cmd[:3] == ["uv", "pip", "install"]:  # nothing installs unlocked
+            raise AssertionError(f"an install without the lock: {cmd}")
         elif cmd[:3] == ["uv", "pip", "check"]:
             result.returncode = after_check_rc
         elif cmd[:2] == ["uv", "--version"]:
@@ -145,6 +146,8 @@ def _update(
             result.stdout = {"--installed": "setuptools starlette"}.get(cmd[2], "")
             if cmd[2] == "--cuda-leftovers":
                 result.stdout = leftovers
+            if cmd[2] == "--opencti-leftovers":
+                result.stdout = opencti_leftovers
         return result
 
     def ask(prompt=""):
@@ -168,7 +171,7 @@ def _update(
     ):
         try:
             # A MagicMock's unset attributes are truthy: the flags are set.
-            args = MagicMock(check=False, no_restart=True, cpu=cpu, gpu=gpu)
+            args = MagicMock(check=check, no_restart=no_restart, cpu=cpu, gpu=gpu)
             cmd_update(args, {})
         except SystemExit as e:
             exited = e
@@ -185,43 +188,48 @@ def _steps(calls):
     return out
 
 
-def test_one_locked_install_then_opencti_unlocked_with_checks_between(box):
+def test_one_locked_install_opencti_too_then_both_checks(box):
     calls, exited = _update(box)
     assert exited is None
     steps = _steps(calls)
-    # The contract: --strict passes immediately before the unlocked OpenCTI
-    # step, and --final runs right after it.
     assert [s[0] if s[0] == "install" else s[1] for s in steps] == [
         "--installed",
         "install",
         "--strict",
-        "install",
         "--final",
     ]
-    locked, opencti = steps[1][1], steps[3][1]
+    locked = steps[1][1]
     # What the venv already has that the lock names goes into the locked
-    # install, as plain requirements; the unlocked step doesn't get them.
+    # install, as plain requirements.
     assert locked[locked.index("-b") + 2 : locked.index("-b") + 4] == [
         "setuptools",
         "starlette",
     ]
-    assert "starlette" not in opencti
     lock = str(box.lock)
     assert (
         locked[locked.index("-c") + 1] == lock
         and locked[locked.index("-b") + 1] == lock
     )
-    assert not any("packages/opencti" in a for a in locked)
+    assert str(box.src / "packages" / "opencti") in locked
     assert any(a.endswith("packages/forensic-rag") for a in locked)
-    assert "-c" not in opencti and "-b" not in opencti
-    assert opencti[-2:] == ["-e", str(box.src / "packages" / "opencti")]
     # The checks run the pulled sift-mcp's checker against its lock.
     for c in calls:
         if len(c) > 2 and c[1].endswith("check-lock.py"):
             assert c[1] == str(box.src / "deps" / "check-lock.py")
             assert c[c.index("--lock") + 1] == lock
-    # pycti's otel pins are held in the lock now; nothing reinstalls the exporter.
     assert "opentelemetry-exporter-otlp-proto-grpc" not in locked
+
+
+def test_a_dropped_pycti_requirement_is_never_reinstalled(box):
+    with patch(
+        "vhir_cli.commands.update._detect_constraint_changed_packages",
+        return_value={"pycti", "httpx"},
+    ):
+        calls, exited = _update(box)
+    assert exited is None
+    locked = next(c for kind, c in _steps(calls) if kind == "install")
+    assert "httpx" in locked and "pycti" not in locked
+    assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
 
 
 def test_installed_opensearch_mcp_is_reinstalled_though_not_in_the_manifest(box):
@@ -298,7 +306,7 @@ def test_a_pulled_sift_mcp_without_the_lock_stops_before_installing(box, capsys)
     assert not _steps(calls)
 
 
-def test_opencti_installed_but_not_in_the_manifest_still_gets_its_step(box):
+def test_opencti_installed_but_not_in_the_manifest_joins_the_locked_install(box):
     def drop(m):
         del m["packages"]["opencti-mcp"]
         return m
@@ -310,10 +318,19 @@ def test_opencti_installed_but_not_in_the_manifest_still_gets_its_step(box):
         "--installed",
         "install",
         "--strict",
-        "install",
         "--final",
     ]
-    assert "-c" not in steps[3][1] and steps[3][1][-1].endswith("packages/opencti")
+    assert str(box.src / "packages" / "opencti") in steps[1][1]
+
+
+def test_opencti_not_installed_is_left_alone(box):
+    def drop(m):
+        del m["packages"]["opencti-mcp"]
+        return m
+
+    calls, _ = _update(box, manifest=drop, opencti=False)
+    locked = next(c for kind, c in _steps(calls) if kind == "install")
+    assert not any("packages/opencti" in a for a in locked)
 
 
 # --- The PyTorch build ----------------------------------------------------------
@@ -474,7 +491,6 @@ def test_yes_removes_them_after_the_final_check_and_cleans_the_cache(box, capsys
     # that links its CPU torch there (uv --link-mode symlink).
     assert calls[clean][3:] == NAMES and "--force" not in calls[clean]
     assert "check none are yours" in out
-    assert any(c[:3] == ["uv", "pip", "check"] for c in calls[clean:])
 
 
 @pytest.mark.parametrize("answer", ["", "n", "no"])
@@ -492,11 +508,15 @@ def test_no_terminal_or_the_gpu_build_never_offers(box, kw):
     assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
 
 
-def test_a_removal_that_did_not_finish_prints_how_to_finish(box, capsys):
-    _, exited = _cleanup(box, answers=["y"], after_check_rc=1)
+def test_after_yes_no_dependency_check_says_the_removal_did_not_finish(box, capsys):
+    """A failing `uv pip check` reports packages that were incompatible before
+    the removal; it says nothing about the removal, so none runs after it."""
+    calls, exited = _cleanup(box, answers=["y"], after_check_rc=1)
     assert exited is None
-    err = capsys.readouterr().err
-    assert "Finish it: uv pip uninstall" in err and "nvidia-cudnn-cu12" in err
+    uninstall = _index(calls, ["uv", "pip", "uninstall"])
+    assert not any(c[:3] == ["uv", "pip", "check"] for c in calls[uninstall:])
+    out, err = capsys.readouterr()
+    assert "didn't finish" not in out + err and "Finish it" not in out + err
 
 
 # --- Nothing in the new steps stops an update it shouldn't --------------------
@@ -541,6 +561,51 @@ def test_an_uninstall_that_fails_skips_the_cache_clean(box, capsys, uninstall):
     assert not any(c[:3] == ["uv", "cache", "clean"] for c in calls)
 
 
+# --- OpenCTI's leftovers: offered for removal, default No -------------------
+
+OPENCTI = ["pycti", "fastapi", "stix2"]
+
+
+def _opencti(box, **kw):
+    kw.setdefault("tty", True)
+    kw.setdefault("gpu", True)  # the build is chosen: no PyTorch question
+    return _update(box, opencti_leftovers="\n".join(OPENCTI) + "\n", **kw)
+
+
+def test_yes_removes_the_opencti_leftovers_and_the_check_is_clean(box, capsys):
+    calls, exited = _opencti(box, answers=["y"])
+    _finished(box, calls, exited)
+    out = capsys.readouterr().out
+    final = next(i for i, c in enumerate(calls) if c[2:3] == ["--final"])
+    uninstall = _index(calls, ["uv", "pip", "uninstall"])
+    assert final < uninstall and calls[uninstall][-3:] == OPENCTI
+    assert not any(c[:3] == ["uv", "cache", "clean"] for c in calls)
+    assert any(c[:3] == ["uv", "pip", "check"] for c in calls[uninstall:])
+    assert "only Valhuntir's environment" in out and "opencti_query.py" in out
+    assert "Removed; the dependency check is clean." in out
+
+
+@pytest.mark.parametrize("answer", ["", "n", EOFError])
+def test_no_or_no_answer_keeps_the_opencti_leftovers(box, capsys, answer):
+    calls, exited = _opencti(box, answers=[answer])
+    _finished(box, calls, exited)
+    assert any("Remove them now? [y/N]" in p for p in _asked(calls))
+    assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
+
+
+def test_no_terminal_or_no_leftovers_never_offers(box):
+    for kw in ({"tty": False}, {"opencti_leftovers": ""}):
+        calls, _ = _update(box, **{"tty": True, "gpu": True, "answers": ["y"], **kw})
+        assert not _asked(calls)
+        assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
+
+
+def test_a_failed_opencti_removal_never_stops_the_update(box, capsys):
+    calls, exited = _opencti(box, answers=["y"], uninstall="failed")
+    _finished(box, calls, exited)
+    assert "Clean-up not finished" in capsys.readouterr().out
+
+
 # --- An update that stops after the pull says so and how to finish ------------
 
 PART_WAY = "Update stopped part-way: the code was pulled and packages may have changed"
@@ -548,7 +613,7 @@ PART_WAY = "Update stopped part-way: the code was pulled and packages may have c
 
 @pytest.mark.parametrize(
     "stop",
-    ["lock missing", "--installed", "install", "--strict", "opencti", "--final"],
+    ["lock missing", "--installed", "install", "--strict", "--final"],
 )
 @pytest.mark.parametrize("flag", ["", "cpu", "gpu"])
 def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
@@ -562,7 +627,6 @@ def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
         gpu=flag == "gpu",
         opencti=True,
         install_rc=1 if stop == "install" else 0,
-        opencti_rc=1 if stop == "opencti" else 0,
         check_rc={stop: 1} if stop.startswith("--") else None,
     )
     assert exited is not None and exited.code == 1
@@ -577,7 +641,7 @@ def test_anchor_a_clean_update_prints_no_part_way_block(box, capsys):
     assert exited is None and PART_WAY not in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("hang", ["--strict", "opencti", "--final"])
+@pytest.mark.parametrize("hang", ["--strict", "--final"])
 def test_a_timeout_after_the_pull_prints_the_part_way_block(box, capsys, hang):
     _, exited = _update(box, opencti=True, hangs=(hang,))
     assert exited is not None and exited.code == 1  # not a traceback
@@ -591,3 +655,99 @@ def test_no_answer_to_the_pytorch_question_prints_the_part_way_block(box, capsys
     assert exited is not None and exited.code == 1
     err = capsys.readouterr().err
     assert "Re-run with: vhir update --cpu or --gpu" in err and PART_WAY in err
+
+
+# --- The gateway's own launch lines get -I before the restart -----------------
+
+
+def _launchers(box):
+    script = box.home / ".vhir" / "start-gateway.sh"
+    unit = box.home / ".config" / "systemd" / "user" / "vhir-gateway.service"
+    unit.parent.mkdir(parents=True)
+    script.write_text(
+        '#!/usr/bin/env bash\nexec "/v/bin/python" -m sift_gateway --config "/c.yaml"\n'
+    )
+    script.chmod(0o755)
+    unit.write_text(
+        "[Service]\nExecStart=/v/bin/python -m sift_gateway --config /c.yaml\n"
+    )
+    return script, unit
+
+
+def test_update_isolates_the_launch_lines_before_the_restart(box):
+    script, unit = _launchers(box)
+    calls, exited = _update(box, no_restart=False)
+    assert exited is None
+    assert '"/v/bin/python" -I -m sift_gateway' in script.read_text()
+    assert "python -I -m sift_gateway" in unit.read_text()
+    order = [c[1:3] for c in calls if c[:1] == ["systemctl"]]
+    assert order.index(["--user", "daemon-reload"]) < order.index(["--user", "restart"])
+
+
+def test_no_restart_still_rewrites_and_says_when_it_applies(box, capsys):
+    script, unit = _launchers(box)
+    calls, exited = _update(box, no_restart=True)
+    assert exited is None and "python -I -m" in unit.read_text()
+    assert ["systemctl", "--user", "restart", "vhir-gateway"] not in calls
+    assert "takes effect at the next gateway restart" in capsys.readouterr().out
+
+
+def test_check_writes_nothing(box):
+    script, unit = _launchers(box)
+    before = (script.read_bytes(), unit.read_bytes())
+    _update(box, check=True)
+    assert (script.read_bytes(), unit.read_bytes()) == before
+
+
+def test_no_restart_says_when_it_applies_after_the_client_deploy_rewrote(
+    box, capsys, monkeypatch
+):
+    """claude-code: Step 5's deploy rewrites the lines, so Step 6.5 finds
+    nothing; the note still has to be printed."""
+    from vhir_cli.commands import client_setup
+
+    script, unit = _launchers(box)
+    monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
+    _update(box, no_restart=True, manifest=lambda m: {**m, "client": "claude-code"})
+    out = capsys.readouterr().out
+    assert "python -I -m" in unit.read_text() and f"Updated: {unit}" in out
+    assert "takes effect at the next gateway restart" in out
+
+
+def test_no_note_when_nothing_was_rewritten(box, capsys):
+    script, unit = _launchers(box)
+    _update(box, no_restart=True)  # rewrites
+    capsys.readouterr()
+    _update(box, no_restart=True)  # nothing left to do
+    assert "takes effect at the next gateway restart" not in capsys.readouterr().out
+
+
+def test_a_user_edited_launcher_is_noted_once_per_update(box, capsys, monkeypatch):
+    """claude-code: Step 5's deploy and Step 6.5 both reach the launchers."""
+    from vhir_cli.commands import client_setup
+
+    script, unit = _launchers(box)
+    script.write_text(script.read_text().replace('exec "', 'exec nice -n 5 "'))
+    unit.write_text(unit.read_text().replace("--config", "--port 4600 --config"))
+    monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
+    _update(box, manifest=lambda m: {**m, "client": "claude-code"})
+    out = capsys.readouterr().out
+    for path in (script, unit):
+        assert out.count(f"Note: {path} has a gateway launch line") == 1, path
+    _update(box, manifest=lambda m: {**m, "client": "claude-code"})  # a later update
+    out = capsys.readouterr().out
+    assert out.count(f"Note: {unit} has a gateway launch line") == 1  # noted again
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-0 file")
+def test_an_unreadable_launcher_is_noted_once_per_update(box, capsys, monkeypatch):
+    from vhir_cli.commands import client_setup
+
+    script, unit = _launchers(box)
+    monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
+    unit.chmod(0)
+    try:
+        _update(box, manifest=lambda m: {**m, "client": "claude-code"})
+    finally:
+        unit.chmod(0o644)
+    assert capsys.readouterr().out.count(f"Note: could not check {unit}") == 1

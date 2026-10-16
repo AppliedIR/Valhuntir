@@ -113,3 +113,86 @@ class TestExec:
         entry = json.loads(log_file.read_text().strip())
         assert entry["result_summary"]["exit_code"] == 0
         assert "lines" in entry["result_summary"]["output"]
+
+
+def _entries(case_dir):
+    log_file = case_dir / "audit" / "cli-exec.jsonl"
+    if not log_file.exists():
+        return []
+    return [json.loads(line) for line in log_file.read_text().splitlines()]
+
+
+class TestExecNeverRunsUnaudited:
+    """A command that ran against the case always leaves its audit entry."""
+
+    def test_output_that_isnt_utf8_is_shown_escaped_and_audited(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        args = FakeArgs(cmd=["printf", "ok\\377\\n"], purpose="non-UTF-8 output")
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            cmd_exec(args, identity)
+        (entry,) = _entries(case_dir)
+        assert entry["result_summary"] == {"exit_code": 0, "output": "1 lines"}
+        assert "ok\\xff" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("raised", [KeyboardInterrupt, RuntimeError])
+    def test_a_run_stopped_by_an_interrupt_or_error_is_audited_once(
+        self, case_dir, identity, monkeypatch, raised
+    ):
+        def run(*a, **kw):  # subprocess.run kills the child, then re-raises
+            raise raised()
+
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setattr("vhir_cli.commands.execute.subprocess.run", run)
+        args = FakeArgs(cmd=["echo", "hello"], purpose="stopped")
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            with pytest.raises(raised):
+                cmd_exec(args, identity)
+        (entry,) = _entries(case_dir)
+        assert entry["params"]["command"] == "echo hello"
+        assert entry["result_summary"]["exit_code"] == -1
+        assert raised.__name__ in entry["result_summary"]["output"]
+
+    def test_the_audit_entry_is_written_before_the_output_is_shown(
+        self, case_dir, identity, monkeypatch
+    ):
+        import builtins
+
+        def show(*a, **kw):  # the terminal fails while the output is shown
+            if a and str(a[0]).startswith("\n--- stdout"):
+                raise BrokenPipeError
+            builtins.print(*a, **kw)
+
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setattr("vhir_cli.commands.execute.print", show, raising=False)
+        args = FakeArgs(cmd=["echo", "hello"], purpose="shown")
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            with pytest.raises(BrokenPipeError):
+                cmd_exec(args, identity)
+        (entry,) = _entries(case_dir)
+        assert entry["result_summary"] == {"exit_code": 0, "output": "1 lines"}
+
+    def test_a_timeout_and_a_missing_command_are_audited_as_before(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        import subprocess
+
+        def run(*a, **kw):
+            raise subprocess.TimeoutExpired(a[0], 300)
+
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            cmd_exec(FakeArgs(cmd=["no-such-tool-x"], purpose="missing"), identity)
+            monkeypatch.setattr("vhir_cli.commands.execute.subprocess.run", run)
+            cmd_exec(FakeArgs(cmd=["sleep", "999"], purpose="slow"), identity)
+        missing, slow = (e["result_summary"] for e in _entries(case_dir))
+        assert missing == {
+            "exit_code": -1,
+            "output": "0 lines; stderr: Command not found: no-such-tool-x",
+        }
+        assert slow == {
+            "exit_code": -1,
+            "output": "0 lines; stderr: Command timed out (300s)",
+        }
+        assert "Command not found: no-such-tool-x" in capsys.readouterr().err

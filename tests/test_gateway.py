@@ -4,7 +4,12 @@ import ssl
 
 import yaml
 
-from vhir_cli.gateway import find_ca_cert, get_local_gateway_url, get_local_ssl_context
+from vhir_cli.gateway import (
+    find_ca_cert,
+    get_local_gateway_url,
+    get_local_ssl_context,
+    local_gateway_ca_cert,
+)
 
 
 class TestGetLocalGatewayUrl:
@@ -124,3 +129,43 @@ class TestFindCaCert:
     def test_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr("vhir_cli.gateway.Path.home", lambda: tmp_path)
         assert find_ca_cert() is None
+
+
+class TestLocalGatewayCaCert:
+    """The CA a local client must trust: the gateway CA's absolute path when
+    the local gateway uses TLS and that CA exists, else None (exactly the
+    precondition of get_local_ssl_context)."""
+
+    def _tls_gateway(self, tmp_path, monkeypatch, *, certfile, with_ca):
+        monkeypatch.setattr("vhir_cli.gateway.Path.home", lambda: tmp_path)
+        config_dir = tmp_path / ".vhir"
+        config_dir.mkdir()
+        gw = {"gateway": {"port": 4508}}
+        if certfile is not None:
+            gw["gateway"]["tls"] = {"certfile": certfile}
+        (config_dir / "gateway.yaml").write_text(yaml.dump(gw))
+        ca = config_dir / "tls" / "ca-cert.pem"
+        if with_ca:
+            ca.parent.mkdir()
+            ca.write_text("dummy")
+        return str(ca)
+
+    def test_tls_and_ca_returns_ca_path(self, tmp_path, monkeypatch):
+        ca = self._tls_gateway(
+            tmp_path, monkeypatch, certfile="/some/cert.pem", with_ca=True
+        )
+        assert local_gateway_ca_cert() == ca
+
+    def test_no_tls_returns_none(self, tmp_path, monkeypatch):
+        self._tls_gateway(tmp_path, monkeypatch, certfile=None, with_ca=True)
+        assert local_gateway_ca_cert() is None
+
+    def test_tls_but_no_ca_returns_none(self, tmp_path, monkeypatch):
+        self._tls_gateway(
+            tmp_path, monkeypatch, certfile="/some/cert.pem", with_ca=False
+        )
+        assert local_gateway_ca_cert() is None
+
+    def test_no_gateway_config_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("vhir_cli.gateway.Path.home", lambda: tmp_path)
+        assert local_gateway_ca_cert() is None

@@ -1,12 +1,11 @@
 """Backup and restore keep the control files out of the case tree.
 
-A backup holds the live ledger (verification/<case_id>.jsonl), the
-declared examiners' hashes (passwords/<ex>.json) and an optional OpenSearch
-snapshot alongside the case files. Restore copied all of them into the case
-directory too (hash material where the LLM can read it); the next backup then
-copied those stale case-dir copies over the live ones it had just written,
-and a later restore installed them. Restore also installed any
-passwords/*.json in the backup, declared or not.
+A backup holds the live 0.6 ledger (verification/<case_id>.jsonl) and an
+optional OpenSearch snapshot alongside the case files. Restore copied them
+into the case directory too; the next backup then copied those stale
+case-dir copies over the live ones it had just written. No credential file
+is backed up or installed at all: not the examiners' password files, and not
+a 0.6 password file an older restore left in the case directory.
 
 Every sudo call is intercepted, and the ledger and password directories are
 redirected to tmp_path: nothing here writes /var/lib/vhir.
@@ -20,6 +19,7 @@ import os
 import shutil
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
@@ -39,7 +39,6 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "VERIFICATION_DIR", ver_dir)
     monkeypatch.setattr(B, "_SNAPSHOTS_DIR", sysdir / "snapshots")
     monkeypatch.setattr(B, "_is_opensearch_available", lambda: False)
-    monkeypatch.setattr(B, "_verify_restored_password", lambda examiner: None)
     installed = []
 
     def sudo(argv, *a, **k):
@@ -91,7 +90,12 @@ def box(tmp_path, monkeypatch):
         monkeypatch.setattr(B.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
         monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
         args = types.SimpleNamespace(
-            backup_path=str(path), skip_ledger=False, skip_opensearch=True
+            backup_path=str(path),
+            skip_ledger=False,
+            skip_opensearch=True,
+            target=json.loads((Path(path) / "backup-manifest.json").read_text())[
+                "source"
+            ],  # where it came from, without the prompt
         )
         try:
             B.cmd_restore(args, {"examiner": "steve"})
@@ -170,17 +174,14 @@ def test_restore_puts_no_control_files_in_the_case_dir(box):
 def test_after_a_restore_the_next_backup_and_restore_use_the_live_copies(box):
     _restore_once(box)
     box.ledger(2)  # the examiner keeps working: one more approval
-    box.pwfile("steve", "cc" * 16)  # and changes their password
     path = box.backup()["backup_path"]
     backed = os.path.join(path, "verification", "backups.jsonl")
     with open(backed) as fh:
         assert len(fh.read().splitlines()) == 2
-    assert box.salt("steve", B.Path(path) / "passwords") == "cc" * 16
+    assert not (B.Path(path) / "passwords").exists()
     box.lose_case()
-    (box.pw_dir / "steve.json").unlink()
     assert box.restore(path) == 0
     assert len((box.ver_dir / "backups.jsonl").read_text().splitlines()) == 2
-    assert box.salt("steve") == "cc" * 16
 
 
 def test_a_case_restored_by_older_code_still_backs_up_the_live_copies(box):
@@ -195,7 +196,7 @@ def test_a_case_restored_by_older_code_still_backs_up_the_live_copies(box):
     box.ledger(2)
     path = B.Path(box.backup()["backup_path"])
     assert len((path / "verification" / "backups.jsonl").read_text().splitlines()) == 2
-    assert box.salt("steve", path / "passwords") == "cc" * 16
+    assert not (path / "passwords" / "steve.json").exists()  # a credential: left out
 
 
 @pytest.mark.parametrize(
@@ -239,17 +240,18 @@ def test_anchor_post_restore_verification_has_nothing_missing(box, capsys):
     assert f"Files: {n} verified\n" in out and "MISSING" not in out, out
 
 
-def test_anchor_both_declared_examiners_are_installed_on_a_fresh_box(box):
+def test_no_examiner_s_password_file_is_backed_up_or_installed(box):
     box.make_case(examiners=("alice", "steve"))
     box.pwfile("steve", "aa" * 16)
     box.pwfile("alice", "a1" * 16)
     box.ledger(1)
     path = box.backup()["backup_path"]
+    assert not (B.Path(path) / "passwords").exists()
     box.lose_case()
     for p in box.pw_dir.glob("*.json"):
         p.unlink()
     assert box.restore(path) == 0
-    assert sorted(p.stem for p in box.pw_dir.glob("*.json")) == ["alice", "steve"]
+    assert list(box.pw_dir.glob("*.json")) == []
 
 
 def test_anchor_plain_files_named_like_the_control_dirs(box):
@@ -260,9 +262,9 @@ def test_anchor_plain_files_named_like_the_control_dirs(box):
     box.ledger(2)
     r = box.backup()
     path = B.Path(r["backup_path"])
-    assert r["includes_verification_ledger"] and r["password_examiners"] == ["steve"]
+    assert r["includes_verification_ledger"]
     assert len((path / "verification" / "backups.jsonl").read_text().splitlines()) == 2
-    assert (path / "passwords" / "steve.json").is_file()
+    assert (path / "passwords").read_text().startswith("examiner's own file")
 
 
 # --- created_by is collected only when it is a well-formed examiner name -----
@@ -280,7 +282,7 @@ def test_a_dotted_alias_of_an_examiner_is_not_collected(box):
     box.ledger(1)
     r = box.backup()
     path = B.Path(r["backup_path"])
-    assert r["password_examiners"] == [] and not (path / "passwords").exists()
+    assert not (path / "passwords").exists()
     box.lose_case()
     box.restore(path)
     assert box.control_in_case() == [] and "steve.json" not in box.installed
@@ -294,11 +296,11 @@ def test_the_alias_beside_the_real_name_changes_nothing(box):
     box.pwfile("steve", "aa" * 16)
     box.ledger(1)
     r = box.backup()
-    assert r["password_examiners"] == ["steve"]
+    assert not (B.Path(r["backup_path"]) / "passwords").exists()
     box.lose_case()
     (box.pw_dir / "steve.json").unlink()
     box.restore(r["backup_path"])
-    assert box.control_in_case() == [] and box.salt("steve") == "aa" * 16
+    assert box.control_in_case() == [] and box.salt("steve") is None
 
 
 @pytest.mark.parametrize("created_by", ["../x", "/etc/x", "Steve", 7, ""])
@@ -311,5 +313,4 @@ def test_a_malformed_created_by_reads_nothing(box, created_by):
     box.ledger(1)
     r = box.backup()
     path = B.Path(r["backup_path"])
-    assert r["password_examiners"] == []
     assert not (path / "x.json").exists() and not (path / "passwords").exists()

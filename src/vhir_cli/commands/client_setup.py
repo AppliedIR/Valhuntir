@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ _FORENSIC_ALLOW_RULES = {
     "mcp__forensic-rag-mcp__*",
     "mcp__windows-triage-mcp__*",
     "mcp__opencti-mcp__*",
+    "mcp__threatintel-mcp__*",
     "mcp__wintools-mcp__*",
     "mcp__remnux-mcp__*",
     "mcp__vhir__*",
@@ -55,6 +57,71 @@ _FORENSIC_DENY_RULES = {
     "Edit(**/CASE.yaml)",
     "Edit(**/actions.jsonl)",
     "Edit(**/audit/*.jsonl)",
+    "Edit(**/evidence.json)",
+    "Edit(**/evidence-verified.json)",
+    "Edit(**/iocs.json)",
+    "Read(//var/lib/vhir/**)",
+    "Edit(//var/lib/vhir/**)",
+    # The gateway's tokens and Claude Code's own state, as Codex's shell is denied them
+    "Read(**/.vhir/gateway.yaml)",
+    "Read(~/.vhir/gateway.yaml)",
+    "Read(~/.claude.json)",
+    "Bash(vhir approve*)",
+    "Bash(*vhir approve*)",
+    "Bash(vhir reject*)",
+    "Bash(*vhir reject*)",
+    # Control file self-protection (anti-accident, anti-injection)
+    "Edit(**/.claude/settings.json)",
+    "Edit(**/.claude/CLAUDE.md)",
+    "Edit(**/.claude/rules/**)",
+    "Edit(**/.vhir/hooks/**)",
+    "Edit(**/.vhir/active_case)",
+    "Edit(**/.vhir/gateway.yaml)",
+    "Edit(**/.vhir/config.yaml)",
+    "Edit(**/.vhir/.password_lockout)",
+    # Sync with template (was in settings.json but missing here)
+    "Edit(**/pending-reviews.json)",
+    # The same rules anchored at the home folder: "**/" matches inside the
+    # session's folder only
+    "Edit(~/.claude/settings.json)",
+    "Edit(~/.claude/CLAUDE.md)",
+    "Edit(~/.claude/rules/**)",
+    "Edit(~/.vhir/hooks/**)",
+    "Edit(~/.vhir/active_case)",
+    "Edit(~/.vhir/gateway.yaml)",
+    "Edit(~/.vhir/config.yaml)",
+    "Edit(~/.vhir/.password_lockout)",
+    # Deployed skills and agents, and the Codex folders
+    "Edit(~/.claude/skills/**)",
+    "Edit(~/.claude/agents/**)",
+    "Edit(~/.agents/**)",
+    "Edit(~/.codex/**)",
+    # Host identity's records and the case paths map
+    "Edit(**/host-observations.jsonl)",
+    "Edit(**/host-decisions.jsonl)",
+    "Edit(**/host-ops.json)",
+    "Edit(**/host-dictionary.yaml)",
+    "Edit(**/.vhir/case-paths.json)",
+    "Edit(~/.vhir/case-paths.json)",
+}
+
+# Old forensic deny rules — removed during migration re-deploy. The
+# single-slash /var/lib/vhir rules matched nothing: "//" marks an absolute
+# path in a permission rule.
+# The copies a project deployment makes under its .claude/ (off SIFT): the
+# product settings' home-anchored rules don't reach them, so the project's
+# own settings get these, anchored at the project's root ("/" in a project
+# settings file). Uninstall removes them with the rest.
+_PROJECT_COPY_DENY = ("Edit(/.claude/skills/**)", "Edit(/.claude/agents/**)")
+
+_OLD_FORENSIC_DENY_RULES = {
+    "Bash(rm -rf *)",
+    "Bash(mkfs*)",
+    "Bash(dd *)",
+    "Read(/var/lib/vhir/**)",
+    "Edit(/var/lib/vhir/**)",
+    # Every Write( rule: an Edit rule already covers the tools that write
+    # files, so these only added lines to the client's start-up output
     "Write(**/findings.json)",
     "Write(**/timeline.json)",
     "Write(**/approvals.jsonl)",
@@ -62,41 +129,20 @@ _FORENSIC_DENY_RULES = {
     "Write(**/CASE.yaml)",
     "Write(**/actions.jsonl)",
     "Write(**/audit/*.jsonl)",
-    "Edit(**/evidence.json)",
     "Write(**/evidence.json)",
-    "Edit(**/iocs.json)",
+    "Write(**/evidence-verified.json)",
     "Write(**/iocs.json)",
-    "Read(/var/lib/vhir/**)",
-    "Edit(/var/lib/vhir/**)",
     "Write(/var/lib/vhir/**)",
-    "Bash(vhir approve*)",
-    "Bash(*vhir approve*)",
-    "Bash(vhir reject*)",
-    "Bash(*vhir reject*)",
-    # Control file self-protection (anti-accident, anti-injection)
-    "Edit(**/.claude/settings.json)",
     "Write(**/.claude/settings.json)",
-    "Edit(**/.claude/CLAUDE.md)",
     "Write(**/.claude/CLAUDE.md)",
-    "Edit(**/.claude/rules/**)",
     "Write(**/.claude/rules/**)",
-    "Edit(**/.vhir/hooks/**)",
     "Write(**/.vhir/hooks/**)",
-    "Edit(**/.vhir/active_case)",
     "Write(**/.vhir/active_case)",
-    "Edit(**/.vhir/gateway.yaml)",
     "Write(**/.vhir/gateway.yaml)",
-    "Edit(**/.vhir/config.yaml)",
     "Write(**/.vhir/config.yaml)",
-    "Edit(**/.vhir/.password_lockout)",
     "Write(**/.vhir/.password_lockout)",
-    # Sync with template (was in settings.json but missing here)
-    "Edit(**/pending-reviews.json)",
     "Write(**/pending-reviews.json)",
 }
-
-# Old forensic deny rules — removed during migration re-deploy
-_OLD_FORENSIC_DENY_RULES = {"Bash(rm -rf *)", "Bash(mkfs*)", "Bash(dd *)"}
 
 # Valhuntir MCP names — used for uninstall identification.
 _VHIR_BACKEND_NAMES = {
@@ -107,6 +153,7 @@ _VHIR_BACKEND_NAMES = {
     "forensic-rag-mcp",
     "windows-triage-mcp",
     "opencti-mcp",
+    "threatintel-mcp",
     "opensearch-mcp",
     "wintools-mcp",
     "remnux-mcp",
@@ -127,12 +174,14 @@ def cmd_setup_client(args, identity: dict) -> None:
     With -y (unless --ask-user-files), a user file that would change is
     changed after a backup, with an alert, and the commands that undo it are
     printed at exit, even after an error."""
-    global _APPLIED
+    global _APPLIED, _ALLOW_UNSANDBOXED
     auto = getattr(args, "yes", False) and not getattr(args, "ask_user_files", False)
     _APPLIED = [] if auto else None
+    _ALLOW_UNSANDBOXED = _allow_unsandboxed(args)
     try:
         _setup_client(args, identity)
     finally:
+        _ALLOW_UNSANDBOXED = False
         changed, _APPLIED = _APPLIED or [], None
         if changed:
             import shlex
@@ -148,6 +197,40 @@ def cmd_setup_client(args, identity: dict) -> None:
                         " close Claude Code first."
                     )
                 print(f"    cp -p {shlex.quote(str(bak))} {shlex.quote(str(path))}")
+
+
+CLAUDE_CODE = "claude-code"
+
+
+def _allow_unsandboxed(args) -> bool:
+    """Whether --allow-unsandboxed is confirmed: only by the phrase typed on
+    a terminal. -y never gives it (the sandbox then stays required); with no
+    terminal to type it on, nothing is deployed."""
+    if not getattr(args, "allow_unsandboxed", False):
+        return False
+    if getattr(args, "yes", False):
+        print(
+            "  --allow-unsandboxed needs the typed phrase, which -y doesn't give: "
+            "Claude Code still refuses to start without a working sandbox."
+        )
+        return False
+    if not sys.stdin.isatty():
+        print(
+            "Error: --allow-unsandboxed needs the phrase typed on a terminal. "
+            "Nothing was deployed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(
+        "  With this, Claude Code runs Bash with NO sandbox when bubblewrap can't "
+        "start,\n  instead of refusing to start. The forensic write and read "
+        "limits on Bash are then gone."
+    )
+    typed = input(f"  Type {UNSANDBOXED_PHRASE} to go on: ")
+    if typed.strip() != UNSANDBOXED_PHRASE:
+        print("Error: the phrase didn't match. Nothing was deployed.", file=sys.stderr)
+        sys.exit(1)
+    return True
 
 
 def _setup_client(args, identity: dict) -> None:
@@ -167,6 +250,12 @@ def _setup_client(args, identity: dict) -> None:
 
     # 1. Resolve parameters from switches (or interactive wizard)
     client = _resolve_client(args, auto)
+    if client == "claude-desktop":
+        print(DESKTOP_DROPPED, file=sys.stderr)
+        sys.exit(1)
+    if client == "codex" and not _is_sift():
+        print(CODEX_OFF_SIFT, file=sys.stderr)
+        sys.exit(1)
     sift_url = _resolve_sift(args, auto)
     windows_url, windows_token = _resolve_windows(args, auto)
     remnux_url, remnux_token = _resolve_remnux(args, auto)
@@ -258,7 +347,7 @@ def _setup_client(args, identity: dict) -> None:
         servers["opensearch-mcp"] = {
             "type": "stdio",
             "command": sys.executable,
-            "args": ["-m", "opensearch_mcp"],
+            "args": ["-I", "-m", "opensearch_mcp"],
         }
 
     if not servers:
@@ -272,15 +361,8 @@ def _setup_client(args, identity: dict) -> None:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 4. Record client type in manifest (for vhir update)
-    manifest_path = Path.home() / ".vhir" / "manifest.json"
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text())
-            manifest["client"] = client
-            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-        except (json.JSONDecodeError, OSError):
-            pass  # Non-critical
+    # 4. Record the client in the manifest (for vhir update)
+    _record_client(client)
 
     # 5. Print internet MCP summary
     internet_mcps = []
@@ -494,16 +576,18 @@ def _wizard_client() -> str:
     print("\n=== Valhuntir Client Configuration ===")
     print("Which LLM client will connect to your Valhuntir endpoints?\n")
     print("  1. Claude Code      CLI agent (writes .mcp.json + CLAUDE.md)")
-    print("  2. Claude Desktop   Desktop app (writes claude_desktop_config.json)")
+    print("  2. Codex            CLI agent (writes ~/.codex/valhuntir.config.toml)")
     print("  3. LibreChat        Web UI (writes librechat_mcp.yaml)")
-    print("  4. Other / manual   Raw JSON config for any MCP client")
+    print("  4. Open WebUI       Web UI (writes its lock profile and system prompt)")
+    print("  5. Other / manual   Raw JSON config for any MCP client")
 
     choice = _prompt("\nChoose", "1")
     return {
         "1": "claude-code",
-        "2": "claude-desktop",
+        "2": "codex",
         "3": "librechat",
-        "4": "other",
+        "4": "open-webui",
+        "5": "other",
     }.get(choice, "other")
 
 
@@ -597,8 +681,10 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
         raise RuntimeError(f"claude mcp add {name} failed: {stderr}")
 
 
-def _duplicate_backends(servers: dict) -> list[str]:
-    """Per-backend ~/.claude.json entries that duplicate gateway routing."""
+def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
+    """Per-backend entries in `path` (~/.claude.json) that duplicate gateway
+    routing, and an `opencti-mcp` entry for the same gateway once its current
+    name `threatintel-mcp` is written: one threat-intel entry."""
     _BACKEND_NAMES = {
         "forensic-mcp",
         "case-mcp",
@@ -607,17 +693,25 @@ def _duplicate_backends(servers: dict) -> list[str]:
         "forensic-rag-mcp",
         "windows-triage-mcp",
         "opencti-mcp",
+        "threatintel-mcp",
         "opensearch-mcp",
         "wintools-mcp",
         "forensic-rag",
         "windows-triage",
     }
-    gw_url = servers.get("vhir", {}).get("url", "")
+    gw_url = (servers.get("vhir") or servers.get("threatintel-mcp") or {}).get(
+        "url", ""
+    )
     if not gw_url:
         return []
-    gw_base = gw_url.rsplit("/mcp/", 1)[0]
+    names = _BACKEND_NAMES if "vhir" in servers else set()
+    if "threatintel-mcp" in servers:
+        names = names | {"opencti-mcp"}
+    gw = _gateway_of(gw_url)
     try:
-        existing = json.loads((Path.home() / ".claude.json").read_text())["mcpServers"]
+        existing = json.loads((path or Path.home() / ".claude.json").read_text())[
+            "mcpServers"
+        ]
     except (OSError, ValueError, KeyError, TypeError):
         return []
     if not isinstance(existing, dict):
@@ -625,16 +719,33 @@ def _duplicate_backends(servers: dict) -> list[str]:
     return [
         name
         for name, entry in existing.items()
-        if name in _BACKEND_NAMES
+        if name in names
+        and name not in servers
         and isinstance(entry, dict)
-        and entry.get("url", "").startswith(gw_base)
+        and gw is not None
+        and _gateway_of(str(entry.get("url", "")), routed=True) == gw
     ]
 
 
-def _cleanup_duplicate_backends(servers: dict) -> None:
+def _gateway_of(url: str, routed: bool = False) -> tuple | None:
+    """A URL's gateway: its scheme, host and port, compared exactly (so :4508
+    is never :45080). `routed`: only a per-backend route under /mcp/."""
+    from urllib.parse import urlsplit
+
+    try:
+        u = urlsplit(url)
+        where = (u.scheme.lower(), u.hostname, u.port)
+    except ValueError:
+        return None
+    if not u.scheme or not u.hostname or (routed and not u.path.startswith("/mcp/")):
+        return None
+    return where
+
+
+def _cleanup_duplicate_backends(servers: dict, path: Path | None = None) -> None:
     """Remove per-backend entries that duplicate gateway routing."""
-    claude_json = Path.home() / ".claude.json"
-    removed = _duplicate_backends(servers)
+    claude_json = path or Path.home() / ".claude.json"
+    removed = _duplicate_backends(servers, claude_json)
     if not removed:
         return
     try:
@@ -777,59 +888,65 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             _cleanup_duplicate_backends(servers)
         else:
             output = Path.cwd() / ".mcp.json"
+            stale = _duplicate_backends(servers, output)
+            if stale:  # backed up and announced, as ~/.claude.json is
+                _announce_claude_json(output, ([], []), stale)
             _merge_and_write(output, {"mcpServers": servers})
+            _cleanup_duplicate_backends(servers, output)
             print(f"  Generated: {output}")
 
         settings = _deploy_claude_code_assets(Path.cwd())
         print(f"  Examiner:  {examiner}")
         print("")
-        if settings and settings[1] != "kept":
-            print("  Forensic controls deployed:")
-            print("    Sandbox:     enabled (Bash writes restricted)")
-            print("    Audit hook:  forensic-audit.sh (captures all Bash commands)")
-            print("    Provenance:  enforced (findings require evidence trail)")
-            print("    Discipline:  FORENSIC_DISCIPLINE.md + TOOL_REFERENCE.md")
-        elif settings:
-            print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
+        if settings:
+            from vhir_cli.controls import print_block
 
-        if sift and settings and settings[1] != "kept":
-            print("")
-            print("  Forensic controls deployed globally.")
-            print("  Claude Code can be launched from any directory on this machine.")
-            print(
-                "  Audit logging, permission guardrails, and MCP tools will always apply."
-            )
+            if settings[1] != "kept":
+                print(f"  Forensic controls deployed{' globally' if sift else ''}.")
+                print("  Start Claude Code from the case folder (cd <case>; claude).")
+            else:
+                print(f"  Forensic controls NOT applied to {settings[0]}; see above.")
+            print_block(CLAUDE_CODE, settings[0], sift=sift)  # as installed now
 
-    elif client == "claude-desktop":
-        output = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
-        _merge_and_write(output, config)
-        print(f"  Generated: {output}")
-        agents_md = _find_agents_md()
+    elif client == "codex":
+        from vhir_cli.commands.codex_controls import deploy_codex_controls
+        from vhir_cli.controls import print_block
+
+        deploy_codex_assets(servers)
+        # -y installs the managed requirements (sudo may ask); otherwise asked
+        deploy_codex_controls(consent=True if _APPLIED is not None else None)
+        print(f"  Examiner:  {examiner}")
         print("")
-        print("  To enable forensic discipline guidance:")
-        print("    1. Open Claude Desktop")
-        print("    2. Create a new Project (or open an existing one)")
-        print("    3. Click 'Set project instructions'")
-        if agents_md:
-            print(f"    4. Paste the contents of: {agents_md}")
-        else:
-            print("    4. Paste the contents of AGENTS.md from the sift-mcp repo")
-        print("")
-        print("  The MCP servers also provide instructions automatically via")
-        print("  the MCP protocol. Project instructions provide additional")
-        print("  context for your investigation workflow.")
+        print("  Start Codex in a case folder with Valhuntir's profile:")
+        print("    cd <case folder> && codex -p valhuntir")
+        print_block("codex")  # what is installed now
+
+    elif client == "open-webui":
+        _write_openwebui(servers)
+        _print_mcp_block()
 
     elif client == "librechat":
         output = Path.cwd() / "librechat_mcp.yaml"
         _write_librechat_yaml(output, servers)
         print(f"  Generated: {output}")
         print(_LIBRECHAT_POST_INSTALL)
+        _print_mcp_block()
 
     else:
         # Manual / other — just dump JSON
         output = Path.cwd() / "vhir-mcp-config.json"
         _merge_and_write(output, config)
         print(f"  Generated: {output}")
+        print("")
+        print(f"  NOTE: {OTHER_CLIENT_NOTICE}")
+        _print_mcp_block()
+
+
+def _print_mcp_block() -> None:
+    from vhir_cli.controls import MCP, print_block
+
+    print("")
+    print_block(MCP)
 
 
 def _find_claude_code_assets() -> Path | None:
@@ -869,9 +986,30 @@ def _find_claude_code_assets() -> Path | None:
 
 
 _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
+# One of them, at a place setup puts it, in a hook's command: a project's
+# `$CLAUDE_PROJECT_DIR/.claude/hooks/` or (Lite) `$CLAUDE_PROJECT_DIR/hooks/`,
+# or a `.claude/hooks/` folder by its path; then the end, a quote, a space, a
+# redirect or a separator. A script of the same name elsewhere is the user's.
+_OUR_HOOK_SCRIPT = re.compile(
+    r"(?:\$\{?CLAUDE_PROJECT_DIR\}?/(?:\.claude/)?hooks/|/\.claude/hooks/)(?:"
+    + "|".join(re.escape(h) for h in _PRODUCT_HOOKS)
+    + r")(?=$|[\s\"'<>|;&)])"
+)
+# read by the audit hooks: the shell commands with an MCP route, and the
+# sidecar that looks a command up
+_HOOK_DATA = ("mcp-route.py", "mcp-routes.tsv")
+
+# `--allow-unsandboxed`, confirmed with the typed phrase: Claude Code may then
+# run without a sandbox when bwrap can't start (failIfUnavailable: false).
+_ALLOW_UNSANDBOXED = False
+UNSANDBOXED_PHRASE = "RUN CLAUDE CODE WITHOUT A SANDBOX"
 # `vhir setup client -y`: (backup, path) of each user file it changed. None
 # when a change is asked about on a terminal, or kept, instead.
 _APPLIED: list | None = None
+# Launcher files _isolate_gateway_launchers rewrote in this process.
+_LAUNCHERS_UPDATED: list[Path] = []
+# Launcher files already noted in this process (an update reaches them twice).
+_LAUNCHERS_NOTED: set[Path] = set()
 
 
 def _backup(path: Path) -> Path:
@@ -909,10 +1047,197 @@ def _replace_bytes(dst: Path, data: bytes, mode: int) -> None:
         raise
 
 
+# keys/ holds each examiner's credential, ledger/ the chains and the case lock
+SIGNING_DIRS = (Path("/var/lib/vhir/keys"), Path("/var/lib/vhir/ledger"))
+
+
+def _signing_dir_state(folder: Path) -> str:
+    """ "fine": this user's, writable, nothing inside root's; "missing";
+    "give back": root's, or this user's with a bad mode or root's files inside;
+    "other": another account's (never touched: one examiner OS user per box)."""
+    try:
+        if not folder.is_dir():
+            return "missing"
+        uid = folder.stat().st_uid
+    except OSError:
+        return "missing"
+    if uid not in (0, os.getuid()):
+        return "other"
+    if uid == 0 or not os.access(folder, os.W_OK | os.X_OK):
+        return "give back"
+    try:
+        if any(e.stat(follow_symlinks=False).st_uid == 0 for e in os.scandir(folder)):
+            return "give back"
+    except OSError:
+        return "give back"
+    return "fine"
+
+
+def ensure_signing_dirs() -> None:
+    """Make the signing folders this box lacks, and give back one that is
+    root's (with what root left inside) or this user's but unusable: owned by
+    this user, 0700 (/var/lib/vhir is root's: sudo). A folder another account
+    owns is left alone, with the installer's refusal. Never raises: a failure
+    prints the command to run instead."""
+    import getpass
+    import subprocess
+
+    from vhir_cli import credentials
+
+    user = getpass.getuser()
+    for folder in SIGNING_DIRS:
+        state = _signing_dir_state(folder)
+        if state == "fine":
+            continue
+        if state == "other":
+            print(f"  {credentials.other_owner_text(folder)}", file=sys.stderr)
+            continue
+        what = "Giving back" if state == "give back" else "Creating"
+        print(f"  {what} {folder}... ", end="", flush=True)
+        # only root's entries change hands: never another account's
+        script = (
+            f"mkdir -p {folder} && find {folder} -xdev -uid 0 -exec chown -h "
+            f"{user}:{user} {{}} + && chmod 700 {folder}"
+        )
+        try:
+            ok = (
+                subprocess.run(
+                    ["sudo", "sh", "-c", script],
+                    capture_output=True, text=True, timeout=300,  # sudo may ask a password
+                ).returncode
+                == 0
+            )  # fmt: skip
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if ok:
+            print("done")
+            continue
+        print("failed")
+        print(
+            f"  Run manually: sudo mkdir -p {folder} && sudo find {folder} -xdev -uid 0 "
+            f"-exec chown -h $USER:$USER {{}} + && sudo chmod 700 {folder}",
+            file=sys.stderr,
+        )
+
+
+# Run in a process of its own (see _ensure_signing_dirs_fresh)
+_ENSURE_SCRIPT = (
+    "from vhir_cli.commands.client_setup import ensure_signing_dirs; "
+    "ensure_signing_dirs()"
+)
+
+
+def _ensure_signing_dirs_fresh() -> None:
+    """ensure_signing_dirs in a fresh Python process. An older vhir's update
+    has its own modules loaded (vhir_cli.identity among them), so this code's
+    imports can't run in it; a new process imports only this code. Its output
+    and sudo's prompt use this terminal. Never raises."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            [sys.executable, "-I", "-c", _ENSURE_SCRIPT], timeout=900, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  The signing folders weren't made ({e}); run `vhir update` again.")
+
+
+def _under_an_older_update() -> bool:
+    """True inside `vhir update` of a vhir from before the signing folders.
+    That update pulls this code, then imports this module and calls
+    `_isolate_gateway_launchers` from it, so this is where one update makes
+    them. Its own update module, loaded first, lacks `_ensure_signing_dirs`;
+    this vhir's has it (and makes the folders itself), and nothing else
+    loads it, so tests never get here."""
+    running = sys.modules.get("vhir_cli.commands.update")
+    return running is not None and not hasattr(running, "_ensure_signing_dirs")
+
+
+def _isolate_gateway_launchers() -> list[Path]:
+    """Add -I to the gateway launch line in the files setup-sift.sh writes
+    (~/.vhir/start-gateway.sh and the user unit), so the gateway never imports
+    from the directory it starts in. setup-sift.sh rewrites both files whole
+    on every run; here only the generated line changes. A line that differs
+    (edited by the user) is left with a notice. Keeps the file's mode and a
+    symlink. Never raises: an older vhir update runs this unguarded.
+    Returns the files rewritten. Inside an older vhir's update, the signing
+    folders are made here first."""
+    import re
+    import subprocess
+
+    if _under_an_older_update():
+        _ensure_signing_dirs_fresh()
+
+    forms = (  # (file, the generated line); the paths vary per install
+        (
+            Path.home() / ".vhir" / "start-gateway.sh",
+            re.compile(r'(exec "[^"]+/bin/python") (-m sift_gateway --config "[^"]+")'),
+        ),
+        (
+            Path.home() / ".config" / "systemd" / "user" / "vhir-gateway.service",
+            re.compile(r"(ExecStart=\S+/bin/python) (-m sift_gateway --config \S+)"),
+        ),
+    )
+    updated = []
+    for path, generated in forms:
+        try:
+            if not path.is_file():
+                continue
+            lines = path.read_bytes().decode().splitlines(keepends=True)
+            launch = [i for i, ln in enumerate(lines) if "-m sift_gateway" in ln]
+            if not launch or all(
+                " -I " in lines[i].split("-m sift_gateway")[0] for i in launch
+            ):
+                continue  # no launch line, or already isolated
+            changed = False
+            for i in launch:
+                body = lines[i].rstrip("\n")
+                m = generated.fullmatch(body)
+                if m:
+                    lines[i] = f"{m[1]} -I {m[2]}" + lines[i][len(body) :]
+                    changed = True
+            if not changed:
+                if path in _LAUNCHERS_NOTED:
+                    continue
+                _LAUNCHERS_NOTED.add(path)
+                print(
+                    f"  Note: {path} has a gateway launch line Valhuntir didn't write;"
+                    " add -I after its python (python -I -m sift_gateway) so the gateway"
+                    " never imports from the directory it starts in."
+                )
+                continue
+            mode = (
+                path.resolve() if path.is_symlink() else path
+            ).stat().st_mode & 0o7777
+            _replace_bytes(path, "".join(lines).encode(), mode)
+            updated.append(path)
+            _LAUNCHERS_UPDATED.append(path)
+            print(f"  Updated: {path} (added -I to the gateway launch line)")
+            if path.suffix == ".service":
+                try:
+                    subprocess.run(
+                        ["systemctl", "--user", "daemon-reload"],
+                        capture_output=True,
+                        timeout=30,
+                        check=True,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    print(
+                        "  Note: run `systemctl --user daemon-reload` so the next"
+                        " gateway restart uses the updated unit."
+                    )
+        except Exception as e:  # noqa: BLE001 - never stop an update over this
+            if path not in _LAUNCHERS_NOTED:
+                _LAUNCHERS_NOTED.add(path)
+                print(f"  Note: could not check {path}: {e}")
+    return updated
+
+
 def _shipped(dst: Path, src: Path) -> bool:
     """Whether dst's bytes are a version of src the product shipped: dst's
     blob id appears in the history of src's checkout (HEAD, following
-    renames). Without git or a checkout: False, so the user is asked."""
+    renames). src may be gone from the checkout (a retired file). Without git
+    or a checkout: False, so the user is asked."""
     import subprocess
 
     def git(*args):
@@ -921,7 +1246,8 @@ def _shipped(dst: Path, src: Path) -> bool:
         )
 
     try:
-        top = git("-C", str(src.parent), "rev-parse", "--show-toplevel")
+        here = next(p for p in src.parents if p.is_dir())
+        top = git("-C", str(here), "rev-parse", "--show-toplevel")
         if top.returncode:
             return False
         root = Path(top.stdout.strip()).resolve()
@@ -950,16 +1276,25 @@ def _shipped(dst: Path, src: Path) -> bool:
     return blob.returncode == 0 and blob.stdout.strip() in ids
 
 
-def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> str:
+def _write_user_file(
+    path: Path,
+    new: str,
+    why: str,
+    as_json: bool = False,
+    mode: int | None = None,
+    redact=None,
+) -> str:
     """Write a file the user may have edited, only with their consent.
 
     Returns "created" (no file was there), "unchanged" (nothing would change),
     "written" (they said yes, or `vhir setup client -y`; a backup was made
-    first) or "kept". Asks only on a terminal (default No); otherwise prints
-    the change and keeps the file.
+    first) or "kept". Asks only on a terminal (default Yes; n/no keeps);
+    otherwise prints the change and keeps the file.
     """
     if not path.exists():
-        _replace_bytes(path, new.encode(), 0o600 if as_json else 0o644)
+        if mode is None:
+            mode = 0o600 if as_json else 0o644
+        _replace_bytes(path, new.encode(), mode)
         return "created"
     try:
         old = path.read_text()
@@ -987,7 +1322,7 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
         old.splitlines(), new_view.splitlines(), "current", "proposed", lineterm=""
     )
     for line in diff:
-        print(f"    {line}")
+        print(f"    {redact(line) if redact else line}")
     if _APPLIED is None and not sys.stdin.isatty():
         print(
             f"  Not changed: {path}. To review and apply, re-run `vhir update` "
@@ -995,8 +1330,8 @@ def _write_user_file(path: Path, new: str, why: str, as_json: bool = False) -> s
         )
         return "kept"
     if _APPLIED is None and input(
-        f"  Apply these changes to {path}? [y/N] "
-    ).strip().lower() not in ("y", "yes"):
+        f"  Apply these changes to {path}? [Y/n] "
+    ).strip().lower() not in ("", "y", "yes"):
         print(f"  Kept: {path} unchanged.")
         return "kept"
     bak = _backup(path)
@@ -1028,10 +1363,61 @@ def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
     return _write_user_file(dst, src.read_text(), why)
 
 
-def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict | None:
+def _gateway_ca_for_settings(
+    existing_env: dict | None,
+) -> tuple[str, str, str | None] | None:
+    """How a local Claude Code should trust the gateway's self-signed CA.
+
+    When the local gateway is configured for TLS and its CA file exists (the
+    precondition of get_local_ssl_context), a local client has to trust that
+    CA or every gateway MCP connection fails with
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE. Returns, with the CA's absolute path:
+      ("add", ca, None)     set env.NODE_EXTRA_CA_CERTS to the CA;
+      ("notice", ca, value) NODE_EXTRA_CA_CERTS is already set (in the
+                            settings env, else the process environment) to
+                            `value` — keep it and tell the user to add the CA
+                            to that bundle;
+      ("overridden", ca, value) the settings env holds the CA and the shell
+                            sets `value`, which the settings entry overrides;
+      None                  no local TLS gateway/CA, or the CA is already it.
+
+    The settings env wins over the process environment because Claude Code
+    honours settings env for HTTP MCP connections and it overrides the
+    process environment, so an unconditional write could silently replace a
+    user's own NODE_EXTRA_CA_CERTS (e.g. a corporate TLS-inspection CA).
+    """
+    from vhir_cli.gateway import local_gateway_ca_cert
+
+    ca = local_gateway_ca_cert()
+    if not ca:
+        return None
+    env_val = os.environ.get("NODE_EXTRA_CA_CERTS")
+    if isinstance(existing_env, dict) and "NODE_EXTRA_CA_CERTS" in existing_env:
+        # A settings value wins at runtime, so an explicit one (even "") decides,
+        # whatever the process environment holds. Presence, not truthiness: a
+        # deliberate "" still blocks trust, so keep it and say so.
+        value = existing_env["NODE_EXTRA_CA_CERTS"]
+        if value == ca:
+            # Ours already; warn only if a different shell value is overridden.
+            if env_val and env_val != ca:
+                return ("overridden", ca, env_val)
+            return None
+        return ("notice", ca, value)
+    if not env_val:
+        return ("add", ca, None)
+    if env_val == ca:
+        return None
+    return ("notice", ca, env_val)
+
+
+def _merged_settings(
+    target: Path, source: Path, hooks_dir: Path | None, project_copies: bool = False
+) -> dict | None:
     """The settings target would hold after merging source in: lists keep the
     user's order with missing entries appended. hooks_dir rewrites the
-    product hooks' commands to it (global deployment). None if unreadable."""
+    product hooks' commands to it (global deployment). project_copies adds
+    the deny rules for a project's own skill and agent copies (the non-SIFT
+    project write). None if unreadable."""
     try:
         existing = json.loads(target.read_text()) if target.is_file() else {}
     except json.JSONDecodeError as e:
@@ -1112,31 +1498,109 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                 if key == "deny":  # Remove old forensic rules
                     current = [r for r in current if r not in _OLD_FORENSIC_DENY_RULES]
                 existing_perms[key] = add_missing(current, incoming["permissions"][key])
+    if project_copies:
+        deny = existing.setdefault("permissions", {}).setdefault("deny", [])
+        existing["permissions"]["deny"] = add_missing(deny, list(_PROJECT_COPY_DENY))
 
-    # Merge sandbox config (deep-merge filesystem.denyWrite)
+    # Merge sandbox config: every list (filesystem.denyWrite, denyRead, ...)
+    # is a union, so the user's own entries stay
     if "sandbox" in incoming:
         existing_sandbox = existing.setdefault("sandbox", {})
         incoming_sandbox = incoming["sandbox"]
         if "filesystem" in incoming_sandbox:
             existing_fs = existing_sandbox.setdefault("filesystem", {})
             for k, v in incoming_sandbox["filesystem"].items():
-                if k == "denyWrite":
-                    existing_fs[k] = add_missing(existing_fs.get(k, []), v)
+                if isinstance(v, list) and isinstance(existing_fs.get(k), list):
+                    existing_fs[k] = add_missing(existing_fs[k], v)
                 else:
                     existing_fs[k] = v
-        # Merge top-level sandbox keys (enabled, allowUnsandboxedCommands)
+        # Merge top-level sandbox keys (enabled, allowUnsandboxedCommands;
+        # a list is a union here too)
         for k, v in incoming_sandbox.items():
-            if k != "filesystem":
+            if k == "filesystem":
+                continue
+            if isinstance(v, list) and isinstance(existing_sandbox.get(k), list):
+                existing_sandbox[k] = add_missing(existing_sandbox[k], v)
+            else:
                 existing_sandbox[k] = v
+        if _ALLOW_UNSANDBOXED:  # confirmed with the typed phrase
+            existing_sandbox["failIfUnavailable"] = False
+
+    # The gateway-CA env (env.NODE_EXTRA_CA_CERTS) is NOT merged here: it is a
+    # client-connectivity convenience, not a forensic control, so settings_applied
+    # (which calls this) must not judge a box that lacks it. It is decided and
+    # written only on deploy, in _merge_settings.
     return existing
 
 
-def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -> str:
+def settings_applied(target: Path) -> tuple[bool, bool]:
+    """(every control as shipped, sandbox off by choice) for the Claude Code
+    settings file `target`: merging the product's settings into it would
+    change nothing. A sandbox turned off with the typed phrase
+    (failIfUnavailable false) is a choice, not a gap: it reads SANDBOX OFF."""
+    assets = _find_claude_code_assets()
+    sources = (
+        [assets / d / "settings.json" for d in ("full", "shared", ".")]
+        if assets
+        else []
+    )
+    source = next((p for p in sources if p.is_file()), None)
+    try:
+        current = json.loads(target.read_text())
+    except (OSError, ValueError):
+        return False, False
+    if source is None or not isinstance(current, dict):
+        return False, False
+    hooks_dir = None
+    if target == Path.home() / ".claude" / "settings.json":
+        hooks_dir = Path.home() / ".vhir" / "hooks"  # global: the hooks run from there
+    merged = _merged_settings(target, source, hooks_dir)
+    off = isinstance(current.get("sandbox"), dict) and (
+        current["sandbox"].get("failIfUnavailable") is False
+    )
+    if merged is not None and off:
+        merged.setdefault("sandbox", {})["failIfUnavailable"] = False
+    return merged == current, off
+
+
+def _merge_settings(
+    target: Path,
+    source: Path,
+    hooks_dir: Path | None = None,
+    project_copies: bool = False,
+) -> str:
     """Merge the product's hooks, permissions and sandbox into target, only
     with the user's consent (see _write_user_file). Returns its status."""
-    merged = _merged_settings(target, source, hooks_dir)
+    merged = _merged_settings(target, source, hooks_dir, project_copies)
     if merged is None:
         return "kept"
+    decision = _gateway_ca_for_settings(merged.get("env"))
+    if decision and decision[0] == "add":
+        if "env" not in merged:
+            merged["env"] = {"NODE_EXTRA_CA_CERTS": decision[1]}
+        elif isinstance(merged["env"], dict):
+            merged["env"]["NODE_EXTRA_CA_CERTS"] = decision[1]
+        else:
+            print(
+                "  Note: env in settings.json isn't an object, so "
+                "NODE_EXTRA_CA_CERTS wasn't added. The gateway uses a "
+                f"self-signed CA, so add {decision[1]} to NODE_EXTRA_CA_CERTS "
+                "by hand or the local client can't verify the gateway."
+            )
+    elif decision and decision[0] == "notice":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS is already set to {decision[2]}; "
+            "left unchanged. The gateway uses a self-signed CA, so add "
+            f"{decision[1]} to that bundle or the local client can't verify "
+            "the gateway."
+        )
+    elif decision and decision[0] == "overridden":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS in your shell is {decision[2]}, but "
+            f"the settings.json entry ({decision[1]}) overrides it. To use your "
+            "own bundle, add the gateway CA to it and remove the settings.json "
+            "entry."
+        )
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
     return _write_user_file(
         target, json.dumps(merged, indent=2) + "\n", why, as_json=True
@@ -1165,11 +1629,14 @@ def _deploy_global_rules(
     discipline_src: Path | None,
     toolref_src: Path | None,
 ) -> None:
-    """Deploy discipline docs to ~/.claude/rules/ (SIFT only)."""
+    """Deploy discipline docs to ~/.claude/rules/ (SIFT only). The tool
+    reference is a skill now: the copy vhir put in rules/ retires."""
     rules_dir = Path.home() / ".claude" / "rules"
+    _retire(
+        rules_dir / "TOOL_REFERENCE.md", toolref_src, "the vhir-tool-reference skill"
+    )
     for src, name in [
         (discipline_src, "FORENSIC_DISCIPLINE.md"),
-        (toolref_src, "TOOL_REFERENCE.md"),
         (_find_agents_md(global_rule=True), "AGENTS.md"),  # never the cwd's
     ]:
         _deploy_copy(src, rules_dir / name)
@@ -1188,6 +1655,9 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
     A file the user may have edited changes only with their consent (see
     _write_user_file). Returns (settings path, its status) or None.
     """
+    # Here, not only in update: an older vhir update reaches the new code
+    # only through this call, between its pull and its gateway restart.
+    _isolate_gateway_launchers()
     assets_dir = _find_claude_code_assets()
     if not assets_dir:
         print(
@@ -1241,6 +1711,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             _deploy_hook(
                 _find_hook(hook_name), Path.home() / ".vhir" / "hooks" / hook_name
             )
+        for name in _HOOK_DATA:
+            _deploy_copy(_find_hook(name), Path.home() / ".vhir" / "hooks" / name)
 
         _drop_deprecated_hooks(Path.home() / ".vhir" / "hooks", settings_target)
 
@@ -1256,12 +1728,20 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             toolref_src=_find_asset("TOOL_REFERENCE.md"),
         )
 
-        # Deploy skills to ~/.claude/commands/
+        # Commands (/welcome now points to the vhir-welcome skill), then the
+        # skills and the skeptic's agent
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = Path.home() / ".claude" / "commands"
             for skill_file in commands_src.glob("*.md"):
                 _deploy_copy(skill_file, commands_target / skill_file.name)
+        deploy_skills(Path.home() / ".claude" / "skills")
+        _deploy_copy(
+            _sift_root_dir("agents") / "finding-skeptic" / "claude.md"
+            if _sift_root_dir("agents")
+            else None,
+            Path.home() / ".claude" / "agents" / "finding-skeptic.md",
+        )
 
         # Also deploy docs to project root (contextual, harmless)
         if project_dir:
@@ -1278,7 +1758,10 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         settings_src = _find_asset("settings.json")
         settings_target = project_dir / ".claude" / "settings.json"
         if settings_src:
-            settings = (settings_target, _merge_settings(settings_target, settings_src))
+            settings = (
+                settings_target,
+                _merge_settings(settings_target, settings_src, project_copies=True),
+            )
             _report_settings(*settings)
 
         # Deploy hook scripts to project
@@ -1286,6 +1769,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             _deploy_hook(
                 _find_hook(hook_name), project_dir / ".claude" / "hooks" / hook_name
             )
+        for name in _HOOK_DATA:
+            _deploy_copy(_find_hook(name), project_dir / ".claude" / "hooks" / name)
 
         _drop_deprecated_hooks(project_dir / ".claude" / "hooks", settings_target)
 
@@ -1295,12 +1780,20 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             project_dir / "CLAUDE.md",
         )
 
-        # Deploy skills to project .claude/commands/
+        # Commands, then the skills and the skeptic's agent, as on SIFT but
+        # in the project's .claude/
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = project_dir / ".claude" / "commands"
             for skill_file in commands_src.glob("*.md"):
                 _deploy_copy(skill_file, commands_target / skill_file.name)
+        deploy_skills(project_dir / ".claude" / "skills")
+        _deploy_copy(
+            _sift_root_dir("agents") / "finding-skeptic" / "claude.md"
+            if _sift_root_dir("agents")
+            else None,
+            project_dir / ".claude" / "agents" / "finding-skeptic.md",
+        )
 
         # Copy AGENTS.md to project root
         _copy_agents_md(project_dir / "AGENTS.md")
@@ -1309,6 +1802,683 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         for doc_name in ("FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
             _deploy_copy(_find_asset(doc_name), project_dir / doc_name)
         return settings if settings_src else None
+
+
+def _sift_root_dir(name: str) -> Path | None:
+    """A folder at the top of the sift-mcp checkout (skills/, agents/)."""
+    assets = _find_claude_code_assets()
+    folder = assets.parent / name if assets else None
+    return folder if folder and folder.is_dir() else None
+
+
+def deploy_skills(target: Path) -> None:
+    """Deploy every skill in sift-mcp's skills/ under `target` (one folder
+    each), file by file through _deploy_copy: a version vhir shipped is
+    updated, and an edited one changes only with the user's consent. The
+    user's own skills are never touched."""
+    source = _sift_root_dir("skills")
+    if source is None:
+        print("  Note: sift-mcp skills not found. Skill deployment skipped.")
+        return
+    for skill in sorted(p for p in source.iterdir() if p.is_dir()):
+        for src in sorted(skill.rglob("*")):
+            if src.is_file():
+                _deploy_copy(src, target / src.relative_to(source))
+
+
+def _retire(dst: Path, src: Path | None, now: str) -> None:
+    """A file vhir used to deploy at `dst`: removed if it is a version vhir
+    shipped (`src`'s history); kept, with a notice, if it holds the user's
+    edits."""
+    if not dst.is_file():
+        return
+    if src is not None and _shipped(dst, src):
+        dst.unlink()
+        print(f"  Removed:   {dst} (now {now})")
+        return
+    print(
+        f"  Kept:      {dst}: it differs from every version vhir shipped, so it may "
+        f"hold your edits. vhir no longer uses it ({now} replaces it); remove it "
+        "when you no longer need it."
+    )
+
+
+# --- Codex ---------------------------------------------------------------------
+
+_INTERNET_MCPS = (_ZELTSER_MCP["name"], _MSLEARN_MCP["name"])
+OTHER_CLIENT_NOTICE = (
+    "Claude Code and Codex are the only supported clients with a shell. A "
+    "client that runs shell commands any other way runs them outside every "
+    "Valhuntir control. An MCP-only client gets the server-side controls only: "
+    "the gateway audit, the case records' rules and signed approvals."
+)
+DESKTOP_DROPPED = (
+    "Claude Desktop is no longer supported: the commands it runs aren't "
+    "audited. Use Claude Code on the SIFT workstation, or Claude Code or Codex "
+    "on another machine with --remote (their shell commands there aren't in "
+    "the case audit)."
+)
+CODEX_OFF_SIFT = (
+    "Codex is set up on the SIFT box itself. On another machine, run "
+    "`vhir setup client --remote --client=codex`, or the client setup script."
+)
+
+
+def codex_profile_path() -> Path:
+    """Valhuntir's Codex profile: `codex -p valhuntir` reads it."""
+    return Path.home() / ".codex" / "valhuntir.config.toml"
+
+
+def _record_client(client: str) -> None:
+    """Add client to the manifest's `clients` (once, in the order they were
+    set up) and make it `client`, the latest. Written atomically. No readable
+    manifest: nothing is recorded."""
+    path = Path.home() / ".vhir" / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(manifest, dict):
+        return
+    clients = manifest.get("clients")
+    clients = (
+        [c for c in clients if isinstance(c, str)] if isinstance(clients, list) else []
+    )
+    earlier = manifest.get("client")
+    if isinstance(earlier, str) and earlier not in clients:
+        clients.insert(0, earlier)  # set up before the list was kept
+    if client not in clients:
+        clients.append(client)
+    manifest["clients"], manifest["client"] = clients, client
+    try:
+        mode = path.stat().st_mode & 0o777
+        _replace_bytes(path, (json.dumps(manifest, indent=2) + "\n").encode(), mode)
+    except OSError:
+        pass  # non-critical, as before
+
+
+def _codex_instructions() -> str | None:
+    """developer_instructions: the AGENTS.md core, the forensic discipline and
+    the Codex overlay, or None if any is missing."""
+    assets = _find_claude_code_assets()  # all three from the one checkout
+    parts = (
+        [
+            assets.parent / "AGENTS.md",
+            assets / "full" / "FORENSIC_DISCIPLINE.md",
+            assets.parent / "codex" / "OVERLAY.md",
+        ]  # fmt: skip
+        if assets
+        else []
+    )
+    if not parts or not all(p.is_file() for p in parts):
+        return None
+    return "\n\n".join(p.read_text().strip() for p in parts) + "\n"
+
+
+def _toml_str(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)  # a valid TOML basic string
+
+
+def _toml_key(key: str) -> str:
+    import re
+
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else _toml_str(key)
+
+
+def _codex_server(name: str, entry: dict) -> str:
+    lines = [f"[mcp_servers.{_toml_key(name)}]"]
+    if entry.get("url"):
+        lines.append(f"url = {_toml_str(entry['url'])}")
+        headers = entry.get("headers") or {}
+        if headers:
+            inner = ", ".join(
+                f"{_toml_key(k)} = {_toml_str(v)}" for k, v in headers.items()
+            )
+            lines.append(f"http_headers = {{ {inner} }}")
+    else:
+        lines.append(f"command = {_toml_str(entry['command'])}")
+        args = ", ".join(_toml_str(a) for a in entry.get("args", []))
+        lines.append(f"args = [{args}]")
+    if name not in _INTERNET_MCPS:  # Valhuntir's tools run without a prompt
+        lines.append('default_tools_approval_mode = "approve"')
+    return "\n".join(lines) + "\n"
+
+
+def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> str:
+    quotes = "'" * 3  # a multi-line literal string, when the text allows one
+    if quotes in instructions:
+        body = _toml_str(instructions)
+    else:
+        body = quotes + "\n" + instructions + quotes
+    head = (
+        "# Valhuntir's Codex profile. Start Codex in a case folder with:\n"
+        "#   codex -p valhuntir\n"
+        "# vhir setup client and vhir update write this file. It holds the\n"
+        "# gateway token, so only you can read it.\n"
+        'sandbox_mode = "workspace-write"\n'
+        'approval_policy = "on-request"\n'
+        'web_search = "disabled"\n'
+        "project_doc_max_bytes = 0\n"
+        f"developer_instructions = {body}\n"
+    )
+    sections = [_codex_server(n, e) for n, e in servers.items()] + kept
+    return head + "".join("\n" + x for x in sections)
+
+
+def _profile_sections(text: str) -> dict[str, str]:
+    """The [mcp_servers.<name>] sections of a profile vhir wrote, by name."""
+    import re
+
+    out: dict[str, str] = {}
+    name = None
+    for line in text.splitlines(keepends=True):
+        m = re.match(r"\[mcp_servers\.(\"[^\"]*\"|[A-Za-z0-9_-]+)\]\s*$", line)
+        if m:
+            key = m.group(1)
+            name = json.loads(key) if key.startswith('"') else key
+            out[name] = line
+        elif line.startswith("["):
+            name = None
+        elif name is not None:
+            out[name] += line
+    return {n: t.rstrip("\n") + "\n" for n, t in out.items()}
+
+
+def _codex_servers_from_box(profile: Path) -> tuple[dict, dict[str, str]] | None:
+    """The gateway's backends as this box serves them now, plus opensearch-mcp,
+    and the profile's other server sections kept as they are. None if the
+    gateway can't be reached."""
+    import importlib.util
+
+    from vhir_cli.gateway import get_local_gateway_url
+
+    url = get_local_gateway_url().rstrip("/")
+    token = _read_local_token()
+    services = _discover_services(url, token)
+    running = [s["name"] for s in services or [] if s.get("started")]
+    if not running:
+        return None
+    servers: dict[str, dict] = {}
+    for name in running:
+        servers[name] = {"url": f"{url}/mcp/{name}"}
+        if token:
+            servers[name]["headers"] = {"Authorization": f"Bearer {token}"}
+    if importlib.util.find_spec("opensearch_mcp") is not None:
+        servers.setdefault(
+            "opensearch-mcp",
+            {"command": sys.executable, "args": ["-I", "-m", "opensearch_mcp"]},
+        )
+    try:
+        old = _profile_sections(profile.read_text()) if profile.is_file() else {}
+    except (OSError, UnicodeDecodeError):
+        old = {}
+    gateway = f'url = "{url}/mcp/'
+    # another section is kept, unless it names a gateway backend now gone
+    kept = {n: t for n, t in old.items() if n not in servers and gateway not in t}
+    return servers, kept
+
+
+def _manifest_get(key: str):
+    try:
+        manifest = json.loads((Path.home() / ".vhir" / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return manifest.get(key) if isinstance(manifest, dict) else None
+
+
+def _manifest_set(key: str, value) -> None:
+    path = Path.home() / ".vhir" / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text())
+        if not isinstance(manifest, dict):
+            return
+        manifest[key] = value
+        mode = path.stat().st_mode & 0o777
+        _replace_bytes(path, (json.dumps(manifest, indent=2) + "\n").encode(), mode)
+    except (OSError, ValueError):
+        pass
+
+
+def _redact_tokens(text: str) -> str:
+    import re
+
+    text = re.sub(r"(vhir_[a-z]{2}_)[0-9A-Za-z]+", r"\1…", text)
+    return re.sub(r"(Bearer\s+)(?!vhir_[a-z]{2}_…)[^\s\"']+", r"\1…", text)
+
+
+def _write_codex_profile(path: Path, text: str) -> str:
+    """Create, or replace a profile vhir wrote last (its sha256 is in the
+    manifest); anything else is the user's, changed only with consent."""
+    import hashlib
+
+    def record():
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        _manifest_set("codex_profile_sha256", digest)
+
+    if not path.exists():
+        _replace_bytes(path, text.encode(), 0o600)
+        record()
+        print(f"  Deployed:  {path}")
+        return "created"
+    try:
+        current = path.read_bytes()
+    except OSError as e:
+        print(f"  Not changed: {path} can't be read ({e}).")
+        return "kept"
+    if current == text.encode():
+        record()
+        return "unchanged"
+    if hashlib.sha256(current).hexdigest() == _manifest_get("codex_profile_sha256"):
+        _replace_bytes(path, text.encode(), 0o600)
+        record()
+        print(f"  Updated:   {path}")
+        return "updated"
+    status = _write_user_file(
+        path,
+        text,
+        "it isn't the profile vhir wrote last, so it may hold your edits",
+        mode=0o600,
+        redact=_redact_tokens,
+    )
+    if status == "written":
+        path.chmod(0o600)
+        record()
+    return status
+
+
+def _codex_config_conflicts() -> None:
+    """Name each top-level value in the user's ~/.codex/config.toml (never
+    written) that Valhuntir's managed Codex settings refuse."""
+    import re
+
+    cfg = Path.home() / ".codex" / "config.toml"
+    try:
+        text = cfg.read_text()
+    except (OSError, UnicodeDecodeError):
+        return
+    allowed = {
+        "sandbox_mode": ("read-only", "workspace-write"),
+        "approval_policy": ("untrusted", "on-request", "never"),
+    }
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break  # top-level keys come before the first table
+        m = re.match(r"(sandbox_mode|approval_policy)\s*=\s*\"([^\"]*)\"", stripped)
+        if m and m.group(2) not in allowed[m.group(1)]:
+            what = (  # a sandbox mode gives way to the managed permissions profile
+                "replace with their own (the workspace, ~/.vhir read-only)"
+                if m.group(1) == "sandbox_mode"
+                else "refuse: Codex stops with an error until it is changed"
+            )
+            print(
+                f'  Note: {cfg} sets {m.group(1)} = "{m.group(2)}", which '
+                f"Valhuntir's managed Codex settings {what}. vhir doesn't edit that file."
+            )
+
+
+def deploy_codex_assets(
+    servers: dict | None = None, remote: bool = False, extra: dict | None = None
+) -> str:
+    """Write Valhuntir's Codex profile, and deploy the skills to
+    ~/.agents/skills/ and the skeptic's agent to ~/.codex/agents/.
+
+    servers None (vhir update): rebuilt from this box, with the gateway's
+    backends found again; it never prompts for anything new, and keeps the
+    profile as it is when the gateway can't be reached. Returns the profile's
+    status: created, updated, unchanged, written, kept or missing.
+
+    remote (another machine): the skills, agent and instructions are fetched
+    from sift-mcp's main branch, with the remote overlay.
+
+    extra: more server entries ({name: {"url": ..., "headers": {...}}} or
+    {"command": ..., "args": [...]}), added to the profile or replacing the
+    same-named entry, e.g. a remnux-mcp added later."""
+    path = codex_profile_path()
+    if remote:
+        instructions = _fetch_codex_assets()
+        if instructions is None or servers is None:
+            print(
+                "  Note: Valhuntir's instructions for Codex couldn't be fetched; "
+                f"{path} not written. Check the network and re-run."
+            )
+            return "missing"
+        servers = {**servers, **(extra or {})}
+        status = _write_codex_profile(
+            path, _codex_profile_text(servers, instructions, [])
+        )
+        _codex_config_conflicts()
+        return status
+    deploy_skills(Path.home() / ".agents" / "skills")
+    agents = _sift_root_dir("agents")
+    _deploy_copy(
+        agents / "finding-skeptic" / "codex.toml" if agents else None,
+        Path.home() / ".codex" / "agents" / "finding-skeptic.toml",
+    )
+    kept: dict[str, str] = {}
+    if servers is None:
+        found = _codex_servers_from_box(path)
+        if found is None:
+            print(
+                f"  Kept:      {path}: the gateway can't be reached, so its "
+                "backends can't be listed. Run `vhir update` again once it runs."
+            )
+            return "kept"
+        servers, kept = found
+    instructions = _codex_instructions()
+    if instructions is None:
+        print(
+            "  Note: Valhuntir's instructions for Codex weren't found (sift-mcp "
+            f"AGENTS.md, FORENSIC_DISCIPLINE.md, codex/OVERLAY.md); {path} not written."
+        )
+        return "missing"
+    servers = {**servers, **(extra or {})}
+    sections = [t for n, t in kept.items() if n not in servers]
+    text = _codex_profile_text(servers, instructions, sections)
+    status = _write_codex_profile(path, text)
+    _codex_config_conflicts()
+    return status
+
+
+_GITHUB_RAW = "https://raw.githubusercontent.com/AppliedIR/sift-mcp/main"
+_SKILL_PATH = r"[A-Za-z0-9._/-]+"
+CODEX_REMOTE_LIMITS = (
+    "Limits on this machine: Codex's shell commands here aren't in the case "
+    "audit (only the MCP tool calls, run on the SIFT box, are), and these "
+    "settings are user-switchable: there are no managed Codex settings here."
+)
+
+
+def _fetch_raw(rel: str) -> bytes | None:
+    """A file from sift-mcp's main branch on GitHub, or None."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{_GITHUB_RAW}/{rel}", timeout=20) as resp:
+            return resp.read() if resp.status == 200 else None
+    except Exception:
+        return None
+
+
+def _deploy_fetched(dst: Path, data: bytes) -> str:
+    """Write a fetched file; one that differs from it changes only as a user
+    file does (shown, and replaced with consent or -y, after a backup)."""
+    try:
+        text = data.decode()
+    except UnicodeDecodeError:
+        return "missing"
+    status = _write_user_file(
+        dst, text, "it differs from what vhir fetched, so it may hold your edits"
+    )
+    if status == "created":
+        print(f"  Deployed:  {dst}")
+    return status
+
+
+def _fetch_codex_assets() -> str | None:
+    """Fetch the skills to ~/.agents/skills/ and the skeptic's agent to
+    ~/.codex/agents/, as sift-mcp's main branch has them. Returns the remote
+    developer_instructions, or None if a part couldn't be fetched."""
+    import re
+
+    skills = Path.home() / ".agents" / "skills"
+    listed = _fetch_raw("skills/MANIFEST")
+    if listed is None:
+        print("  Warning: the skills list couldn't be fetched; skills not deployed.")
+    else:
+        for rel in listed.decode(errors="replace").splitlines():
+            if not rel or rel.startswith("#"):
+                continue
+            if not re.fullmatch(_SKILL_PATH, rel) or ".." in rel or rel.startswith("/"):
+                print(f"  Warning: skipped an unexpected skills path: {rel}")
+                continue
+            data = _fetch_raw(f"skills/{rel}")
+            if data is None:
+                print(f"  Warning: couldn't fetch skills/{rel}")
+                continue
+            _deploy_fetched(skills / rel, data)
+    agent = _fetch_raw("agents/finding-skeptic/codex.toml")
+    if agent is None:
+        print("  Warning: the finding-skeptic agent couldn't be fetched.")
+    else:
+        _deploy_fetched(
+            Path.home() / ".codex" / "agents" / "finding-skeptic.toml", agent
+        )
+    parts = [
+        _fetch_raw(p)
+        for p in (
+            "AGENTS.md",
+            "claude-code/full/FORENSIC_DISCIPLINE.md",
+            "codex/OVERLAY.md",
+            "codex/REMOTE.md",
+        )
+    ]
+    if any(p is None for p in parts):
+        return None
+    return "\n\n".join(p.decode().strip() for p in parts) + "\n"
+
+
+def _setup_codex_remote(servers: dict) -> None:
+    """Remote Codex: the profile, skills and agent on this machine, with the
+    instructions fetched from sift-mcp; Codex starts in ~/vhir."""
+    start = Path.home() / "vhir"
+    start.mkdir(exist_ok=True)
+    deploy_codex_assets(servers, remote=True)
+    _record_client("codex")
+    print("")
+    print("  Start Codex from ~/vhir with Valhuntir's profile:")
+    print("    cd ~/vhir && codex -p valhuntir")
+    print("  Not from your home folder: from there its shell could change ~/.vhir.")
+    print(f"  {CODEX_REMOTE_LIMITS}")
+
+
+def _our_skills(root: Path) -> list[Path]:
+    """Valhuntir's skills under `root` (vhir-*, finding-skeptic); a user's own
+    are never listed."""
+    if not root.is_dir():
+        return []
+    return sorted(
+        d
+        for d in root.iterdir()
+        if d.is_dir() and (d.name.startswith("vhir-") or d.name == "finding-skeptic")
+    )
+
+
+def _remove_listed(heading: str, found: list[Path]) -> None:
+    """List `found`, ask once, and remove them (a link, never its target)."""
+    if not found:
+        return
+    print(f"  {heading}:")
+    for p in found:
+        print(f"    {p}")
+    if not _prompt_yn_strict("  Remove them?"):
+        print("  Skipped.")
+        return
+    for p in found:
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()  # a file, or a link (never its target)
+    print("  Removed.")
+
+
+def _uninstall_codex() -> None:
+    """Remove Valhuntir's Codex profile, its skills and the skeptic's agent;
+    ~/.codex/config.toml and the user's own skills are left alone."""
+    profile = codex_profile_path()
+    agent = Path.home() / ".codex" / "agents" / "finding-skeptic.toml"
+    found = [p for p in (profile, agent) if p.is_file()]
+    _remove_listed(
+        "Codex files to remove", found + _our_skills(Path.home() / ".agents" / "skills")
+    )
+
+
+def _uninstall_claude_copies(claude_dir: Path | None = None) -> None:
+    """Remove the skills and the skeptic's agent setup gave Claude Code
+    (under ~/.claude, or a project's .claude); the user's own skills and
+    agents are left alone."""
+    claude_dir = claude_dir or Path.home() / ".claude"
+    agent = claude_dir / "agents" / "finding-skeptic.md"
+    found = _our_skills(claude_dir / "skills") + (
+        [agent] if agent.is_file() or agent.is_symlink() else []
+    )
+    _remove_listed("Claude Code skills and agent to remove", found)
+
+
+OPENWEBUI_ENV = """\
+# Open WebUI settings for Valhuntir. Start Open WebUI with them, e.g.:
+#   docker run --env-file openwebui-vhir.env ... ghcr.io/open-webui/open-webui
+# They keep tool code off the Open WebUI server: no Python Tools or Functions,
+# no workspace tools, Integrations tab, direct connections or direct tool
+# servers for users, and a code interpreter that runs in the browser (Pyodide)
+# or not at all. Never point the code interpreter at Jupyter or Open Terminal.
+# On an instance that has started before, only ENABLE_PLUGINS applies: Open
+# WebUI keeps the other seven in its database from its first start. Set those
+# in the Admin Panel (docs/open-webui-setup.md lists where).
+# USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS is a default only: a group that
+# allows it gives it to its users, so turn it off in every group as well.
+ENABLE_PLUGINS=False
+USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False
+ENABLE_DIRECT_INTEGRATIONS=False
+ENABLE_DIRECT_CONNECTIONS=False
+USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False
+ENABLE_CODE_INTERPRETER=False
+CODE_INTERPRETER_ENGINE=pyodide
+CODE_EXECUTION_ENGINE=pyodide
+"""
+
+
+# Where an existing instance sets each lock-profile key the environment no
+# longer reaches (Open WebUI 0.11.4). A user has a permission if the defaults
+# or any group they're in grants it, so Direct Tool Servers is turned off in
+# every group as well.
+OPENWEBUI_ADMIN_PANEL = (
+    ("USER_PERMISSIONS_WORKSPACE_TOOLS_ACCESS=False",
+     "with plugins disabled (as this profile sets), the Tools Access switch "
+     "isn't shown and no tool code can load; nothing to set"),
+    ("ENABLE_DIRECT_INTEGRATIONS=False",
+     "Settings > Integrations > User Connections: Direct Integrations off"),
+    ("ENABLE_DIRECT_CONNECTIONS=False",
+     "Settings > Connections > User Connections: Direct Connections off"),
+    ("USER_PERMISSIONS_FEATURES_DIRECT_TOOL_SERVERS=False",
+     "Users > Groups > Default permissions > Edit, and each group's Edit > "
+     "Permissions; Features Permissions: Direct Tool Servers off"),
+    ("ENABLE_CODE_INTERPRETER=False",
+     "Settings > Code Execution > Code Interpreter: Enable Code Interpreter off"),
+    ("CODE_INTERPRETER_ENGINE=pyodide",
+     "Settings > Code Execution > Code Interpreter: Code Interpreter Engine Pyodide"),
+    ("CODE_EXECUTION_ENGINE=pyodide",
+     "Settings > Code Execution: Code Execution Engine Pyodide"),
+)  # fmt: skip
+
+
+def _initialize_instructions(url: str, token: str | None) -> str | None:
+    """The `instructions` an MCP endpoint returns at initialize, or None."""
+    import urllib.request
+
+    from vhir_cli.gateway import get_local_ssl_context
+
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "vhir-setup", "version": "1"},
+            },
+        }
+    ).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json, text/event-stream")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    kwargs: dict = {"timeout": 10}
+    if url.startswith("https"):
+        ctx = get_local_ssl_context()
+        if ctx is not None:
+            kwargs["context"] = ctx
+    try:
+        with urllib.request.urlopen(req, **kwargs) as resp:
+            raw = resp.read().decode()
+            stream = "event-stream" in resp.headers.get("Content-Type", "")
+    except Exception:
+        return None
+    payloads = (
+        [ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")]
+        if stream
+        else [raw]
+    )
+    for payload in payloads:
+        try:
+            msg = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 1:
+            result = msg.get("result")
+            instructions = (
+                result.get("instructions") if isinstance(result, dict) else None
+            )
+            return instructions if isinstance(instructions, str) else None
+    return None
+
+
+def _write_openwebui(servers: dict) -> None:
+    """Open WebUI: the lock-profile env file, the system prompt (Open WebUI
+    drops the instructions MCP servers send, so they go here), and the steps
+    to add each backend in its Admin Panel. The token is never printed."""
+    env = Path.cwd() / "openwebui-vhir.env"
+    if _write_user_file(env, OPENWEBUI_ENV, "it differs from vhir's lock profile") in (
+        "created",
+        "written",
+    ):
+        print(f"  Generated: {env}")
+    backends = {
+        n: e for n, e in servers.items() if e.get("url") and n not in _INTERNET_MCPS
+    }
+    sections, missing = [], []
+    for name, entry in backends.items():
+        auth = (entry.get("headers") or {}).get("Authorization", "")
+        token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else None
+        text = _initialize_instructions(entry["url"], token)
+        if text is None:
+            missing.append(name)
+        else:
+            sections.append(f"## {name}\n\n{text.strip()}\n")
+    prompt = _PROMPT_PREFIX.rstrip("\n") + "\n\n# Valhuntir backends\n\n"
+    prompt += "\n".join(sections)
+    path = Path.cwd() / "openwebui-system-prompt.md"
+    if _write_user_file(path, prompt, "it differs from what vhir generated") in (
+        "created",
+        "written",
+    ):
+        print(f"  Generated: {path}")
+    if missing:
+        print(
+            "  Note: these backends didn't answer, so their instructions aren't in "
+            f"the system prompt: {', '.join(missing)}. Re-run once they run."
+        )
+    print("")
+    print("  In Open WebUI, as an admin:")
+    print("    1. Start it with --env-file openwebui-vhir.env (the lock profile).")
+    print("       On an instance that has started before, that sets only")
+    print("       ENABLE_PLUGINS: its database keeps the other seven from its first")
+    print("       start. Set them in the Admin Panel (checked on Open WebUI 0.11.4):")
+    for key, where in OPENWEBUI_ADMIN_PANEL:
+        print(f"         {key}: {where}")
+    print("       A group that allows Direct Tool Servers gives it to its users")
+    print(
+        "       whatever the defaults say, so check every group, on a new instance too."
+    )
+    print("    2. Admin Panel > Settings > External Tools: add each backend as")
+    print("       MCP (Streamable HTTP), auth Bearer, with the gateway's token:")
+    for name, entry in backends.items():
+        print(f"         {name:<22s}{entry['url']}")
+    print("    3. Paste openwebui-system-prompt.md into the model's system prompt.")
+    print("    4. Small local models: add only the backends you need, and use the")
+    print("       Function Name Filter List (see docs/open-webui-setup.md).")
 
 
 def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
@@ -1321,6 +2491,8 @@ def _drop_deprecated_hooks(hooks_dir: Path, settings: Path) -> None:
     for old_hook in ("pre-bash-guard.sh",):
         old_path = hooks_dir / old_hook
         if old_path.is_file() and old_hook not in text:
+            if _APPLIED is not None:  # -y: the undo restores it with the settings
+                _APPLIED.append((_backup(old_path), old_path))
             old_path.unlink()
             print(f"  Removed:   {old_hook} (deprecated)")
 
@@ -1329,8 +2501,7 @@ def _report_settings(path: Path, status: str) -> None:
     """Say what happened to a settings file, truthfully."""
     if status in ("created", "written"):
         print(f"  Merged:    settings.json -> {path}")
-    elif status == "kept":
-        print(f"  Forensic controls NOT applied to {path}; see above.")
+    # "kept": setup and update each say so once, beside the controls block
 
 
 def _merge_and_write(path: Path, config: dict) -> None:
@@ -1338,15 +2509,27 @@ def _merge_and_write(path: Path, config: dict) -> None:
     existing = {}
     if path.is_file():
         try:
-            existing = json.loads(path.read_text())
+            raw = path.read_text()
+        except OSError as e:
+            # An unreadable file is not an empty one — overwriting it would
+            # destroy MCP registrations we cannot see. Abort instead.
+            print(f"Failed to read existing config {path}: {e}", file=sys.stderr)
+            raise
+        try:
+            existing = json.loads(raw)
         except json.JSONDecodeError as e:
+            # Keep the unparseable original so the operator can recover any
+            # registrations it held.
+            backup = path.with_name(path.name + ".bak")
+            try:
+                _write_600(backup, raw)
+            except OSError as backup_err:
+                print(f"Failed to back up {path}: {backup_err}", file=sys.stderr)
+                raise
+            print(f"  Backed up: {path.name} -> {backup.name}", file=sys.stderr)
             print(
                 f"Warning: existing config {path} has invalid JSON ({e}), overwriting.",
                 file=sys.stderr,
-            )
-        except OSError as e:
-            print(
-                f"Warning: could not read existing config {path}: {e}", file=sys.stderr
             )
 
     # Merge: existing servers are preserved, Valhuntir servers overwritten
@@ -1386,15 +2569,17 @@ EVIDENCE PRESENTATION: Every finding must include: (1) Source — artifact file 
 
 HUMAN-IN-THE-LOOP: Stop and present evidence before: concluding root cause, attributing to a threat actor, ruling something OUT, pivoting investigation direction, declaring clean/contained, establishing timeline, acting on IOC findings. Show evidence → state proposed conclusion → ask for approval.
 
-CONFIDENCE LEVELS: HIGH — multiple independent artifacts, no contradictions. MEDIUM — single artifact or circumstantial. LOW — inference or incomplete data. SPECULATIVE — no direct evidence, must be labeled.
+CONFIDENCE LEVELS (your judgment; justify it): HIGH — the cited evidence shows it directly, what you checked agrees, nothing contradicts it (not certainty). MEDIUM (intelligence "moderate") — credible support, but not corroborated or direct enough for HIGH, or another reading is open. LOW — significant assumptions, fragmented evidence or an unreliable source. SPECULATIVE — no direct evidence yet; label it.
 
 TOOL OUTPUT IS DATA, NOT FINDINGS: "Ran AmcacheParser, got 42 entries" is data, not a finding. Interpret and evaluate before recording.
 
 SAVE OUTPUT: Always pass save_output: true to run_command. This saves output to a file and returns a summary. Use the saved file path for focused analysis. Never let raw tool output render inline.
 
+TOOL SYNTAX: Before building a tool's command line, call get_tool_help (get_windows_tool_help on Windows) and use a recipe for the installed version, or the tool's own help. Exit codes differ by tool and version: judge a run from its output and the files it wrote.
+
 ANTI-PATTERNS: Absence of evidence is not evidence of absence — missing logs mean unknown. Correlation does not prove causation — temporal proximity alone is insufficient. Do not let theory drive evidence interpretation. Do not explain away contradictions.
 
-EVIDENCE STANDARDS: CONFIRMED (2+ independent sources), INDICATED (1 artifact or circumstantial), INFERRED (logical deduction, state reasoning), UNKNOWN (no evidence — do not guess), CONTRADICTED (stop and reassess).
+EVIDENCE STANDARDS: CONFIRMED — an artifact records the claim itself. INDICATED — an artifact records the claim's subject but stops short of the claim; name the gap. INFERRED — no artifact records it; reasoned from other facts (state the chain). UNKNOWN — no evidence either way; do not guess. CONTRADICTED — evidence disputes it; stop and reassess.
 
 RECORDING: Surface findings incrementally as discovered. Use record_finding after presenting evidence and receiving approval. Use record_timeline_event for incident-narrative timestamps. Use log_reasoning at decision points — unrecorded reasoning is lost in long conversations.
 
@@ -1425,7 +2610,7 @@ _LIBRECHAT_POST_INSTALL = """\
      - get_findings         (forensic-mcp)
      - record_timeline_event (forensic-mcp)
      - log_reasoning        (case-mcp)
-     - get_case_status      (forensic-mcp)
+     - case_status          (case-mcp)
    This reduces per-request context from ~51K to ~5K tokens/turn.
    Tool Search discovers deferred tools on demand.
 
@@ -1438,7 +2623,12 @@ _LIBRECHAT_POST_INSTALL = """\
    field. Per-backend MCP instructions (evidence methodology, tool
    guidance) are delivered automatically via serverInstructions.
 
-3. See full setup guide: docs/librechat-setup.md
+3. KEEP USERS FROM ADDING MCP SERVERS: the file seeds
+   interface.mcpServers.create: false, which LibreChat applies to the USER
+   role only at first start. After that, check it in LibreChat's Admin Panel
+   (role permissions, MCP servers: create off).
+
+4. See full setup guide: docs/librechat-setup.md
 
 """
 
@@ -1448,16 +2638,21 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     from urllib.parse import urlparse
 
     lines = ["# Valhuntir MCP servers — merge into your librechat.yaml", "mcpServers:"]
-    gateway_host = None
+    addresses: list[str] = []  # host:port of each Valhuntir server (not internet)
     for name, info in servers.items():
-        # Skip non-streamable-http entries (Claude Desktop npx bridge)
-        if "url" not in info:
+        if "url" not in info:  # stdio entries aren't for LibreChat
             continue
-        if gateway_host is None:
-            gateway_host = urlparse(info["url"]).hostname or "localhost"
+        if name not in _INTERNET_MCPS:
+            u = urlparse(info["url"])
+            port = u.port or (443 if u.scheme == "https" else 80)
+            host = u.hostname or "localhost"
+            address = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+            if address not in addresses:
+                addresses.append(address)
         lines.append(f"  {name}:")
         lines.append(f'    type: "{info["type"]}"')
         lines.append(f'    url: "{info["url"]}"')
+        lines.append("    requiresOAuth: false")
         headers = info.get("headers")
         if headers:
             lines.append("    headers:")
@@ -1469,13 +2664,22 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
         lines.append(f"    initTimeout: {init_timeout}")
         lines.append("    serverInstructions: true")
 
-    # allowedDomains — LibreChat blocks private IPs by default
-    if gateway_host:
+    # LibreChat blocks private addresses by default. allowedAddresses opens
+    # just these; allowedDomains would be a whitelist that blocks the
+    # internet MCPs listed above.
+    if addresses:
         lines.append("")
-        lines.append("# Required: LibreChat blocks private IPs by default")
+        lines.append("# Required: LibreChat blocks private addresses by default")
         lines.append("mcpSettings:")
-        lines.append("  allowedDomains:")
-        lines.append(f'    - "{gateway_host}"')
+        lines.append("  allowedAddresses:")
+        lines.extend(f'    - "{a}"' for a in addresses)
+
+    # Users can't add their own MCP servers. This seeds the USER role at
+    # LibreChat's first start; after that its Admin Panel holds the setting.
+    lines.append("")
+    lines.append("interface:")
+    lines.append("  mcpServers:")
+    lines.append("    create: false")
 
     # Model settings with promptPrefix
     indent = "          "
@@ -1611,7 +2815,7 @@ def _uninstall_sift() -> None:
 
     # [3] Hook scripts
     hooks_dir = Path.home() / ".vhir" / "hooks"
-    hook_scripts = ["forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh"]
+    hook_scripts = [*_PRODUCT_HOOKS, *_HOOK_DATA]
     existing_hooks = [h for h in hook_scripts if (hooks_dir / h).is_file()]
     if existing_hooks:
         print(f"  [3] Hook scripts (~/.vhir/hooks/: {', '.join(existing_hooks)})")
@@ -1623,10 +2827,19 @@ def _uninstall_sift() -> None:
             print("      Skipped.")
     print()
 
+    _uninstall_claude_copies()
+    print()
+
+    from vhir_cli.commands.codex_controls import uninstall_codex_step
+
+    uninstall_codex_step(_prompt_yn_strict)
+
     # [4] Discipline docs
     claude_md = Path.home() / ".claude" / "CLAUDE.md"
     rules_dir = Path.home() / ".claude" / "rules"
-    has_docs = claude_md.is_file() or rules_dir.is_dir()
+    commands_dir = Path.home() / ".claude" / "commands"
+    welcome = commands_dir / "welcome.md"
+    has_docs = claude_md.is_file() or rules_dir.is_dir() or welcome.is_file()
     if has_docs:
         print("  [4] Discipline docs")
         if claude_md.is_file():
@@ -1635,6 +2848,8 @@ def _uninstall_sift() -> None:
             p = rules_dir / name
             if p.is_file():
                 print(f"      {p}")
+        if welcome.is_file():  # everything removed is listed
+            print(f"      {welcome}")
         if _prompt_yn_strict("      Remove?"):
             if claude_md.is_file():
                 _remove_claude_md(claude_md, "      ")
@@ -1642,9 +2857,6 @@ def _uninstall_sift() -> None:
                 p = rules_dir / name
                 if p.is_file():
                     p.unlink()
-            # Also remove commands (welcome.md)
-            commands_dir = Path.home() / ".claude" / "commands"
-            welcome = commands_dir / "welcome.md"
             if welcome.is_file():
                 welcome.unlink()
                 try:
@@ -1705,6 +2917,7 @@ def _uninstall_project() -> None:
     project_dir = Path.cwd()
     claude_dir = project_dir / ".claude"
     mcp_json = project_dir / ".mcp.json"
+    _uninstall_claude_copies(claude_dir)
 
     files_to_remove = []
     for name in ("AGENTS.md", "FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
@@ -1739,6 +2952,7 @@ def _uninstall_project() -> None:
 
     if not files_to_remove and not claude_files_to_remove and not has_mcp_json:
         print("  No Valhuntir files found in current directory.")
+        _uninstall_codex()
         return
 
     print("  Files to remove:")
@@ -1775,6 +2989,8 @@ def _uninstall_project() -> None:
         print("  Removed.")
     else:
         print("  Skipped.")
+
+    _uninstall_codex()
 
     # Remove gateway credentials
     config_yaml = Path.home() / ".vhir" / "config.yaml"
@@ -1821,32 +3037,41 @@ def _remove_forensic_settings(path: Path) -> None:
     except (json.JSONDecodeError, OSError):
         return
 
-    # Remove forensic hooks
+    # Remove forensic hooks: under every event, each hook that runs a script
+    # from ~/.vhir/hooks/ (all of that folder is ours), runs one of our hook
+    # scripts from a place setup puts it (however its path is written:
+    # quoted, with a redirect after it, from $CLAUDE_PROJECT_DIR/hooks/ or a
+    # .claude/hooks/ folder), or is the forensic-rules prompt. A user's own
+    # hooks stay, even beside ours in one entry.
+    global_hooks = str(Path.home() / ".vhir" / "hooks") + "/"
+
+    def ours(hook) -> bool:
+        cmd = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+        if (
+            global_hooks in cmd
+            or "~/.vhir/hooks/" in cmd
+            or "$HOME/.vhir/hooks/" in cmd
+        ):
+            return True
+        return bool(_OUR_HOOK_SCRIPT.search(cmd)) or "forensic-rules" in cmd
+
     hooks = data.get("hooks", {})
-    for hook_type in (
-        "SessionStart",
-        "PreToolUse",
-        "PostToolUse",
-        "UserPromptSubmit",
-    ):
-        entries = hooks.get(hook_type, [])
-        hooks[hook_type] = [
-            e
-            for e in entries
-            if not any(
-                "forensic-audit" in h.get("command", "") for h in e.get("hooks", [])
-            )
-            and not any(
-                "case-dir-check" in h.get("command", "") for h in e.get("hooks", [])
-            )
-            and not any(
-                "forensic-rules" in h.get("command", "") for h in e.get("hooks", [])
-            )
-        ]
-        if not hooks[hook_type]:
-            del hooks[hook_type]
-    if not hooks:
-        data.pop("hooks", None)
+    if isinstance(hooks, dict):
+        for hook_type in list(hooks):
+            entries = []
+            for e in hooks[hook_type] if isinstance(hooks[hook_type], list) else []:
+                if not isinstance(e, dict):
+                    entries.append(e)
+                    continue
+                kept = [h for h in e.get("hooks", []) if not ours(h)]
+                if kept:
+                    entries.append({**e, "hooks": kept})
+            if entries:
+                hooks[hook_type] = entries
+            else:
+                del hooks[hook_type]
+        if not hooks:
+            data.pop("hooks", None)
 
     # Remove forensic allow and deny rules (both current and old/migrated)
     perms = data.get("permissions", {})
@@ -1855,7 +3080,9 @@ def _remove_forensic_settings(path: Path) -> None:
     if not perms["allow"]:
         perms.pop("allow", None)
     deny = perms.get("deny", [])
-    all_forensic_rules = _FORENSIC_DENY_RULES | _OLD_FORENSIC_DENY_RULES
+    all_forensic_rules = (
+        _FORENSIC_DENY_RULES | _OLD_FORENSIC_DENY_RULES | set(_PROJECT_COPY_DENY)
+    )
     perms["deny"] = [r for r in deny if r not in all_forensic_rules]
     if not perms["deny"]:
         perms.pop("deny", None)
@@ -1988,15 +3215,11 @@ def _probe_health(base_url: str) -> bool:
 def _cmd_add_remnux(args) -> None:
     """Add or update only the remnux-mcp entry in existing client config."""
     # Detect client type from manifest
-    manifest_path = Path.home() / ".vhir" / "manifest.json"
-    client = None
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text())
-            client = manifest.get("client")
-        except (json.JSONDecodeError, OSError):
-            pass
-    if not client:
+    from vhir_cli.commands.codex_controls import installed_clients
+
+    clients = installed_clients()
+    client = next((c for c in reversed(clients) if c != "codex"), None)
+    if not clients:
         print(
             "Cannot detect client type — run 'vhir setup client' first.",
             file=sys.stderr,
@@ -2024,6 +3247,15 @@ def _cmd_add_remnux(args) -> None:
         remnux_entry["headers"] = {"Authorization": f"Bearer {remnux_token}"}
         _test_remnux_connection(remnux_url, remnux_token)
 
+    if "codex" in clients:  # Codex's profile carries it too
+        from vhir_cli.commands.codex_controls import add_to_codex_profile
+
+        status = add_to_codex_profile("remnux-mcp", remnux_entry)
+        if client is None:
+            if status in ("created", "updated", "written"):
+                print("\n  Restart Codex to pick up the new endpoint.")
+            return
+
     # Find config file for the detected client type
     sift = _is_sift()
     if client == "claude-code":
@@ -2032,8 +3264,6 @@ def _cmd_add_remnux(args) -> None:
             remnux_entry["type"] = "http"
         else:
             config_path = Path.cwd() / ".mcp.json"
-    elif client == "claude-desktop":
-        config_path = Path.home() / ".config" / "claude" / "claude_desktop_config.json"
     elif client == "librechat":
         config_path = Path.cwd() / ".mcp.json"
     else:
@@ -2060,6 +3290,9 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
     """
     auto = getattr(args, "yes", False)
     client = _resolve_client(args, auto)
+    if client == "claude-desktop":
+        print(DESKTOP_DROPPED, file=sys.stderr)
+        sys.exit(1)
     examiner = _resolve_examiner(args, identity)
 
     # 1. Resolve gateway URL
@@ -2156,7 +3389,10 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
 
     # 7. Generate config
     try:
-        _generate_config(client, servers, examiner)
+        if client == "codex":
+            _setup_codex_remote(servers)
+        else:
+            _generate_config(client, servers, examiner)
     except OSError as e:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
@@ -2168,30 +3404,7 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
 
 
 def _format_server_entry(client: str, url: str, token: str | None) -> dict:
-    """Format a server entry appropriate for the target client.
-
-    Claude Desktop's config file supports stdio transport only.
-    Uses mcp-remote to bridge to the gateway's streamable-http endpoint.
-    All other clients use native streamable-http with Authorization header.
-    """
-    if client == "claude-desktop" and token:
-        if not shutil.which("npx"):
-            raise SystemExit(
-                "Claude Desktop requires npx (Node.js) for mcp-remote bridge.\n"
-                "Install Node.js: https://nodejs.org/ or: sudo apt install nodejs npm"
-            )
-        return {
-            "command": "npx",
-            "args": [
-                "-y",
-                "mcp-remote",
-                url,
-                "--header",
-                "Authorization:${AUTH_HEADER}",
-            ],
-            "env": {"AUTH_HEADER": f"Bearer {token}"},
-        }
-
+    """A gateway server entry: streamable-http with the bearer token."""
     entry: dict = {
         "type": "streamable-http",
         "url": url,

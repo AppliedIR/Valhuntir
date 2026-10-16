@@ -18,17 +18,17 @@ Valhuntir turns a single incident response analyst into the manager of an agenti
 
 ## Valhuntir — AI-Assisted Forensic Investigation
 
-Valhuntir ensures accountability and enforces human review of findings through cryptographic signing, password-gated approvals, and multiple layered controls.
+Valhuntir ensures accountability and enforces human review of findings through signed approvals (each examiner's own key, unlocked by their passphrase) and multiple layered controls.
 
-Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code, Claude Desktop, Cherry Studio, self-hosted LibreChat, and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
+Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compatible client through the gateway. Supported clients include Claude Code and Codex (agents with a shell, set up with Valhuntir's controls), self-hosted LibreChat and Open WebUI (MCP-only, with a locked configuration), and any client that supports Streamable HTTP transport with Bearer token authentication. The client must run on your machine or local network — cloud-hosted services cannot reach internal gateway addresses. Forensic discipline is provided structurally at the gateway and MCP layer, not through client-specific prompt engineering, so the same rigor applies regardless of which AI model or client drives the investigation.
 
 > Looking for a simpler setup without the gateway or OpenSearch? See [Valhuntir Lite](#valhuntir-lite).
 
 ### Evidence Indexing with OpenSearch (Optional)
 
-With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 17 purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
+With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
 
-15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, and Prefetch/SRUM (via Plaso or wintools-mcp).
+15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, Prefetch/SRUM (via Plaso or wintools-mcp), and Linux and macOS volumes, folders and disk images (via Plaso).
 
 Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`), and proper `@timestamp` with timezone handling. Hayabusa auto-detection runs after EVTX ingest, applying 3,700+ Sigma rules and indexing alerts for structured querying.
 
@@ -41,7 +41,7 @@ Every parser produces deterministic content-based document IDs (re-ingest = zero
 5. **Enrich programmatically** — validate files/services against known-good baselines, check IOCs against threat intelligence (zero LLM tokens with opensearch-mcp)
 6. **Search and analyze** — query across millions of records, aggregate patterns, build timelines
 7. **Record findings** — LLM stages findings and timeline events as DRAFT with full evidence provenance
-8. **Human review** — examiner approves or rejects each finding via the Examiner Portal or CLI (HMAC-signed)
+8. **Human review** — examiner approves or rejects each finding via the Examiner Portal or CLI (each decision signed with the examiner's key)
 9. **Generate report** — produce IR report from approved findings with MITRE mappings and IOC aggregation
 
 Without OpenSearch, steps 3-6 are replaced by the LLM doing direct tool execution and analysis. Still very effective, but slower and with much higher token cost. Findings, timeline, approval workflow, and reporting are identical either way.
@@ -123,8 +123,8 @@ graph LR
     SM["sift-mcp<br/>5 tools · Linux forensic<br/>tool execution"]
     RAG["forensic-rag<br/>3 tools · semantic search<br/>22K records"]
     WT["windows-triage<br/>13 tools · offline baseline<br/>validation"]
-    OC["opencti<br/>8 tools · threat<br/>intelligence"]
-    OS["opensearch-mcp<br/>17 tools · evidence indexing,<br/>query, enrichment"]
+    OC["threatintel-mcp<br/>8 tools · threat<br/>intelligence"]
+    OS["opensearch-mcp<br/>21 tools · evidence indexing,<br/>query, enrichment"]
     CD["Examiner Portal<br/>browser review + commit"]
     FK["forensic-knowledge<br/>shared YAML data"]
     CASE["Case Directory"]
@@ -150,7 +150,7 @@ graph LR
 
 ### Human-in-the-Loop Workflow
 
-All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths produce identical HMAC-signed approval records. The AI cannot approve its own findings. MCP guidance provides reminders to the LLM to check in with the human frequently for review and guidance.
+All findings and timeline events are staged as DRAFT by the AI. Only a human examiner can approve or reject them — via the Examiner Portal (browser) or the vhir CLI. Both paths sign each decision with the examiner's own key into the case's ledger, which `vhir review --verify` checks. The AI cannot approve its own findings. MCP guidance provides reminders to the LLM to check in with the human frequently for review and guidance.
 
 ```mermaid
 sequenceDiagram
@@ -163,13 +163,13 @@ sequenceDiagram
     Note over Case: Staged for review
 
     Human->>Case: Review, edit, approve/reject
-    Human->>Case: Commit (password + HMAC signing)
+    Human->>Case: Sign (passphrase unlocks the examiner's key)
 
     Note over Case: Only APPROVED items<br/>appear in reports
     Human->>Case: vhir report --full
 ```
 
-The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Commit button requires the examiner's password. The CLI's `vhir approve` provides the same capability from the terminal.
+The **Examiner Portal** (`vhir portal`) is the primary review interface — an 8-tab browser UI where examiners review, edit, approve, and reject findings and timeline events. The Commit button lists every decision, then signs them with the examiner's passphrase. The CLI's `vhir approve` provides the same capability from the terminal.
 
 Examiners review findings in the Examiner Portal — validating artifacts, observations, and interpretations, with the full command audit trail from original evidence to final result.
 
@@ -186,7 +186,7 @@ Valhuntir reinforces forensic discipline through multiple layers built into the 
 - **Forensic Knowledge (FK) package** — When a forensic tool is executed, the response is enriched with tool-specific caveats, corroboration suggestions, and field interpretation guidance. Delivered at the MCP response level, not in the system prompt, so it arrives exactly when the LLM needs it.
 - **Discipline reminders** — Each tool response includes a rotating forensic methodology reminder. Finding validation checks submissions against methodology standards and returns actionable feedback.
 - **MCP server instructions** — Each backend provides structured instructions during session initialization. The gateway aggregates them into a single coherent briefing.
-- **Client configuration** — For Claude Code, `vhir setup client` deploys forensic discipline docs, investigation rules, and tool reference guides as persistent context. Other clients receive guidance through MCP server instructions.
+- **Client configuration** — For Claude Code, `vhir setup client` deploys forensic discipline docs, investigation rules, and tool reference guides as persistent context, and Valhuntir's workflows as Agent Skills. Other clients receive guidance through MCP server instructions.
 - **Forensic RAG** — Semantic search across 22,000+ records from 23 authoritative sources (Sigma, MITRE ATT&CK, LOLBAS, Atomic Red Team, and more). Grounds LLM analysis in authoritative references rather than training data.
 - **Windows triage baseline** — Offline validation against 2.6 million known-good records. No network calls required.
 
@@ -201,10 +201,10 @@ These layers reinforce each other through consistent, contextual repetition acro
 | case-mcp | SIFT | (via gateway) | Case management, audit queries, evidence registration, backup (15 tools) |
 | report-mcp | SIFT | (via gateway) | Report generation with profiles, IOC aggregation, MITRE mapping (6 tools) |
 | sift-mcp | SIFT | (via gateway) | Denylist-protected forensic tool execution on Linux/SIFT (5 tools) |
-| opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (17 tools). Optional. |
+| opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (21 tools). Optional. |
 | forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more (3 tools) |
 | windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation (13 tools) |
-| opencti-mcp | SIFT | (via gateway) | Threat intelligence from OpenCTI (8 tools) |
+| threatintel-mcp | SIFT | (via gateway) | Threat intelligence: `lookup_ioc` returns each configured platform's records (OpenCTI, MISP), with no verdict; the other tools search OpenCTI. Also answers to `opencti-mcp` (8 tools) |
 | OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
 | Examiner Portal | SIFT | (via gateway) | Browser-based review and approval. Primary review UI. |
 | wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (10 tools) |
@@ -222,7 +222,7 @@ http://localhost:4508/mcp/sift-mcp
 http://localhost:4508/mcp/opensearch-mcp
 http://localhost:4508/mcp/windows-triage-mcp
 http://localhost:4508/mcp/forensic-rag-mcp
-http://localhost:4508/mcp/opencti-mcp
+http://localhost:4508/mcp/threatintel-mcp   # also /mcp/opencti-mcp
 ```
 
 #### Multi-Examiner Team
@@ -234,7 +234,7 @@ graph LR
         BR1["Browser<br/>(human interface)"]
         CLI1["vhir CLI"]
         GW1["sift-gateway<br/>:4508"]
-        MCPs1["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · opencti-mcp"]
+        MCPs1["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · threatintel-mcp"]
         CASE1["Case Directory"]
 
         CC1 -->|"streamable-http"| GW1
@@ -249,7 +249,7 @@ graph LR
         BR2["Browser<br/>(human interface)"]
         CLI2["vhir CLI"]
         GW2["sift-gateway<br/>:4508"]
-        MCPs2["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · opencti-mcp"]
+        MCPs2["forensic-mcp · case-mcp · report-mcp<br/>sift-mcp · forensic-rag-mcp · opensearch-mcp<br/>windows-triage-mcp · threatintel-mcp"]
         CASE2["Case Directory"]
 
         CC2 -->|"streamable-http"| GW2
@@ -294,7 +294,7 @@ cases/INC-2026-0219/
 
 ### SIFT Workstation
 
-Requires Python 3.10+ and sudo access. The installer handles everything: MCP servers, gateway, vhir CLI, HMAC verification ledger, examiner identity, and LLM client configuration. When you select Claude Code, additional forensic controls are deployed (kernel-level sandbox, case data deny rules, PreToolUse guard hook, PostToolUse audit hook, provenance enforcement, password-gated human approval with HMAC signing). Other clients get MCP config only.
+Requires Python 3.10+ and sudo access. The installer handles everything: MCP servers, gateway, vhir CLI, the signed decision ledger and signing-key folders, examiner identity, and LLM client configuration. When you select Claude Code, additional forensic controls are deployed (kernel-level sandbox, case data deny rules, PreToolUse guard hook, PostToolUse audit hook, provenance enforcement, signed human approval). Other clients get MCP config only.
 
 **Quick** — Core platform only, no databases (~70 MB):
 
@@ -336,9 +336,10 @@ Invoke-WebRequest https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/m
 Expand-Archive wintools.zip -DestinationPath .; cd wintools-mcp-main
 ```
 
-Then run the installer:
+Then run the installer. Windows 10/11 refuses to run scripts by default, so the first line allows them for this PowerShell window only:
 
 ```
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\setup-windows.ps1
 ```
 
@@ -348,19 +349,19 @@ All Valhuntir components are assumed to run on a private forensic network, prote
 
 Any data loaded into the system or its component VMs, computers, or instances runs the risk of being exposed to the underlying AI. Only place data on these systems that you are willing to send to your AI provider.
 
-Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
+Outgoing Internet connections are required for report generation (Zeltser IR Writing MCP) and optionally used for threat intelligence (OpenCTI, MISP) and documentation (MS Learn MCP). No incoming connections from external systems should be allowed.
 
-Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) get additional forensic controls deployed by `vhir setup client` — sandbox, deny rules, audit hooks, and provenance enforcement. The password-gated approval system (HMAC-signed) is the primary security control and applies to all clients. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy. See the [Security Model](https://appliedir.github.io/Valhuntir/security/) for details.
+Valhuntir is designed so that AI interactions flow through MCP tools, enabling security controls and audit trails. Clients with direct shell access (like Claude Code) get additional forensic controls deployed by `vhir setup client` — sandbox, deny rules, audit hooks, and provenance enforcement. Signed approval (each examiner's key, unlocked by their passphrase) is the primary security control and applies to all clients; what it does and doesn't prove is in the stated limits. Valhuntir is not designed to defend against a malicious AI or to constrain the AI client that you deploy. See the [Security Model](https://appliedir.github.io/Valhuntir/security/) for details.
 
 ## Commands
 
 Most `vhir` CLI operations have MCP equivalents via case-mcp, forensic-mcp, and report-mcp. When working with an MCP-connected client, you can ask the AI to handle case management, evidence registration, report generation, and more — the AI operates through audited MCP tools rather than direct CLI invocation.
 
-The commands below require the examiner's password and are intentional human-in-the-loop checkpoints. The password is the security gate — without it, no findings can be approved or rejected regardless of the client or access method.
+The commands below are intentional human-in-the-loop checkpoints. Approving and rejecting sign each decision with the examiner's key, which only their passphrase unlocks; verify checks every signature. The passphrase is read from the terminal, which a plain shell pipe can't supply. What that does and doesn't stop (a pseudo-terminal, a process with administrative rights) is in the [stated limits](https://appliedir.github.io/Valhuntir/security/#stated-limits).
 
-### Human-Only Commands (require password)
+### Human-Only Commands (require the passphrase or a terminal)
 
-These commands require password entry that the AI cannot supply. This is by design — the examiner must authenticate to approve, reject, or commit findings.
+These commands are for the examiner at a terminal. Valhuntir's Claude Code settings deny `vhir approve` and `vhir reject` to the assistant's shell tool, which guards against an accidental or instructed run; it isn't a security boundary.
 
 #### approve
 
@@ -372,10 +373,11 @@ vhir approve F-alice-001 --note "Malware family unconfirmed"  # Approve with exa
 vhir approve --by jane                                   # Filter to IDs with jane's examiner prefix
 vhir approve --findings-only                             # Skip timeline events
 vhir approve --timeline-only                             # Skip findings
-vhir approve --review                                    # Apply pending portal edits
+vhir approve --review                                    # Sign reviews staged in the portal
+vhir approve --reattest F-alice-005                      # Fresh signed approval of an item approved before 0.6.4
 ```
 
-Requires the examiner's password. Approved findings are HMAC-signed with a PBKDF2-derived key. The `--review` flag applies edits made in the Examiner Portal (stored in `pending-reviews.json`), recomputes content hashes and HMAC signatures, then removes the pending file. Alternatively, use the portal's Commit button (Shift+C) which performs the same operation via challenge-response authentication — the password never leaves the browser.
+Every decision is signed with the examiner's own Ed25519 key, which their passphrase unlocks. Every item to be signed, including each item decided with it ("cascade from F-…"), is shown before the passphrase prompt. A finding's evidence chain and grade are shown too, and its approval checks run first: the evidence it starts from is still registered and unchanged, its audit lines are unchanged, and each cited OpenSearch document still has its recorded hash (imported findings and findings from before 0.6.4 aren't checked again; a registered folder is checked by its manifest; a cited document is checked again only if its hash was recorded). A failed check needs a reason typed at the terminal, signed with the approval; with none, the item stays DRAFT. The `--review` flag signs the reviews staged in the Examiner Portal (`pending-reviews.json`): your own entries, and another examiner's only if you include them; exactly the entries signed leave the file. Alternatively, use the portal's Commit button (Shift+C): the browser signs in, unlocks the key and signs the decisions it lists, and the passphrase never leaves the browser.
 
 #### reject
 
@@ -385,7 +387,7 @@ vhir reject F-alice-003 T-alice-002 --reason "Contradicted by memory analysis"
 vhir reject --review                                     # Interactive walk-through of DRAFT items
 ```
 
-Requires the examiner's password.
+Signed like an approval; it can also reject an APPROVED item.
 
 #### exec
 
@@ -404,23 +406,26 @@ vhir evidence unlock
 
 Requires terminal confirmation. Unlocking evidence allows writes to the evidence directory.
 
-#### Password management
+#### Passphrase and signing key
 
 ```
-vhir config --setup-password               # Set approval password (PBKDF2-hashed, min 8 chars)
-vhir config --reset-password               # Reset password (requires current, re-signs ledger)
+vhir config --setup-password               # Passphrase and signing key (at least 8 characters; 15+ recommended)
+vhir config --reset-password               # Change the passphrase (the same key, re-encrypted)
+vhir config --forgot-password              # New key under a new passphrase; the old one is kept as retired
+vhir config --upgrade-key                  # Signing key for a 0.6 passphrase
+vhir enrol --name lab2                     # A LAN examiner enrols at the SIFT terminal (also --reset, --forgot, --upgrade)
 ```
 
-Password entry uses masked input. The AI cannot supply the password.
+The passphrase is read from the terminal without echo. That stops a plain shell pipe from supplying it; it doesn't stop a program that runs vhir under a pseudo-terminal, or a process with administrative rights. See the [Security Model](https://appliedir.github.io/Valhuntir/security/#stated-limits).
 
-#### HMAC verification
+#### Verification
 
 ```
-vhir review --verify                       # Cross-check content hashes + HMAC verification
-vhir review --verify --mine                # HMAC verification for current examiner only
+vhir review --findings --verify                                      # Verify every signed decision
+vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored to your records
 ```
 
-Requires the examiner's password to derive the HMAC key and confirm integrity. `--verify` also works with `--findings` (`vhir review --findings --verify`).
+No passphrase or terminal needed. Exit 0 means every approved item verifies (or was approved before 0.6.4, labelled so) with no failure. Verify prints every signing key with its full fingerprint and each chain's head. Without `--expect-key` and `--expect-head` it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup).
 
 ### All Commands
 
@@ -432,7 +437,7 @@ The remaining commands can also be performed through MCP tools (case-mcp, forens
 vhir portal                                              # Open the Examiner Portal in your browser
 ```
 
-Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Commit button (Shift+C) requires the examiner's password. Alternatively, `vhir approve --review` applies pending edits from the CLI.
+Opens the Examiner Portal for the active case. The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. The Commit button (Shift+C) lists every decision, then signs them with the examiner's passphrase. Alternatively, `vhir approve --review` signs the staged reviews from the CLI.
 
 #### backup
 
@@ -445,17 +450,18 @@ vhir backup /path/to/destination --include-extractions   # Include extraction fi
 vhir backup --verify /path/to/backup/                    # Verify backup integrity
 ```
 
-Creates a timestamped backup with SHA-256 manifest. Password hash files are always included for HMAC verification. The `--all` flag includes evidence, extractions, and OpenSearch indices (if available). Without flags, interactive mode prompts per category with size estimates.
+Creates a timestamped backup with SHA-256 manifest. It carries the case's signed history and public signing keys (`ledger/`), and no passphrase verifier or signing-key file. The `--all` flag includes evidence, extractions, and OpenSearch indices (if available). Without flags, interactive mode prompts per category with size estimates.
 
 #### restore
 
 ```
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13   # Restore from backup
 vhir restore /path/to/backup/... --skip-opensearch       # Skip OpenSearch restore
-vhir restore /path/to/backup/... --skip-ledger           # Skip verification ledger
+vhir restore /path/to/backup/... --skip-ledger           # Skip restoring the 0.6 approval records
+vhir restore /path/to/backup/... --target /cases/INC-1   # Restore here, without asking
 ```
 
-Restores a case from backup to its original path. Includes case files, verification ledger, password hashes, and OpenSearch indices (if present in backup). Prompts for the examiner password to verify HMAC integrity. Never auto-activates — run `vhir case activate` after restore.
+Restores a case from backup. Restore asks where to put the case, offering the folder it was backed up from; without a terminal (scripts), `--target` is required. A folder left by an interrupted restore is removed only after you answer yes (default no); without a terminal, remove it yourself first. Includes case files, the case's signed history, and OpenSearch indices (if present in backup). Each signing key the case's chains hold is added to this box as a retired public key ("KEY ADDED"), so the case verifies here. No credential is restored. Never auto-activates — run `vhir case activate` after restore.
 
 #### case
 
@@ -500,7 +506,7 @@ vhir todo update TODO-alice-002 --note "Waiting on third party" --priority low
 #### evidence
 
 ```
-vhir evidence register /path/to/image.E01 --description "Disk image"
+vhir evidence register /path/to/image.E01 --description "Disk image"   # Asks you to confirm at the terminal
 vhir evidence list
 vhir evidence verify
 vhir evidence log [--path <filter>]
@@ -613,17 +619,15 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/AppliedIR/Valhuntir/mai
 
 Always launch your LLM client from `~/vhir/` or a subdirectory. Forensic controls only apply when started from within the workspace. To uninstall, re-run the setup script with `--uninstall` (Linux/macOS) or `-Uninstall` (Windows).
 
-Claude Desktop's config file supports stdio transport only. The [mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge is used to connect to the gateway. `vhir setup client --client=claude-desktop` generates the correct mcp-remote config automatically.
-
 | Client | Platforms | Config file | Extras |
 |--------|-----------|-------------|--------|
 | Claude Code | Linux, macOS, Windows | `~/vhir/.mcp.json` or `~/.claude.json` (SIFT) | `CLAUDE.md`, `settings.json`, sandbox, audit hooks |
-| Claude Desktop | macOS, Windows | `claude_desktop_config.json` (see note) | Requires mcp-remote bridge. Project instructions from AGENTS.md |
-| Cherry Studio | Linux, macOS, Windows | JSON import (manual) | `baseUrl` field, `streamableHttp` type (camelCase) |
+| Codex | Linux, macOS, Windows | `~/.codex/valhuntir.config.toml` (`codex -p valhuntir`) | Instructions in the profile, skills in `~/.agents/skills/`, Codex's sandbox |
 | LibreChat | Any (browser) | `librechat.yaml` (`mcpServers` section) | Valhuntir generates `librechat_mcp.yaml` reference to merge |
+| Open WebUI | Any (browser) | Admin Panel (steps printed) | Lock profile `openwebui-vhir.env` and `openwebui-system-prompt.md`; see sift-mcp `docs/open-webui-setup.md` |
 | Other | Any | `vhir-mcp-config.json` | Manual integration |
 
-Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Claude Desktop is not available on Linux and requires the [mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge (stdio-only config). Config paths: `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows). Any MCP client that supports Streamable HTTP transport with Bearer token authentication will work — the gateway is not client-specific.
+Claude Code on Windows requires Git for Windows (provides Git Bash) or WSL. Any MCP client that supports Streamable HTTP transport with Bearer token authentication will work — the gateway is not client-specific.
 
 ## Examiner Identity
 
@@ -643,9 +647,9 @@ Every approval, rejection, and command execution is logged with examiner identit
 |---|---|---|
 | `HAYABUSA_RULES_DIR` | *(autodetect)* | Path to hayabusa-rules directory (must contain a `config/` subdirectory). Set when hayabusa rules are installed outside the default locations (`/usr/local/share/hayabusa-rules`, `/usr/share/hayabusa-rules`, `/opt/hayabusa*/rules`). Example: `Environment=HAYABUSA_RULES_DIR=/srv/forensics/hayabusa-rules` in the gateway systemd unit file. |
 | `VHIR_SHARD_BREAKER_THRESHOLD` | `3` | Consecutive shard-limit batch failures before the bulk-write circuit breaker halts ingest. |
-| `VHIR_INTEL_BREAKER_THRESHOLD` | `10` | Consecutive non-rate-limit OpenCTI errors before enrichment halts. |
-| `VHIR_INTEL_RATE_LIMIT_RETRIES` | `5` | Per-IOC retry cap when OpenCTI rate-limits. |
-| `VHIR_INTEL_MIN_INTERVAL_MS` | `100` | Minimum milliseconds between OpenCTI requests (default ~10 QPS). Prevents self-inflicted rate limits. Clamped to a 10ms floor. |
+| `VHIR_INTEL_BREAKER_THRESHOLD` | `10` | Consecutive lookup errors, or consecutive unavailable answers from every configured threat-intel provider, before enrichment halts. Rate limits don't count. |
+| `VHIR_INTEL_RATE_LIMIT_RETRIES` | `5` | Per-IOC retry cap when a threat-intel provider rate-limits. |
+| `VHIR_INTEL_MIN_INTERVAL_MS` | `100` | Minimum milliseconds between threat-intel lookups (default ~10 QPS). Prevents self-inflicted rate limits. Clamped to a 10ms floor. |
 
 All thresholds clamp to a sane lower bound (operator typo of `0` won't disable safety).
 
@@ -654,8 +658,8 @@ All thresholds clamp to a sane lower bound (operator typo of `0` won't disable s
 | Repo | Purpose |
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
-| [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (17 tools, 15 parsers). Optional. |
-| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (10 tools, 31 catalog entries) |
+| [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (21 tools, 15 parsers). Optional. |
+| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (10 tools, 25 catalog entries) |
 | [Valhuntir](https://github.com/AppliedIR/Valhuntir) | CLI, architecture reference |
 
 ## Updating
@@ -737,7 +741,7 @@ graph LR
         CC["Claude Code<br/>(human interface)"]
         FR["forensic-rag-mcp<br/>Knowledge search"]
         WTR["windows-triage-mcp<br/>Baseline validation"]
-        OC["opencti-mcp<br/>Threat intelligence"]
+        OC["threatintel-mcp<br/>Threat intelligence"]
 
         CC -->|stdio| FR
         CC -->|stdio| WTR
@@ -769,13 +773,46 @@ graph LR
 |-----------|----------|-------|
 | Claude Code → forensic-rag-mcp | stdio | Local Python process, always present |
 | Claude Code → windows-triage-mcp | stdio | Local Python process, always present |
-| Claude Code → opencti-mcp | stdio | Local Python process, connects out to OpenCTI via HTTP(S) |
-| opencti-mcp → OpenCTI Instance | HTTP(S) | opencti-mcp runs locally, calls out to the OpenCTI server |
+| Claude Code → threatintel-mcp | stdio | Local Python process, connects out to OpenCTI (and MISP, if configured) via HTTP(S) |
+| threatintel-mcp → OpenCTI or MISP instance | HTTP(S) | threatintel-mcp runs locally, calls out to each configured platform |
 | Claude Code → remnux-mcp | streamable-http | Remote, on its own REMnux workstation |
 | Claude Code → MS Learn MCP | HTTPS | `https://learn.microsoft.com/api/mcp` — streamable-http type in .mcp.json |
 | Claude Code → Zeltser IR Writing MCP | HTTPS | `https://website-mcp.zeltser.com/mcp` — streamable-http type in .mcp.json |
 
 No gateway, no sandbox, no deny rules. Claude runs forensic tools directly via Bash. Forensic discipline is suggested and reinforced via prompt hooks and reference documents, but Claude Code can choose to ignore them. See the [sift-mcp README](https://github.com/AppliedIR/sift-mcp#valhuntir-lite) for optional add-on install flags (`--opencti`, `--remnux`, `--mslearn`, `--zeltser`).
+
+## What changes for AI clients in this release
+
+After `vhir update` (or `vhir setup client`) redeploys the client controls:
+
+- **Claude Code refuses to start without its sandbox.** On a host where
+  bubblewrap can't run, Claude Code now stops with a message instead of running
+  Bash unconfined. `vhir setup client --allow-unsandboxed` (with a typed
+  phrase) deploys the old behaviour, and the controls block then says
+  SANDBOX OFF.
+- **The AI's shell can't read the signing and approval store**
+  (`/var/lib/vhir`). `vhir backup`, `vhir case close` and `vhir export` run
+  from inside the AI's sandbox now stop with a message instead of leaving the
+  signed history out; run them in your own terminal.
+- **The `Write(...)` deny rules are gone** (the `Edit(...)` rules already
+  cover writing tools); a redeploy takes vhir's old ones off, and your own
+  rules stay.
+- **Failed and refused commands are audited too.** A failed command, a call
+  the permission mode refused and a refusal by the case-data guard each leave
+  a line in the case's audit file. Deny-rule refusals still leave none.
+- **Codex is supported on the SIFT workstation.** Setting it up installs
+  Codex's managed requirements (`/etc/codex/requirements.toml`, with your
+  consent), which apply to **every Codex session on the machine**: its
+  sandbox stays on, its shell can't read the store or the gateway's tokens,
+  and its commands are audited into the active case (marked `outside_case`
+  when the session runs elsewhere). A `~/.codex/config.toml` that asks for
+  `danger-full-access` then stops Codex from starting: setup names the line.
+  To turn the requirements off, see sift-mcp `docs/codex.md#opt-out`.
+- **Setup prints what each control protects and what it doesn't** (the same
+  table is in `docs/security.md`). In short: `run_command` still runs as you,
+  with sudo, outside every sandbox, so client-side controls prevent accidents
+  and record what happened; an approved finding's signature catches a later
+  change.
 
 ## Upgrading from Lite to Valhuntir
 
@@ -783,7 +820,7 @@ Both modes share the same Python venv, triage databases, and RAG index.
 Valhuntir adds the gateway (up to 8 MCP backends behind one HTTP endpoint),
 4+ additional MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp,
 and optionally opensearch-mcp), a web-based review portal (Examiner Portal),
-structured case management, sandbox enforcement, and HMAC-signed approvals.
+structured case management, sandbox enforcement, and signed approvals.
 
 To upgrade, run `setup-sift.sh` from your existing sift-mcp clone. The
 installer reuses the existing venv and databases. Lite case data (markdown
@@ -808,7 +845,7 @@ MITRE ATT&CK is a registered trademark of The MITRE Corporation. SIFT Workstatio
 
 ## Acknowledgments
 
-Architecture and direction by Steve Anson. Implementation by Claude Code (Anthropic).
+Architecture and direction by Steve Anson. Implementation by Claude Code (Anthropic). Code review by Codex (OpenAI). Design inspiration drawn from Lenny Zeltser's [REMnux MCP](https://github.com/REMnux/remnux-mcp-server).
 
 ## Clear Disclosure
 
