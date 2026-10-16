@@ -1301,13 +1301,15 @@ def _write_user_file(
     as_json: bool = False,
     mode: int | None = None,
     redact=None,
+    summary: list[str] | None = None,
 ) -> str:
     """Write a file the user may have edited, only with their consent.
 
     Returns "created" (no file was there), "unchanged" (nothing would change),
     "written" (they said yes, or `vhir setup client -y`; a backup was made
     first) or "kept". Asks only on a terminal (default Yes; n/no keeps);
-    otherwise prints the change and keeps the file.
+    otherwise prints the change and keeps the file. summary: lines that say
+    what the change does, printed before the diff.
     """
     if not path.exists():
         if mode is None:
@@ -1336,6 +1338,10 @@ def _write_user_file(
     import difflib
 
     print(f"\n  vhir would change {path} ({why}):")
+    for line in summary or []:  # an indented line belongs to the one above
+        print(f"    {line}" if line.startswith(" ") else f"    - {line}")
+    if summary:
+        print("  The full change:")
     diff = difflib.unified_diff(
         old.splitlines(), new_view.splitlines(), "current", "proposed", lineterm=""
     )
@@ -1619,9 +1625,155 @@ def _merge_settings(
         return "kept"
     _add_gateway_ca(merged, remote_ca)
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
+    try:
+        current = json.loads(target.read_text()) if target.is_file() else {}
+    except (ValueError, OSError):  # changed since the merge read it: diff only
+        summary = None
+    else:
+        summary = _settings_summary(target, current, merged)
     return _write_user_file(
-        target, json.dumps(merged, indent=2) + "\n", why, as_json=True
+        target, json.dumps(merged, indent=2) + "\n", why, as_json=True, summary=summary
     )
+
+
+_SANDBOX_KEYS = ("enabled", "allowUnsandboxedCommands", "failIfUnavailable")
+
+
+def _settings_summary(target: Path, current, merged: dict) -> list[str]:
+    """What merging the product settings into target changes, in a few
+    lines: the sandbox keys whose value changes, each old Valhuntir deny rule
+    removed (and what replaces it, if anything), the deny rules added and the
+    hooks added, changed or removed."""
+    if not isinstance(current, dict):
+        current = {}
+    if target == Path.home() / ".claude" / "settings.json":
+        scope = "every Claude Code session of this account"
+    else:
+        scope = f"the Claude Code sessions started in {target.parent.parent}"
+    lines = []
+    before = current.get("sandbox")
+    before = before if isinstance(before, dict) else {}
+    after = merged.get("sandbox")
+    after = after if isinstance(after, dict) else {}
+    for key in _SANDBOX_KEYS:
+        old, new = before.get(key, _UNSET), after.get(key, _UNSET)
+        if (type(old), old) != (type(new), new) and new is not _UNSET:
+            lines.append(_sandbox_line(key, old, new, scope))
+    old_deny = _rules(current, "deny")
+    new_deny = _rules(merged, "deny")
+    removed = [r for r in old_deny if r in _OLD_FORENSIC_DENY_RULES]
+    removed = [r for r in removed if r not in new_deny]
+    if removed:
+        lines.append(f"removes {len(removed)} old Valhuntir deny rules:")
+        for rule in removed:
+            by = _replacement(rule, new_deny)
+            lines.append(
+                f"  {rule}: " + (f"{by} replaces it" if by else "nothing replaces it")
+            )
+    added = [r for r in new_deny if r not in old_deny]
+    if added:
+        lines.append(f"adds {len(added)} deny rules")
+    lines += _hook_lines(_hook_cmds(current), _hook_cmds(merged))
+    return lines
+
+
+_UNSET = object()
+
+
+def _sandbox_line(key: str, old, new, scope: str) -> str:
+    def shown(v):
+        return "not set" if v is _UNSET else json.dumps(v)
+
+    if key == "enabled" and new is True:
+        was = "off" if old is False or old is _UNSET else shown(old)
+        return f"turns the Claude Code sandbox ON for {scope} (it is {was} now)"
+    if key == "enabled" and new is False:
+        return f"turns the Claude Code sandbox OFF for {scope} (it is {shown(old)} now)"
+    what = {
+        ("allowUnsandboxedCommands", False): "a command the sandbox blocks is "
+        "refused, never run outside the sandbox",
+        ("allowUnsandboxedCommands", True): "a command the sandbox blocks may "
+        "run outside the sandbox",
+        ("failIfUnavailable", True): "Claude Code fails when the sandbox can't "
+        "start, instead of running without it",
+        ("failIfUnavailable", False): "Claude Code runs without the sandbox when "
+        "the sandbox can't start",
+    }.get((key, new))
+    text = f"sets sandbox.{key} to {shown(new)} for {scope} (it is {shown(old)} now)"
+    return f"{text}: {what}" if what else text
+
+
+def _rules(settings: dict, kind: str) -> list:
+    perms = settings.get("permissions")
+    rules = perms.get(kind) if isinstance(perms, dict) else None
+    return [r for r in rules if isinstance(r, str)] if isinstance(rules, list) else []
+
+
+def _replacement(rule: str, deny: list) -> str | None:
+    """The rule in deny that does an old Valhuntir rule's job, if any: Write
+    rules gave way to the Edit rule for the same files, and a single-slash
+    absolute path to its "//" form."""
+    tool, _, rest = rule.partition("(")
+    pattern = rest[:-1]
+    patterns = [pattern]
+    if pattern.startswith("/") and not pattern.startswith("//"):
+        patterns.append("/" + pattern)
+    tools = [tool, "Edit"] if tool == "Write" else [tool]
+    for t in tools:
+        for p in patterns:
+            if f"{t}({p})" in deny:
+                return f"{t}({p})"
+    return None
+
+
+def _hook_cmds(settings: dict) -> list[tuple[str, str, str]]:
+    """(event, matcher, command) for each hook command in settings."""
+    hooks = settings.get("hooks")
+    out = []
+    for event, entries in hooks.items() if isinstance(hooks, dict) else ():
+        for entry in entries if isinstance(entries, list) else ():
+            if not isinstance(entry, dict):
+                continue
+            matcher = entry.get("matcher", "")
+            hs = entry.get("hooks")
+            for h in hs if isinstance(hs, list) else ():
+                cmd = h.get("command") if isinstance(h, dict) else None
+                if isinstance(cmd, str) and (event, matcher, cmd) not in out:
+                    out.append((event, matcher, cmd))
+    return out
+
+
+def _hook_name(cmd: str) -> str:
+    """A script's file name, or an inline command's first line, quoted."""
+    first = (cmd.splitlines() or [""])[0]
+    return first.rsplit("/", 1)[-1] if "/" in first else f'"{first[:40]}"'
+
+
+def _hook_lines(old: list, new: list) -> list[str]:
+    def where(event, matcher):
+        return f"{event} ({matcher})" if matcher else event
+
+    gone = [h for h in old if h not in new]
+    lines = []
+    for event, matcher, cmd in new:
+        if (event, matcher, cmd) in old:
+            continue
+        name = _hook_name(cmd)
+        was = next(
+            (g for g in gone if g[:2] == (event, matcher) and _hook_name(g[2]) == name),
+            None,
+        )
+        if was:
+            gone.remove(was)
+            lines.append(
+                f"moves the {where(event, matcher)} hook {name} to {cmd} "
+                f"(it runs {was[2]} now)"
+            )
+        else:
+            lines.append(f"adds the {where(event, matcher)} hook {name}")
+    for event, matcher, cmd in gone:
+        lines.append(f"removes the {where(event, matcher)} hook {_hook_name(cmd)}")
+    return lines
 
 
 def _settings_gateway_ca(target: Path, remote_ca: str) -> None:
