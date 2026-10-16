@@ -218,7 +218,11 @@ def test_a_release_without_the_build_is_refused(gh, capsys):
     assert rc == 1 and f"no hayabusa-{VERSION}-lin-x64-musl.zip" in out
 
 
-@pytest.mark.parametrize("body", [b"not json", b"[1, 2]", b"x" * (5 * 1024 * 1024 + 1)])
+@pytest.mark.parametrize(
+    "body",
+    [b"not json", b"[1, 2]", b"x" * (5 * 1024 * 1024 + 1)],
+    ids=["not-json", "a-list", "5MiB+1"],
+)
 def test_a_release_answer_that_is_not_a_release_is_refused(
     gh, capsys, monkeypatch, body
 ):
