@@ -134,7 +134,12 @@ def split_cascades(
         for d in direct
         if d.type == "finding" and d.decision in ("approve", "reject", "edit")
     }
-    changed = {d.id for d in direct if d.type == "finding" and d.modifications}
+    # Only an applied edit changes the finding; a dropped one (iocs) doesn't.
+    changed = {
+        d.id
+        for d in direct
+        if d.type == "finding" and set(d.modifications) & DELTA_EDITABLE_FIELDS
+    }
     changed |= {f.get("id") for f in findings if f.get("examiner_modifications")}
     exclude = {d.id for d in direct} | set(skipped)
     planned, held = [], []

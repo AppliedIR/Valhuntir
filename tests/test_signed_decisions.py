@@ -217,6 +217,42 @@ def test_an_earlier_edit_of_another_finding_holds_nothing(case, capsys, monkeypa
     assert "which was edited after" not in capsys.readouterr().out
 
 
+_IOCS = {"iocs": {"original": ["10.0.0.7"], "modified": ["10.0.0.8"]}}
+_TITLE = {"title": {"original": "PsExec", "modified": "A backup agent"}}
+
+
+@pytest.mark.parametrize(
+    "mods, held",
+    [(_IOCS, False), ({**_IOCS, **_TITLE}, True)],
+    ids=["iocs-only", "iocs-and-title"],
+)
+def test_only_an_applied_edit_holds_the_linked_event(
+    case, capsys, monkeypatch, mods, held
+):
+    """An iocs modification isn't applied, so it doesn't change the finding
+    the event was made from: the event cascades with it. An applied edit
+    beside it still holds the event."""
+    entry = {
+        "id": "F-steve-001",
+        "type": "finding",
+        "action": "approve",
+        "examiner": "steve",
+        "modifications": mods,
+    }
+    capsys.readouterr()
+    _review(case, entry, monkeypatch)
+    out = capsys.readouterr().out
+    assert ("F-steve-001", "approve") in _signed()
+    assert (("T-steve-001", "approve") in _signed()) is not held
+    assert _status(case, "timeline.json", "T-steve-001") == (
+        "DRAFT" if held else "APPROVED"
+    )
+    assert (
+        "T-steve-001 is linked to F-steve-001, which was edited after" in out
+    ) is held
+    assert verify_case(case).exit_code == 0
+
+
 def test_show_signed_prints_the_signed_view(case, capsys):
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", show_signed=True)
     assert '  Signed view: {"confidence": "LOW"' in capsys.readouterr().out
