@@ -356,6 +356,41 @@ def test_a_record_step_that_fails_changes_nothing(home, monkeypatch, capsys):
     assert "case-paths.json: Permission denied" in err
 
 
+def test_a_put_back_that_fails_leaves_the_file_and_no_temp_file(tmp_path, monkeypatch):
+    from vhir_cli import case_identity
+
+    target = tmp_path / "CASE.yaml"
+    target.write_bytes(b"case_uuid: new\n")
+
+    def fail(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(case_identity.os, "replace", fail)
+    with pytest.raises(OSError, match="No space left"):
+        case_identity._put_back(target, b"case_uuid: old\n", 0o644)
+    assert target.read_bytes() == b"case_uuid: new\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize(
+    ("error", "line"),
+    [
+        (
+            OSError(13, "Permission denied", "/c/CASE.yaml"),
+            "/c/CASE.yaml: Permission denied",
+        ),
+        (OSError(5, "Input/output error"), "Input/output error"),
+        (OSError("lock held"), "lock held"),
+        (ValueError("bad header"), "bad header"),
+        (ValueError(), "ValueError"),
+    ],
+)
+def test_a_failed_step_is_named_in_one_line(error, line):
+    from vhir_cli.case_identity import _reason
+
+    assert _reason(error) == line
+
+
 @needs_sift
 def test_a_new_identity_records_both_folders(home, capsys):
     case_dir, copy, _ = _copied(home)
