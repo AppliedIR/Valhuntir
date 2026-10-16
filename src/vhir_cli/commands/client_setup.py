@@ -909,6 +909,8 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
                     "Claude Code trust it."
                 )
         settings = _deploy_claude_code_assets(Path.cwd(), remote_ca=remote_ca)
+        if remote_ca and not settings:  # no assets: the CA step still runs
+            _settings_gateway_ca(Path.cwd() / ".claude" / "settings.json", remote_ca)
         print(f"  Examiner:  {examiner}")
         print("")
         if settings:
@@ -1592,6 +1594,40 @@ def _merge_settings(
     merged = _merged_settings(target, source, hooks_dir, project_copies)
     if merged is None:
         return "kept"
+    _add_gateway_ca(merged, remote_ca)
+    why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
+    return _write_user_file(
+        target, json.dumps(merged, indent=2) + "\n", why, as_json=True
+    )
+
+
+def _settings_gateway_ca(target: Path, remote_ca: str) -> None:
+    """Without the claude-code assets there is no settings.json to merge, so
+    set only the gateway CA in target, as _merge_settings would."""
+    try:
+        merged = json.loads(target.read_text()) if target.is_file() else {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        print(f"  Not changed: {target} can't be read as JSON ({e}).")
+        merged = None
+    if not isinstance(merged, dict):
+        print(
+            "  Note: the gateway uses a self-signed CA. Set NODE_EXTRA_CA_CERTS "
+            f"to {remote_ca} by hand or Claude Code can't verify the gateway."
+        )
+        return
+    _add_gateway_ca(merged, remote_ca)
+    why = "NODE_EXTRA_CA_CERTS, so Claude Code trusts the gateway's CA"
+    _report_settings(
+        target,
+        _write_user_file(
+            target, json.dumps(merged, indent=2) + "\n", why, as_json=True
+        ),
+    )
+
+
+def _add_gateway_ca(merged: dict, remote_ca: str | None) -> None:
+    """Set env.NODE_EXTRA_CA_CERTS in merged settings when the gateway's CA
+    needs it (see _gateway_ca_for_settings), or say why it wasn't."""
     decision = _gateway_ca_for_settings(merged.get("env"), remote_ca)
     if decision and decision[0] == "add":
         if "env" not in merged:
@@ -1619,10 +1655,6 @@ def _merge_settings(
             "own bundle, add the gateway CA to it and remove the settings.json "
             "entry."
         )
-    why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
-    return _write_user_file(
-        target, json.dumps(merged, indent=2) + "\n", why, as_json=True
-    )
 
 
 def _deploy_hook(source: Path, target: Path) -> str:
@@ -2261,6 +2293,23 @@ def _rc_lines(rc: Path) -> list[str]:
     return rc.read_bytes().decode("utf-8", "surrogateescape").splitlines(True)
 
 
+def _codex_users_bundle(ca: str, ours: str | None) -> bool:
+    """Whether Codex uses a CA bundle of the user's own (not ca or vhir's
+    profile line, ours); if so, say to add ca to it."""
+    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
+        value = os.environ.get(var)
+        if value and value not in (ca, ours):  # the user's own bundle
+            print(
+                f"  Note: {var} is set to {value}, which Codex uses instead of "
+                f"the gateway's CA. Add {ca} to that bundle, or Codex can't "
+                "connect to the gateway."
+            )
+            return True
+        if value and var == "CODEX_CA_CERTIFICATE":
+            break  # SSL_CERT_FILE is only Codex's fallback
+    return False
+
+
 def _codex_gateway_ca(servers: dict, remote: bool) -> None:
     """Codex trusts the gateway's self-signed CA only through its environment
     (CODEX_CA_CERTIFICATE, else SSL_CERT_FILE): its profile can't name one,
@@ -2281,6 +2330,8 @@ def _codex_gateway_ca(servers: dict, remote: bool) -> None:
             )
         return
     if sys.platform == "win32":
+        if _codex_users_bundle(ca, None):
+            return
         ps_ca = str(ca).replace("'", "''")  # a ' doubles inside PowerShell's '...'
         print(
             "  Note: Codex trusts the gateway only with CODEX_CA_CERTIFICATE set. "
@@ -2297,17 +2348,8 @@ def _codex_gateway_ca(servers: dict, remote: bool) -> None:
         print(f"  Note: {rc} couldn't be read ({e}). Start Codex with:\n    {start}")
         return
     ours = next((v for v in map(_codex_ca_ours, lines) if v), None)
-    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
-        value = os.environ.get(var)
-        if value and value not in (ca, ours):  # the user's own bundle
-            print(
-                f"  Note: {var} is set to {value}, which Codex uses instead of "
-                f"the gateway's CA. Add {ca} to that bundle, or Codex can't "
-                "connect to the gateway."
-            )
-            return
-        if value and var == "CODEX_CA_CERTIFICATE":
-            break  # SSL_CERT_FILE is only Codex's fallback
+    if _codex_users_bundle(ca, ours):
+        return
     if rc is None:
         print(
             "  Note: no ~/.bashrc or ~/.zshrc to set Codex's CA in. "

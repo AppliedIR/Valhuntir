@@ -768,6 +768,95 @@ def test_remote_claude_code_trusts_the_ca_copied_from_the_sift(
     assert got[-1] is None
 
 
+def test_remote_claude_code_trusts_the_ca_without_the_assets_checkout(
+    laptop, monkeypatch, capsys
+):
+    # a CLI-only laptop: no sift-mcp checkout, so no settings.json to merge
+    monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+    monkeypatch.setattr(cs, "_find_claude_code_assets", lambda: None)
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    proj = laptop.home / "case"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    settings = proj / ".claude" / "settings.json"
+    _remote(client="claude-code")
+    assert json.loads(settings.read_text()) == {"env": {"NODE_EXTRA_CA_CERTS": str(ca)}}
+    # a settings file the user already has keeps its keys
+    settings.write_text('{"model": "x", "env": {"A": "1"}}\n')
+    _remote(client="claude-code")
+    assert json.loads(settings.read_text()) == {
+        "model": "x",
+        "env": {"A": "1", "NODE_EXTRA_CA_CERTS": str(ca)},
+    }
+    # a user's own NODE_EXTRA_CA_CERTS stays, with the note to add the CA
+    settings.write_text('{"env": {"NODE_EXTRA_CA_CERTS": "/corp.pem"}}\n')
+    capsys.readouterr()
+    _remote(client="claude-code")
+    assert json.loads(settings.read_text()) == {
+        "env": {"NODE_EXTRA_CA_CERTS": "/corp.pem"}
+    }
+    assert f"add {ca} to that bundle" in capsys.readouterr().out
+
+
+def test_remote_claude_code_over_http_writes_no_settings_without_assets(
+    laptop, monkeypatch
+):
+    monkeypatch.setattr(cs, "_find_claude_code_assets", lambda: None)
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    _setup(
+        remote=True, sift="http://sift.example:4508", token=TOKEN, client="claude-code"
+    )
+    assert not (laptop.home / ".claude" / "settings.json").exists()
+
+
+def _windows_codex_ca(monkeypatch, capsys, env):
+    import vhir_cli.gateway as gw
+
+    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    monkeypatch.setattr(gw, "find_ca_cert", lambda: WIN_CA)
+    monkeypatch.setattr(cs, "_gateway_uses_https", lambda s: True)
+    monkeypatch.setattr(cs.sys, "platform", "win32")
+    cs._codex_gateway_ca({}, remote=True)
+    monkeypatch.undo()
+    return capsys.readouterr().out
+
+
+WIN_CA = r"C:\Users\u\.vhir\tls\ca-cert.pem"
+
+
+@pytest.mark.parametrize("var", ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"])
+def test_on_windows_a_users_own_bundle_gets_the_warning_not_the_line(
+    monkeypatch, capsys, var
+):
+    out = _windows_codex_ca(monkeypatch, capsys, {var: r"C:\corp\bundle.pem"})
+    assert "SetEnvironmentVariable" not in out
+    assert f"{var} is set to C:\\corp\\bundle.pem" in out
+    assert f"Add {WIN_CA} to that bundle" in out
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"CODEX_CA_CERTIFICATE": WIN_CA},
+        {"CODEX_CA_CERTIFICATE": WIN_CA, "SSL_CERT_FILE": "x"},
+    ],
+)
+def test_on_windows_no_bundle_of_the_users_still_gets_the_line(
+    monkeypatch, capsys, env
+):
+    out = _windows_codex_ca(monkeypatch, capsys, env)
+    assert f"'CODEX_CA_CERTIFICATE', '{WIN_CA}', 'User')" in out
+    assert "is set to" not in out
+
+
 def test_uninstall_removes_the_ca_line_and_keeps_the_rest(laptop, monkeypatch):
     for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
         monkeypatch.delenv(var, raising=False)
