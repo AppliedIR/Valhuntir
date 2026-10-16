@@ -132,7 +132,10 @@ def test_a_failed_pull_after_another_moved_is_part_way(world, capsys):
     code, heads = _run(world)
     err = capsys.readouterr().err
     assert code == 1 and heads["sift-mcp"] == "sift-mcp-new"
-    assert "Not possible to fast-forward" in err and "Resolve conflicts" in err
+    # The failure names the stash dance that sets local changes aside, updates,
+    # and brings them back — not a bare, misleading "Resolve conflicts".
+    assert "Not possible to fast-forward" in err and "Resolve conflicts" not in err
+    assert "stash push -u" in err and "stash pop" in err and "git -C" in err
     assert PART_WAY in err and err.rstrip().endswith("finish with: vhir update")
 
 

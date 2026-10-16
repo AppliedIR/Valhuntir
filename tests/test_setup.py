@@ -72,3 +72,8 @@ class TestCmdSetup:
 
         output = capsys.readouterr().out
         assert "OFFLINE" in output
+        # The hint must name a command that starts the gateway *process*, not
+        # `vhir service start` (which talks to an already-running gateway).
+        assert "systemctl --user start vhir-gateway" in output
+        assert "~/.vhir/start-gateway.sh" in output
+        assert "vhir service start" not in output

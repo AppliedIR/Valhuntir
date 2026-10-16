@@ -446,6 +446,7 @@ def _torch_variant(
         import shutil
 
         found = "no NVIDIA GPU was found"
+        default = "cpu"  # no GPU: Enter keeps CPU even if a GPU build is installed
         if shutil.which("nvidia-smi"):
             try:
                 smi = subprocess.run(
@@ -453,6 +454,7 @@ def _torch_variant(
                 )
                 if smi.returncode == 0 and smi.stdout.startswith("GPU"):
                     found = "an NVIDIA GPU was found"
+                    default = variant  # a GPU is here: Enter keeps the build installed
             except (OSError, subprocess.SubprocessError):
                 pass  # a probe that fails or hangs: no GPU detected
         print(f"\n  PyTorch for knowledge search ({found}):")
@@ -471,7 +473,7 @@ def _torch_variant(
         )
         while True:
             try:
-                answer = input("    PyTorch build (cpu/gpu) [cpu]: ")
+                answer = input(f"    PyTorch build (cpu/gpu) [{default}]: ")
             except EOFError:  # no answer mustn't become a silent swap to CPU
                 print(
                     "\nNo answer to the PyTorch question; nothing installed."
@@ -479,7 +481,7 @@ def _torch_variant(
                     file=sys.stderr,
                 )
                 _stop_part_way(args)
-            answer = answer.strip().lower() or "cpu"
+            answer = answer.strip().lower() or default
             if answer in ("cpu", "gpu"):
                 return answer, answer
             print("    Please enter cpu or gpu.")
@@ -983,7 +985,10 @@ def cmd_update(args, identity: dict) -> None:
         if result.returncode != 0:
             print(
                 f"Failed to pull {name}: {result.stderr.strip()}\n"
-                f"Resolve conflicts in {path} or re-run setup-sift.sh.",
+                "  Set local changes aside, update, then bring them back:\n"
+                f"    git -C {path} stash push -u\n"
+                "    vhir update\n"
+                f"    git -C {path} stash pop",
                 file=sys.stderr,
             )
             if pulled or _git_head(path) not in (
@@ -1356,6 +1361,7 @@ def _finish_update(
         else:
             print(f"failed ({failure})")
             print("  Check with: systemctl --user status vhir-gateway")
+            print("  Or, if you start it by hand: ~/.vhir/start-gateway.sh")
             restart_ok = False
 
     # Step 7b: Check OpenSearch version mismatch

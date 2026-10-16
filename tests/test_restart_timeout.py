@@ -61,6 +61,9 @@ def test_a_slow_restart_still_starting_says_so(manifest_dir, capsys):
     smoke = _update(manifest_dir[0], "activating")
     out = capsys.readouterr().out
     assert "failed (no answer in 60 s; the gateway is activating)" in out
+    # A gateway started by hand has no systemd unit to restart; the hint also
+    # names the manual launcher so that user isn't left at a dead end.
+    assert "~/.vhir/start-gateway.sh" in out
     assert "Skipping connectivity test" in out and not smoke.called
 
 

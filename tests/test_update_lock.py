@@ -88,6 +88,7 @@ def _update(
     after_check_rc=0,
     uninstall="ok",
     smi_hangs=False,
+    gpu_found=False,
     check=False,
     no_restart=True,
 ):
@@ -121,6 +122,8 @@ def _update(
         result = MagicMock(returncode=0, stdout="0", stderr="")
         if cmd[0] == "nvidia-smi" and smi_hangs:
             raise subprocess.TimeoutExpired(cmd, 30)
+        if cmd[0] == "nvidia-smi" and gpu_found:
+            result.returncode, result.stdout = 0, "GPU 0: NVIDIA (UUID: GPU-x)\n"
         if cmd[:3] == ["uv", "pip", "uninstall"] and uninstall != "ok":
             if uninstall == "timeout":
                 raise subprocess.TimeoutExpired(cmd, 600)
@@ -166,7 +169,8 @@ def _update(
         patch("sys.stdin.isatty", return_value=tty),
         patch("sys.platform", platform),
         patch(
-            "shutil.which", return_value="/usr/bin/nvidia-smi" if smi_hangs else None
+            "shutil.which",
+            return_value="/usr/bin/nvidia-smi" if (smi_hangs or gpu_found) else None,
         ),
     ):
         try:
@@ -394,6 +398,30 @@ def test_an_old_install_on_a_terminal_is_asked_default_cpu(
     assert "0.2 GB download" in out and "3 GB download" in out
     assert _lock_of(calls) == str(box.cpu_lock if variant == "cpu" else box.lock)
     assert _manifest(box)["torch_variant"] == variant
+
+
+@pytest.mark.parametrize(
+    "installed,variant,default",
+    [
+        ("2.10.0", "gpu", "gpu"),  # GPU build + GPU found: Enter keeps gpu
+        ("2.14.0+cpu", "cpu", "cpu"),  # CPU build + GPU found: Enter stays cpu
+        ("", "cpu", "cpu"),  # no torch, rag installed, GPU found: Enter stays cpu
+    ],
+)
+def test_a_found_gpu_defaults_enter_to_the_installed_build(
+    box, capsys, installed, variant, default
+):
+    # With a GPU present the Enter default is the installed build, so a GPU
+    # build isn't thrown away; a CPU or absent build still defaults to cpu.
+    calls, exited = _update(
+        box, torch=installed, tty=True, answers=[""], gpu_found=True
+    )
+    assert exited is None and len(_asked(calls)) == 1
+    assert "an NVIDIA GPU was found" in capsys.readouterr().out
+    assert f"[{default}]" in _asked(calls)[0]
+    assert _lock_of(calls) == str(box.lock if default == "gpu" else box.cpu_lock)
+    if installed:
+        assert _manifest(box)["torch_variant"] == variant
 
 
 def test_a_wrong_answer_is_asked_again(box):

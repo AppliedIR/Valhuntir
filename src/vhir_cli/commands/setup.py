@@ -291,7 +291,10 @@ def _run_connectivity_test(sift_tools: bool = True) -> None:
                 time.sleep(2)
             else:
                 print("  Gateway: OFFLINE — is the gateway running?")
-                print("    Start with: vhir service start")
+                print(
+                    "    Start with: systemctl --user start vhir-gateway"
+                    " (or ~/.vhir/start-gateway.sh if you started it by hand)"
+                )
                 return
         except Exception as e:
             print(f"  Gateway: ERROR ({e})")
