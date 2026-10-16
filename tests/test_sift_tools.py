@@ -388,6 +388,11 @@ def test_vhir_update_ends_with_it_and_the_smoke_test_leaves_it_out(
         smoke.assert_called_once_with(sift_tools=False)
 
 
+# A Volatility 2.27.0 that can't save its symbols, and no Hayabusa: the SIFT
+# update, with its installer, is named only when a SIFT tool is out of date
+BOTH = f"{VOL.format('2.27.0')}; {HAYABUSA}"
+
+
 def _named(installer: str, problems: str) -> str:
     return TEXT.format(problems).replace(
         "`~/.vhir/src/sift-mcp/setup-sift.sh`", f"`{installer}`"
@@ -397,12 +402,13 @@ def _named(installer: str, problems: str) -> str:
 def test_setup_sift_runs_the_module_and_gets_the_manifests_installer(box):
     # setup-sift.sh: `timeout 60 "$VENV_PYTHON" -m vhir_cli.sift_tools 2>/dev/null`
     _manifest(box.home, {"source": "/opt/ir/sift-mcp"})
+    _vol(box, "vol", str(_python(box, "opt", "2.27.0", [_locked(box, "a")])))
     src = str(Path(sift_tools.__file__).parents[1])
     paths = [src, os.environ.get("PYTHONPATH", "")]
     env = {
         **os.environ,
         "HOME": str(box.home),
-        "PATH": str(box.bin),  # nothing on it: no Hayabusa, no Volatility
+        "PATH": str(box.bin),  # the stub Volatility only: no Hayabusa
         "PYTHONPATH": os.pathsep.join(p for p in paths if p),
     }
     run = subprocess.run(
@@ -414,23 +420,22 @@ def test_setup_sift_runs_the_module_and_gets_the_manifests_installer(box):
         env=env,
     )
     assert run.returncode == 0
-    want = _named("/opt/ir/sift-mcp/setup-sift.sh", HAYABUSA) + CHOICE + "\n"
+    want = _named("/opt/ir/sift-mcp/setup-sift.sh", BOTH) + CHOICE + "\n"
     assert run.stdout == want
 
 
-def test_setup_test_prints_the_manifests_installer(box, monkeypatch, capsys):
+def test_setup_test_prints_the_manifests_installer(box, capsys):
     _manifest(box.home, {"source": "/opt/ir/sift-mcp"})
-    monkeypatch.setattr(sift_tools, "volatility_problem", lambda: None)
-    monkeypatch.setattr(sift_tools, "hayabusa_missing", lambda: True)
+    _vol(box, "vol", str(_python(box, "opt", "2.27.0", [_locked(box, "a")])))
     setup._print_sift_tools_warning()
-    want = _named("/opt/ir/sift-mcp/setup-sift.sh", HAYABUSA) + CHOICE
+    want = _named("/opt/ir/sift-mcp/setup-sift.sh", BOTH) + CHOICE
     assert capsys.readouterr().out == "\n  WARNING: " + want + "\n"
 
 
 def test_vhir_update_names_the_installer_it_updated_from(
     manifest_dir, capsys, monkeypatch
 ):
-    monkeypatch.setattr(sift_tools, "volatility_problem", lambda: None)
+    monkeypatch.setattr(sift_tools, "volatility_problem", lambda: "Volatility 3 2.27.0")
     monkeypatch.setattr(sift_tools, "hayabusa_missing", lambda: True)
     home = manifest_dir[0]
     with (
@@ -442,5 +447,5 @@ def test_vhir_update_names_the_installer_it_updated_from(
     ):
         cmd_update(test_update._make_args(), {})
     installer = str(home / ".vhir" / "src" / "sift-mcp" / "setup-sift.sh")
-    want = _named(installer, HAYABUSA) + CHOICE
+    want = _named(installer, BOTH) + CHOICE
     assert capsys.readouterr().out.endswith("\n  WARNING: " + want + "\n")
