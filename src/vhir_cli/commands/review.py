@@ -5,7 +5,7 @@ Supports multiple view modes:
   vhir review --findings             — finding summary table
   vhir review --findings --detail    — full findings with all fields
   vhir review --findings --verify    — verify every signed decision (no password)
-  vhir review --iocs                 — IOCs grouped by approval status
+  vhir review --iocs                 — IOC records grouped by status
   vhir review --timeline             — timeline summary
   vhir review --timeline --detail    — full timeline with evidence refs
   vhir review --evidence             — evidence registry
@@ -34,11 +34,17 @@ from vhir_cli.case_io import (
     load_todos,
     load_withdrawals,
     no_terminal_line,
+    text_of,
 )
-from vhir_cli.defang import refang
 from vhir_cli.display import cited as _cited
-from vhir_cli.display import display_safe, one_line
+from vhir_cli.display import display_safe, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
+from vhir_cli.ioc_groups import (
+    TEXT_ONLY,
+    not_recorded,
+    record_groups,
+    record_status,
+)
 from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
@@ -106,7 +112,10 @@ def _show_summary(case_dir: Path) -> None:
 
     draft_t = sum(1 for t in timeline if t.get("status") == "DRAFT")
     approved_t = sum(1 for t in timeline if t.get("status") == "APPROVED")
-    print(f"Timeline: {len(timeline)} events ({draft_t} draft, {approved_t} approved)")
+    rejected_t = sum(1 for t in timeline if t.get("status") == "REJECTED")
+    print(
+        f"Timeline: {len(timeline)} events ({draft_t} draft, {approved_t} approved, {rejected_t} rejected)"
+    )
 
     print(f"Evidence: {len(evidence)} registered files")
 
@@ -280,10 +289,10 @@ def _show_findings_detail(case_dir: Path) -> None:
             f"  Interpretation: {indent_lines(raw.get('interpretation', ''), ' ' * 18)}"
         )
         if f.get("iocs"):
-            print(f"  IOCs:         {f['iocs']}")
+            print(f"  IOCs:         {one_line(ioc_text(raw['iocs']))}")
         # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
-        if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
-            print(f"  MITRE:        {mitre}")
+        if mitre := raw.get("mitre_ids") or raw.get("mitre_techniques"):
+            print(f"  MITRE:        {one_line(list_text(mitre))}")
         if f.get("approved_at"):
             print(f"  Approved:     {f['approved_at']}")
         if f.get("rejected_at"):
@@ -311,11 +320,14 @@ def _show_findings_detail(case_dir: Path) -> None:
                 if extraction:
                     print(f"        $ {extraction}")
                 if content:
-                    display = content[:200]
-                    if len(content) > 200:
+                    body, cut = _split_cut(content)
+                    display = body[:200]
+                    if len(body) > 200:
                         display += "..."
                     # A block: each line indented under the artifact
                     print(f"        {indent_lines(display, ' ' * 8)}")
+                    if cut:  # the preview never hides that the text was cut
+                        print(f"        {one_line(cut)}")
 
         # Supporting commands
         supporting = f.get("supporting_commands", [])
@@ -377,94 +389,47 @@ def _show_findings_verify(
 
 
 def _show_iocs(case_dir: Path) -> None:
-    """Extract IOCs from findings, grouped by approval status."""
-    findings = load_findings(case_dir)
-    if not findings:
-        print("No findings recorded.")
-        return
-
-    groups = {"APPROVED": [], "DRAFT": [], "REJECTED": []}
-    for f in findings:
-        status = f.get("status", "DRAFT")
-        if status in groups:
-            groups[status].append(f)
-
+    """The case's IOC records, grouped by each record's own status as the
+    Portal shows them, then the values the findings name that no record
+    holds."""
+    records = [r for r in load_iocs(case_dir) if isinstance(r, dict)]
+    by_status: dict[str, list] = {}
+    for r in records:
+        by_status.setdefault(record_status(r), []).append(r)
     labels = {
-        "APPROVED": "IOCs from Approved Findings",
-        "DRAFT": "IOCs from Draft Findings (unverified)",
-        "REJECTED": "IOCs from Rejected Findings",
+        "APPROVED": "Approved IOCs",
+        "DRAFT": "Draft IOCs (unverified)",
+        "REJECTED": "Rejected IOCs",
     }
-
-    any_iocs = False
-    for status in ("APPROVED", "DRAFT", "REJECTED"):
-        iocs = _extract_iocs_from_findings(groups[status])
-        if not iocs:
+    order = [s for s in labels if s in by_status]
+    order += sorted(s for s in by_status if s not in labels)
+    shown = False
+    for status in order:
+        groups = record_groups(by_status[status])
+        if not groups:
             continue
-        any_iocs = True
-        print(f"\n=== {labels[status]} ===")
-        for ioc_type, values in sorted(iocs.items()):
-            shown = ", ".join(one_line(v) for v in sorted(values))
-            print(f"  {one_line(ioc_type) + ':':<10} {shown}")
-
-    if not any_iocs:
-        print("No IOCs found in findings.")
-
-
-def _extract_iocs_from_findings(findings: list[dict]) -> dict[str, set[str]]:
-    """Extract IOCs from a list of findings."""
-    collected: dict[str, set[str]] = {}
-
-    for f in findings:
-        iocs_field = f.get("iocs")
-        if isinstance(iocs_field, dict):
-            for ioc_type, values in iocs_field.items():
-                if ioc_type not in collected:
-                    collected[ioc_type] = set()
-                if isinstance(values, list):
-                    collected[ioc_type].update(str(v) for v in values)
-                else:
-                    collected[ioc_type].add(str(values))
-        elif isinstance(iocs_field, list):
-            for ioc in iocs_field:
-                if isinstance(ioc, dict):
-                    ioc_type = ioc.get("type", "Unknown")
-                    ioc_value = ioc.get("value", "")
-                    if ioc_type not in collected:
-                        collected[ioc_type] = set()
-                    collected[ioc_type].add(str(ioc_value))
-
-        text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
-        _extract_text_iocs(text, collected)
-
-    return collected
+        shown = True
+        print(f"\n=== {one_line(labels.get(status, status + ' IOCs'))} ===")
+        for ioc_type, values in groups.items():
+            print(
+                f"  {one_line(ioc_type) + ':':<10} {', '.join(one_line(v) for v in values)}"
+            )
+    if not shown:
+        print("IOC records: none")
+    if rest := not_recorded(load_findings(case_dir), records):
+        print(f"\n=== {TEXT_ONLY} ===")
+        print(f"  {', '.join(one_line(v) for v in rest)}")
 
 
-def _extract_text_iocs(text: str, collected: dict[str, set[str]]) -> None:
-    """Extract common IOC patterns from free text."""
-    # Analysts habitually defang indicators in notes; every pattern below
-    # matches the live form only, so normalise before matching.
-    text = refang(text)
-    ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
-    for ip in re.findall(ipv4_pattern, text):
-        if not ip.startswith(("0.", "127.", "255.")):
-            collected.setdefault("IPv4", set()).add(ip)
+# The line forensic-mcp ends an artifact's content with when it stored only
+# the first part of it
+_CUT_LINE = re.compile(r"\n(\[cut: [0-9]+ of [0-9]+ chars stored\])\Z")
 
-    for h in re.findall(r"\b[a-fA-F0-9]{64}\b", text):
-        collected.setdefault("SHA256", set()).add(h.lower())
 
-    for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{40}(?![a-fA-F0-9])", text):
-        collected.setdefault("SHA1", set()).add(h.lower())
-
-    for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])", text):
-        collected.setdefault("MD5", set()).add(h.lower())
-
-    for fp in re.findall(r"[A-Z]:\\(?:[^\s,;]+)", text):
-        collected.setdefault("File", set()).add(fp)
-
-    for d in re.findall(
-        r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|info|biz|xyz|top|cc|tk)\b", text
-    ):
-        collected.setdefault("Domain", set()).add(d.lower())
+def _split_cut(content: str) -> tuple[str, str]:
+    """The content, and the cut line it ends with ("" if none)."""
+    m = _CUT_LINE.search(content)
+    return (content[: m.start()], m.group(1)) if m else (content, "")
 
 
 def _show_timeline(
@@ -477,7 +442,7 @@ def _show_timeline(
 ) -> None:
     """Show timeline events with optional filters."""
     timeline = load_timeline(case_dir)
-    timeline.sort(key=lambda t: t.get("timestamp", ""))
+    timeline.sort(key=lambda t: text_of(t.get("timestamp")))
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
     if start:
@@ -513,7 +478,7 @@ def _show_timeline(
             tid = one_line(t.get("id", "?"))
             item_status = one_line(t.get("status", "?"))
             ts = one_line(display_instant(t.get("timestamp")))
-            desc = one_line(t.get("description", ""))  # one row per event
+            desc = one_line(text_of(t.get("description")))  # one row per event
             if len(desc) > 40:
                 desc = desc[:37] + "..."
             print(f"{tid:<20} {item_status:<10} {ts:<22} {desc}")

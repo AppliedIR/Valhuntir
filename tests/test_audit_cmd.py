@@ -6,7 +6,11 @@ from argparse import Namespace
 import pytest
 import yaml
 
-from vhir_cli.commands.audit_cmd import _load_audit_entries, cmd_audit
+from vhir_cli.commands.audit_cmd import (
+    _load_audit_entries,
+    audit_summary_data,
+    cmd_audit,
+)
 
 
 @pytest.fixture
@@ -226,6 +230,36 @@ class TestAuditSummary:
         output = capsys.readouterr().out
         assert "run_tool" in output
         assert "record_finding" in output
+
+    def test_summary_counts_a_hook_entry_as_bash(self, case_dir, identity, capsys):
+        hook = {
+            "ts": "2026-02-19T10:00:00Z",
+            "source": "claude-code-hook",
+            "command": "ls /cases",
+            "audit_id": "hook-tester-20260219-001",
+        }
+        (case_dir / "audit" / "claude-code.jsonl").write_text(json.dumps(hook) + "\n")
+        assert audit_summary_data(case_dir)["by_tool"] == {
+            "claude-code": {"Bash (hook)": 1}
+        }
+        cmd_audit(_make_args("summary"), identity)
+        output = capsys.readouterr().out
+        assert "Bash (hook)" in output and "unknown" not in output
+
+    def test_summary_counts_an_mcp_entry_by_its_tool(self, case_dir, identity, capsys):
+        entry = {
+            "ts": "2026-02-19T10:00:00Z",
+            "mcp": "sift-mcp",
+            "tool": "run_command",
+            "audit_id": "sift-tester-20260219-001",
+        }
+        (case_dir / "audit" / "sift-mcp.jsonl").write_text(json.dumps(entry) + "\n")
+        assert audit_summary_data(case_dir)["by_tool"] == {
+            "sift-mcp": {"run_command": 1}
+        }
+        cmd_audit(_make_args("summary"), identity)
+        output = capsys.readouterr().out
+        assert "run_command" in output and "Bash (hook)" not in output
 
     def test_summary_empty(self, case_dir, identity, capsys):
         cmd_audit(_make_args("summary"), identity)

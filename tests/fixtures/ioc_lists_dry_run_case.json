@@ -1,0 +1,159 @@
+{
+ "findings": [
+  {
+   "id": "F-steve-001",
+   "interpretation": "An interactive session of the domain account tdungan on rd01 mapped drive H: to the Users folder of another host's administrative C$ share. Mapping C$ requires administrative rights on 172.16.6.12 and is a common lateral-movement and data-access step; it is also routine for administrators. The memory image shows the command, not whether the mapping succeeded or what was accessed.",
+   "iocs": [
+    "172.16.6.12",
+    "\\\\172.16.6.12\\c$\\Users",
+    {
+     "type": "user-account",
+     "value": "tdungan"
+    },
+    "S-1-5-21-2838623409-1327563992-2591358621-1136"
+   ],
+   "observation": "In rd01 memory, windows.pstree shows explorer.exe (PID 6664, session 2) started cmd.exe (PID 6784) at 2023-01-25 14:52:04 UTC with the command line 'C:\\Windows\\system32\\cmd.exe /C net use H: \\\\172.16.6.12\\c$\\Users', which started net.exe (PID 9128) with 'net  use H: \\\\172.16.6.12\\c$\\Users' at the same second. windows.getsids for PID 6784 lists S-1-5-21-2838623409-1327563992-2591358621-1136 tdungan, BUILTIN\\Remote Desktop Users and Interactive, at Medium Mandatory Level.",
+   "status": "APPROVED",
+   "title": "rd01: user tdungan mapped the C$ admin share of 172.16.6.12 (net use H: \\\\172.16.6.12\\c$\\Users) at 14:52:04 UTC"
+  },
+  {
+   "id": "F-steve-002",
+   "interpretation": "rd01 (172.16.6.11) was a hub of interactive and administrative remote access at capture time: someone was connected to it over RDP from 172.16.30.23 while its explorer.exe held an RDP session onward to 172.16.7.15, and it held SMB sessions both ways. Together with the C$ mapping (F-steve-001) this fits hands-on-keyboard lateral movement, but RDP, SMB and WinRM are also normal administration; the connections alone don't show intent.",
+   "iocs": [
+    "172.16.30.23",
+    "172.16.7.15",
+    "172.16.6.14",
+    "172.16.6.18",
+    "172.16.5.21"
+   ],
+   "observation": "windows.netscan on rd01 memory lists, among 170 entries: an inbound RDP connection 172.16.30.23:55264 -> 172.16.6.11:3389 ESTABLISHED (svchost.exe PID 960, TermService) created 14:38:47 UTC; an outbound RDP connection from explorer.exe (PID 6664) 172.16.6.11:59665 -> 172.16.7.15:3389 ESTABLISHED created 14:47:21 UTC; SMB 172.16.6.11:61814 -> 172.16.6.14:445 ESTABLISHED (System) created 14:54:00 UTC; inbound SMB 172.16.6.18:63026 -> 172.16.6.11:445 ESTABLISHED created 14:43:02 UTC; WinRM 172.16.6.11:54867 -> 172.16.5.21:5985 ESTABLISHED (svchost.exe PID 3300, WinRM) created 15:24:11 UTC.",
+   "status": "APPROVED",
+   "title": "rd01 memory: live RDP, SMB and WinRM sessions to and from five internal hosts at capture time (172.16.30.23, 172.16.7.15, 172.16.6.14, 172.16.6.18, 172.16.5.21)"
+  },
+  {
+   "id": "F-steve-003",
+   "interpretation": "The beacon names evil[.]com and evil2[.]com; 203.0.113.7:8443 is the address they resolved to.",
+   "iocs": [
+    "evil[.]com",
+    "203.0.113.7:8443",
+    {
+     "type": "domain-name",
+     "value": "evil2[.]com"
+    }
+   ],
+   "observation": "svchost.exe (PID 3300) connected to 203.0.113.7:8443 after resolving evil[.]com and evil2[.]com.",
+   "status": "APPROVED",
+   "title": "rd01: beacon to evil[.]com and evil2[.]com at 203.0.113.7:8443"
+  }
+ ],
+ "records": [
+  {
+   "id": "IOC-steve-001",
+   "source_findings": [
+    "F-steve-001"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "172.16.6.12"
+  },
+  {
+   "id": "IOC-steve-002",
+   "source_findings": [
+    "F-steve-001"
+   ],
+   "status": "APPROVED",
+   "type": "file:path",
+   "value": "\\\\172.16.6.12\\c$\\Users"
+  },
+  {
+   "id": "IOC-steve-003",
+   "source_findings": [
+    "F-steve-001"
+   ],
+   "status": "APPROVED",
+   "type": "user-account",
+   "value": "tdungan"
+  },
+  {
+   "id": "IOC-steve-004",
+   "source_findings": [
+    "F-steve-001"
+   ],
+   "status": "APPROVED",
+   "type": "unknown",
+   "value": "S-1-5-21-2838623409-1327563992-2591358621-1136"
+  },
+  {
+   "id": "IOC-steve-005",
+   "source_findings": [
+    "F-steve-002"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "172.16.30.23"
+  },
+  {
+   "id": "IOC-steve-006",
+   "source_findings": [
+    "F-steve-002"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "172.16.7.15"
+  },
+  {
+   "id": "IOC-steve-007",
+   "source_findings": [
+    "F-steve-002"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "172.16.6.14"
+  },
+  {
+   "id": "IOC-steve-008",
+   "source_findings": [
+    "F-steve-002"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "172.16.6.18"
+  },
+  {
+   "id": "IOC-steve-009",
+   "source_findings": [
+    "F-steve-002"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "172.16.5.21"
+  },
+  {
+   "id": "IOC-steve-010",
+   "source_findings": [
+    "F-steve-003"
+   ],
+   "status": "APPROVED",
+   "type": "domain-name",
+   "value": "evil.com"
+  },
+  {
+   "id": "IOC-steve-011",
+   "source_findings": [
+    "F-steve-003"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "203.0.113.7"
+  },
+  {
+   "id": "IOC-steve-012",
+   "source_findings": [
+    "F-steve-003"
+   ],
+   "status": "APPROVED",
+   "type": "domain-name",
+   "value": "evil2.com"
+  }
+ ]
+}

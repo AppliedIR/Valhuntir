@@ -15,7 +15,6 @@ import contextlib
 import io
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,16 +29,17 @@ from vhir_cli.case_io import (
     load_iocs,
     load_timeline,
     load_todos,
+    text_of,
 )
 from vhir_cli.defang import (
     _NETWORK_TYPES,
     defang_iocs,
     network_ioc,
-    refang,
     structured_iocs,
 )
-from vhir_cli.display import cited_text, one_line
+from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
+from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
 from vhir_cli.ledger_verify import (
     approved_view,
     shown_label,
@@ -202,53 +202,14 @@ def _status_counts(items: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _extract_all_iocs(findings: list[dict]) -> dict[str, list[str]]:
-    """Extract IOCs from findings, returning type -> sorted unique values."""
-    collected: dict[str, set[str]] = {}
-
-    for f in findings:
-        iocs_field = f.get("iocs")
-        if isinstance(iocs_field, dict):
-            for ioc_type, values in iocs_field.items():
-                if ioc_type not in collected:
-                    collected[ioc_type] = set()
-                if isinstance(values, list):
-                    collected[ioc_type].update(str(v) for v in values)
-                else:
-                    collected[ioc_type].add(str(values))
-        elif isinstance(iocs_field, list):
-            for ioc in iocs_field:
-                if isinstance(ioc, dict):
-                    ioc_type = ioc.get("type", "Unknown")
-                    ioc_value = ioc.get("value", "")
-                    if ioc_type not in collected:
-                        collected[ioc_type] = set()
-                    collected[ioc_type].add(str(ioc_value))
-
-        # Text extraction from observation/interpretation
-        text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
-        # Analysts habitually defang indicators in notes; every pattern below
-        # matches the live form only, so normalise before matching.
-        text = refang(text)
-        ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
-        for ip in re.findall(ipv4_pattern, text):
-            if not ip.startswith(("0.", "127.", "255.")):
-                collected.setdefault("IPv4", set()).add(ip)
-        for h in re.findall(r"\b[a-fA-F0-9]{64}\b", text):
-            collected.setdefault("SHA256", set()).add(h.lower())
-        for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{40}(?![a-fA-F0-9])", text):
-            collected.setdefault("SHA1", set()).add(h.lower())
-        for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])", text):
-            collected.setdefault("MD5", set()).add(h.lower())
-        for fp in re.findall(r"[A-Z]:\\(?:[^\s,;]+)", text):
-            collected.setdefault("File", set()).add(fp)
-        for d in re.findall(
-            r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|info|biz|xyz|top|cc|tk)\b",
-            text,
-        ):
-            collected.setdefault("Domain", set()).add(d.lower())
-
-    return {k: sorted(v) for k, v in sorted(collected.items())}
+def _extract_all_iocs(
+    findings: list[dict], records: list, all_records: list | None = None
+) -> dict[str, list[str]]:
+    """The IOC records by label, then the values the findings name that no
+    record of the case holds (`ioc_groups`). `records` are the records
+    listed; `all_records` every IOC record of the case, whatever its status
+    (`records` when not given)."""
+    return ioc_groups(findings, records, all_records)
 
 
 def _report_full(case_dir: Path, args) -> None:
@@ -284,7 +245,7 @@ def _report_full(case_dir: Path, args) -> None:
         "approved_findings": approved_findings,
         "approved_timeline": approved_timeline,
         "approved_iocs": view["iocs"],
-        "iocs": _extract_all_iocs(approved_findings),
+        "iocs": _extract_all_iocs(approved_findings, view["iocs"], load_iocs(case_dir)),
         "verification": verification_json(view),
     }
 
@@ -303,7 +264,7 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
     view = approved_view(case_dir)
-    iocs = _extract_all_iocs(view["findings"])
+    iocs = _extract_all_iocs(view["findings"], view["iocs"], load_iocs(case_dir))
     total_iocs = sum(len(v) for v in iocs.values())
 
     lines = []
@@ -345,7 +306,7 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
 def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     """Timeline report with optional date filtering."""
     timeline = load_timeline(case_dir)
-    timeline.sort(key=lambda t: t.get("timestamp", ""))
+    timeline.sort(key=lambda t: text_of(t.get("timestamp")))
 
     from_date = getattr(args, "from_date", None)
     to_date = getattr(args, "to_date", None)
@@ -370,7 +331,7 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
         tid = t.get("id", "?")
         status = t.get("status", "?")
         ts = display_instant(t.get("timestamp"))
-        desc = t.get("description", "")
+        desc = text_of(t.get("description"))
         if len(desc) > 35:
             desc = desc[:32] + "..."
         lines.append(
@@ -385,31 +346,25 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
 
 
 def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
-    """IOC report from approved findings."""
-    approved = approved_view(case_dir)["findings"]
-
-    if not approved:
-        print("No approved findings with IOCs.")
-        return None
-
-    iocs = _extract_all_iocs(approved)
-    if not iocs:
-        print("No IOCs found in approved findings.")
-        return None
+    """IOC report: the case's approved IOC records by type, then the values the
+    approved findings name that no IOC record of the case holds."""
+    view = approved_view(case_dir)
+    groups = _extract_all_iocs(view["findings"], view["iocs"], load_iocs(case_dir))
+    records = {k: v for k, v in groups.items() if k != TEXT_ONLY}
 
     lines = []
-    lines.append("IOC REPORT (Approved Findings Only)")
+    lines.append("IOC REPORT (Approved IOCs Only)")
     lines.append("=" * 50)
-    for ioc_type, values in iocs.items():
+    if not records:
+        lines.append("\n  Approved IOC records: none")
+    for ioc_type, values in groups.items():
         lines.append(f"\n  {_d(ioc_type, safe)} ({len(values)}):")
         for v in values:
             lines.append(f"    {_d(v, safe)}")
 
-    total = sum(len(v) for v in iocs.values())
-    lines.append(f"\nTotal: {total} IOCs across {len(iocs)} types")
-
-    output = "\n".join(lines)
-    return output
+    total = sum(len(v) for v in records.values())
+    lines.append(f"\nTotal: {total} IOC records across {len(records)} types")
+    return "\n".join(lines)
 
 
 def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
@@ -457,10 +412,10 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
             f"  Interpretation: {_ml(f.get('interpretation', ''), safe, ' ' * 18)}"
         )
         if f.get("iocs"):
-            lines.append(f"  IOCs:         {json.dumps(f['iocs'], default=str)}")
+            lines.append(f"  IOCs:         {_d(ioc_text(f['iocs']), safe)}")
         # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
         if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
-            lines.append(f"  MITRE:        {_d(mitre, safe)}")
+            lines.append(f"  MITRE:        {_d(list_text(mitre), safe)}")
         if f.get("approved_at"):
             lines.append(f"  Approved:     {_d(f['approved_at'], safe)}")
         if f.get("rejected_at"):

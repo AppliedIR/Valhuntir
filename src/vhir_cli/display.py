@@ -28,7 +28,7 @@ MULTI_LINE = frozenset({"observation", "interpretation", "description", "context
 def one_line(text) -> str:
     """Text for one terminal line, its control characters shown as "?", so it
     can't move the cursor or hide another line."""
-    text = _CONTROL.sub("?", str(text))
+    text = _CONTROL.sub("?", str(text).expandtabs())  # a TAB keeps its column
     if text.isascii():
         return text
     return "".join(
@@ -40,6 +40,36 @@ def lines(text, indent: str) -> str:
     """Multi-line text: each line break stays a real one, indented under its
     field; every other control character is shown as "?"."""
     return f"\n{indent}".join(one_line(line) for line in str(text).split("\n"))
+
+
+def ioc_text(iocs, _depth: int = 0) -> str:
+    """A finding's iocs as the examiner reads them: each value as written, a
+    typed one followed by its type, never the list's Python or JSON form. A
+    {type: [values]} form, or a dict with no value, reads `key: values`. None
+    and empty items are left out; nesting past a few levels shows as "...".
+    The print site still makes the text safe for its line."""
+    if iocs is None:
+        return ""
+    if _depth > 8:
+        return "..."
+    if isinstance(iocs, dict):
+        if "value" in iocs:
+            value = ioc_text(iocs["value"], _depth + 1)
+            kind = ioc_text(iocs.get("type"), _depth + 1)
+            return f"{value} ({kind})".lstrip() if kind else value
+        return "; ".join(f"{k}: {ioc_text(v, _depth + 1)}" for k, v in iocs.items())
+    if isinstance(iocs, list):
+        return ", ".join(t for t in (ioc_text(i, _depth + 1) for i in iocs) if t)
+    return str(iocs)
+
+
+def list_text(value) -> str:
+    """A list field (a finding's MITRE ids) as the examiner reads it: its items
+    joined with ", ", never the list's Python form; any other value as text.
+    The print site still makes the text safe for its line."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(x) for x in value)
+    return str(value)
 
 
 def cited(value) -> list:

@@ -10,6 +10,7 @@ import yaml
 from tests.signing import sign_approved
 from vhir_cli.case_io import save_findings, save_timeline, save_todos
 from vhir_cli.commands.report import cmd_report
+from vhir_cli.ioc_groups import TEXT_ONLY
 
 
 @pytest.fixture
@@ -188,8 +189,9 @@ class TestReportFull:
         cmd_report(_make_args(full=True), identity)
         output = capsys.readouterr().out
         data = json.loads(output.strip())
-        assert "IPv4" in data["iocs"]
-        assert "192.168.1.50" in data["iocs"]["IPv4"]
+        # No IOC records: the approved finding's values are not recorded
+        assert list(data["iocs"]) == [TEXT_ONLY]
+        assert "192.168.1.50" in data["iocs"][TEXT_ONLY]
 
     def test_full_report_empty_case(self, case_dir, identity, capsys):
         cmd_report(_make_args(full=True), identity)
@@ -428,8 +430,8 @@ class TestReportSavePathSecurity:
 @pytest.mark.parametrize(
     "fields,shown",
     [
-        ({"mitre_ids": ["T1059.001", "T1105"]}, "['T1059.001', 'T1105']"),
-        ({"mitre_techniques": ["T1003"]}, "['T1003']"),
+        ({"mitre_ids": ["T1059.001", "T1105"]}, "T1059.001, T1105"),
+        ({"mitre_techniques": ["T1003"]}, "T1003"),
         ({}, None),
     ],
     ids=["mitre_ids", "older-mitre_techniques", "neither"],

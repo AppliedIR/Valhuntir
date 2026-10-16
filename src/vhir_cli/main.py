@@ -319,7 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument(
         "--iocs",
         action="store_true",
-        help="Extract IOCs from findings grouped by status",
+        help="IOC records grouped by status, then values no record holds",
     )
     p_review.add_argument(
         "--timeline", action="store_true", help="Show timeline events"
@@ -594,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="End date filter (ISO format; a date alone includes that whole day, UTC)",
     )
     p_report.add_argument(
-        "--ioc", action="store_true", help="IOC report from approved findings"
+        "--ioc", action="store_true", help="IOC report: the approved IOC records"
     )
     p_report.add_argument(
         "--findings", dest="report_findings", help="Finding IDs (comma-separated)"
@@ -905,8 +905,10 @@ def _case_status_data(case_dir) -> dict:
 
     draft_f = sum(1 for f in findings if f.get("status") == "DRAFT")
     approved_f = sum(1 for f in findings if f.get("status") == "APPROVED")
+    rejected_f = sum(1 for f in findings if f.get("status") == "REJECTED")
     draft_t = sum(1 for t in timeline if t.get("status") == "DRAFT")
     approved_t = sum(1 for t in timeline if t.get("status") == "APPROVED")
+    rejected_t = sum(1 for t in timeline if t.get("status") == "REJECTED")
     open_todos = sum(1 for t in todos if t.get("status") == "open")
 
     return {
@@ -918,9 +920,11 @@ def _case_status_data(case_dir) -> dict:
         "finding_count": len(findings),
         "finding_draft": draft_f,
         "finding_approved": approved_f,
+        "finding_rejected": rejected_f,
         "timeline_count": len(timeline),
         "timeline_draft": draft_t,
         "timeline_approved": approved_t,
+        "timeline_rejected": rejected_t,
         "todo_open": open_todos,
         "todo_total": len(todos),
     }
@@ -949,10 +953,10 @@ def _case_status(args, identity: dict) -> None:
     print(f"  Examiner: {one_line(data['examiner'])}")
     print(f"  Path:     {data['path']}")
     print(
-        f"  Findings: {data['finding_count']} ({data['finding_draft']} draft, {data['finding_approved']} approved)"
+        f"  Findings: {data['finding_count']} ({data['finding_draft']} draft, {data['finding_approved']} approved, {data['finding_rejected']} rejected)"
     )
     print(
-        f"  Timeline: {data['timeline_count']} ({data['timeline_draft']} draft, {data['timeline_approved']} approved)"
+        f"  Timeline: {data['timeline_count']} ({data['timeline_draft']} draft, {data['timeline_approved']} approved, {data['timeline_rejected']} rejected)"
     )
     print(f"  TODOs:    {data['todo_open']} open / {data['todo_total']} total")
 
@@ -1662,7 +1666,15 @@ def _case_close(args, identity: dict) -> None:
         print(f"Case not found: {case_id}", file=sys.stderr)
         sys.exit(1)
 
-    confirm = input(f"Close case {case_id}? [y/N] ")
+    try:
+        confirm = input(f"Close case {case_id}? [y/N] ")
+    except EOFError:  # no terminal to answer (a pipe with nothing in it, an AI's shell)
+        print()
+        print(
+            "Not closed: `vhir case close` asks for confirmation; run it in a terminal.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if confirm.lower() != "y":
         print("Cancelled.")
         return

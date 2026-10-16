@@ -15,13 +15,16 @@ from vhir_cli.case_io import (
     verify_approval_integrity,
     write_approval_log,
 )
-from vhir_cli.commands.review import (
-    _extract_iocs_from_findings,
-    _extract_text_iocs,
-    cmd_review,
-)
+from vhir_cli.commands.review import cmd_review
+from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups, text_iocs
 
 from .signing import approve_under_0_6
+
+
+def _fill(text, collected):
+    """The text's IOCs, by the pattern that found each, into `collected`."""
+    for label, value in text_iocs(text):
+        collected.setdefault(label, set()).add(value)
 
 
 @pytest.fixture
@@ -325,10 +328,10 @@ class TestIOCExtraction:
         )
         cmd_review(args, {})
         output = capsys.readouterr().out
-        assert "Approved Findings" in output
+        # No IOC records: the findings' values are listed as not recorded
+        assert output.startswith(f"IOC records: none\n\n=== {TEXT_ONLY} ===\n")
         assert "192.168.1.50" in output
         assert "evil.example.com" in output
-        assert "Draft Findings" in output
         assert "172.16.0.99" in output
 
     def test_extract_from_dict_iocs(self):
@@ -339,9 +342,7 @@ class TestIOCExtraction:
                 "interpretation": "",
             }
         ]
-        result = _extract_iocs_from_findings(findings)
-        assert "1.2.3.4" in result["IPv4"]
-        assert "bad.com" in result["Domain"]
+        assert ioc_groups(findings, []) == {TEXT_ONLY: ["1.2.3.4", "bad.com"]}
 
     def test_extract_from_list_iocs(self):
         findings = [
@@ -351,28 +352,27 @@ class TestIOCExtraction:
                 "interpretation": "",
             }
         ]
-        result = _extract_iocs_from_findings(findings)
-        assert "5.6.7.8" in result["IPv4"]
+        assert ioc_groups(findings, []) == {TEXT_ONLY: ["5.6.7.8"]}
 
     def test_extract_text_ipv4(self):
         collected = {}
-        _extract_text_iocs("Connected to 10.20.30.40 from source", collected)
+        _fill("Connected to 10.20.30.40 from source", collected)
         assert "10.20.30.40" in collected["IPv4"]
 
     def test_extract_text_sha256(self):
         collected = {}
         h = "a" * 64
-        _extract_text_iocs(f"Hash: {h}", collected)
+        _fill(f"Hash: {h}", collected)
         assert h in collected["SHA256"]
 
     def test_extract_text_windows_path(self):
         collected = {}
-        _extract_text_iocs(r"Found at C:\Windows\Temp\evil.exe on disk", collected)
+        _fill(r"Found at C:\Windows\Temp\evil.exe on disk", collected)
         assert r"C:\Windows\Temp\evil.exe" in collected["File"]
 
     def test_extract_text_domain(self):
         collected = {}
-        _extract_text_iocs("Resolved evil.example.com via DNS", collected)
+        _fill("Resolved evil.example.com via DNS", collected)
         assert "evil.example.com" in collected["Domain"]
 
     def test_no_iocs(self, case_dir, capsys):
@@ -401,7 +401,7 @@ class TestIOCExtraction:
         )
         cmd_review(args, {})
         output = capsys.readouterr().out
-        assert "No IOCs" in output
+        assert output == "IOC records: none\n"
 
 
 class TestTimeline:

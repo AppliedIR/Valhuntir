@@ -92,8 +92,11 @@ def grade_label(finding: dict, art: dict | None = None, reason: bool = True) -> 
 
 
 def _hash(sha) -> str:
-    """The start of a SHA-256; a hash still being computed names its job."""
-    sha = str(sha or "?")
+    """The start of a SHA-256; a hash still being computed names its job, and
+    an empty or missing one reads "(no hash)"."""
+    if not sha:
+        return "(no hash)"
+    sha = str(sha)
     if sha.startswith("pending:"):
         return f"pending (job {_s(sha.split(':', 1)[1])})"
     return f"sha256={_s(sha)[:16]}"
@@ -122,7 +125,7 @@ def candidate_line(c: dict) -> str:
         parts.append(f"entry={_s(c['entry_sha256'])[:16]}")
     parts += [f"{k}={_s(c[k])}" for k in ("tool", "path", "image") if c.get(k)]
     if "sha256" in c:
-        parts.append(_hash(c["sha256"]) if c["sha256"] else "no hash")
+        parts.append(_hash(c["sha256"]))
     return " ".join(parts)
 
 
@@ -155,14 +158,27 @@ def link_line(link: dict) -> str:
         doc = link.get("document")
         # a returned record: the query's link names it, not a file; a record
         # with no content hash (recorded before 0.6.4) reads "(no hash)"
-        chash = doc.get("content_hash")
         return (
             f"{head}: record {_s(doc.get('_id') or '?')} in "
-            f"{_s(doc.get('_index') or '?')} {_hash(chash) if chash else '(no hash)'}"
+            f"{_s(doc.get('_index') or '?')} {_hash(doc.get('content_hash'))}"
         )
     if "from" in link:
         return f"{head}: {_file(link.get('from'))} -> {_file(link.get('to'))}"
     return f"{head}: -> {_file(link.get('to'))}" if "to" in link else head
+
+
+def _once(links: list[dict]) -> list[dict]:
+    """Each step once, the first kept, in stored order: two links are the same
+    step when their JSON objects are equal with keys sorted. A fan-in stores
+    the same root and mount links once per file it read."""
+    seen: set[str] = set()
+    out = []
+    for link in links:
+        key = json.dumps(link, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            out.append(link)
+    return out
 
 
 def _grouped_links(links: list[dict]) -> list[dict]:
@@ -172,7 +188,9 @@ def _grouped_links(links: list[dict]) -> list[dict]:
     link, so N records from one ingest repeat the chain N times. Grouping by
     the chain keeps each record under its own ingest even when a query returns
     records from two ingests interleaved; order follows each chain's first
-    appearance."""
+    appearance. Within a group's chain, and within the tail of links no
+    record follows, each step shows once; a step two groups share shows in
+    both."""
     groups: list[dict] = []
     by_chain: dict[str, dict] = {}
     pending: list[dict] = []
@@ -181,7 +199,7 @@ def _grouped_links(links: list[dict]) -> list[dict]:
             key = json.dumps(pending, sort_keys=True, default=str)
             grp = by_chain.get(key)
             if grp is None:
-                grp = {"chain": list(pending), "records": [], "seen": set()}
+                grp = {"chain": _once(pending), "records": [], "seen": set()}
                 by_chain[key] = grp
                 groups.append(grp)
             rkey = json.dumps(link, sort_keys=True, default=str)
@@ -192,7 +210,7 @@ def _grouped_links(links: list[dict]) -> list[dict]:
         else:
             pending.append(link)
     if pending:  # a chain with no record links renders in stored order
-        groups.append({"chain": pending, "records": []})
+        groups.append({"chain": _once(pending), "records": []})
     out: list[dict] = []
     for grp in groups:
         out.extend(grp["chain"])

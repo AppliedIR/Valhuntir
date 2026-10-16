@@ -55,6 +55,7 @@ from vhir_cli.case_io import (
 from vhir_cli.display import MULTI_LINE as _MULTI_LINE
 from vhir_cli.display import cited as _cited
 from vhir_cli.display import cited_text as _cited_text
+from vhir_cli.display import ioc_text
 from vhir_cli.display import lines as _lines
 from vhir_cli.display import one_line as _one_line
 
@@ -904,7 +905,7 @@ def _safe(text) -> str:
     """Text shown as written, with control, format, surrogate and line or
     paragraph separator characters (newlines included) as visible escapes."""
     out = []
-    for ch in str(text):
+    for ch in str(text).expandtabs():  # a TAB keeps its column
         if unicodedata.category(ch) in _UNSAFE_CATEGORIES:
             cp = ord(ch)
             if cp <= 0xFF:
@@ -1018,7 +1019,7 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
         for line in _alternative_lines(item.get("alternatives")):
             print(f"  Alternative: {line}")
         if item.get("iocs"):
-            print(f"  IOCs: {_safe(item['iocs'])}")
+            print(f"  IOCs: {_safe(ioc_text(item['iocs']))}")
         for line in _evidence_lines(item, timeline):
             print(line)
     else:
@@ -1088,7 +1089,7 @@ def _display_item(item: dict) -> None:
         for line in _alternative_lines(item.get("alternatives")):
             print(f"  Alternative: {_one_line(line)}")
         if item.get("iocs"):
-            print(f"  IOCs: {_one_line(item['iocs'])}")
+            print(f"  IOCs: {_one_line(ioc_text(item['iocs']))}")
         if item.get("timeline_event_id"):
             print(f"  Timeline event: {_one_line(item['timeline_event_id'])}")
     else:
@@ -1266,27 +1267,21 @@ def _render_field(label: str, item: dict, modifications: dict, field: str) -> No
     prefix = f"  {label}:{' ' * pad}"
 
     def shown(text, indent: str) -> str:
+        if field == "iocs":
+            text = ioc_text(text)
+        elif isinstance(text, list):
+            text = ", ".join(str(x) for x in text)
         return _lines(text, indent) if field in _MULTI_LINE else _one_line(text)
 
     if field in modifications:
         mod = modifications[field]
-        original = mod.get("original", "")
-        modified = mod.get("modified", "")
-        # Format lists
-        if isinstance(original, list):
-            original = ", ".join(str(x) for x in original)
-        if isinstance(modified, list):
-            modified = ", ".join(str(x) for x in modified)
         indent = " " * (len(prefix) + 2)
-        print(f"{prefix}{_RED}- {shown(original, indent)}{_RESET}")
+        print(f"{prefix}{_RED}- {shown(mod.get('original', ''), indent)}{_RESET}")
         print(
-            f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {shown(modified, indent)}{_RESET}"
+            f"  {' ' * (len(label) + 1)}{' ' * pad}{_GREEN}+ {shown(mod.get('modified', ''), indent)}{_RESET}"
         )
     else:
-        val = item.get(field, "")
-        if isinstance(val, list):
-            val = ", ".join(str(x) for x in val)
-        print(f"{prefix}{shown(val, ' ' * len(prefix))}")
+        print(f"{prefix}{shown(item.get(field, ''), ' ' * len(prefix))}")
 
 
 # An IOC's value and type are what the examiner decides: only its tags and

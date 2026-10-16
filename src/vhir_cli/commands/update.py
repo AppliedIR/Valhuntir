@@ -10,6 +10,7 @@ command — they would need to re-run their client setup script.
 from __future__ import annotations
 
 import datetime
+import importlib.metadata
 import json
 import os
 import shlex
@@ -1241,7 +1242,8 @@ def _write_update_state(version: str, vhir_commit: str) -> None:
     """Record an update's progress; every vhir command compares it with the
     installed code (main._warn_if_update_incomplete). version "" is written
     just before the pull, so any stop before Step 9 keeps warning; the full
-    record (the running process's version) is written after Step 9."""
+    record (the version installed on disk, read fresh) is written after
+    Step 9."""
     state = {
         "version": version,
         "vhir_commit": vhir_commit,
@@ -1390,9 +1392,10 @@ def _finish_update(
     hashes = manifest.get("git", {})
     parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
-    from vhir_cli import __version__
-
-    _write_update_state(__version__, manifest.get("git", {}).get("vhir", ""))
+    # The version installed now, read fresh: vhir_cli.__version__ was read
+    # when this process started, which can be before the pull
+    installed = importlib.metadata.version("vhir-cli")
+    _write_update_state(installed, manifest.get("git", {}).get("vhir", ""))
     if "claude-code" in clients or "codex" in clients:
         print("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)

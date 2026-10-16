@@ -292,8 +292,13 @@ def _protected_write(path: Path, content: str) -> None:
 def get_case_dir(case_id: str | None = None) -> Path:
     """Resolve the active case directory."""
     if case_id:
-        _validate_case_id(case_id)
         cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
+        if "/" in case_id or "\\" in case_id:
+            raise CaseError(
+                f"--case takes a case ID (the folder name under {cases_dir}), "
+                "not a path. For a case folder elsewhere, set VHIR_CASE_DIR."
+            )
+        _validate_case_id(case_id)
         case_dir = cases_dir / case_id
         if not case_dir.exists():
             raise CaseError(f"Case not found: {case_id}")
@@ -645,7 +650,8 @@ def signed_text(item: dict, item_type: str, view: int = 2) -> str:
 # --- IOC values, as forensic-mcp's _process_iocs extracts them ---
 # A copy of forensic-mcp (case/manager.py: _refang_ioc, _normalize_ioc, the
 # IPv4 test in _detect_ioc_type, and _process_iocs' flatten, refang and port
-# strip); forensic-mcp doesn't depend on vhir-cli. A parity test runs both.
+# strip); forensic-mcp doesn't depend on vhir-cli, so a change there needs the
+# same change here.
 
 
 def _refang_ioc(value: str) -> str:
@@ -1264,11 +1270,17 @@ def display_instant(ts: object) -> str:
     return text[:19]
 
 
+def text_of(value: object) -> str:
+    """A stored field as text to sort or compare by: "" when it is missing or
+    null, else its text (a number a bundle or hand edit stored, too)."""
+    return "" if value is None else str(value)
+
+
 def _at_or_after(ts: object, since: str) -> bool:
     """Compare instants; when either side doesn't parse, compare as text, as before."""
     bound, value = _utc(since), _utc(ts)
     if bound is None or value is None:
-        return ts >= since
+        return text_of(ts) >= since
     return value >= bound
 
 
@@ -1280,7 +1292,7 @@ def _at_or_before(ts: object, end: str) -> bool:
     when either side doesn't parse, compare as text, as before."""
     bound, value = _utc(end), _utc(ts)
     if bound is None or value is None:
-        return ts <= end
+        return text_of(ts) <= end
     if _DATE_ONLY.match(end):
         try:
             return value < bound + timedelta(days=1)

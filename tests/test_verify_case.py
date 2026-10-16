@@ -138,6 +138,19 @@ def test_a_clean_case_exits_0_without_anchors_and_says_so(case, steve):
     assert "anchored\n" not in out
 
 
+def test_a_case_with_no_items_says_none_under_items(case):
+    out = render(verify_case(case))
+    assert "\nItems:\n  none\n" in out, out
+
+
+def test_one_item_is_listed_under_items_with_no_none(case, steve):
+    f = _finding()
+    _save(case, findings=[f])
+    _approve(case, steve, f)
+    items = render(verify_case(case)).split("\nItems:\n")[1]
+    assert items.startswith("  F-steve-001 ") and "  none" not in items, items
+
+
 def test_with_every_key_pinned_and_the_last_head_it_says_anchored(case, steve):
     f = _finding()
     _save(case, findings=[f])

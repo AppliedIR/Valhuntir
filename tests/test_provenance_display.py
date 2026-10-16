@@ -501,7 +501,7 @@ def test_each_candidate_of_an_ambiguous_artifact_is_listed_by_the_fields_it_has(
         f"candidate: sift-steve-040 entry={E16} path={X}/4/a.csv sha256={HCSV[:16]}"
         in text
     )
-    assert f"candidate: sift-steve-041 entry={E16} path={X}/4/a.csv no hash" in text
+    assert f"candidate: sift-steve-041 entry={E16} path={X}/4/a.csv (no hash)" in text
     for n in "12":  # one id on two entries: told apart by the entry's hash
         assert (
             f"candidate: sift-steve-042 entry={n * 16} tool=run_command\n"
