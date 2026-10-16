@@ -1,14 +1,14 @@
 # MCP Reference
 
-100 MCP tools across 9 backends. Eight backends run on the SIFT workstation (7 as stdio subprocesses of sift-gateway, plus opensearch-mcp optionally). wintools-mcp runs independently on a Windows machine. The Examiner Portal (case-dashboard package) is a web UI served by the gateway — not an MCP backend.
+The MCP backends below run on the SIFT workstation (as stdio subprocesses of sift-gateway, with opensearch-mcp optional). wintools-mcp runs independently on a Windows machine. The Examiner Portal (case-dashboard package) is a web UI served by the gateway — not an MCP backend.
 
-Without optional backends: 73 tools / 7 backends. With opensearch-mcp: 90 / 8. With wintools-mcp: 100 / 9.
+The tool lists below are per backend. opensearch-mcp and wintools-mcp add theirs when they are installed.
 
-## forensic-mcp (23 tools)
+## forensic-mcp
 
-The investigation state machine. Manages findings, timeline events, evidence listing, TODOs, and forensic discipline methodology. Provides 9 core tools plus 14 discipline entries. The discipline entries are exposed as MCP resources by default; when `reference_mode="tools"` is set, they become tools instead (for clients without resource support). Either way, the server provides 23 callable endpoints.
+The investigation state machine. Manages findings, timeline events, evidence listing, TODOs, and forensic discipline methodology. Provides core tools plus discipline entries. The discipline entries are exposed as MCP resources by default; when `reference_mode="tools"` is set, they become tools instead (for clients without resource support). Either way, the server provides the same set of callable endpoints.
 
-### Core Tools (9)
+### Core Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -22,7 +22,7 @@ The investigation state machine. Manages findings, timeline events, evidence lis
 | `update_todo` | `todo_id`, `status`, `note`, `assignee`, `priority`, `analyst_override` | Update a TODO | To add notes, reassign, or change status |
 | `complete_todo` | `todo_id`, `analyst_override` | Mark a TODO as completed | When follow-up is done |
 
-### Discipline Tools (14)
+### Discipline Tools
 
 Available as MCP resources by default. Exposed as tools when `reference_mode="tools"`.
 
@@ -70,7 +70,7 @@ The `validate_finding()` tool allows the LLM to pre-check a finding before commi
 
 Discipline resources provide on-demand access to forensic methodology. The LLM can query checkpoint requirements before making significant conclusions, check evidence standards when assessing confidence, and retrieve corroboration suggestions when planning the next analysis step.
 
-## case-mcp (16 tools)
+## case-mcp
 
 Case lifecycle management, evidence operations, export/import, backup, and audit logging.
 
@@ -100,9 +100,9 @@ Case lifecycle management, evidence operations, export/import, backup, and audit
 
 ### How case-mcp Guides the LLM
 
-`case_status()` returns platform capabilities — which optional backends are available (opensearch-mcp, wintools-mcp, remnux-mcp, OpenCTI) — so the LLM knows what tools it can use. It also returns investigation guidance based on the current case state. This dynamic context replaces static instructions that may become stale during a session.
+`case_status()` returns platform capabilities: `"installed"` for a package that imports here (opencti, opensearch, forensic_rag, sift_tools), `"configured"` for a backend the config lists (remnux, wintools), or `false`. It never reports `true`, and neither value says the backend answers. It also returns investigation guidance based on the current case state. This dynamic context replaces static instructions that may become stale during a session.
 
-## report-mcp (6 tools)
+## report-mcp
 
 Report generation with data-driven profiles and Zeltser IR Writing integration. Only APPROVED findings appear in reports.
 
@@ -130,7 +130,7 @@ Report generation with data-driven profiles and Zeltser IR Writing integration. 
 
 `generate_report()` collects approved findings, timeline events, and IOCs, performs MITRE ATT&CK mapping, aggregates IOCs, shows as approved only the items that verify (listing the rest under `verification.not_verified`), carries every signing key and chain head, and returns structured JSON with Zeltser IR Writing guidance. The LLM uses this data and the Zeltser guidance to render narrative sections, then saves the result with `save_report()`.
 
-## sift-mcp (5 tools)
+## sift-mcp
 
 Forensic tool execution on Linux/SIFT. A denylist blocks destructive system commands (mkfs, shutdown, kill, nc/ncat). All other binaries can execute. Tools in the forensic catalog get enriched responses; uncataloged tools get basic envelopes.
 
@@ -144,7 +144,7 @@ Forensic tool execution on Linux/SIFT. A denylist blocks destructive system comm
 
 ### Tool Catalog (56 FK entries)
 
-The forensic-knowledge package provides YAML definitions for 56 tools across 17 categories. When sift-mcp executes a cataloged tool, the response is enriched with:
+The forensic-knowledge package provides YAML definitions for catalogued forensic tools, by category. When sift-mcp executes a cataloged tool, the response is enriched with:
 
 | Field | Description |
 |-------|-------------|
@@ -191,7 +191,7 @@ Accuracy content (caveats, field_meanings) is always delivered — these prevent
 - Flag restrictions — `find` blocks `-exec`/`-delete`, `sed` blocks `-i`, `tar` blocks extraction/creation, `awk` blocks `system()`/pipes
 - Output truncation — large output capped; use `save_output=True` for large results
 
-## forensic-rag-mcp (3 tools)
+## forensic-rag-mcp
 
 Semantic search across 22,000+ forensic knowledge records from 23 authoritative sources.
 
@@ -240,7 +240,7 @@ Semantic search across 22,000+ forensic knowledge records from 23 authoritative 
 
 Combined boost from source matching and technique matching is capped at 120% of the raw semantic score to prevent over-ranking marginal matches.
 
-## windows-triage-mcp (13 tools)
+## windows-triage-mcp
 
 Offline Windows baseline validation. Checks artifacts against 2.6 million known-good records from multiple Windows versions. No network calls required.
 
@@ -276,7 +276,7 @@ Offline Windows baseline validation. Checks artifacts against 2.6 million known-
 - `check_registry` requires the full registry baseline database (~12GB). `check_autorun` is faster for persistence checks.
 - UNKNOWN is the most common result. It means "not in the baseline database" — not "suspicious."
 
-## threatintel-mcp (8 tools)
+## threatintel-mcp
 
 Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP); the other seven tools search OpenCTI. Named `opencti-mcp` in configurations from before.
 
@@ -303,11 +303,11 @@ Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenC
 | 50-79 | Medium confidence, corroborate with other sources |
 | < 50 | Low confidence, note uncertainty |
 
-## opensearch-mcp (21 tools)
+## opensearch-mcp
 
 Evidence indexing, structured querying, and programmatic enrichment. Connects to a local or remote OpenSearch instance. Optional but recommended for investigations at scale.
 
-### Query Tools (8)
+### Query Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -320,7 +320,7 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 | `idx_status` | — | Index inventory: names, doc counts, sizes | To see what's indexed |
 | `idx_case_summary` | `case_id`, `include_fields` (false) | Complete case overview: hosts, artifacts, fields, enrichment status, time ranges | First call in any indexed investigation |
 
-### Ingest Tools (6)
+### Ingest Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -331,7 +331,7 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 | `idx_ingest_accesslog` | `path`, `hostname`, `index_suffix` ("accesslog"), `dry_run` (true) | Apache/Nginx access log ingest | For web server logs |
 | `idx_ingest_status` | `case_id` | Monitor running ingest operations | To check ingest progress |
 
-### Enrichment Tools (2)
+### Enrichment Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -344,14 +344,14 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 |------|-----------|-------------|---------------------|
 | `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | Hayabusa detection alerts (count and query) | To review automated detections |
 
-### Host Tools (2)
+### Host Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `idx_host_inventory` | `case_id`, `offset` (0), `limit` (50) | The case's machines (`host.id`) with their state, the raw names their records carry, the evidence they came from and document counts; names no machine holds yet; ingest runs awaiting host confirmation. Read only | To see which machines the case holds and what the examiner still has to confirm |
 | `case_host_fix` | `raw`, `new_canonical` | Suggest that a host name belongs to another machine. Records the suggestion for the examiner and changes no document | When a host name looks like another machine's; the examiner renames or merges in the Hosts tab |
 
-### Maintenance Tools (2)
+### Maintenance Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -377,11 +377,11 @@ Searches without an index read the active case's own indices. A case from before
 
 After ingest, `idx_ingest()` returns `next_steps` suggesting enrichment and query tools with specific artifact types to check.
 
-## wintools-mcp (10 tools, separate deployment)
+## wintools-mcp (separate deployment)
 
 Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML catalog files can execute. Runs independently on a Windows workstation, exposing a Streamable HTTP endpoint on port 4624. The gateway can proxy requests to wintools-mcp, or LLM clients can connect directly.
 
-### Discovery Tools (6)
+### Discovery Tools
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|

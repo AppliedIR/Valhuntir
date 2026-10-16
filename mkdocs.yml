@@ -43,6 +43,7 @@ nav:
     - MCP Tools: mcp-reference.md
   - Operations:
     - Deployment: deployment.md
+    - Updating: updating.md
     - Security: security.md
 
 markdown_extensions:

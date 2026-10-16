@@ -77,6 +77,28 @@ vhir case migrate --examiner alice
 vhir case migrate --import-all    # Merge all examiners' data
 ```
 
+### `vhir case new-identity`
+
+Give a copied case (a `cp -r` of another case) its own identity.
+
+```bash
+vhir case new-identity INC-2026-0225-copy
+```
+
+| Argument/Option | Description |
+|-----------------|-------------|
+| `case_id` | Case ID of the copy |
+| `--cases-dir` | Cases root directory (default: `$VHIR_CASES_DIR` or `~/cases`) |
+
+### `vhir case prune-ingest-manifests`
+
+Remove ingest manifests from the case's evidence registry. Older ingests registered each ingest manifest as evidence; they belong in the case's audit folder. Running it again on a clean case changes nothing.
+
+```bash
+vhir case prune-ingest-manifests                  # Active case
+vhir case prune-ingest-manifests INC-2026-0225
+```
+
 ## Examiner Portal
 
 ### `vhir portal`
@@ -88,6 +110,10 @@ vhir portal
 ```
 
 The portal is the primary review interface — examiners can review, edit, approve, reject, and commit findings entirely in the browser. Use the Commit button (Shift+C) to apply decisions with challenge-response authentication. Alternatively, `vhir approve --review` applies pending edits from the CLI.
+
+### `vhir dashboard`
+
+Retired: opens the Examiner Portal. Use `vhir portal`.
 
 ## Review
 
@@ -228,6 +254,101 @@ vhir evidence unlock
 ```
 
 Legacy aliases: `vhir lock-evidence`, `vhir unlock-evidence`, `vhir register-evidence`.
+
+## Evidence Indexing (OpenSearch)
+
+These commands come with opensearch-mcp and appear only when it is installed. Every ingest waits until its hosts are confirmed in the Examiner Portal's Hosts tab (`vhir portal`); until then the CLI prints "Waiting for host confirmation (N host name(s)): …" and the host names it waits on.
+
+### `vhir ingest`
+
+Ingest evidence into OpenSearch: an evidence directory or archive.
+
+```bash
+vhir ingest /cases/evidence/triage.zip
+vhir ingest /cases/evidence/C --hostname WKSTN01     # A flat directory needs --hostname
+```
+
+| Argument/Option | Description |
+|-----------------|-------------|
+| `path` | Path to evidence directory or archive |
+| `--hostname` | Override hostname (required for flat directories) |
+| `--case` | Case ID (reads `~/.vhir/active_case` if omitted) |
+| `--password` | Archive password |
+| `--from` / `--to` | Start / end date (ISO) |
+| `--all-logs` | Parse all evtx files |
+| `--reduced-ids` | Filter to high-value Event IDs |
+| `--source-timezone` | Evidence system's local timezone |
+| `--include` / `--exclude` | Artifact types (comma-separated) |
+| `--full` | Include all tiers |
+| `--config` | YAML config file |
+| `--vss` | Include volume shadow copies |
+| `--yes` | Skip confirmation |
+| `--skip-triage` | Skip post-ingest triage baseline enrichment |
+| `--no-hayabusa` | Skip Hayabusa detection after evtx ingest |
+
+### `vhir ingest-memory`
+
+Parse a memory image with Volatility 3 and index the results.
+
+```bash
+vhir ingest-memory /cases/evidence/mem.raw --hostname WKSTN01
+```
+
+| Argument/Option | Description |
+|-----------------|-------------|
+| `path` | Path to memory image |
+| `--hostname` | Source hostname, if known (else the examiner names it in the Hosts tab) |
+| `--case` | Case ID |
+| `--tier` | Analysis depth (1=fast, 2=default, 3=deep) |
+| `--plugins` | Specific plugins (comma-separated) |
+| `--timeout` | Per-plugin timeout in seconds |
+| `--yes` | Skip confirmation |
+
+### `vhir ingest-json`
+
+Index a JSON or JSONL file, or a directory of them.
+
+```bash
+vhir ingest-json /cases/evidence/export.jsonl --hostname WKSTN01
+```
+
+Options: `path` (JSON/JSONL file or directory), `--hostname` (required), `--index-suffix`, `--time-field`, `--case`, `--from`, `--to`, `--batch-size`, `--dry-run`.
+
+### `vhir ingest-delimited`
+
+Index a CSV, TSV, Zeek or bodyfile file, or a directory of them.
+
+```bash
+vhir ingest-delimited /cases/evidence/conn.log --hostname SENSOR01 --format zeek
+vhir ingest-delimited /cases/evidence/hosts/ --recursive     # Each subdirectory is a host
+```
+
+Options: `path` (delimited file or directory), `--hostname`, `--recursive` (treat subdirectories as hosts), `--index-suffix`, `--time-field`, `--delimiter`, `--format {csv,tsv,zeek,bodyfile}`, `--case`, `--from`, `--to`, `--batch-size`, `--dry-run`.
+
+### `vhir ingest-accesslog`
+
+Index Apache or Nginx access logs: a file or a directory of them.
+
+```bash
+vhir ingest-accesslog /cases/evidence/access.log --hostname WEB01
+```
+
+Options: `path` (access log file or directory), `--hostname` (required), `--index-suffix`, `--case`, `--from`, `--to`, `--dry-run`.
+
+### `vhir enrich-intel`
+
+Enrich the case's indexed data with OpenCTI threat intel.
+
+```bash
+vhir enrich-intel --dry-run      # Extract IOCs and show counts without lookup
+vhir enrich-intel
+```
+
+| Option | Description |
+|--------|-------------|
+| `--case` | Case ID (default: active case) |
+| `--dry-run` | Extract IOCs and show counts without lookup |
+| `--force` | Re-enrich even if already enriched |
 
 ## Reporting
 
@@ -429,6 +550,16 @@ vhir setup join-code --name lab2   # A code that joins as lab2 only, ending lab2
 
 A code bound with `--name` lets a LAN examiner re-join under their own name; their passphrase, signing key and ledger lines are unchanged. It can't take the box owner's own name.
 
+### `vhir setup hayabusa`
+
+Install the current Hayabusa release for this user, into `~/.local` (no sudo). SANS's installer (`sudo cast install teamdfir/sift`) installs Hayabusa 3.8.1 with the rest of SIFT.
+
+```bash
+vhir setup hayabusa
+```
+
+The release is checked against the sha256 digest GitHub's release API gives, unpacked with its rules into `~/.local/share/hayabusa/<version>/` and linked as `~/.local/bin/hayabusa`.
+
 ## Service Management
 
 ### `vhir service status`
@@ -448,6 +579,26 @@ vhir service start forensic-mcp
 vhir service stop threatintel-mcp
 vhir service restart                   # All backends
 ```
+
+## Updating
+
+### `vhir update`
+
+Pull the latest code, reinstall the packages, redeploy the client controls and restart the gateway. Run it on the SIFT workstation. See [Updating](updating.md) for the Windows workstation, remote examiner machines and the steps after an update.
+
+```bash
+vhir update --check               # Check for updates without applying
+vhir update                       # Pull latest, reinstall, redeploy, restart
+vhir update --no-restart          # Skip gateway restart after update
+vhir update --cpu                 # Install CPU PyTorch for knowledge search
+```
+
+| Option | Description |
+|--------|-------------|
+| `--check` | Check for updates without applying |
+| `--no-restart` | Skip gateway restart |
+| `--cpu` | Install CPU PyTorch for knowledge search (~0.7 GB) |
+| `--gpu` | Install GPU (CUDA) PyTorch for knowledge search (~5.4 GB) |
 
 ## Configuration
 

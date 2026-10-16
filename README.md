@@ -50,7 +50,7 @@ Without OpenSearch, steps 3-6 are replaced by the LLM doing direct tool executio
 
 | Component | Role | RAM (min) | RAM (rec) | Disk | Notes |
 |-----------|------|-----------|-----------|------|-------|
-| **Valhuntir with sift-mcp** | Gateway + 8 MCP backends | 16 GB | 16 GB | 50 GB + evidence/extractions | SIFT Workstation (Ubuntu). Gateway capped at 4 GB. 24 GB for memory analysis with Volatility 3. |
+| **Valhuntir with sift-mcp** | Gateway + MCP backends | 16 GB | 16 GB | 50 GB + evidence/extractions | SIFT Workstation (Ubuntu). Gateway capped at 4 GB. 24 GB for memory analysis with Volatility 3. |
 | **Valhuntir + OpenSearch** | Above + evidence indexing | 32 GB | 32 GB | 100 GB + evidence/extractions/indices | OpenSearch JVM 6 GB, container 8 GB. Can run on separate host. |
 | **Valhuntir Lite** | Stdio MCPs only, no gateway | 8 GB | 16 GB | 30 GB + evidence/extractions | No OpenSearch. Direct MCP from LLM client. |
 | **OpenSearch (remote)** | Dedicated indexing host | 12 GB | 16 GB | 100 GB + indices | Alternative to co-located. Connects via HTTPS. |
@@ -107,24 +107,24 @@ graph TB
     GW -.->|"HTTP(S)"| OCTI
 ```
 
-REMnux, Windows, and OpenSearch are optional. SIFT alone provides 73 MCP tools across 7 backends (90 with opensearch-mcp, 100 with wintools-mcp), the Examiner Portal, and full case management.
+REMnux, Windows, and OpenSearch are optional. SIFT alone provides the core MCP backends, the Examiner Portal, and full case management. The [Where Things Run](#where-things-run) table lists each backend; the [MCP reference](https://appliedir.github.io/Valhuntir/mcp-reference/) lists their tools.
 
 ### SIFT Platform Components
 
-The sift-gateway aggregates up to 8 MCP backends as stdio subprocesses behind a single HTTP endpoint. Each backend is also available individually. The Examiner Portal is served by the gateway for browser-based review and approval. opensearch-mcp connects to a local or remote OpenSearch instance for evidence indexing and querying at scale.
+The sift-gateway aggregates the MCP backends as stdio subprocesses behind a single HTTP endpoint. Each backend is also available individually. The Examiner Portal is served by the gateway for browser-based review and approval. opensearch-mcp connects to a local or remote OpenSearch instance for evidence indexing and querying at scale.
 
 ```mermaid
 graph LR
     GW["sift-gateway :4508"]
 
-    FM["forensic-mcp<br/>23 tools · findings, timeline,<br/>evidence, discipline"]
-    CM["case-mcp<br/>16 tools · case management,<br/>audit queries, backup"]
-    RM["report-mcp<br/>6 tools · report generation,<br/>IOC aggregation"]
-    SM["sift-mcp<br/>5 tools · Linux forensic<br/>tool execution"]
-    RAG["forensic-rag<br/>3 tools · semantic search<br/>22K records"]
-    WT["windows-triage<br/>13 tools · offline baseline<br/>validation"]
-    OC["threatintel-mcp<br/>8 tools · threat<br/>intelligence"]
-    OS["opensearch-mcp<br/>21 tools · evidence indexing,<br/>query, enrichment"]
+    FM["forensic-mcp<br/>findings, timeline,<br/>evidence, discipline"]
+    CM["case-mcp<br/>case management,<br/>audit queries, backup"]
+    RM["report-mcp<br/>report generation,<br/>IOC aggregation"]
+    SM["sift-mcp<br/>Linux forensic<br/>tool execution"]
+    RAG["forensic-rag<br/>semantic search<br/>22K records"]
+    WT["windows-triage<br/>offline baseline<br/>validation"]
+    OC["threatintel-mcp<br/>threat<br/>intelligence"]
+    OS["opensearch-mcp<br/>evidence indexing,<br/>query, enrichment"]
     CD["Examiner Portal<br/>browser review + commit"]
     FK["forensic-knowledge<br/>shared YAML data"]
     CASE["Case Directory"]
@@ -197,17 +197,17 @@ These layers reinforce each other through consistent, contextual repetition acro
 | Component | Runs on | Port | Purpose |
 |-----------|---------|------|---------|
 | sift-gateway | SIFT | 4508 | Aggregates SIFT-local MCPs behind one HTTP endpoint |
-| forensic-mcp | SIFT | (via gateway) | Findings, timeline, evidence, TODOs, IOCs, discipline (23 tools) |
-| case-mcp | SIFT | (via gateway) | Case management, audit queries, evidence registration, backup (16 tools) |
-| report-mcp | SIFT | (via gateway) | Report generation with profiles, IOC aggregation, MITRE mapping (6 tools) |
-| sift-mcp | SIFT | (via gateway) | Denylist-protected forensic tool execution on Linux/SIFT (5 tools) |
-| opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (21 tools). Optional. |
-| forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more (3 tools) |
-| windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation (13 tools) |
-| threatintel-mcp | SIFT | (via gateway) | Threat intelligence: `lookup_ioc` returns each configured platform's records (OpenCTI, MISP), with no verdict; the other tools search OpenCTI. Also answers to `opencti-mcp` (8 tools) |
+| forensic-mcp | SIFT | (via gateway) | Findings, timeline, evidence, TODOs, IOCs, discipline |
+| case-mcp | SIFT | (via gateway) | Case management, audit queries, evidence registration, backup |
+| report-mcp | SIFT | (via gateway) | Report generation with profiles, IOC aggregation, MITRE mapping |
+| sift-mcp | SIFT | (via gateway) | Denylist-protected forensic tool execution on Linux/SIFT |
+| opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment. Optional. |
+| forensic-rag-mcp | SIFT | (via gateway) | Semantic search across Sigma, MITRE ATT&CK, Atomic Red Team, and more |
+| windows-triage-mcp | SIFT | (via gateway) | Offline Windows baseline validation |
+| threatintel-mcp | SIFT | (via gateway) | Threat intelligence: `lookup_ioc` returns each configured platform's records (OpenCTI, MISP), with no verdict; the other tools search OpenCTI. Also answers to `opencti-mcp` |
 | OpenSearch | SIFT (Docker) | 9200 | Evidence search engine. Local or remote. Optional. |
 | Examiner Portal | SIFT | (via gateway) | Browser-based review and approval. Primary review UI. |
-| wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows (10 tools) |
+| wintools-mcp | Windows | 4624 | Catalog-gated forensic tool execution on Windows |
 | vhir CLI | SIFT | -- | Human-only: case init, evidence management, verification, exec. Approval also available via Examiner Portal. Remote examiners need SSH only for CLI-exclusive operations. |
 | forensic-knowledge | anywhere | -- | Shared YAML data package (tools, artifacts, discipline) |
 
@@ -312,7 +312,7 @@ curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.
 curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh --recommended
 ```
 
-**Recommended with OpenSearch** — Everything above plus evidence indexing at scale. Parses and indexes evidence into OpenSearch, giving the LLM 17 structured query tools instead of reading raw artifacts. Requires Docker.
+**Recommended with OpenSearch** — Everything above plus evidence indexing at scale. Parses and indexes evidence into OpenSearch, giving the LLM structured query tools instead of reading raw artifacts. Requires Docker.
 
 ```
 curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.sh -o /tmp/vhir-quickstart.sh && bash /tmp/vhir-quickstart.sh --recommended --opensearch
@@ -545,8 +545,8 @@ vhir audit summary
 
 ```
 vhir service status                    # Show running backends + health
-vhir service start forensic-rag        # Start a backend
-vhir service stop windows-triage       # Stop a backend
+vhir service start forensic-rag-mcp    # Start a backend
+vhir service stop windows-triage-mcp   # Stop a backend
 vhir service restart sift-mcp          # Restart a backend
 ```
 
@@ -571,7 +571,11 @@ vhir config --show                         # Show current configuration
 vhir update                       # Pull latest, reinstall, redeploy, restart
 vhir update --check               # Check for updates without applying
 vhir update --no-restart          # Skip gateway restart after update
+vhir update --cpu                 # Install CPU PyTorch for knowledge search (~0.7 GB)
+vhir update --gpu                 # Install GPU (CUDA) PyTorch for knowledge search (~5.4 GB)
 ```
+
+What an update changes and what to run after it: [Updating](https://appliedir.github.io/Valhuntir/updating/).
 
 #### join
 
@@ -658,8 +662,8 @@ All thresholds clamp to a sane lower bound (operator typo of `0` won't disable s
 | Repo | Purpose |
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
-| [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (21 tools, 15 parsers). Optional. |
-| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (10 tools, 25 catalog entries) |
+| [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (15 parsers). Optional. |
+| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (25 catalog entries) |
 | [Valhuntir](https://github.com/AppliedIR/Valhuntir) | CLI, architecture reference |
 
 ## Updating
@@ -672,9 +676,12 @@ vhir update --check      # Check for updates without applying
 vhir update --no-restart # Update without restarting the gateway
 ```
 
-The update command pulls the latest code from all configured repos (sift-mcp, vhir,
-opensearch-mcp, wintools-mcp), reinstalls all packages, redeploys forensic controls,
-restarts the gateway, and runs a connectivity smoke test.
+Run it on the SIFT workstation. The update command pulls the latest code for sift-mcp,
+vhir and (if installed) opensearch-mcp, reinstalls the packages, redeploys the forensic
+controls for each configured client, restarts the gateway, and runs a connectivity smoke
+test. It does not update a remote examiner machine or the Windows workstation. The
+[Updating](https://appliedir.github.io/Valhuntir/updating/) page covers both, and the
+commands to run after an update.
 
 ## Valhuntir Lite
 
@@ -817,7 +824,7 @@ After `vhir update` (or `vhir setup client`) redeploys the client controls:
 ## Upgrading from Lite to Valhuntir
 
 Both modes share the same Python venv, triage databases, and RAG index.
-Valhuntir adds the gateway (up to 8 MCP backends behind one HTTP endpoint),
+Valhuntir adds the gateway (the MCP backends behind one HTTP endpoint),
 4+ additional MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp,
 and optionally opensearch-mcp), a web-based review portal (Examiner Portal),
 structured case management, sandbox enforcement, and signed approvals.

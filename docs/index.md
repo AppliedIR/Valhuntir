@@ -4,7 +4,7 @@ Valhuntir is a forensic investigation platform that connects LLM clients to fore
 
 ## What Valhuntir Does
 
-- Provides up to 100 MCP tools across 9 backends (73 SIFT-only, 90 with OpenSearch, 100 with Windows)
+- Provides MCP tools across the SIFT backends, with more when opensearch-mcp or wintools-mcp is added (the [MCP reference](mcp-reference.md) lists them per backend)
 - Executes forensic tools (Zimmerman suite, Volatility, Sleuth Kit, Hayabusa, and more) through MCP servers
 - Indexes evidence into OpenSearch for structured querying across millions of records (optional)
 - Records findings, timeline events, and investigation reasoning with full audit trails
@@ -17,15 +17,15 @@ Valhuntir is a forensic investigation platform that connects LLM clients to fore
 | Component | Purpose |
 |-----------|---------|
 | **sift-gateway** | HTTP gateway aggregating all SIFT-local MCPs behind one endpoint |
-| **forensic-mcp** | Findings, timeline, evidence, TODOs, discipline (23 tools: 9 core + 14 discipline) |
-| **case-mcp** | Case lifecycle, evidence management, export/import, backup, audit (16 tools) |
-| **report-mcp** | Report generation with 6 profile types (6 tools) |
-| **sift-mcp** | Linux forensic tool execution with FK enrichment (5 tools) |
-| **forensic-rag-mcp** | Semantic search across 22K+ forensic knowledge records (3 tools) |
-| **windows-triage-mcp** | Offline Windows baseline validation (13 tools) |
-| **threatintel-mcp** | Read-only threat intelligence: each configured platform's records (OpenCTI, MISP), no verdict (8 tools) |
-| **opensearch-mcp** | Evidence indexing, structured querying, enrichment (21 tools, separate repo) |
-| **wintools-mcp** | Windows forensic tool execution (10 tools, separate repo) |
+| **forensic-mcp** | Findings, timeline, evidence, TODOs, discipline (core tools plus discipline entries) |
+| **case-mcp** | Case lifecycle, evidence management, export/import, backup, audit |
+| **report-mcp** | Report generation with 6 profile types |
+| **sift-mcp** | Linux forensic tool execution with FK enrichment |
+| **forensic-rag-mcp** | Semantic search across 22K+ forensic knowledge records |
+| **windows-triage-mcp** | Offline Windows baseline validation |
+| **threatintel-mcp** | Read-only threat intelligence: each configured platform's records (OpenCTI, MISP), no verdict |
+| **opensearch-mcp** | Evidence indexing, structured querying, enrichment (separate repo) |
+| **wintools-mcp** | Windows forensic tool execution (separate repo) |
 | **remnux-mcp** | Automated malware analysis on REMnux VM (optional, user-provided) |
 | **vhir CLI** | Human-only case management, approval, reporting, evidence handling |
 | **forensic-knowledge** | Shared YAML data package for tool guidance and artifact knowledge |

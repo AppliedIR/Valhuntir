@@ -86,43 +86,43 @@ http://localhost:4508/mcp/opensearch-mcp
 
 ### forensic-mcp
 
-The investigation state machine. 23 tools managing findings, timeline events, evidence listing, TODOs, and forensic discipline. Findings and timeline events stage as DRAFT and require human approval. IOCs are auto-extracted from findings. The server validates findings against methodology standards and returns feedback.
+The investigation state machine. Its tools manage findings, timeline events, evidence listing, TODOs, and forensic discipline. Findings and timeline events stage as DRAFT and require human approval. IOCs are auto-extracted from findings. The server validates findings against methodology standards and returns feedback.
 
 ### case-mcp
 
-Case lifecycle management. 16 tools for init, activate, close, list, status, evidence registration/verification, export/import, audit summary, action/reasoning logging, backup, portal access, and a draft host list. Tools are classified by safety tier (SAFE/CONFIRM/AUTO).
+Case lifecycle management. Tools for init, activate, close, list, status, evidence registration/verification, export/import, audit summary, action/reasoning logging, backup, portal access, and a draft host list. Tools are classified by safety tier (SAFE/CONFIRM/AUTO).
 
-`case_status()` dynamically detects available platform capabilities (opensearch-mcp, wintools-mcp, remnux-mcp, OpenCTI) using `importlib.util.find_spec()` and gateway.yaml parsing. This gives the LLM accurate information about what tools are available in the current deployment.
+`case_status()` reports platform capabilities by what it checked, never `true`, and contacts nothing. opencti, opensearch, forensic_rag and sift_tools are `"installed"` when their package imports (`importlib.util.find_spec()`). remnux and wintools are `"configured"` when gateway.yaml (or, for REMnux, `~/.claude.json`) lists them. Anything else is `false`. Neither value says the backend answers.
 
 ### report-mcp
 
-Report generation with 6 data-driven profiles. 6 tools. Aggregates approved findings, IOCs, and MITRE ATT&CK mappings. Shows as approved only the items that verify (the same verification as `vhir review --verify`), lists the rest as not verified, and carries every signing key and chain head in each profile; saved reports end with a verification block the server appends. Integrates with Zeltser IR Writing MCP for report templates and writing guidance. IOC extraction searches finding text (observation + interpretation + description) for patterns.
+Report generation with 6 data-driven profiles. Aggregates approved findings, IOCs, and MITRE ATT&CK mappings. Shows as approved only the items that verify (the same verification as `vhir review --verify`), lists the rest as not verified, and carries every signing key and chain head in each profile; saved reports end with a verification block the server appends. Integrates with Zeltser IR Writing MCP for report templates and writing guidance. IOC extraction searches finding text (observation + interpretation + description) for patterns.
 
 ### sift-mcp
 
-Forensic tool execution on Linux/SIFT. 5 tools — 4 discovery plus `run_command`. A denylist blocks destructive system commands. Catalog-enriched responses for 59+ known tools (from the forensic-knowledge package), basic envelopes for uncataloged tools. The enrichment delivery system manages token budget over long sessions (accuracy content always delivered, discovery content decays after 3 calls per tool).
+Forensic tool execution on Linux/SIFT: discovery tools plus `run_command`. A denylist blocks destructive system commands. Catalog-enriched responses for 59+ known tools (from the forensic-knowledge package), basic envelopes for uncataloged tools. The enrichment delivery system manages token budget over long sessions (accuracy content always delivered, discovery content decays after 3 calls per tool).
 
 ### wintools-mcp
 
-Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
+Forensic tool execution on Windows, with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
 
 ### opensearch-mcp
 
-Evidence indexing, structured querying, and programmatic enrichment. 21 tools. Connects to a local or remote OpenSearch instance. 15 parsers cover the forensic evidence spectrum. Can run as a stdio MCP server (via gateway), HTTP server (standalone), CLI (`opensearch-ingest`), or vhir plugin (`vhir ingest`).
+Evidence indexing, structured querying, and programmatic enrichment. Connects to a local or remote OpenSearch instance. 15 parsers cover the forensic evidence spectrum. Can run as a stdio MCP server (via gateway), HTTP server (standalone), CLI (`opensearch-ingest`), or vhir plugin (`vhir ingest`).
 
 Hayabusa auto-detection runs after EVTX ingest, applying 3,700+ Sigma rules and indexing alerts. Two post-ingest enrichment pipelines (triage baseline and threat intelligence) run programmatically with zero LLM token cost.
 
 ### forensic-rag-mcp
 
-Semantic search across 22,000+ forensic knowledge records from 23 authoritative sources. 3 tools. Uses a sentence-transformer embedding model to rank results by semantic similarity. Source filtering supports both substring matching and exact source_id matching. Score boosts from source and technique matching are capped at 120% of raw semantic score.
+Semantic search across 22,000+ forensic knowledge records from 23 authoritative sources. Uses a sentence-transformer embedding model to rank results by semantic similarity. Source filtering supports both substring matching and exact source_id matching. Score boosts from source and technique matching are capped at 120% of raw semantic score.
 
 ### windows-triage-mcp
 
-Offline Windows baseline validation against 2.6 million known-good records. 13 tools. Databases cover files, processes, services, scheduled tasks, autorun entries, registry keys, hashes (LOLDrivers), LOLBins, hijackable DLLs, and named pipes across multiple Windows versions. All lookups are local — no network calls.
+Offline Windows baseline validation against 2.6 million known-good records. Databases cover files, processes, services, scheduled tasks, autorun entries, registry keys, hashes (LOLDrivers), LOLBins, hijackable DLLs, and named pipes across multiple Windows versions. All lookups are local — no network calls.
 
 ### threatintel-mcp
 
-Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP) and returns each one's own records with MATCH, NO_MATCH or UNAVAILABLE, not a verdict; the other tools search OpenCTI. The backend is named `opencti-mcp` in configurations from before; a gateway configured with `threatintel-mcp` also serves `/mcp/opencti-mcp`, and its audit file stays `opencti-mcp.jsonl`. 8 tools with rate limiting (configurable, default 60 calls/minute) and circuit breaker (opens after 5 consecutive failures, recovers after 60 seconds). Label-based retry handles transient label creation failures.
+Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP) and returns each one's own records with MATCH, NO_MATCH or UNAVAILABLE, not a verdict; the other tools search OpenCTI. The backend is named `opencti-mcp` in configurations from before; a gateway configured with `threatintel-mcp` also serves `/mcp/opencti-mcp`, and its audit file stays `opencti-mcp.jsonl`. Its tools have rate limiting (configurable, default 60 calls/minute) and circuit breaker (opens after 5 consecutive failures, recovers after 60 seconds). Label-based retry handles transient label creation failures.
 
 ### case-dashboard (Examiner Portal)
 
@@ -134,7 +134,7 @@ Shared YAML data package with no runtime state. Three data directories:
 
 | Directory | Content | Entries |
 |-----------|---------|---------|
-| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 56 tools across 17 categories |
+| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | Catalogued forensic tools, by category |
 | `data/artifacts/` | Artifact descriptions with interpretation guidance | 53 artifacts (Windows + Linux) |
 | `data/discipline/` | Forensic discipline rules and reminders | Rules, anti-patterns, checkpoints |
 

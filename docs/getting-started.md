@@ -35,18 +35,19 @@ The installer prompts for:
 
 ### Windows Forensic Workstation (Optional)
 
-If you have a Windows forensic VM for Zimmerman tools and Hayabusa:
+If you have a Windows forensic VM for Zimmerman tools and Hayabusa, join it to SIFT with a join code. In remote mode the SIFT installer asks "Will you connect a Windows forensic workstation?"; answering yes prints the command below. Or run this on SIFT at any time:
 
-```powershell
-git clone https://github.com/AppliedIR/wintools-mcp.git
-cd wintools-mcp
-Set-ExecutionPolicy -Scope Process Bypass -Force
-.\scripts\setup-windows.ps1
+```bash
+vhir setup join-code
 ```
 
-`Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default.
+It asks for the Windows machine's IP address and prints a one-line PowerShell command that downloads the current installer and runs it with the code:
 
-The Windows installer generates a bearer token. Copy it to your SIFT gateway configuration or LLM client setup.
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force; cd $env:TEMP; Invoke-WebRequest https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip -OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip -DestinationPath . -Force; if ($?) { .\wintools-mcp-main\scripts\setup-windows.ps1 -JoinCode <code> -GatewayHost <sift-ip> -GatewayPort 4508 } }
+```
+
+Run the printed line on Windows, in PowerShell as Administrator. `Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default. With the join code the installer exchanges credentials with SIFT itself, so no token needs copying. When it has finished, run `vhir setup client` on each examiner machine.
 
 ## First Case
 

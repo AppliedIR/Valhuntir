@@ -165,7 +165,7 @@ Or ask the LLM to ingest evidence — it uses the ingest tools on opensearch-mcp
 | Parser | Artifacts | Source |
 |--------|-----------|--------|
 | evtx | Windows Event Logs | pyevtx-rs (ECS-normalized) |
-| EZ Tools (10) | Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline | Eric Zimmerman tools via wintools-mcp |
+| EZ Tools | Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline | Eric Zimmerman tools via wintools-mcp |
 | Volatility 3 | Memory forensics (26 plugins, 3 tiers) | vol3 subprocess |
 | JSON/JSONL | Suricata EVE, tshark, Velociraptor, any JSON | Auto-detect format |
 | Delimited | CSV, TSV, Zeek TSV, bodyfile, L2T supertimelines | Auto-detect delimiter |
@@ -186,7 +186,7 @@ After EVTX ingest, opensearch-mcp checks if Hayabusa is installed and automatica
 
 ### Querying Indexed Evidence
 
-The LLM queries indexed evidence through opensearch-mcp's 8 query tools. Start by asking for a case overview, then direct the LLM to search, aggregate, or build timelines:
+The LLM queries indexed evidence through opensearch-mcp's query tools. Start by asking for a case overview, then direct the LLM to search, aggregate, or build timelines:
 
 - **"Give me a case summary"** — the LLM calls `idx_case_summary` to show hosts, artifact types, document counts, and enrichment status
 - **"Show me all 4688 events where cmd.exe was spawned from an unusual parent"** — structured search across event logs
@@ -195,7 +195,7 @@ The LLM queries indexed evidence through opensearch-mcp's 8 query tools. Start b
 - **"What unique source IPs appear in the event logs?"** — field value enumeration
 - **"How many logon events are there?"** — fast document counts
 
-Every write goes to `case-<c12>-<artifact_type>-0`, named from the case's identity; index names carry no host, and each record carries its machine in `host.id`. The LLM can query across an entire case, or target specific artifact types and machines (by `host.id`). See the [MCP Reference](mcp-reference.md#opensearch-mcp-21-tools) for the full list of query tools and parameters.
+Every write goes to `case-<c12>-<artifact_type>-0`, named from the case's identity; index names carry no host, and each record carries its machine in `host.id`. The LLM can query across an entire case, or target specific artifact types and machines (by `host.id`). See the [MCP Reference](mcp-reference.md#opensearch-mcp) for the full list of query tools and parameters.
 
 ### Programmatic Enrichment
 
