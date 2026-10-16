@@ -1,17 +1,23 @@
 """Approval authentication: mandatory password for approve/reject.
 
-Password uses getpass (reads from /dev/tty, no echo) to block
-both AI-via-Bash AND expect-style terminal automation.
-A password must be configured before approvals are allowed.
+The password is read from /dev/tty without echo. That stops a plain shell
+pipe from supplying it. It doesn't stop a program that runs vhir under a
+pseudo-terminal, or a process with administrative rights (limit 3). The
+Claude Code deny rules for `vhir approve`/`vhir reject` stop an assistant's
+shell tool from running them. They guard against accidents and aren't a
+security boundary. Credential files are readable by processes running as the
+examiner (limit 2).
 
-Password hashes are stored in /var/lib/vhir/passwords/{examiner}.json
-(0o600, directory 0o700) — protected by Read/Edit/Write deny
-rules so the LLM cannot access the hash material. Auto-migration
-from the legacy config.yaml location happens on first use.
+A 0.6 password (a PBKDF2 hash in /var/lib/vhir/passwords/{examiner}.json, or
+the older config.yaml location) is read here only to upgrade it to a signing
+key; the credential since 0.6.4 is the keys file (vhir_cli.keys), and
+passwords/{examiner}.json then holds a pointer to it. The failed-attempt
+lockout is kept here, shared by the CLI and the portal.
 """
 
 from __future__ import annotations
 
+import codecs
 import getpass as getpass_mod
 import hashlib
 import json
@@ -34,6 +40,8 @@ from pathlib import Path
 
 import yaml
 
+from vhir_cli.display import display_safe
+
 PBKDF2_ITERATIONS = 600_000
 _MAX_PASSWORD_ATTEMPTS = 3
 _LOCKOUT_SECONDS = 900  # 15 minutes
@@ -47,7 +55,7 @@ _EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
 def _validate_examiner_name(analyst: str) -> None:
     """Reject examiner names that don't match canonical slug format."""
-    if not _EXAMINER_RE.match(analyst):
+    if not _EXAMINER_RE.fullmatch(analyst):
         raise ValueError(f"Invalid examiner name: {analyst!r}")
 
 
@@ -170,43 +178,6 @@ def _ensure_passwords_dir(passwords_dir: Path) -> None:
         sys.exit(1)
 
 
-def require_confirmation(config_path: Path, analyst: str) -> tuple[str, str | None]:
-    """Require password confirmation. Returns (mode, password).
-
-    Returns ('password', raw_password_string) on success. The raw password
-    is needed for HMAC derivation in the verification ledger.
-
-    Password must be configured for the analyst. If not, prints setup
-    instructions and exits.
-
-    Raises SystemExit on failure, lockout, or missing password.
-    """
-    if not has_password(config_path, analyst):
-        print(
-            "No approval password configured. Set one with:\n  vhir config --setup-password\n",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    _check_lockout(analyst)
-    password = getpass_prompt("Enter password to confirm: ")
-    if not verify_password(config_path, analyst, password):
-        _record_failure(analyst)
-        remaining = _MAX_PASSWORD_ATTEMPTS - _recent_failure_count(analyst)
-        if remaining <= 0:
-            print(
-                f"Too many failed attempts. Locked out for {_LOCKOUT_SECONDS}s.",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"Incorrect password. {remaining} attempt(s) remaining.",
-                file=sys.stderr,
-            )
-        sys.exit(1)
-    _clear_failures(analyst)
-    return ("password", password)
-
-
 def require_tty_confirmation(prompt: str) -> bool:
     """Prompt y/N via /dev/tty. Returns True if confirmed."""
     try:
@@ -218,7 +189,8 @@ def require_tty_confirmation(prompt: str) -> bool:
         )
         sys.exit(1)
     try:
-        sys.stderr.write(prompt)
+        # it can name a file: its controls shown as "?" before the examiner answers
+        sys.stderr.write(display_safe(prompt))
         sys.stderr.flush()
         response = tty.readline().strip().lower()
         return response == "y"
@@ -226,30 +198,28 @@ def require_tty_confirmation(prompt: str) -> bool:
         tty.close()
 
 
-def has_password(
-    config_path: Path, analyst: str, *, passwords_dir: Path | None = None
-) -> bool:
-    """Check if analyst has a password configured (new location, fallback old)."""
-    passwords_dir = passwords_dir or _PASSWORDS_DIR
-    _maybe_migrate_pin_dir()
-    _maybe_migrate(config_path, passwords_dir, analyst)
-    if _load_password_entry(passwords_dir, analyst) is not None:
-        return True
-    # Fallback: legacy config.yaml
-    config = _load_config(config_path)
-    section = config.get("passwords", config.get("pins", {}))
-    return (
-        isinstance(section, dict)
-        and analyst in section
-        and "hash" in section[analyst]
-        and "salt" in section[analyst]
-    )
+def read_tty_line(prompt: str) -> str | None:
+    """A line the examiner types at the terminal (/dev/tty), stripped; None
+    when there is no terminal. Never stdin, so a pipe or a file can't supply
+    it."""
+    try:
+        tty = open("/dev/tty")
+    except OSError:
+        return None
+    try:
+        sys.stderr.write(prompt)
+        sys.stderr.flush()
+        return tty.readline().strip()
+    finally:
+        tty.close()
 
 
 def verify_password(
     config_path: Path, analyst: str, password: str, *, passwords_dir: Path | None = None
-) -> bool:
-    """Verify a password against stored hash (new location, fallback old)."""
+) -> str | None:
+    """The reading of `password` that reproduces the stored hash (new
+    location, fallback old), or None. That is the typed text, or for a 0.6
+    entry stored byte by byte, its 0.6 reading. Derive keys only from it."""
     passwords_dir = passwords_dir or _PASSWORDS_DIR
     _maybe_migrate(config_path, passwords_dir, analyst)
     entry = _load_password_entry(passwords_dir, analyst)
@@ -259,145 +229,40 @@ def verify_password(
         section = config.get("passwords", config.get("pins", {}))
         entry = section.get(analyst) if isinstance(section, dict) else None
     if not entry:
-        return False
+        return None
     try:
         stored_hash = entry["hash"]
         salt = bytes.fromhex(entry["salt"])
     except (KeyError, ValueError):
-        return False
-    computed = hashlib.pbkdf2_hmac(
-        "sha256", password.encode(), salt, PBKDF2_ITERATIONS
-    ).hex()
-    return secrets.compare_digest(computed, stored_hash)
+        return None
+
+    def matches(text: str) -> bool:
+        computed = hashlib.pbkdf2_hmac(
+            "sha256", text.encode(), salt, PBKDF2_ITERATIONS
+        ).hex()
+        return secrets.compare_digest(computed, stored_hash)
+
+    if matches(password):
+        return password
+    # 0.6 read each byte on its own, so a non-ASCII password was stored as
+    # that reading. Accept it, and mark the entry for the upgrade at the
+    # next signed decision.
+    legacy = legacy_decoded(password)
+    if legacy == password or not matches(legacy):
+        return None
+    _mark_legacy_decoding(passwords_dir, analyst)
+    return legacy
 
 
-def setup_password(
-    config_path: Path, analyst: str, *, passwords_dir: Path | None = None
-) -> str:
-    """Set up a new password for the analyst. Prompts twice to confirm.
-
-    Returns the raw password string (needed for HMAC re-signing during rotation).
-    """
-    passwords_dir = passwords_dir or _PASSWORDS_DIR
-    _maybe_migrate_pin_dir()
-    _maybe_migrate(config_path, passwords_dir, analyst)
-    _ensure_passwords_dir(passwords_dir)
-    pw1 = getpass_prompt("Enter new password: ")
-    if not pw1:
-        print("Password cannot be empty.", file=sys.stderr)
-        sys.exit(1)
-    if len(pw1) < _MIN_PASSWORD_LENGTH:
-        print(
-            f"Password must be at least {_MIN_PASSWORD_LENGTH} characters.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    pw2 = getpass_prompt("Confirm new password: ")
-    if pw1 != pw2:
-        print("Passwords do not match.", file=sys.stderr)
-        sys.exit(1)
-
-    salt = secrets.token_bytes(32)
-    pw_hash = hashlib.pbkdf2_hmac("sha256", pw1.encode(), salt, PBKDF2_ITERATIONS).hex()
-
-    entry = {"hash": pw_hash, "salt": salt.hex()}
-
-    _save_password_entry(passwords_dir, analyst, entry)
-
-    # Strip old location if present
-    config = _load_config(config_path)
-    for key in ("passwords", "pins"):
-        if key in config and analyst in config[key]:
-            del config[key][analyst]
-            if not config[key]:
-                del config[key]
-    _save_config(config_path, config)
-
-    print(f"Password configured for analyst '{analyst}'.")
-    return pw1
-
-
-def reset_password(
-    config_path: Path, analyst: str, *, passwords_dir: Path | None = None
-) -> None:
-    """Reset password. Requires current password first.
-
-    After changing the password, re-signs all verification ledger entries
-    for this analyst with the new key.
-    """
-    if not has_password(config_path, analyst, passwords_dir=passwords_dir):
-        print(
-            f"No password configured for analyst '{analyst}'. Use --setup-password first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    current = getpass_prompt("Enter current password: ")
-    if not verify_password(config_path, analyst, current, passwords_dir=passwords_dir):
-        print("Incorrect current password.", file=sys.stderr)
-        print(
-            "\nIf you have forgotten your password, you can force a reset by removing\n"
-            "the password file and setting up a new one:\n"
-            f"\n  rm /var/lib/vhir/passwords/{analyst}.json"
-            "\n  vhir config --setup-password\n"
-            "\nThis will invalidate HMAC signatures on previously approved findings.\n"
-            "The findings themselves are preserved — only the integrity proof is lost.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Read old salt before setup_password overwrites it
-    old_salt = get_analyst_salt(config_path, analyst, passwords_dir=passwords_dir)
-
-    new_password = setup_password(config_path, analyst, passwords_dir=passwords_dir)
-
-    # Re-HMAC verification ledger entries with new key
-    new_salt = get_analyst_salt(config_path, analyst, passwords_dir=passwords_dir)
-    try:
-        from vhir_cli.verification import (
-            VERIFICATION_DIR,
-            derive_hmac_key,
-            rehmac_entries,
-        )
-
-        if VERIFICATION_DIR.is_dir():
-            old_key = derive_hmac_key(current, old_salt)
-            new_key = derive_hmac_key(new_password, new_salt)
-            for ledger_file in VERIFICATION_DIR.glob("*.jsonl"):
-                case_id = ledger_file.stem
-                count = rehmac_entries(
-                    case_id,
-                    analyst,
-                    current,
-                    old_salt,
-                    new_password,
-                    new_salt,
-                    old_key=old_key,
-                    new_key=new_key,
-                )
-                if count:
-                    print(
-                        f"  Re-signed {count} ledger entry/entries for case {case_id}."
-                    )
-    except (ImportError, OSError) as e:
-        print(f"  Warning: could not re-sign ledger entries: {e}", file=sys.stderr)
-
-
-def get_analyst_salt(
-    config_path: Path, analyst: str, *, passwords_dir: Path | None = None
-) -> bytes:
-    """Get the analyst's PBKDF2 salt. Raises ValueError if missing."""
-    passwords_dir = passwords_dir or _PASSWORDS_DIR
-    _maybe_migrate(config_path, passwords_dir, analyst)
+def _mark_legacy_decoding(passwords_dir: Path, analyst: str) -> None:
+    """Record on a 0.6 entry that it was stored with the byte-wise reading."""
     entry = _load_password_entry(passwords_dir, analyst)
-    if entry is None:
-        # Fallback: legacy config.yaml
-        config = _load_config(config_path)
-        section = config.get("passwords", config.get("pins", {}))
-        entry = section.get(analyst) if isinstance(section, dict) else None
-    if not entry or "salt" not in entry:
-        raise ValueError(f"No salt found for analyst '{analyst}'")
-    return bytes.fromhex(entry["salt"])
+    if entry is None or entry.get("legacy_decoding"):
+        return
+    try:
+        _save_password_entry(passwords_dir, analyst, {**entry, "legacy_decoding": True})
+    except OSError:
+        pass  # the password was accepted; the mark is a hint for the upgrade
 
 
 def _load_failures() -> dict[str, list[float]]:
@@ -448,7 +313,7 @@ def _check_lockout(analyst: str) -> None:
         else:
             remaining = _LOCKOUT_SECONDS
         print(
-            f"Password locked. Too many failed attempts. Try again in {remaining} seconds.",
+            f"Passphrase locked. Too many failed attempts. Try again in {remaining} seconds.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -469,22 +334,37 @@ def _clear_failures(analyst: str) -> None:
         _save_failures(data)
 
 
+class NoTerminal(RuntimeError):
+    """The passphrase prompt can't open /dev/tty: no examiner is at a
+    terminal (an AI's shell, a pipe). Signing refuses and saves nothing."""
+
+
+def require_terminal() -> None:
+    """Raise NoTerminal unless the passphrase prompt could open /dev/tty."""
+    if not _HAS_TERMIOS:
+        raise NoTerminal("Passphrase entry requires a terminal with termios support.")
+    try:
+        open("/dev/tty").close()
+    except OSError as err:
+        raise NoTerminal("Passphrase entry requires /dev/tty.") from err
+
+
 def getpass_prompt(prompt: str) -> str:
     """Read password from /dev/tty with masked input (shows * per keystroke).
 
-    Raises RuntimeError if /dev/tty or termios is unavailable.
+    Raises NoTerminal if /dev/tty or termios is unavailable.
     """
     if not _HAS_TERMIOS:
-        raise RuntimeError(
-            "Password entry requires a terminal with termios support. "
-            "Cannot read password without /dev/tty."
+        raise NoTerminal(
+            "Passphrase entry requires a terminal with termios support. "
+            "Cannot read the passphrase without /dev/tty."
         )
 
     try:
         tty_in = open("/dev/tty")
     except OSError as err:
-        raise RuntimeError(
-            "Password entry requires /dev/tty. Cannot read password in this environment. "
+        raise NoTerminal(
+            "Passphrase entry requires /dev/tty. Cannot read the passphrase in this environment. "
             "Ensure you are running from an interactive terminal."
         ) from err
     try:
@@ -494,9 +374,12 @@ def getpass_prompt(prompt: str) -> str:
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            chars = []
+            chars = []  # code points: a multi-byte character is one entry
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             while True:
-                ch = os.read(fd, 1).decode("utf-8", errors="replace")
+                ch = decoder.decode(os.read(fd, 1))
+                if not ch:
+                    continue  # the middle of a multi-byte character
                 if ch in ("\r", "\n"):
                     break
                 elif ch in ("\x7f", "\x08"):  # backspace/delete
@@ -519,6 +402,15 @@ def getpass_prompt(prompt: str) -> str:
             sys.stderr.flush()
     finally:
         tty_in.close()
+
+
+def legacy_decoded(password: str) -> str:
+    """`password` as 0.6's reader read it: each byte decoded on its own, so
+    every byte of a non-ASCII character became U+FFFD. Only the upgrade's
+    one retry against a 0.6 verifier uses it."""
+    return "".join(
+        ch if ord(ch) < 128 else "\ufffd" * len(ch.encode("utf-8")) for ch in password
+    )
 
 
 def _load_config(config_path: Path) -> dict:

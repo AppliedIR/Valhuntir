@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    bundle_too_deep,
     export_bundle,
     get_case_dir,
     import_bundle,
@@ -29,6 +30,9 @@ def cmd_export(args, identity: dict) -> None:
 
     try:
         bundle = export_bundle(case_dir, since=since)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     except OSError as e:
         print(f"Failed to read case data for export: {e}", file=sys.stderr)
         sys.exit(1)
@@ -42,10 +46,21 @@ def cmd_export(args, identity: dict) -> None:
         print(f"Failed to write export bundle to {output_file}: {e}", file=sys.stderr)
         sys.exit(1)
 
+    from vhir_cli.case_copies import summary_lines
+
     print(f"Exported to {output_file}")
     print(f"  Examiner: {bundle.get('examiner', '?')}")
     print(f"  Findings: {len(bundle.get('findings', []))}")
     print(f"  Timeline: {len(bundle.get('timeline', []))}")
+    if untimed := bundle.get("untimed"):
+        print(
+            f"  Left out (no time recorded): {untimed['findings']} findings, "
+            f"{untimed['timeline']} timeline events; export without --since to include them"
+        )
+    for line in summary_lines(
+        str(bundle.get("case_id", "")), bundle.get("ledger") or {}
+    ):
+        print(line)
 
 
 def cmd_merge(args, identity: dict) -> None:
@@ -64,6 +79,9 @@ def cmd_merge(args, identity: dict) -> None:
     try:
         with open(input_file) as f:
             bundle = json.load(f)
+    except RecursionError:  # too deep to decode: refused by name, nothing read
+        print(f"Merge failed: {bundle_too_deep()['message']}", file=sys.stderr)
+        sys.exit(1)
     except json.JSONDecodeError as e:
         print(f"Bundle file contains invalid JSON: {e}", file=sys.stderr)
         sys.exit(1)
@@ -83,10 +101,29 @@ def cmd_merge(args, identity: dict) -> None:
 
     fr = result.get("findings", {})
     tr = result.get("timeline", {})
+
+    def kept(r: dict) -> str:  # items this case recorded, never replaced by a merge
+        n = r.get("own", 0)
+        return (
+            f", {n} kept: recorded in this case (incoming copy not applied)"
+            if n
+            else ""
+        )
+
     print("Merge complete:")
     print(
-        f"  Findings: {fr.get('added', 0)} added, {fr.get('updated', 0)} updated, {fr.get('skipped', 0)} skipped"
+        f"  Findings: {fr.get('added', 0)} added, {fr.get('updated', 0)} updated, {fr.get('skipped', 0)} skipped{kept(fr)}"
     )
     print(
-        f"  Timeline: {tr.get('added', 0)} added, {tr.get('updated', 0)} updated, {tr.get('skipped', 0)} skipped"
+        f"  Timeline: {tr.get('added', 0)} added, {tr.get('updated', 0)} updated, {tr.get('skipped', 0)} skipped{kept(tr)}"
     )
+    anchors = result.get("ledger") or {}
+    if anchors.get("keys") or anchors.get("heads"):
+        from vhir_cli.case_copies import summary_lines
+
+        print(
+            "  The bundle's signed history wasn't added (decisions don't travel by "
+            "merge). Its keys and heads, to compare with the other box:"
+        )
+        for line in summary_lines(str(bundle.get("case_id", "")), anchors):
+            print(f"  {line}")

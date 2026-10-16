@@ -17,7 +17,7 @@ The recommended workflow uses OpenSearch for evidence indexing. Without OpenSear
 2. Register evidence         → evidence_register() or vhir evidence register
 3. Ingest and index          → idx_ingest() to parse evidence into OpenSearch
 4. Scope the investigation   → idx_case_summary() for hosts, artifacts, time ranges
-5. Check for detections      → idx_list_detections() for Hayabusa/Sigma alerts
+5. Check for detections      → idx_list_detections() for Hayabusa detection alerts (count and query)
 6. Enrich programmatically   → idx_enrich_triage() + idx_enrich_intel()
 7. Search and analyze        → idx_search(), idx_aggregate(), idx_timeline()
 8. Deep analysis             → run_command() with SIFT tools, run_windows_command()
@@ -118,7 +118,7 @@ vhir backup /path/to/destination --include-opensearch # Include OpenSearch indic
 vhir backup --verify /path/to/backup/INC-2026-0225/  # Verify backup integrity
 ```
 
-Backups include password hash files for HMAC verification and the verification ledger. After backup, a warning reminds you to remember the examiner password — it's needed to verify findings on restore.
+Backups carry the case's signed history and the public signing keys (`ledger/`), and no passphrase verifier or signing-key file. The printout lists every signing key with its full fingerprint and each chain's head; a copy kept off this machine is an anchor.
 
 The LLM can create case-data-only backups at investigation checkpoints — it uses the `backup_case` tool on case-mcp. OpenSearch indices are not included in MCP backups.
 
@@ -128,11 +128,11 @@ To restore a case from backup:
 vhir restore /path/to/backup/INC-2026-0411-2026-04-13
 ```
 
-Restore enforces the original case path for audit trail integrity. After restoring, the case must be activated manually (`vhir case activate`). The restore wizard prompts for the examiner password to verify HMAC integrity. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
+Restore asks where to put the case, offering the folder it was backed up from (Enter accepts it); in a script, pass `--target <folder>`. It never removes an existing folder without asking. After restoring, the case must be activated manually (`vhir case activate`). Restore adds each signing key the case's chains hold to this box as a retired public key ("KEY ADDED"), so the case verifies here; it restores no credential. See the [CLI Reference](cli-reference.md#vhir-restore) for all options.
 
 ## Evidence Indexing with OpenSearch
 
-When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 17 purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
+When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
 
 ### Ingesting Evidence
 
@@ -195,7 +195,7 @@ The LLM queries indexed evidence through opensearch-mcp's 8 query tools. Start b
 - **"What unique source IPs appear in the event logs?"** — field value enumeration
 - **"How many logon events are there?"** — fast document counts
 
-All indices follow the naming convention: `case-{case_id}-{artifact_type}-{hostname}`. The LLM can query across an entire case or target specific artifact types and hosts. See the [MCP Reference](mcp-reference.md#opensearch-mcp-17-tools) for the full list of query tools and parameters.
+Every write goes to `case-<c12>-<artifact_type>-0`, named from the case's identity; index names carry no host, and each record carries its machine in `host.id`. The LLM can query across an entire case, or target specific artifact types and machines (by `host.id`). See the [MCP Reference](mcp-reference.md#opensearch-mcp-21-tools) for the full list of query tools and parameters.
 
 ### Programmatic Enrichment
 
@@ -234,11 +234,11 @@ Examples of what you can ask the LLM:
 
 ### Windows Tools (via wintools-mcp)
 
-wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 31 cataloged tools across 7 categories: Zimmerman suite (14), Sysinternals (5), memory analysis (4), timeline (3), malware analysis (3), collection (1), and scripts (1).
+wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
 
 Additional capabilities:
 - `batch_scan` — run a tool against all files in a directory with safety bounds
-- `list_kape_targets` — list KAPE targets/modules for evidence parsing
+- `list_kape_targets` — list the KAPE modules, which process files already collected into the case (KAPE targets aren't run)
 - `get_share_info` — get SMB share paths for evidence access
 
 **Evidence access:** Valhuntir configures an authenticated SMB share from the Windows workstation to the case directory on SIFT. This allows wintools-mcp to read evidence files, write parsed output to the extractions directory, and record audit trail entries — all without manually copying files between systems. The gateway proxies tool calls to wintools-mcp over HTTPS with Bearer token authentication. See the [Deployment Guide](deployment.md) for SMB setup and firewall configuration, or the [wintools-mcp README](https://github.com/AppliedIR/wintools-mcp) for detailed configuration.
@@ -297,9 +297,9 @@ Verdicts:
 - **SUSPICIOUS** — anomaly detected (wrong path, Unicode homoglyphs, known C2 pipe, vulnerable driver)
 - **UNKNOWN** — not in the database (neutral, not an indicator — most third-party software returns this)
 
-### Threat Intelligence (opencti-mcp)
+### Threat Intelligence (threatintel-mcp)
 
-Live threat intelligence from your configured OpenCTI instance. Ask the LLM to look up IOCs, search for threat actors or malware families, check recent indicators, map entity relationships, or search threat reports. For example: "Look up this IP in threat intel" or "What malware is associated with APT29?"
+Live threat intelligence from your configured OpenCTI instance, and MISP if configured. `lookup_ioc` shows each platform's own records for an IOC, not a verdict. Ask the LLM to look up IOCs, search for threat actors or malware families, check recent indicators, map entity relationships, or search threat reports. For example: "Look up this IP in threat intel" or "What malware is associated with APT29?"
 
 ### Malware Analysis (remnux-mcp)
 
@@ -322,10 +322,17 @@ Routine tool output is NOT a finding. "Ran AmcacheParser, got 42 entries" goes i
 
 The intended flow:
 
-1. LLM analyzes tool output
-2. LLM presents evidence to the examiner with the actual log entry/record (not a summary)
-3. Examiner gives conversational approval
-4. LLM calls `record_finding()` with evidence artifacts and provenance
+1. LLM analyzes tool output and drafts the finding
+2. Where the client provides it (Claude Code, Codex), the `finding-skeptic` skill challenges the draft before you see it: a separate agent re-runs the cited tools and tries to refute it, and the LLM reassesses
+3. LLM presents evidence to the examiner with the actual log entry/record (not a summary)
+4. Examiner gives conversational approval
+5. LLM calls `record_finding()` with evidence artifacts and provenance
+
+### Challenge, Alternatives and Withdrawals
+
+- **Challenge line.** At approval, each finding shows how it was challenged: "stands", "revised after challenge", or "withdrawn, not applied, staged for your decision" (the withdrawal lacked the contradicting output it needs, or couldn't be logged, so the finding is yours to decide). The client reports this, and the skeptic's audit ids are shown so you can check them. **"Not challenged"** means no skeptic ran: the model skipped it, or the client can't run one. MCP-only chat clients (LibreChat, Open WebUI) have no skeptic, so all their findings read "Not challenged"; your review is their only challenge.
+- **Alternatives.** A finding can carry other explanations: **open** (still possible) or **ruled out** (with the tool output and its audit ids). The server keeps "ruled out" only with tool output from the case's audit trail; otherwise it stays open. You can edit alternatives at review: in the portal (as JSON) or with `vhir approve --edit`.
+- **Withdrawals.** A candidate is withdrawn only when re-run output contradicts a fact in its observation. It is not staged, so it isn't in your queue. `vhir approve` and the portal show a one-line count when there are any: open them with `vhir review --withdrawn` or the list on the portal Overview, each with the contradiction and the skeptic's tool calls. Withdrawals stay in the case's audit trail and are not carried in export bundles.
 
 ### Finding Fields
 
@@ -380,13 +387,9 @@ When a finding is recorded, `record_finding()` classifies its provenance by scan
 | **SHELL** | Not in audit trail — provided via `supporting_commands` | Self-reported |
 | **NONE** | Not found anywhere | **Rejected** by hard gate |
 
-The finding is stamped with its provenance tier. Findings with NONE provenance and no supporting commands are automatically rejected.
+The tier is a gate, not stored on the finding: findings with NONE provenance and no supporting commands are automatically rejected.
 
 The **Evidence Provenance Chain** — visible in the Examiner Portal on each finding — traces the full path from finding back to registered evidence: which evidence file was input, which tool processed it, and what output was extracted. This lets the examiner verify any claim back to its source.
-
-### Grounding Score
-
-When a finding is staged, forensic-mcp checks whether the investigation consulted authoritative reference sources (forensic-rag, windows-triage, opencti). Findings are scored STRONG (2+ sources), PARTIAL (1 source or evidence chain to registered files), or WEAK (none). The score is advisory — it nudges the LLM to cross-reference but does not block the finding.
 
 ### IOC Auto-Extraction
 
@@ -442,7 +445,7 @@ Examiners can edit finding fields inline (confidence, justification, observation
 
 Keyboard shortcuts: `1`-`8` switch tabs, `j`/`k` navigate items, `a` approve, `r` reject, `e` edit, `Shift+C` commit.
 
-The Commit button (`Shift+C`) requires the examiner's password — the password never leaves the browser.
+The Commit button (`Shift+C`) opens a dialog that lists every decision to be signed, including items decided with them and entries another examiner staged (included only if you tick them). Your passphrase then signs exactly those, in the browser; it never leaves the browser. A LAN examiner enrols once at the SIFT terminal with `vhir enrol --name NAME`.
 
 ### CLI Approval
 
@@ -454,6 +457,7 @@ vhir approve F-steve-004 --edit                 # Edit in $EDITOR first
 vhir approve --findings-only                    # Review only findings
 vhir approve --timeline-only                    # Review only timeline
 vhir approve --review                           # Apply pending portal edits
+vhir review --withdrawn                         # Candidates withdrawn after challenge
 ```
 
 ### Rejecting Findings
@@ -481,14 +485,12 @@ The LLM can retrieve findings, timeline events, TODOs, case status, and audit da
 ### Integrity Verification
 
 ```bash
-vhir review --verify                # Full verification (all examiners)
-vhir review --verify --mine         # Current examiner only
+vhir review --findings --verify          # Verify every signed decision (all examiners)
+vhir review --findings --verify --mine   # Show only your items
+vhir review --findings --verify --expect-key alice=SHA256:… --expect-head 41:…   # Anchored
 ```
 
-This performs three levels of verification:
-- **Content hash check**: SHA-256 hashes in `findings.json` vs. `approvals.jsonl`
-- **Ledger reconciliation**: Cross-checks approved items against the HMAC verification ledger
-- **HMAC verification**: Recomputes HMAC-SHA256 signatures using the examiner's password
+Verification needs no passphrase. It checks every line's signature and link in the case's ledger, and each approved item against its latest signed line, and prints every signing key with its full fingerprint and each chain's head. Without anchors it prints "Not anchored": compare the fingerprint with a copy kept off this machine (any earlier report, export or backup). Exit 0: every approved item verifies (or was approved before 0.6.4, labelled so) with no failure; 2: a failure, each with how to recover. See the [stated limits](security.md#stated-limits).
 
 ## Report Generation
 
@@ -577,7 +579,7 @@ vhir audit log --tool run_command    # Filter by tool
 vhir audit summary                   # Counts per MCP and tool
 ```
 
-When Claude Code is the LLM client, a PostToolUse hook additionally captures every Bash command to `audit/claude-code.jsonl`.
+When Claude Code is the LLM client, a PostToolUse hook also records each Bash command to `audit/claude-code.jsonl` while a case is active (with no active case, it records nothing).
 
 The LLM can also write to the audit trail:
 - `log_reasoning()` — record analytical decisions at decision points (no approval needed)

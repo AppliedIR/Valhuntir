@@ -25,7 +25,7 @@ report-mcp ── reports
 sift-mcp ── SIFT forensic tools
 forensic-rag-mcp ── knowledge search
 windows-triage-mcp ── baseline DB
-opencti-mcp ── threat intel
+threatintel-mcp ── threat intel
 opensearch-mcp ── evidence indexing    OpenSearch :9200
 case-dashboard ── Examiner Portal
 ```
@@ -39,7 +39,7 @@ These are structural facts. If any other document contradicts these, the invaria
 3. **wintools-mcp runs on a Windows machine.** The gateway proxies requests to wintools-mcp over HTTPS — the LLM client does not connect directly (except in Lite mode).
 4. **Clients connect to two endpoints at most:** the gateway (SIFT tools) and remnux-mcp (malware analysis, if configured). The gateway proxies wintools-mcp and OpenCTI.
 5. **The case directory is local per examiner.** Multi-examiner collaboration uses export/merge, not shared filesystem.
-6. **Human approval is structural.** The AI cannot approve its own work. Only the Examiner Portal (preferred) or vhir CLI — both requiring password-based authentication — can move findings to APPROVED.
+6. **Human approval is structural.** The AI cannot approve its own work. Only the Examiner Portal (preferred) or vhir CLI — both signing each decision with the examiner's key, unlocked by their passphrase — can move findings to APPROVED.
 7. **AGENTS.md is the source of truth for forensic rules.** Per-client config files (CLAUDE.md) are copies, not sources.
 8. **forensic-knowledge is a shared data package.** It has no runtime state. Used by forensic-mcp, sift-mcp, and wintools-mcp.
 
@@ -76,7 +76,7 @@ http://localhost:4508/mcp/report-mcp
 http://localhost:4508/mcp/sift-mcp
 http://localhost:4508/mcp/forensic-rag-mcp
 http://localhost:4508/mcp/windows-triage-mcp
-http://localhost:4508/mcp/opencti-mcp
+http://localhost:4508/mcp/threatintel-mcp   (also /mcp/opencti-mcp)
 http://localhost:4508/mcp/opensearch-mcp
 ```
 
@@ -96,7 +96,7 @@ Case lifecycle management. 15 tools for init, activate, close, list, status, evi
 
 ### report-mcp
 
-Report generation with 6 data-driven profiles. 6 tools. Aggregates approved findings, IOCs, and MITRE ATT&CK mappings. Includes bidirectional reconciliation against the HMAC verification ledger to detect post-approval tampering. Integrates with Zeltser IR Writing MCP for report templates and writing guidance. IOC extraction searches finding text (observation + interpretation + description) for patterns.
+Report generation with 6 data-driven profiles. 6 tools. Aggregates approved findings, IOCs, and MITRE ATT&CK mappings. Shows as approved only the items that verify (the same verification as `vhir review --verify`), lists the rest as not verified, and carries every signing key and chain head in each profile; saved reports end with a verification block the server appends. Integrates with Zeltser IR Writing MCP for report templates and writing guidance. IOC extraction searches finding text (observation + interpretation + description) for patterns.
 
 ### sift-mcp
 
@@ -104,11 +104,11 @@ Forensic tool execution on Linux/SIFT. 5 tools — 4 discovery plus `run_command
 
 ### wintools-mcp
 
-Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (31 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
+Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
 
 ### opensearch-mcp
 
-Evidence indexing, structured querying, and programmatic enrichment. 17 tools. Connects to a local or remote OpenSearch instance. 15 parsers cover the forensic evidence spectrum. Can run as a stdio MCP server (via gateway), HTTP server (standalone), CLI (`opensearch-ingest`), or vhir plugin (`vhir ingest`).
+Evidence indexing, structured querying, and programmatic enrichment. 21 tools. Connects to a local or remote OpenSearch instance. 15 parsers cover the forensic evidence spectrum. Can run as a stdio MCP server (via gateway), HTTP server (standalone), CLI (`opensearch-ingest`), or vhir plugin (`vhir ingest`).
 
 Hayabusa auto-detection runs after EVTX ingest, applying 3,700+ Sigma rules and indexing alerts. Two post-ingest enrichment pipelines (triage baseline and threat intelligence) run programmatically with zero LLM token cost.
 
@@ -120,13 +120,13 @@ Semantic search across 22,000+ forensic knowledge records from 23 authoritative 
 
 Offline Windows baseline validation against 2.6 million known-good records. 13 tools. Databases cover files, processes, services, scheduled tasks, autorun entries, registry keys, hashes (LOLDrivers), LOLBins, hijackable DLLs, and named pipes across multiple Windows versions. All lookups are local — no network calls.
 
-### opencti-mcp
+### threatintel-mcp
 
-Read-only threat intelligence from OpenCTI. 8 tools with rate limiting (configurable, default 60 calls/minute) and circuit breaker (opens after 5 consecutive failures, recovers after 60 seconds). Label-based retry handles transient label creation failures.
+Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP) and returns each one's own records with MATCH, NO_MATCH or UNAVAILABLE, not a verdict; the other tools search OpenCTI. The backend is named `opencti-mcp` in configurations from before; a gateway configured with `threatintel-mcp` also serves `/mcp/opencti-mcp`, and its audit file stays `opencti-mcp.jsonl`. 8 tools with rate limiting (configurable, default 60 calls/minute) and circuit breaker (opens after 5 consecutive failures, recovers after 60 seconds). Label-based retry handles transient label creation failures.
 
 ### case-dashboard (Examiner Portal)
 
-Web-based review interface served by the gateway at `/portal/`. 8 tabs: Overview, Findings, Timeline, Hosts, Accounts, Evidence, IOCs, TODOs. Keyboard shortcuts for navigation (`1-8` tabs, `j/k` items, `a` approve, `r` reject, `e` edit, `Shift+C` commit). Challenge-response authentication for commits — the browser derives PBKDF2 key and computes HMAC without sending the password. Light and dark themes.
+Web-based review interface served by the gateway at `/portal/`. 8 tabs: Overview, Findings, Timeline, Hosts, Accounts, Evidence, IOCs, TODOs. Keyboard shortcuts for navigation (`1-8` tabs, `j/k` items, `a` approve, `r` reject, `e` edit, `Shift+C` commit). Signing in the browser — the commit dialog lists every decision, then the browser signs in (challenge-response), unlocks the examiner's key and signs; the passphrase never leaves the browser. Light and dark themes.
 
 ### forensic-knowledge
 
@@ -134,7 +134,7 @@ Shared YAML data package with no runtime state. Three data directories:
 
 | Directory | Content | Entries |
 |-----------|---------|---------|
-| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 59 tools across 17 categories |
+| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 56 tools across 17 categories |
 | `data/artifacts/` | Artifact descriptions with interpretation guidance | 53 artifacts (Windows + Linux) |
 | `data/discipline/` | Forensic discipline rules and reminders | Rules, anti-patterns, checkpoints |
 
@@ -173,7 +173,7 @@ Typical full deployment with three VMs on a single host.
         ▼                           ▼
 ┌── REMnux VM (optional) ─┐  ┌── Windows VM (optional) ──────────────┐
 │  remnux-mcp :3000        │  │  wintools-mcp :4624                   │
-│  200+ analysis tools     │  │  31 cataloged tools                   │
+│  200+ analysis tools     │  │  25 cataloged tools                   │
 └──────────────────────────┘  │  SMB ──► Case Directory (on SIFT)     │
                               └───────────────────────────────────────┘
 ```
@@ -260,7 +260,6 @@ When the LLM records a finding via `record_finding()`, forensic-mcp validates it
 - Enforces audit_id on each artifact and verifies it exists in the audit trail
 - Rejects artifacts whose source files are not in the evidence registry
 - Classifies provenance tier (MCP > HOOK > SHELL > NONE, with NONE rejected)
-- Scores grounding based on whether reference sources (RAG, triage, threat intel) were consulted
 
 This is structural enforcement, not prompt-based — the tool itself enforces quality standards.
 
@@ -300,32 +299,16 @@ Nine layers of defense-in-depth protect the integrity of forensic findings. See 
 | Layer | Control | Type |
 |-------|---------|------|
 | L1 | Structural approval gate (DRAFT → APPROVED requires human) | Structural |
-| L2 | HMAC verification ledger (PBKDF2 + HMAC-SHA256 signatures) | Cryptographic |
-| L3 | Case data deny rules (41 rules blocking Edit/Write to protected files) | Permission |
+| L2 | Signed decision ledger (each examiner's Ed25519 key; chained lines) | Cryptographic |
+| L3 | Case data deny rules (Edit/Write on protected files, Read on `/var/lib/vhir`) | Permission |
 | L4 | Sandbox filesystem write protection (bwrap) | Kernel |
 | L5 | File permission protection (chmod 444 after write) | Filesystem |
-| L6 | Report reconciliation (bidirectional ledger cross-check) | Integrity |
-| L7 | Password authentication (CLI + portal challenge-response) | Authentication |
+| L6 | One verdict source (reports, portal and verify all use the same verification) | Integrity |
+| L7 | Passphrase unlocks the signing key (CLI terminal prompt; portal signs in the browser) | Authentication |
 | L8 | Provenance enforcement (MCP > HOOK > SHELL > NONE) | Structural |
 | L9 | Kernel sandbox (bubblewrap namespaces) | Kernel |
 
-The HMAC ledger (L2) is the cryptographic guarantee. The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
-
-## Grounding Score
-
-Grounding measures whether the investigation consulted authoritative reference sources before making a claim. It's separate from provenance (which tracks where the evidence came from) — grounding tracks whether you checked your work against external knowledge.
-
-When a finding is staged, forensic-mcp checks the audit trail for usage of three reference backends:
-
-| Level | Criteria | Meaning |
-|-------|----------|---------|
-| **STRONG** | 2+ reference sources consulted | Claim is cross-referenced against authoritative knowledge |
-| **PARTIAL** | 1 source consulted, or finding traces to registered evidence | Some external validation performed |
-| **WEAK** | No reference sources consulted, no evidence chain | Claim lacks external validation |
-
-Reference sources: forensic-rag (Sigma rules, MITRE ATT&CK, forensic artifacts), windows-triage (known-good baseline), opencti (threat intelligence).
-
-Grounding is advisory — it does not block a finding. It's returned in the `record_finding()` response so the analyst and examiner can assess how well-supported a claim is. A WEAK finding may be perfectly valid, but the examiner knows the investigator didn't cross-reference it.
+The signed ledger (L2) records every decision with the examiner's signature, which `vhir review --verify` checks; what a verified result does and doesn't show is in the [stated limits](security.md#stated-limits). The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
 
 ## Case Directory Structure
 
@@ -370,7 +353,7 @@ Every MCP tool call is logged to a per-backend JSONL file in the case `audit/` d
 - Case identifier
 - Result summary
 
-Evidence IDs resume sequence numbering across process restarts. When Claude Code is the client, a PostToolUse hook additionally captures every Bash command to `audit/claude-code.jsonl` with SHA-256 hashes.
+Evidence IDs resume sequence numbering across process restarts. When Claude Code is the client, a PostToolUse hook also records each Bash command, while a case is active, to `audit/claude-code.jsonl` with SHA-256 hashes.
 
 Findings recorded via `record_finding()` are classified by provenance tier based on audit trail evidence:
 

@@ -17,7 +17,7 @@ body:
         - windows-triage
         - wintools-mcp
         - forensic-rag
-        - opencti-mcp
+        - threatintel-mcp (opencti-mcp)
         - Installer (setup-sift.sh)
         - Installer (quickstart-lite.sh)
         - Documentation

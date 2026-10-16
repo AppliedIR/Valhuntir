@@ -119,9 +119,11 @@ class TestUrlNormalization:
             import vhir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
-            join_mod._find_ca_cert = lambda: None
-            join_mod._write_config = lambda *a, **kw: None
-            join_mod.cmd_join(args, {"examiner": "tester"})
+            with (
+                patch.object(join_mod, "_find_ca_cert", lambda: None),
+                patch.object(join_mod, "_write_config", lambda *a, **kw: None),
+            ):
+                join_mod.cmd_join(args, {"examiner": "tester"})
 
         return mock_requests.post.call_args[0][0]
 
@@ -142,7 +144,7 @@ class TestUrlNormalization:
 
 
 class TestJoinCodeCommand:
-    def test_prints_instructions(self, capsys):
+    def test_prints_instructions(self, capsys, monkeypatch):
         """Verify output format includes code and setup-windows instruction."""
         args = MagicMock()
         args.expires = 2
@@ -162,17 +164,31 @@ class TestJoinCodeCommand:
             import vhir_cli.commands.join as join_mod
 
             importlib.reload(join_mod)
-            join_mod._ensure_static_ip = lambda: "10.0.0.5"
-            join_mod._ensure_remote_binding = lambda: None
-            join_mod._get_local_gateway_url = lambda: "http://127.0.0.1:4508"
-            join_mod._get_local_gateway_token = lambda: "vhir_gw_test"
-            join_mod._setup_samba_share = lambda code: "10.0.0.20"
-            join_mod._setup_firewall = lambda ip: None
+            # restored after the test: later tests call the real functions
+            monkeypatch.setattr(join_mod, "_ensure_static_ip", lambda: "10.0.0.5")
+            monkeypatch.setattr(join_mod, "_ensure_remote_binding", lambda: None)
+            monkeypatch.setattr(
+                join_mod, "_get_local_gateway_url", lambda: "http://127.0.0.1:4508"
+            )
+            monkeypatch.setattr(
+                join_mod, "_get_local_gateway_token", lambda: "vhir_gw_test"
+            )
+            monkeypatch.setattr(
+                join_mod, "_setup_samba_share", lambda code: "10.0.0.20"
+            )
+            monkeypatch.setattr(join_mod, "_setup_firewall", lambda ip: None)
             join_mod.cmd_setup_join_code(args, {"examiner": "steve"})
 
         captured = capsys.readouterr()
         assert "ABCD-EFGH" in captured.out
-        assert "setup-windows.ps1" in captured.out
+        assert (
+            "wintools-mcp/archive/refs/heads/main.zip -OutFile wintools.zip"
+            in captured.out
+        )
+        assert (
+            "scripts\\setup-windows.ps1 -JoinCode ABCD-EFGH -GatewayHost "
+            in captured.out
+        )
         assert "expires in 2 hours" in captured.out
 
 

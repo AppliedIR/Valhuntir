@@ -6,6 +6,7 @@ source="cli_exec" and audit IDs (cliexec-{examiner}-{YYYYMMDD}-{NNN}).
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -15,7 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vhir_cli.approval_auth import require_tty_confirmation
-from vhir_cli.case_io import get_case_dir
+from vhir_cli.case_io import (
+    CaseFileNotRegular,
+    CaseFileTooLarge,
+    get_case_dir,
+    kept,
+    open_regular,
+)
+from vhir_cli.display import one_line
 
 _MCP_NAME = "cli-exec"
 _EVIDENCE_PREFIX = "cliexec"
@@ -53,10 +61,29 @@ def cmd_exec(args, identity: dict) -> None:
         print("Cancelled.")
         return
 
-    # Pre-allocate evidence ID
-    audit_id = _next_audit_id(case_dir, examiner)
+    # Nothing runs unless its audit entry can be written: the log is read as a
+    # regular file only (a device or FIFO is refused unread) and opened now;
+    # the entry goes through this handle
+    log_file = case_dir / "audit" / f"{_MCP_NAME}.jsonl"
+    try:
+        if log_file.parent.is_symlink():  # the folder too: never another case's trail
+            raise OSError(errno.ELOOP, "a symbolic link")
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_id = _next_audit_id(case_dir, examiner)
+        # never through a link: the entry stays in the case
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+        fd = os.open(log_file, flags, 0o644)
+        audit_fh = os.fdopen(fd, "ab", buffering=0)
+        if os.fstat(fd).st_nlink != 1:
+            audit_fh.close()
+            raise OSError(errno.EMLINK, "another name links to it")
+    except OSError as e:
+        print(f"Not run: vhir exec can't write this command's audit entry ({_why(log_file, e)}). "
+              f"{_advice(e)}", file=sys.stderr)  # fmt: skip
+        sys.exit(1)
 
-    # Execute
+    # Execute. Once it has started, the command is audited whatever happens:
+    # output that isn't UTF-8 is kept as \x escapes, not raised on.
     start = time.monotonic()
     try:
         result = subprocess.run(
@@ -64,6 +91,7 @@ def cmd_exec(args, identity: dict) -> None:
             shell=False,
             capture_output=True,
             text=True,
+            errors="backslashreplace",
             timeout=300,
             cwd=str(case_dir),
         )
@@ -80,18 +108,18 @@ def cmd_exec(args, identity: dict) -> None:
         stderr = f"Failed to execute command: {e}"
         if e.errno == 2:
             stderr = f"Command not found: {cmd_parts[0]}"
+    except BaseException as e:  # interrupted or failed while it ran: run() killed it
+        how = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
+        failed = _log_exec(audit_fh, command_str, purpose, -1, "", f"{how} ({type(e).__name__})",
+                           examiner, audit_id, (time.monotonic() - start) * 1000)  # fmt: skip
+        if failed:
+            print(_ran_unaudited(log_file, failed), file=sys.stderr)
+        raise
     elapsed_ms = (time.monotonic() - start) * 1000
 
-    # Display output
-    if stdout:
-        print(f"\n--- stdout ---\n{stdout[:10000]}")
-    if stderr:
-        print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
-    print(f"\nExit code: {exit_code}")
-
-    # Write audit entry
-    _log_exec(
-        case_dir,
+    # Write audit entry, before showing the output: printing it can fail
+    failed = _log_exec(
+        audit_fh,
         command_str,
         purpose,
         exit_code,
@@ -101,7 +129,60 @@ def cmd_exec(args, identity: dict) -> None:
         audit_id,
         elapsed_ms,
     )
+
+    # Display output. A reader that stopped early (| head) never hides a
+    # failed write: the warning is on stderr
+    try:
+        if stdout:
+            print(f"\n--- stdout ---\n{stdout[:10000]}")
+        if stderr:
+            print(f"\n--- stderr ---\n{stderr[:5000]}", file=sys.stderr)
+        print(f"\nExit code: {exit_code}")
+        sys.stdout.flush()  # here, not at exit, so a closed pipe is seen now
+    except BrokenPipeError:
+        if not failed:
+            raise
+        # nothing more can reach the closed pipe, at exit either
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    if failed:  # last, and never an audit id that names no entry
+        print(_ran_unaudited(log_file, failed), file=sys.stderr)
+        sys.exit(1)
     print(f"Audit ID: {audit_id}")
+
+
+_WRITABLE = (
+    "Check that the case's disk has free space and that its audit/ folder and "
+    "log are writable, then run it again."
+)
+_LOG_SHAPES = (
+    "not a regular file",
+    "a folder",
+    "a symbolic link",
+    "another name links to it",
+)
+
+
+def _advice(e: OSError) -> str:
+    """For a log too large, or one that isn't the case's own regular file: it
+    was left as it is (an audit log is evidence); for anything else (a
+    permission, a full disk), check the folder."""
+    why = e.why if isinstance(e, CaseFileNotRegular) else (
+        "a symbolic link" if e.errno == errno.ELOOP else
+        "another name links to it" if e.errno == errno.EMLINK else "")  # fmt: skip
+    if isinstance(e, CaseFileTooLarge) or why in _LOG_SHAPES:
+        return kept(why)
+    return _WRITABLE
+
+
+def _why(log_file: Path, e: OSError) -> str:
+    why = (e.why if isinstance(e, (CaseFileNotRegular, CaseFileTooLarge)) else
+           "a symbolic link" if e.errno == errno.ELOOP else e.strerror)  # fmt: skip
+    return one_line(f"{log_file}: {why or type(e).__name__}")
+
+
+def _ran_unaudited(log_file: Path, e: OSError) -> str:
+    return (f"WARNING: the command ran, but its audit entry couldn't be written "
+            f"({_why(log_file, e)}), so it is not in the case's audit trail.")  # fmt: skip
 
 
 def _next_audit_id(case_dir: Path, examiner: str) -> str:
@@ -112,32 +193,29 @@ def _next_audit_id(case_dir: Path, examiner: str) -> str:
     max_seq = 0
     if log_file.exists():
         pattern = f"{_EVIDENCE_PREFIX}-{examiner}-{today}-"
-        try:
-            with open(log_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        eid = entry.get("audit_id", "")
-                        if eid.startswith(pattern):
-                            try:
-                                seq = int(eid[len(pattern) :])
-                                max_seq = max(max_seq, seq)
-                            except ValueError:
-                                pass
-                    except json.JSONDecodeError:
-                        continue
-        except OSError as e:
-            import logging
-
-            logging.debug("Could not read audit log for sequence: %s", e)
+        # a regular file only, line by line with each line capped; any read
+        # error refuses the run
+        with open_regular(log_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    eid = entry.get("audit_id", "")
+                    if eid.startswith(pattern):
+                        try:
+                            seq = int(eid[len(pattern) :])
+                            max_seq = max(max_seq, seq)
+                        except ValueError:
+                            pass
+                except json.JSONDecodeError:
+                    continue
     return f"{_EVIDENCE_PREFIX}-{examiner}-{today}-{max_seq + 1:03d}"
 
 
 def _log_exec(
-    case_dir: Path,
+    audit_fh,
     command: str,
     purpose: str,
     exit_code: int,
@@ -146,12 +224,10 @@ def _log_exec(
     examiner: str,
     audit_id: str,
     elapsed_ms: float,
-) -> None:
-    """Write execution record to audit trail using canonical schema."""
-    audit_dir = case_dir / "audit"
-    audit_dir.mkdir(parents=True, exist_ok=True)
-    log_file = audit_dir / f"{_MCP_NAME}.jsonl"
-
+) -> OSError | None:
+    """Write execution record to audit trail using canonical schema, through
+    the log opened before the run, and close it. Returns the error when the
+    entry couldn't be written in full."""
     # Summarize output for audit (not full stdout/stderr)
     stdout_summary = f"{len(stdout.splitlines())} lines"
     if exit_code != 0 and stderr:
@@ -169,10 +245,21 @@ def _log_exec(
         "result_summary": {"exit_code": exit_code, "output": stdout_summary},
         "elapsed_ms": round(elapsed_ms, 1),
     }
-    try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-    except OSError:
-        print(f"WARNING: Failed to write exec audit log: {log_file}", file=sys.stderr)
+    data, size = (json.dumps(entry, default=str) + "\n").encode("utf-8"), None
+    with audit_fh:
+        try:
+            size = os.fstat(audit_fh.fileno()).st_size
+            done = 0
+            # a short write is a failure unless the rest follows
+            while done < len(data):
+                n = audit_fh.write(data[done:])
+                if not n:
+                    raise OSError(errno.EIO, "short write")
+                done += n
+            os.fsync(audit_fh.fileno())
+        except OSError as e:
+            # never leave a partial line for the next entry to glue onto
+            if size is not None:
+                os.ftruncate(audit_fh.fileno(), size)
+            return e
+    return None

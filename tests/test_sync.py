@@ -191,3 +191,38 @@ class TestMerge:
         merged = json.loads((case_dir / "findings.json").read_text())
         f001 = next(f for f in merged if f["id"] == "F-alice-001")
         assert f001["title"] == "Updated by Bob"
+
+
+class TestExportSinceIsValidated:
+    """`since` is compared with stored timestamps as a string: "not-a-
+    timestamp" exported nothing and "20261001" a wrong subset, both silently."""
+
+    @pytest.mark.parametrize("since", ["not-a-timestamp", "20261001"])
+    def test_a_since_that_isnt_iso_is_refused(
+        self, tmp_path, monkeypatch, capsys, since
+    ):
+        case_dir = tmp_path / "case"
+        _init_case(case_dir)
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        output = tmp_path / "bundle.json"
+        args = _make_export_args(file=str(output), since=since)
+        with pytest.raises(SystemExit) as exit_:
+            cmd_export(args, {"examiner": "alice"})
+        assert exit_.value.code == 1
+        assert f"since '{since}' is not valid ISO 8601" in capsys.readouterr().err
+        assert not output.exists()
+
+    @pytest.mark.parametrize(
+        "since,findings", [("2026-10-01", 0), ("", 1), ("2020-01-01", 1)]
+    )
+    def test_a_date_or_no_since_exports_as_before(
+        self, tmp_path, monkeypatch, since, findings
+    ):
+        case_dir = tmp_path / "case"
+        _init_case(case_dir)
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        output = tmp_path / "bundle.json"
+        cmd_export(
+            _make_export_args(file=str(output), since=since), {"examiner": "alice"}
+        )
+        assert len(json.loads(output.read_text())["findings"]) == findings
