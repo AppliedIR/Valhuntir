@@ -47,7 +47,7 @@ It asks for the Windows machine's IP address and prints a one-line PowerShell co
 Set-ExecutionPolicy -Scope Process Bypass -Force; cd $env:TEMP; Invoke-WebRequest https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/main.zip -OutFile wintools.zip; if ($?) { Expand-Archive wintools.zip -DestinationPath . -Force; if ($?) { .\wintools-mcp-main\scripts\setup-windows.ps1 -JoinCode <code> -GatewayHost <sift-ip> -GatewayPort 4508 } }
 ```
 
-Run the printed line on Windows, in PowerShell as Administrator. `Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default. With the join code the installer exchanges credentials with SIFT itself, so no token needs copying. When it has finished, run `vhir setup client` on each examiner machine.
+Run the printed line on Windows, in PowerShell as Administrator. When the gateway uses TLS (remote mode), the printed line also ends with `-GatewayCertSha256 <pin>`: the installer pins the gateway's certificate by that fingerprint, so run the line exactly as printed. `Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default. With the join code the installer exchanges credentials with SIFT itself, so no token needs copying. When it has finished, run `vhir setup client` on each examiner machine.
 
 ## First Case
 

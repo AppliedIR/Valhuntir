@@ -299,7 +299,7 @@ vhir ingest-memory /cases/evidence/mem.raw --hostname WKSTN01
 | `path` | Path to memory image |
 | `--hostname` | Source hostname, if known (else the examiner names it in the Hosts tab) |
 | `--case` | Case ID |
-| `--tier` | Analysis depth (1=fast, 2=default, 3=deep) |
+| `--tier` | Analysis depth: 1 (fast, the default), 2 or 3 (deep) |
 | `--plugins` | Specific plugins (comma-separated) |
 | `--timeout` | Per-plugin timeout in seconds |
 | `--yes` | Skip confirmation |

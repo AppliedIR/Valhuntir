@@ -132,7 +132,7 @@ Restore asks where to put the case, offering the folder it was backed up from (E
 
 ## Evidence Indexing with OpenSearch
 
-When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
+When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
 
 ### Ingesting Evidence
 
@@ -234,7 +234,7 @@ Examples of what you can ask the LLM:
 
 ### Windows Tools (via wintools-mcp)
 
-wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
+wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. The catalog covers the Zimmerman suite, Sysinternals, timeline, malware analysis, memory and collection tools. It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
 
 Additional capabilities:
 - `batch_scan` — run a tool against all files in a directory with safety bounds

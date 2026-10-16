@@ -26,7 +26,7 @@ Valhuntir is **LLM client agnostic** — connect any locally installed MCP-compa
 
 ### Evidence Indexing with OpenSearch (Optional)
 
-With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
+With [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp), evidence is parsed programmatically and indexed into OpenSearch, giving the LLM purpose-built query tools instead of consuming billions of tokens reading raw artifacts. A 30-host triage collection with 50 million records becomes instantly searchable. Triage baseline and threat intelligence enrichment run programmatically — zero LLM tokens consumed.
 
 15 parsers cover the forensic evidence spectrum: Windows Event Logs (evtx), 10 EZ Tool artifact types (Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline), Volatility 3 memory forensics, JSON/JSONL (Suricata, tshark, Velociraptor), delimited (CSV, TSV, Zeek, bodyfile, supertimelines), Apache/Nginx access logs, W3C (IIS, HTTPERR, Windows Firewall), Windows Defender MPLog, Scheduled Tasks XML, Windows Error Reporting, SSH auth logs, PowerShell transcripts, Prefetch/SRUM (via Plaso or wintools-mcp), and Linux and macOS volumes, folders and disk images (via Plaso).
 
@@ -663,7 +663,7 @@ All thresholds clamp to a sane lower bound (operator typo of `0` won't disable s
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
 | [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (15 parsers). Optional. |
-| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (25 catalog entries) |
+| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Catalog-gated Windows forensic tool execution |
 | [Valhuntir](https://github.com/AppliedIR/Valhuntir) | CLI, architecture reference |
 
 ## Updating
@@ -825,7 +825,7 @@ After `vhir update` (or `vhir setup client`) redeploys the client controls:
 
 Both modes share the same Python venv, triage databases, and RAG index.
 Valhuntir adds the gateway (the MCP backends behind one HTTP endpoint),
-4+ additional MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp,
+additional MCP servers (forensic-mcp, case-mcp, report-mcp, sift-mcp,
 and optionally opensearch-mcp), a web-based review portal (Examiner Portal),
 structured case management, sandbox enforcement, and signed approvals.
 

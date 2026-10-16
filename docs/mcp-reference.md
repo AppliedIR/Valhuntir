@@ -142,7 +142,7 @@ Forensic tool execution on Linux/SIFT. A denylist blocks destructive system comm
 | `check_tools` | `tool_names` (list) | Check tool installation status | To verify tools are available before a workflow |
 | `suggest_tools` | `artifact_type`, `question` | Suggest relevant tools with corroboration guidance | When deciding how to analyze a specific artifact type |
 
-### Tool Catalog (56 FK entries)
+### Tool Catalog
 
 The forensic-knowledge package provides YAML definitions for catalogued forensic tools, by category. When sift-mcp executes a cataloged tool, the response is enriched with:
 
@@ -278,7 +278,7 @@ Offline Windows baseline validation. Checks artifacts against 2.6 million known-
 
 ## threatintel-mcp
 
-Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP); the other seven tools search OpenCTI. Named `opencti-mcp` in configurations from before.
+Read-only threat intelligence. `lookup_ioc` asks each configured platform (OpenCTI, MISP); the other tools search OpenCTI. Named `opencti-mcp` in configurations from before.
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -338,7 +338,7 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 | `idx_enrich_triage` | `case_id` | Baseline enrichment via windows-triage-mcp | After ingest — stamps EXPECTED/SUSPICIOUS verdicts |
 | `idx_enrich_intel` | `case_id`, `dry_run` (true), `force` | Threat intel enrichment via OpenCTI | After ingest — stamps MALICIOUS/CLEAN verdicts |
 
-### Detection Tool (1)
+### Detection Tool
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
@@ -392,31 +392,31 @@ Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML
 | `get_windows_tool_help` | `tool_name` | Tool-specific help, flags, caveats | Before running an unfamiliar tool |
 | `suggest_windows_tools` | `artifact_type`, `question` | Suggest tools for an artifact type | When deciding how to analyze a Windows artifact |
 
-### Evidence Access (1)
+### Evidence Access
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `get_share_info` | — | Get SMB share paths (share_root, case_dir, evidence_dir, extractions_dir) | To understand where evidence files are on the Windows side |
 
-### KAPE Discovery (1)
+### KAPE Discovery
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `list_kape_targets` | `list_type` ("modules", the only listing) | List the KAPE modules in structured categories; targets aren't run, so aren't listed | When planning a KAPE module run over files collected into the case |
 
-### Batch Execution (1)
+### Batch Execution
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `batch_scan` | `tool`, `directory`, `filter_pattern`, `max_files` (500), `timeout` (3600) | Run a tool against files in a directory with safety bounds | For directory-level scanning (sigcheck, densityscout, capa) |
 
-### Generic Execution (1)
+### Generic Execution
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
 | `run_windows_command` | `command` (list), `purpose`, `timeout`, `save_output`, `input_files` | Execute a cataloged forensic tool | Core tool — every Windows forensic analysis action |
 
-### Tool Catalog (25 entries)
+### Tool Catalog
 
 | File | Count | Tools |
 |------|-------|-------|

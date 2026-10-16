@@ -100,11 +100,11 @@ Report generation with 6 data-driven profiles. Aggregates approved findings, IOC
 
 ### sift-mcp
 
-Forensic tool execution on Linux/SIFT: discovery tools plus `run_command`. A denylist blocks destructive system commands. Catalog-enriched responses for 59+ known tools (from the forensic-knowledge package), basic envelopes for uncataloged tools. The enrichment delivery system manages token budget over long sessions (accuracy content always delivered, discovery content decays after 3 calls per tool).
+Forensic tool execution on Linux/SIFT: discovery tools plus `run_command`. A denylist blocks destructive system commands. Catalog-enriched responses for the tools the forensic-knowledge package describes, basic envelopes for uncataloged tools. The enrichment delivery system manages token budget over long sessions (accuracy content always delivered, discovery content decays after 3 calls per tool).
 
 ### wintools-mcp
 
-Forensic tool execution on Windows, with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
+Forensic tool execution on Windows, with catalog-gated execution — only tools defined in YAML catalog files can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
 
 ### opensearch-mcp
 
@@ -173,7 +173,7 @@ Typical full deployment with three VMs on a single host.
         ▼                           ▼
 ┌── REMnux VM (optional) ─┐  ┌── Windows VM (optional) ──────────────┐
 │  remnux-mcp :3000        │  │  wintools-mcp :4624                   │
-│  200+ analysis tools     │  │  25 cataloged tools                   │
+│  Malware analysis tools  │  │  Cataloged tools                      │
 └──────────────────────────┘  │  SMB ──► Case Directory (on SIFT)     │
                               └───────────────────────────────────────┘
 ```
