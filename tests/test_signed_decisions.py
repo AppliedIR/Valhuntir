@@ -253,6 +253,21 @@ def test_only_an_applied_edit_holds_the_linked_event(
     assert verify_case(case).exit_code == 0
 
 
+def test_an_applied_edit_in_this_decision_alone_holds_the_linked_event():
+    """The edit in this decision holds the event by itself, before the finding
+    carries any examiner_modifications from it."""
+    from vhir_cli import decide
+
+    f = {"id": "F-steve-001", "status": "DRAFT", "title": "PsExec",
+         "timeline_event_id": "T-steve-001"}  # fmt: skip
+    t = {"id": "T-steve-001", "status": "DRAFT", "auto_created_from": "F-steve-001"}
+    d = decide.Decision(dict(f), "finding", "approve", "APPROVED", loaded=dict(f),
+                        modifications=_TITLE)  # fmt: skip
+    planned, held = decide.split_cascades([d], [f], [t], [])
+    assert planned == []
+    assert [(h.id, h.coupled_from) for h in held] == [("T-steve-001", "F-steve-001")]
+
+
 def test_show_signed_prints_the_signed_view(case, capsys):
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", show_signed=True)
     assert '  Signed view: {"confidence": "LOW"' in capsys.readouterr().out
