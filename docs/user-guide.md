@@ -441,7 +441,7 @@ The portal has 8 tabs:
 | **IOCs** | Indicators extracted from findings with category/status filters |
 | **TODOs** | Outstanding investigation tasks |
 
-Examiners can edit finding fields inline (confidence, justification, observation, interpretation, MITRE IDs, IOCs, tags), approve or reject items, and commit decisions — all in the browser.
+Examiners can edit finding fields inline (confidence, justification, observation, interpretation, MITRE IDs, tags), approve or reject items, and commit decisions — all in the browser. IOCs are displayed read-only (they are structured values extracted from the finding).
 
 Keyboard shortcuts: `1`-`8` switch tabs, `j`/`k` navigate items, `a` approve, `r` reject, `e` edit, `Shift+C` commit.
 

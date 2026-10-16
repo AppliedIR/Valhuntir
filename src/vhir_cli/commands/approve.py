@@ -1110,7 +1110,7 @@ _DELTA_EDITABLE_FIELDS = {
     "confidence",
     "confidence_justification",
     "mitre_ids",
-    "iocs",
+    # "iocs" excluded: structured {value, type}, not inline-editable in the portal.
     "context",
     "alternatives",
     # Timeline event fields
