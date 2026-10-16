@@ -428,8 +428,8 @@ class TestReportSavePathSecurity:
 @pytest.mark.parametrize(
     "fields,shown",
     [
-        ({"mitre_ids": ["T1059.001", "T1105"]}, "['T1059.001', 'T1105']"),
-        ({"mitre_techniques": ["T1003"]}, "['T1003']"),
+        ({"mitre_ids": ["T1059.001", "T1105"]}, "T1059.001, T1105"),
+        ({"mitre_techniques": ["T1003"]}, "T1003"),
         ({}, None),
     ],
     ids=["mitre_ids", "older-mitre_techniques", "neither"],
