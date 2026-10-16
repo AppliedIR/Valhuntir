@@ -15,6 +15,7 @@ Supports multiple view modes:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -310,11 +311,14 @@ def _show_findings_detail(case_dir: Path) -> None:
                 if extraction:
                     print(f"        $ {extraction}")
                 if content:
-                    display = content[:200]
-                    if len(content) > 200:
+                    body, cut = _split_cut(content)
+                    display = body[:200]
+                    if len(body) > 200:
                         display += "..."
                     # A block: each line indented under the artifact
                     print(f"        {indent_lines(display, ' ' * 8)}")
+                    if cut:  # the preview never hides that the text was cut
+                        print(f"        {one_line(cut)}")
 
         # Supporting commands
         supporting = f.get("supporting_commands", [])
@@ -408,6 +412,17 @@ def _show_iocs(case_dir: Path) -> None:
 
     if not any_iocs:
         print("No IOCs found in findings.")
+
+
+# The line forensic-mcp ends an artifact's content with when it stored only
+# the first part of it
+_CUT_LINE = re.compile(r"\n(\[cut: [0-9]+ of [0-9]+ chars stored\])\Z")
+
+
+def _split_cut(content: str) -> tuple[str, str]:
+    """The content, and the cut line it ends with ("" if none)."""
+    m = _CUT_LINE.search(content)
+    return (content[: m.start()], m.group(1)) if m else (content, "")
 
 
 def _extract_iocs_from_findings(
