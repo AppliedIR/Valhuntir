@@ -112,7 +112,10 @@ def _show_summary(case_dir: Path) -> None:
 
     draft_t = sum(1 for t in timeline if t.get("status") == "DRAFT")
     approved_t = sum(1 for t in timeline if t.get("status") == "APPROVED")
-    print(f"Timeline: {len(timeline)} events ({draft_t} draft, {approved_t} approved)")
+    rejected_t = sum(1 for t in timeline if t.get("status") == "REJECTED")
+    print(
+        f"Timeline: {len(timeline)} events ({draft_t} draft, {approved_t} approved, {rejected_t} rejected)"
+    )
 
     print(f"Evidence: {len(evidence)} registered files")
 
