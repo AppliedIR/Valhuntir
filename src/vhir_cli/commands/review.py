@@ -15,7 +15,6 @@ Supports multiple view modes:
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -35,10 +34,10 @@ from vhir_cli.case_io import (
     load_withdrawals,
     no_terminal_line,
 )
-from vhir_cli.defang import refang
 from vhir_cli.display import cited as _cited
 from vhir_cli.display import display_safe, ioc_text, one_line
 from vhir_cli.display import lines as indent_lines
+from vhir_cli.ioc_groups import ioc_groups
 from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
@@ -395,76 +394,28 @@ def _show_iocs(case_dir: Path) -> None:
         "REJECTED": "IOCs from Rejected Findings",
     }
 
+    records = load_iocs(case_dir)
     any_iocs = False
     for status in ("APPROVED", "DRAFT", "REJECTED"):
-        iocs = _extract_iocs_from_findings(groups[status])
+        iocs = _extract_iocs_from_findings(groups[status], records)
         if not iocs:
             continue
         any_iocs = True
         print(f"\n=== {labels[status]} ===")
-        for ioc_type, values in sorted(iocs.items()):
-            shown = ", ".join(one_line(v) for v in sorted(values))
+        for ioc_type, values in iocs.items():  # text-only values last
+            shown = ", ".join(one_line(v) for v in values)
             print(f"  {one_line(ioc_type) + ':':<10} {shown}")
 
     if not any_iocs:
         print("No IOCs found in findings.")
 
 
-def _extract_iocs_from_findings(findings: list[dict]) -> dict[str, set[str]]:
-    """Extract IOCs from a list of findings."""
-    collected: dict[str, set[str]] = {}
-
-    for f in findings:
-        iocs_field = f.get("iocs")
-        if isinstance(iocs_field, dict):
-            for ioc_type, values in iocs_field.items():
-                if ioc_type not in collected:
-                    collected[ioc_type] = set()
-                if isinstance(values, list):
-                    collected[ioc_type].update(str(v) for v in values)
-                else:
-                    collected[ioc_type].add(str(values))
-        elif isinstance(iocs_field, list):
-            for ioc in iocs_field:
-                if isinstance(ioc, dict):
-                    ioc_type = ioc.get("type", "Unknown")
-                    ioc_value = ioc.get("value", "")
-                    if ioc_type not in collected:
-                        collected[ioc_type] = set()
-                    collected[ioc_type].add(str(ioc_value))
-
-        text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
-        _extract_text_iocs(text, collected)
-
-    return collected
-
-
-def _extract_text_iocs(text: str, collected: dict[str, set[str]]) -> None:
-    """Extract common IOC patterns from free text."""
-    # Analysts habitually defang indicators in notes; every pattern below
-    # matches the live form only, so normalise before matching.
-    text = refang(text)
-    ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
-    for ip in re.findall(ipv4_pattern, text):
-        if not ip.startswith(("0.", "127.", "255.")):
-            collected.setdefault("IPv4", set()).add(ip)
-
-    for h in re.findall(r"\b[a-fA-F0-9]{64}\b", text):
-        collected.setdefault("SHA256", set()).add(h.lower())
-
-    for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{40}(?![a-fA-F0-9])", text):
-        collected.setdefault("SHA1", set()).add(h.lower())
-
-    for h in re.findall(r"(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])", text):
-        collected.setdefault("MD5", set()).add(h.lower())
-
-    for fp in re.findall(r"[A-Z]:\\(?:[^\s,;]+)", text):
-        collected.setdefault("File", set()).add(fp)
-
-    for d in re.findall(
-        r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|info|biz|xyz|top|cc|tk)\b", text
-    ):
-        collected.setdefault("Domain", set()).add(d.lower())
+def _extract_iocs_from_findings(
+    findings: list[dict], records: list
+) -> dict[str, list[str]]:
+    """The IOCs the findings name, label -> values (`ioc_groups`); `records`
+    are the case's IOC records."""
+    return ioc_groups(findings, records)
 
 
 def _show_timeline(

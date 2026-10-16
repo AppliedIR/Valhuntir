@@ -20,6 +20,7 @@ from tests.signing import sign_approved
 from vhir_cli.case_io import save_findings, save_timeline
 from vhir_cli.commands.report import cmd_report
 from vhir_cli.commands.review import cmd_review
+from vhir_cli.ioc_groups import TEXT_ONLY
 
 CLEAR = "\x1b[2J"
 RETITLE = "\x1b]0;owned\x07"
@@ -143,7 +144,7 @@ def test_iocs_are_read_from_the_stored_text(case, capsys):
     assert "    C:\\first.exe\n    C:\\second.exe" in saved
     _report(full=True)
     report = json.loads(capsys.readouterr().out)
-    assert report["iocs"]["File"] == ["C:\\first.exe", "C:\\second.exe"]
+    assert report["iocs"][TEXT_ONLY] == ["C:\\first.exe", "C:\\second.exe"]
 
 
 def test_a_second_line_can_t_pose_as_a_field(case, capsys):

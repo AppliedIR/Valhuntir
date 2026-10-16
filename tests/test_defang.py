@@ -5,8 +5,14 @@ from __future__ import annotations
 import pytest
 
 from vhir_cli.commands.report import _extract_all_iocs
-from vhir_cli.commands.review import _extract_text_iocs
 from vhir_cli.defang import refang
+from vhir_cli.ioc_groups import TEXT_ONLY, text_iocs
+
+
+def _fill(text, collected):
+    """The text's IOCs, by the pattern that found each, into `collected`."""
+    for label, value in text_iocs(text):
+        collected.setdefault(label, set()).add(value)
 
 
 @pytest.mark.parametrize(
@@ -86,23 +92,21 @@ def test_mixed_text_refangs_every_indicator():
 
 def test_extractor_finds_defanged_domain_and_ip():
     collected: dict[str, set[str]] = {}
-    _extract_text_iocs(
-        "C2 at hxxp://evil[.]com, beacon to 185[.]220[.]101[.]45", collected
-    )
+    _fill("C2 at hxxp://evil[.]com, beacon to 185[.]220[.]101[.]45", collected)
     assert "evil.com" in collected["Domain"]
     assert "185.220.101.45" in collected["IPv4"]
 
 
 def test_extractor_still_finds_live_indicators():
     collected: dict[str, set[str]] = {}
-    _extract_text_iocs("C2 at evil.com, beacon to 185.220.101.45", collected)
+    _fill("C2 at evil.com, beacon to 185.220.101.45", collected)
     assert "evil.com" in collected["Domain"]
     assert "185.220.101.45" in collected["IPv4"]
 
 
 def test_extractor_does_not_invent_iocs_from_paths():
     collected: dict[str, set[str]] = {}
-    _extract_text_iocs(r"dropped C:\Users\victim\.ssh\id_rsa", collected)
+    _fill(r"dropped C:\Users\victim\.ssh\id_rsa", collected)
     assert not collected.get("Domain")
 
 
@@ -114,10 +118,11 @@ def test_report_extractor_finds_defanged_indicators():
                 "observation": "C2 at hxxp://evil[.]com",
                 "interpretation": "relay via 185[.]220[.]101[.]45",
             }
-        ]
+        ],
+        [],
     )
-    assert "evil.com" in out["Domain"]
-    assert "185.220.101.45" in out["IPv4"]
+    # named in the text only: listed live, in the group of text-only values
+    assert out == {TEXT_ONLY: ["185.220.101.45", "evil.com"]}
 
 
 SAMPLE = (
@@ -129,11 +134,11 @@ def test_the_sample_gives_its_live_indicators_never_the_parent_domain():
     """Both extractors: the defanged domains and IP come out live, and
     bad(dot)example.com is bad.example.com, never its parent example.com."""
     collected: dict[str, set[str]] = {}
-    _extract_text_iocs(SAMPLE, collected)
-    report = _extract_all_iocs([{"observation": SAMPLE, "interpretation": ""}])
-    for got in (collected, report):
-        assert set(got["Domain"]) == {"evil.com", "bad.example.com"}
-        assert set(got["IPv4"]) == {"185.220.101.45"}
+    _fill(SAMPLE, collected)
+    report = _extract_all_iocs([{"observation": SAMPLE, "interpretation": ""}], [])
+    assert set(collected["Domain"]) == {"evil.com", "bad.example.com"}
+    assert set(collected["IPv4"]) == {"185.220.101.45"}
+    assert set(report[TEXT_ONLY]) == {"evil.com", "bad.example.com", "185.220.101.45"}
 
 
 @pytest.mark.parametrize(
@@ -147,11 +152,11 @@ def test_hxxp_is_a_scheme_only_before_its_separator(text, kind, value):
     """Only a scheme's hxxp is refanged: the same letters in a host name or a
     path are part of the indicator, in both extractors."""
     collected: dict[str, set[str]] = {}
-    _extract_text_iocs(text, collected)
-    report = _extract_all_iocs([{"observation": text, "interpretation": ""}])
-    for got in (collected, report):
-        assert value in got[kind]
-        assert not any("http" in v for v in got.get(kind, ())), got
+    _fill(text, collected)
+    report = _extract_all_iocs([{"observation": text, "interpretation": ""}], [])
+    for got in (collected[kind], report[TEXT_ONLY]):
+        assert value in got
+        assert not any("http" in v for v in got), got
 
 
 # --- writing the case's IOCs defanged in a saved report -------------------------
