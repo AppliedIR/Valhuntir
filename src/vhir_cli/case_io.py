@@ -761,6 +761,38 @@ def plan_cascades(
         out.append(
             {"item": t, "type": "timeline", "status_after": after, "coupled_from": fid}
         )
+    out.extend(c for _, c, _, _ in _ioc_outcomes(decided, findings, iocs, exclude) if c)
+    return out
+
+
+def undecided_iocs(
+    decided: dict[str, str],
+    findings: list[dict],
+    iocs: list[dict],
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> list[dict]:
+    """The IOCs a finding approved or rejected here cites that don't cascade,
+    because the findings citing them end this commit at different statuses.
+    They stay DRAFT until the examiner decides each on its own.
+
+    Same arguments as `plan_cascades`. Returns `{item, coupled_from, citing}`
+    per IOC: `coupled_from` the first finding decided here that cites it, and
+    `citing` each finding citing it, as `(id, status after this commit)`."""
+    findings = [f for f in findings if isinstance(f, dict)]
+    return [
+        {"item": ioc, "coupled_from": source, "citing": citing}
+        for ioc, cascade, citing, source in _ioc_outcomes(
+            decided, findings, iocs, exclude
+        )
+        if cascade is None
+    ]
+
+
+def _ioc_outcomes(decided, findings, iocs, exclude):
+    """Each DRAFT IOC that a finding approved or rejected here cites, not
+    manually reviewed and not excluded, as `(ioc, cascade or None, citing,
+    the first such finding)`. It cascades when every finding citing it has
+    that status after this commit."""
     status_after = {
         f.get("id"): decided.get(f.get("id"), f.get("status", "DRAFT"))
         for f in findings
@@ -773,20 +805,24 @@ def plan_cascades(
             continue
         value = normalize_ioc(str(ioc.get("value", "")))
         citing = [fid for fid, values in cited.items() if value in values]
-        sources = sorted(fid for fid in citing if fid in decided)
+        sources = sorted(
+            fid for fid in citing if decided.get(fid) in ("APPROVED", "REJECTED")
+        )
+        if not sources:
+            continue
+        cascade = None
         for after in ("APPROVED", "REJECTED"):
             mine = [fid for fid in sources if decided[fid] == after]
             if mine and all(status_after[fid] == after for fid in citing):
-                out.append(
-                    {
-                        "item": ioc,
-                        "type": "ioc",
-                        "status_after": after,
-                        "coupled_from": mine[0],
-                    }
-                )
+                cascade = {
+                    "item": ioc,
+                    "type": "ioc",
+                    "status_after": after,
+                    "coupled_from": mine[0],
+                }
                 break
-    return out
+        named = [(fid, status_after[fid]) for fid in sorted(citing, key=str)]
+        yield ioc, cascade, named, sources[0]
 
 
 def set_status(

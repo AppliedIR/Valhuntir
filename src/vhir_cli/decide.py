@@ -40,6 +40,7 @@ from vhir_cli.case_io import (
     save_timeline,
     set_status,
     signed_text,
+    undecided_iocs,
     write_approval_log,
 )
 from vhir_cli.display import one_line
@@ -80,6 +81,30 @@ class Decision:
         return self.item["id"]
 
 
+class Held(tuple):
+    """An item linked to a finding decided here that isn't signed with it: a
+    timeline event made from a finding edited since, or an IOC the findings
+    citing it leave at different statuses (`citing`: each one's id and status
+    after this commit, empty for an event). It unpacks as `(id, finding id)`,
+    as the held pairs did before IOCs were held."""
+
+    def __new__(cls, item_id: str, coupled_from: str, citing=()):
+        self = super().__new__(cls, (item_id, coupled_from))
+        self.citing = tuple(citing)
+        return self
+
+    def __getnewargs__(self):  # copy and pickle rebuild it whole
+        return (self[0], self[1], self.citing)
+
+    @property
+    def id(self) -> str:
+        return self[0]
+
+    @property
+    def coupled_from(self) -> str:
+        return self[1]
+
+
 def item_type(item_id: str) -> str:
     return case_io.id_kind(item_id)  # one rule, which import_bundle also enforces
 
@@ -93,14 +118,15 @@ def cascades(
 
 def split_cascades(
     direct: list[Decision], findings, timeline, iocs, skipped=()
-) -> tuple[list[Decision], list[tuple[str, str]]]:
-    """The cascades of `direct`, and the timeline events held back from them:
-    `(event id, finding id)` for each event linked to a finding edited here or
-    in an earlier review.
+) -> tuple[list[Decision], list[Held]]:
+    """The cascades of `direct`, and the linked items held back from them:
+    each timeline event linked to a finding edited here or in an earlier
+    review, then each IOC that doesn't cascade because the findings citing
+    it end this commit at different statuses.
 
     An event was made from its finding's text, so it would be signed with the
     text the edit replaced. It needs its own decision, and stays as it is until
-    the examiner decides it."""
+    the examiner decides it. So does such an IOC."""
     edited = {d.id: d.item for d in direct}
     findings = [edited.get(f.get("id"), f) for f in findings if isinstance(f, dict)]
     decided = {
@@ -114,21 +140,31 @@ def split_cascades(
     planned, held = [], []
     for c in plan_cascades(decided, findings, timeline, iocs, exclude):
         if c["type"] == "timeline" and c["coupled_from"] in changed:
-            held.append((c["item"]["id"], c["coupled_from"]))
+            held.append(Held(c["item"]["id"], c["coupled_from"]))
             continue
         planned.append(
             Decision(c["item"], c["type"], "approve" if c["status_after"] == "APPROVED" else "reject",
                      c["status_after"], loaded=copy.deepcopy(c["item"]), coupled_from=c["coupled_from"])
         )  # fmt: skip
+    for u in undecided_iocs(decided, findings, iocs, exclude):
+        held.append(Held(u["item"].get("id"), u["coupled_from"], tuple(u["citing"])))
     return planned, held
 
 
-def held_line(event_id: str, finding_id: str) -> str:
-    """Why a linked event isn't signed, and what to do about it."""
+def held_line(item_id: str, finding_id: str, citing=()) -> str:
+    """Why a linked item isn't signed, and what to do about it."""
+    if citing:
+        named = [f"{one_line(f)} ({one_line(s)})" for f, s in citing]
+        names = " and ".join([", ".join(named[:-1]), named[-1]] if named[1:] else named)
+        return (
+            f"{one_line(item_id)} stays DRAFT: cited by {names}. It is approved only "
+            f"when every finding that cites it is approved. To reject it now: "
+            f"vhir reject {one_line(item_id)}"
+        )
     return (
-        f"{one_line(event_id)} is linked to {one_line(finding_id)}, which was edited "
+        f"{one_line(item_id)} is linked to {one_line(finding_id)}, which was edited "
         f"after the event was made from it. It won't be signed. Decide it on its own: "
-        f"vhir approve {one_line(event_id)}"
+        f"vhir approve {one_line(item_id)}"
     )
 
 
@@ -137,10 +173,10 @@ def confirm_plan(
     planned: list[Decision],
     display: Callable[[dict], None],
     lead: str = "",
-    held: list[tuple[str, str]] = (),
+    held: list[Held] = (),
 ) -> None:
     """Print every cascaded item, after the direct ones, then the linked
-    events held back, `lead` and the ids to be signed, just above the prompt."""
+    items held back, `lead` and the ids to be signed, just above the prompt."""
     if planned:
         print(f"\n{len(planned)} item(s) decided with them:")
     for c in planned:
@@ -148,8 +184,8 @@ def confirm_plan(
         print(f"  cascade from {one_line(c.coupled_from)}: {c.decision}")
     if held:
         print(f"\n{len(held)} linked item(s) not signed:")
-    for event_id, finding_id in held:
-        print(f"  {held_line(event_id, finding_id)}")
+    for h in held:
+        print(f"  {held_line(h.id, h.coupled_from, h.citing)}")
     ids = ", ".join(one_line(d.id) for d in direct + planned)
     if lead:
         print(lead)
