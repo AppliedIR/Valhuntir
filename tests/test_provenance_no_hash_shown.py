@@ -171,3 +171,66 @@ def test_reject_shows_no_root_and_no_sha256_question(name, case, monkeypatch, ca
     out = _out(name, case, monkeypatch, capsys, "", "")
     assert "F-tester-001" in out
     assert "sha256=?" not in out and "  Root: " not in out
+
+
+# The chain a gate finding's artifact stored: an image copied off a registered
+# ISO and hashed later, ingested from a mount folder, the mount and the file
+# read in it recorded, then the record the query returned
+ISO = "/srv/data/508.23.1B.iso"
+E01 = "/cases/C-1/evidence/iso-1B/rd01-c-drive.E01"
+VOL = "/home/u/.vhir/cases/C-1/tmp/ingest-20261016T095727-1-l5q6kk72/vol2"
+EVTX = f"{VOL}/Windows/System32/winevt/Logs/Security.evtx"
+
+
+def _gate_provenance(vol_sha):
+    iso = {"path": ISO, "sha256": REAL, "label": "AI-registered"}
+    e01 = {"path": E01, "sha256": REAL}
+    pending = {"path": E01, "sha256": "pending:hash-15c9"}
+    evtx = {"path": EVTX, "sha256": REAL}
+    vol = {"path": VOL, "sha256": vol_sha}
+    doc = {"_index": "case-1-evtx-0", "_id": "50a7", "content_hash": REAL}
+    chain = [
+        {"method": "registered-path", "audit_id": "", "from": iso, "to": iso},
+        {"method": "recorded-id", "audit_id": "sift-1", "from": iso, "to": e01},
+        {"method": "recorded-id", "audit_id": "fileidentity-1", "from": pending, "to": e01},
+        {"method": "hash+place", "audit_id": "sift-1", "from": e01, "to": e01},
+        {"method": "recorded-id", "audit_id": "osingest-1", "from": pending, "to": vol},
+        {"method": "recorded-mount", "audit_id": "osingest-1", "from": evtx, "to": vol},
+        {"method": "recorded-id", "audit_id": "osingest-2", "from": evtx, "to": {}},
+        {"method": "recorded-id", "audit_id": "opensearch-1", "document": doc},
+    ]  # fmt: skip
+    art = {"source": EVTX, "extraction": "idx_search", "content": "4648",
+           "audit_id": "sift-tester-20261016-001", "provenance_grade": "FULL",
+           "provenance_reason": "", "provenance_chain": chain,
+           "provenance_root": iso, "provenance_roots": [iso]}  # fmt: skip
+    return {"provenance_schema": 2, "provenance_grade": "FULL", "artifacts": [art]}
+
+
+def _gate_out(name, case, monkeypatch, capsys, vol_sha):  # noqa: F811
+    return _view(name, case, monkeypatch, capsys, **_gate_provenance(vol_sha))
+
+
+@pytest.mark.parametrize("name", CHAIN_VIEWS)
+def test_a_mount_folder_with_no_hash_reads_no_hash_at_each_step(
+    name,
+    case,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    out = _gate_out(name, case, monkeypatch, capsys, "")
+    assert out.count("sha256=?") == 0
+    assert out.count(f"-> {VOL} (no hash)") == 2
+    assert (
+        f"[recorded-mount] osingest-1: {EVTX} sha256={REAL[:16]} -> {VOL} (no hash)"
+        in out
+    )
+    assert f"{E01} pending (job hash-15c9) -> {VOL} (no hash)" in out
+    assert f"osingest-2: {EVTX} sha256={REAL[:16]} -> (no file)" in out
+    assert f"record 50a7 in case-1-evtx-0 sha256={REAL[:16]}" in out
+
+
+@pytest.mark.parametrize("name", CHAIN_VIEWS)
+def test_a_mount_folder_with_a_hash_still_prints_it(name, case, monkeypatch, capsys):  # noqa: F811
+    out = _gate_out(name, case, monkeypatch, capsys, REAL)
+    assert "(no hash)" not in out
+    assert out.count(f"-> {VOL} sha256={REAL[:16]}") == 2
