@@ -35,6 +35,8 @@ CHOICE = (
     " For Hayabusa, run `vhir setup hayabusa` (installs the current Hayabusa "
     "release; the current SIFT release doesn't include it)."
 )
+# Hayabusa the only problem: no SIFT update named
+ONLY_HAYABUSA = HAYABUSA + "." + CHOICE
 
 
 def _exe(path: Path, text: str) -> Path:
@@ -129,14 +131,23 @@ def test_volatility_2_28_is_not_named_even_with_root_owned_folders(box):
 def test_no_hayabusa_is_named(box):
     py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
     _vol(box, "vol", str(py))
-    assert sift_tools.warning() == TEXT.format(HAYABUSA) + CHOICE
+    assert sift_tools.warning() == ONLY_HAYABUSA
+
+
+def test_a_missing_hayabusa_alone_does_not_send_the_user_to_cast(box):
+    # SANS's installer has no Hayabusa: updating SIFT would install nothing
+    py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
+    _vol(box, "vol", str(py))
+    text = sift_tools.warning()
+    assert "cast" not in text and "setup-sift.sh" not in text
+    assert "`vhir setup hayabusa`" in text
 
 
 def test_the_rerun_advice_keeps_the_install_flags(box):
     # Both `vhir update` and setup-sift.sh print this warning. A remote box
     # re-run flagless reconfigures the gateway as a local install, so the
     # re-run advice must not be the bare flagless `./setup-sift.sh`.
-    py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
+    py = _python(box, "opt", "2.27.0", [_locked(box, "a")])
     _vol(box, "vol", str(py))
     text = sift_tools.warning()
     assert "with the options you installed with (for example `--remote`)" in text
@@ -257,7 +268,7 @@ def test_the_module_prints_the_warning_or_nothing(box, capsys):
     assert sift_tools.main() == 0 and capsys.readouterr().out == ""
     (box.bin / "hayabusa").unlink()
     assert sift_tools.main() == 0
-    assert capsys.readouterr().out == TEXT.format(HAYABUSA) + CHOICE + "\n"
+    assert capsys.readouterr().out == ONLY_HAYABUSA + "\n"
 
 
 def test_setup_test_prints_it_before_the_gateway_is_reached(monkeypatch, capsys):

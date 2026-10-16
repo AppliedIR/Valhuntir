@@ -177,6 +177,9 @@ def warning() -> str | None:
         problems.append("Hayabusa missing: no event-log detections")
     if not problems:
         return None
+    if not vol:
+        # SANS's installer doesn't bring Hayabusa: name only Valhuntir's
+        return "Hayabusa missing: no event-log detections." + HAYABUSA_CHOICE
     return (
         "Some SIFT tools are out of date and parts of Valhuntir won't work with them "
         f"({'; '.join(problems)}). Update SIFT with: `sudo cast install teamdfir/sift` "
