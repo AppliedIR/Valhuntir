@@ -1270,11 +1270,17 @@ def display_instant(ts: object) -> str:
     return text[:19]
 
 
+def text_of(value: object) -> str:
+    """A stored field as text to sort or compare by: "" when it is missing or
+    null, else its text (a number a bundle or hand edit stored, too)."""
+    return "" if value is None else str(value)
+
+
 def _at_or_after(ts: object, since: str) -> bool:
     """Compare instants; when either side doesn't parse, compare as text, as before."""
     bound, value = _utc(since), _utc(ts)
     if bound is None or value is None:
-        return ts >= since
+        return text_of(ts) >= since
     return value >= bound
 
 
@@ -1286,7 +1292,7 @@ def _at_or_before(ts: object, end: str) -> bool:
     when either side doesn't parse, compare as text, as before."""
     bound, value = _utc(end), _utc(ts)
     if bound is None or value is None:
-        return ts <= end
+        return text_of(ts) <= end
     if _DATE_ONLY.match(end):
         try:
             return value < bound + timedelta(days=1)

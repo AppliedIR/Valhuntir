@@ -34,6 +34,7 @@ from vhir_cli.case_io import (
     load_todos,
     load_withdrawals,
     no_terminal_line,
+    text_of,
 )
 from vhir_cli.display import cited as _cited
 from vhir_cli.display import display_safe, ioc_text, list_text, one_line
@@ -438,7 +439,7 @@ def _show_timeline(
 ) -> None:
     """Show timeline events with optional filters."""
     timeline = load_timeline(case_dir)
-    timeline.sort(key=lambda t: t.get("timestamp", ""))
+    timeline.sort(key=lambda t: text_of(t.get("timestamp")))
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
     if start:
@@ -474,7 +475,7 @@ def _show_timeline(
             tid = one_line(t.get("id", "?"))
             item_status = one_line(t.get("status", "?"))
             ts = one_line(display_instant(t.get("timestamp")))
-            desc = one_line(t.get("description", ""))  # one row per event
+            desc = one_line(text_of(t.get("description")))  # one row per event
             if len(desc) > 40:
                 desc = desc[:37] + "..."
             print(f"{tid:<20} {item_status:<10} {ts:<22} {desc}")
