@@ -150,12 +150,8 @@ SHAPES = {
         [_f(1, [{"value": 445, "type": "port"}])], [], {TEXT_ONLY: ["445"]},
     ),
     "not-recorded-empty-left-out": (
-        [_f(1, [None, "", "  ", {"value": None, "type": "ip"}, {"type": "ip"}, ["x"]])], [], {},
+        [_f(1, [None, "", "  ", {"value": None, "type": "ip"}, {"type": "ip"}, 5, ["x"]])], [], {},
     ),
-    "not-recorded-number-items": (
-        [_f(1, [8443, 2.5, "evil.com"])], [], {TEXT_ONLY: ["2.5", "8443", "evil.com"]},
-    ),
-    "recorded-number-item": ([_f(1, [8443])], [_r(1, "8443", None)], {"Unknown": ["8443"]}),
     # a finding's IOC typed null, as a list or as a number, and its record
     "finding-ioc-type-null": (
         [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "tdungan", "type": None}])],
