@@ -123,6 +123,25 @@ def test_a_step_two_groups_share_shows_in_both():
     assert steps.count(link_line(ROOT)) == 2 and steps.count(link_line(MOUNT)) == 2
 
 
+def test_two_ingests_that_start_with_the_same_step_each_list_it():
+    chain = [ROOT, A, _record("r1"), ROOT, B, _record("r2")]
+    steps = _steps(finding_lines(_finding(chain)))
+    assert steps == [link_line(x) for x in chain]
+
+
+def test_records_from_two_ingests_interleaved_each_sit_under_their_own():
+    chain = [ROOT, A, _record("r1"), ROOT, B, _record("r2"), ROOT, A, _record("r3")]
+    steps = _steps(finding_lines(_finding(chain)))
+    want = (ROOT, A, _record("r1"), _record("r3"), ROOT, B, _record("r2"))
+    assert steps == [link_line(x) for x in want]
+
+
+def test_records_of_one_ingest_stored_together_stay_under_it():
+    chain = [ROOT, A, _record("r1"), _record("r3"), ROOT, B, _record("r2")]
+    steps = _steps(finding_lines(_finding(chain)))
+    assert steps == [link_line(x) for x in chain]
+
+
 def test_the_tail_no_record_follows_lists_each_step_once():
     steps = _steps(finding_lines(_finding([ROOT, MOUNT, A, ROOT, MOUNT, B, A])))
     assert steps == [link_line(x) for x in (ROOT, MOUNT, A, B)]
