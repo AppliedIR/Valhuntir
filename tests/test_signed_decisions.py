@@ -1099,6 +1099,31 @@ def test_a_pending_iocs_modification_is_dropped_noted_and_never_signed(case):
     assert "iocs" not in entry["modifications"]
 
 
+@pytest.mark.parametrize("mixed", [False, True], ids=["ioc_only", "mixed"])
+def test_review_mode_notes_a_pending_iocs_delta_and_leaves_the_iocs(
+    case, capsys, monkeypatch, mixed
+):
+    """A pending entry from the portal carries a modifications.iocs (IOCs are
+    read-only, not in the editable set). Signing it through _review_mode must
+    say the iocs were not applied — not drop them silently — leave the
+    finding's own iocs untouched, and still apply any editable field alongside."""
+    mods = {"iocs": {"original": ["10.0.0.7"],
+                     "modified": [{"value": "9.9.9.9", "type": "ipv4"}]}}  # fmt: skip
+    if mixed:
+        mods["observation"] = {"original": "o", "modified": "edited observation"}
+    entry = {"id": "F-steve-001", "type": "finding", "action": "edit",
+             "examiner": "steve", "modifications": mods}  # fmt: skip
+    _review(case, entry, monkeypatch)
+    out = capsys.readouterr().out
+
+    assert "F-steve-001: iocs not applied (not editable here)" in out
+    assert ("F-steve-001", "edit") in _signed()
+    findings = json.loads((case / "findings.json").read_text())
+    f = {x["id"]: x for x in findings}["F-steve-001"]
+    assert f["iocs"] == ["10.0.0.7"]  # the finding's own iocs are left as they were
+    assert f["observation"] == ("edited observation" if mixed else "o")
+
+
 def test_a_todo_that_can_t_be_written_is_kept_and_the_exit_is_1(
     case, monkeypatch, capsys
 ):

@@ -246,6 +246,12 @@ def save_unsigned(
                     left.append(
                         f"{d.id}: left as staged by {d.delta_entry.get('staged_by') or 'unknown'}"
                     )
+                else:
+                    dropped = sorted(set(d.modifications) - DELTA_EDITABLE_FIELDS)
+                    if dropped:  # a stale modifications.iocs re-saved, never applied
+                        not_saved.append(
+                            f"{d.id}: {', '.join(dropped)} not applied (not editable here)"
+                        )
                 for e in entries:
                     if e == d.delta_entry and e.get("staged_by") == examiner:
                         e["saved_unsigned"] = {"at": now, "reason": why}

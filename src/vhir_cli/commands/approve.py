@@ -1466,6 +1466,11 @@ def _review_mode(
                     "original": m.get("original"), "modified": m.get("modified"),
                     "modified_by": examiner, "modified_at": now,
                 }  # fmt: skip
+        dropped = sorted(f for f in mods if f not in _DELTA_EDITABLE_FIELDS)
+        if dropped:  # e.g. a stale modifications.iocs: applied to nothing, say so
+            print(
+                f"  {_one_line(item_id)}: {', '.join(dropped)} not applied (not editable here)"
+            )
         if entry.get("note"):
             _apply_note(item, entry["note"], identity)
         kind = decide.item_type(item_id)
