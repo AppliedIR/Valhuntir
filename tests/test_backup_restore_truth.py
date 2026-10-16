@@ -23,6 +23,7 @@ import multiprocessing as mp
 import shutil
 import subprocess
 import sys
+import time
 import types
 import uuid
 from argparse import Namespace
@@ -664,29 +665,35 @@ def _take(lock, barrier, out):
         barrier.wait(10)
 
 
-def _race(lock: Path, start: str | None, trials: int) -> list[str]:
+def _race(
+    lock: Path, start: str | None, trials: int, take=_take, wait: float = 30
+) -> list[str]:
     """What went wrong across the trials of two processes taking the lock at
-    once: both took it, or one crashed."""
+    once: both took it, one crashed, or one had to be killed."""
     ctx, wrong = mp.get_context("fork"), []
     for _ in range(trials):
         lock.unlink(missing_ok=True)
         if start is not None:
             lock.write_text(start)
         barrier, out = ctx.Barrier(2), ctx.Queue()
-        ps = [ctx.Process(target=_take, args=(lock, barrier, out)) for _ in range(2)]
+        ps = [ctx.Process(target=take, args=(lock, barrier, out)) for _ in range(2)]
+        killed = 0
         try:
             for p in ps:
                 p.start()
-            got = sorted(out.get(timeout=30) for _ in ps)
+            got = sorted(out.get(timeout=wait) for _ in ps)
             for p in ps:
-                p.join(30)
+                p.join(wait)
         finally:  # a stuck taker fails the test; left alive, it would hold the run open at exit
             for p in ps:
                 if p.is_alive():
                     p.kill()
                     p.join()
+                    killed += 1
         if got != ["refused", "took"]:
             wrong.append(" / ".join(got))
+        if killed:
+            wrong.append("a taker had to be killed")
     return wrong
 
 
@@ -701,6 +708,17 @@ def test_two_takers_never_both_hold_the_snapshot_lock(tmp_path, start):
     lock = tmp_path / ".backup.lock"
     wrong = _race(lock, _dead_pid() if start == "stale" else None, 500)
     assert wrong == [], f"{len(wrong)} of 500: {sorted(set(wrong))}"
+
+
+def _take_then_hang(lock, barrier, out):
+    _take(lock, barrier, out)
+    time.sleep(3600)
+
+
+def test_a_taker_that_has_to_be_killed_fails_the_race(tmp_path):
+    lock = tmp_path / ".backup.lock"
+    wrong = _race(lock, None, 1, take=_take_then_hang, wait=3)
+    assert wrong == ["a taker had to be killed"]
 
 
 def test_a_lock_held_by_another_users_live_process_is_held(tmp_path):
