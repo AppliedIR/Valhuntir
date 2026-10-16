@@ -132,7 +132,7 @@ Restore asks where to put the case, offering the folder it was backed up from (E
 
 ## Evidence Indexing with OpenSearch
 
-When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM 21 purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
+When opensearch-mcp is installed, evidence is parsed programmatically and indexed into OpenSearch, giving the LLM purpose-built query tools instead of consuming billions of tokens reading raw artifacts.
 
 ### Ingesting Evidence
 
@@ -165,7 +165,7 @@ Or ask the LLM to ingest evidence — it uses the ingest tools on opensearch-mcp
 | Parser | Artifacts | Source |
 |--------|-----------|--------|
 | evtx | Windows Event Logs | pyevtx-rs (ECS-normalized) |
-| EZ Tools (10) | Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline | Eric Zimmerman tools via wintools-mcp |
+| EZ Tools | Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline | Eric Zimmerman tools via wintools-mcp |
 | Volatility 3 | Memory forensics (26 plugins, 3 tiers) | vol3 subprocess |
 | JSON/JSONL | Suricata EVE, tshark, Velociraptor, any JSON | Auto-detect format |
 | Delimited | CSV, TSV, Zeek TSV, bodyfile, L2T supertimelines | Auto-detect delimiter |
@@ -186,7 +186,7 @@ After EVTX ingest, opensearch-mcp checks if Hayabusa is installed and automatica
 
 ### Querying Indexed Evidence
 
-The LLM queries indexed evidence through opensearch-mcp's 8 query tools. Start by asking for a case overview, then direct the LLM to search, aggregate, or build timelines:
+The LLM queries indexed evidence through opensearch-mcp's query tools. Start by asking for a case overview, then direct the LLM to search, aggregate, or build timelines:
 
 - **"Give me a case summary"** — the LLM calls `idx_case_summary` to show hosts, artifact types, document counts, and enrichment status
 - **"Show me all 4688 events where cmd.exe was spawned from an unusual parent"** — structured search across event logs
@@ -195,7 +195,7 @@ The LLM queries indexed evidence through opensearch-mcp's 8 query tools. Start b
 - **"What unique source IPs appear in the event logs?"** — field value enumeration
 - **"How many logon events are there?"** — fast document counts
 
-Every write goes to `case-<c12>-<artifact_type>-0`, named from the case's identity; index names carry no host, and each record carries its machine in `host.id`. The LLM can query across an entire case, or target specific artifact types and machines (by `host.id`). See the [MCP Reference](mcp-reference.md#opensearch-mcp-21-tools) for the full list of query tools and parameters.
+Every write goes to `case-<c12>-<artifact_type>-0`, named from the case's identity; index names carry no host, and each record carries its machine in `host.id`. The LLM can query across an entire case, or target specific artifact types and machines (by `host.id`). See the [MCP Reference](mcp-reference.md#opensearch-mcp) for the full list of query tools and parameters.
 
 ### Programmatic Enrichment
 
@@ -234,7 +234,7 @@ Examples of what you can ask the LLM:
 
 ### Windows Tools (via wintools-mcp)
 
-wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
+wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. The catalog covers the Zimmerman suite, Sysinternals, timeline, malware analysis, memory and collection tools. It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
 
 Additional capabilities:
 - `batch_scan` — run a tool against all files in a directory with safety bounds
