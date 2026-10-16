@@ -83,10 +83,10 @@ def _config(home, examiner):
 @pytest.mark.parametrize("raw", ["!!!", "---", "_", " ", "@@ ##", "\u00e9\u00e9"])
 @pytest.mark.parametrize("source", ["flag", "env", "config"])
 def test_a_name_with_nothing_usable_warns_and_falls_back_to_the_os_user(
-    clean, capsys, raw, source
+    clean, capsys, monkeypatch, raw, source
 ):
     if source == "env":
-        os.environ["VHIR_EXAMINER"] = raw
+        monkeypatch.setenv("VHIR_EXAMINER", raw)
     if source == "config":
         _config(clean, raw)
     identity = get_examiner_identity(raw if source == "flag" else None)
