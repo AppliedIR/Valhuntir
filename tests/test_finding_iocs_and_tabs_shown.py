@@ -237,6 +237,12 @@ IOC_SHAPES = {
                   "пользователь, ユーザー (user-account), \\u202eexe.txt"),
     "html-js": (["<script>alert(1)</script>", "a&b\"c'd"],
                 "<script>alert(1)</script>, a&b\"c'd", None),
+    "strings-and-typed-values": (
+        ["C:\\Windows\\System32\\SRLUpdate.exe", "439d9563489045d8c16f47e89033e8390592f6ca",
+         {"value": "\\SRL User Maintenance", "type": "scheduled-task"},
+         {"value": "tdungan", "type": "user-account"}],
+        "C:\\Windows\\System32\\SRLUpdate.exe, 439d9563489045d8c16f47e89033e8390592f6ca, "
+        "\\SRL User Maintenance (scheduled-task), tdungan (user-account)", None),
     "multiple-hosts": ([{"value": "rd01", "type": "hostname"}, {"value": "dc01", "type": "hostname"},
                         {"value": "base-wkstn-05", "type": "hostname"}],
                        "rd01 (hostname), dc01 (hostname), base-wkstn-05 (hostname)", None),

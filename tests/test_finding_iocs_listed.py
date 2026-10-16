@@ -139,6 +139,22 @@ SHAPES = {
         [_f(1, [{"value": "x", "type": TEXT_ONLY}], observation="to 8.8.4.4")], [],
         {TEXT_ONLY: ["8.8.4.4", "x"]},
     ),
+    "text-path-sentence-punctuation": (
+        [_f(1, ["C:\\Windows\\System32\\SRLUpdate.exe", "C:\\Windows\\System32\\STUN.exe"],
+            observation="Removed C:\\Windows\\System32\\SRLUpdate.exe. The task ran "
+                        '"C:\\Windows\\System32\\STUN.exe", then (C:\\Temp\\a.exe) and '
+                        "'C:\\Temp\\b.exe'; C:\\Temp\\c.exe: done")], [],
+        {"File": ["C:\\Windows\\System32\\SRLUpdate.exe", "C:\\Windows\\System32\\STUN.exe"],
+         TEXT_ONLY: ["C:\\Temp\\a.exe", "C:\\Temp\\b.exe", "C:\\Temp\\c.exe"]},
+    ),
+    "path-really-ending-in-a-dot": (
+        [_f(1, ["C:\\Temp\\odd."], observation="Wrote C:\\Temp\\odd. and left.")], [],
+        {"File": ["C:\\Temp\\odd."]},
+    ),
+    "text-path-closed-parens-kept": (
+        [_f(1, observation="Ran C:\\Temp\\copy(1) and (see C:\\Temp\\x(2).exe)")], [],
+        {TEXT_ONLY: ["C:\\Temp\\copy(1)", "C:\\Temp\\x(2).exe"]},
+    ),
     "no-iocs": ([_f(1)], [], {}),
 }  # fmt: skip
 

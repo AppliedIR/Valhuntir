@@ -74,10 +74,22 @@ def ioc_key(value: str) -> str:
     return v
 
 
+def _sentence_end(value: str) -> str:
+    """The value without the punctuation the sentence around it ends with: a
+    trailing . , ; : " or ', and a ) with no ( to close."""
+    while value and (
+        value[-1] in ".,;:\"'"
+        or (value[-1] == ")" and value.count(")") > value.count("("))
+    ):
+        value = value[:-1]
+    return value
+
+
 def text_iocs(text: str) -> list[tuple[str, str]]:
     """(label, value) for each IOC the text names, by the patterns in order.
-    Defanged indicators are read live; a hash or domain is lowercased, and a
-    0., 127. or 255. address is left out."""
+    Defanged indicators are read live; a hash or domain is lowercased, a path
+    loses the punctuation that ends its sentence, and a 0., 127. or 255.
+    address is left out."""
     # Analysts habitually defang indicators in notes; every pattern matches
     # the live form only, so normalise before matching.
     text = refang(text)
@@ -87,8 +99,10 @@ def text_iocs(text: str) -> list[tuple[str, str]]:
             if label == "IPv4":
                 if not v.startswith(("0.", "127.", "255.")):
                     found.append((label, v))
+            elif label == "File":
+                found.append((label, _sentence_end(v)))
             else:
-                found.append((label, v if label == "File" else v.lower()))
+                found.append((label, v.lower()))
     return found
 
 
