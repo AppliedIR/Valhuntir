@@ -442,7 +442,9 @@ def _show_timeline(
 ) -> None:
     """Show timeline events with optional filters."""
     timeline = load_timeline(case_dir)
-    timeline.sort(key=lambda t: text_of(t.get("timestamp")))
+    timeline.sort(
+        key=lambda t: (display_instant(t.get("timestamp")), text_of(t.get("timestamp")))
+    )
     if status:
         timeline = [t for t in timeline if t.get("status") == status.upper()]
     if start:

@@ -306,7 +306,9 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
 def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     """Timeline report with optional date filtering."""
     timeline = load_timeline(case_dir)
-    timeline.sort(key=lambda t: text_of(t.get("timestamp")))
+    timeline.sort(
+        key=lambda t: (display_instant(t.get("timestamp")), text_of(t.get("timestamp")))
+    )
 
     from_date = getattr(args, "from_date", None)
     to_date = getattr(args, "to_date", None)
