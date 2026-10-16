@@ -485,7 +485,7 @@ EXAMINER_NAME=$(echo "$EXAMINER_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-
 [[ -z "$EXAMINER_NAME" ]] && EXAMINER_NAME="examiner"
 ok "Examiner: $EXAMINER_NAME"
 
-echo "examiner: $EXAMINER_NAME" >> "$Valhuntir_CONFIG"
+echo "examiner: \"$EXAMINER_NAME\"" >> "$Valhuntir_CONFIG"
 
 # Write VHIR_EXAMINER to shell profile
 SHELL_RC=""
