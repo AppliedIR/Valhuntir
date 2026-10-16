@@ -32,6 +32,13 @@ def cmd_join(args, identity: dict) -> None:
     wintools_token = None
     if getattr(args, "wintools", False):
         wintools_url, wintools_token = _get_wintools_credentials()
+        if not wintools_url:
+            print(
+                "Cannot join as wintools: ~/.vhir/wintools.yaml is missing or "
+                "unreadable. Nothing was sent and no config was written.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # TLS verification: use CA cert if available, otherwise skip (self-signed)
     ca_cert = getattr(args, "ca_cert", None) or _find_ca_cert()
