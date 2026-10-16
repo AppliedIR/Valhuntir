@@ -22,14 +22,14 @@ from vhir_cli.commands.reject import cmd_reject
 
 from .signing import enrol, sign_approved
 
-UNC = "\\\\172.16.6.12\\c$\\Users"  # as stored: two leading backslashes
-SID = "S-1-5-21-2838623409-1327563992-2591358621-1136"
-IOCS = ["172.16.6.12", UNC, {"value": "tdungan", "type": "user-account"}, SID]
+UNC = "\\\\192.0.2.62\\c$\\Users"  # as stored: two leading backslashes
+SID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+IOCS = ["192.0.2.62", UNC, {"value": "jdoe", "type": "user-account"}, SID]
 NETSCAN = (
-    "0xb50c4d057ae0\tTCPv4\t172.16.6.11\t3389\t172.16.30.23\t55264\tESTABLISHED\t-\n"
+    "0xb50c4d057ae0\tTCPv4\t192.0.2.61\t3389\t192.0.2.30\t55264\tESTABLISHED\t-\n"
     "*** 6784\t6664\tcmd.exe\t0xb50c4e3eb0c0\t1\t-\t2\tFalse\t2023-01-25 14:52:04.000000 UTC\tN/A"
 )
-COLUMNS = re.compile(r"0xb50c4d057ae0 +TCPv4 +172\.16\.6\.11 +3389 ")
+COLUMNS = re.compile(r"0xb50c4d057ae0 +TCPv4 +192\.0\.2\.61 +3389 ")
 HOSTILE = (
     "runs:a\t\t\t\tb\n"
     "tabesc:x\t\x1b[2Jy\n"
@@ -38,7 +38,7 @@ HOSTILE = (
     "osc:\t\x1b]0;owned\x07z\n"
     "c1:\t\x9b2Jw"
 )
-OBS = "netscan shows RDP from 172.16.30.23"
+OBS = "netscan shows RDP from 192.0.2.30"
 IDENT = {"examiner": "analyst1", "os_user": "u", "examiner_source": "flag"}
 
 IOC_VIEWS = [
@@ -81,7 +81,7 @@ def _finding(
     status="DRAFT",
     iocs=_UNSET,
     content=NETSCAN,
-    title="Lateral movement to rd01",
+    title="Lateral movement to ws01",
     interpretation="Remote logon",
     **extra,
 ):
@@ -99,8 +99,8 @@ def _finding(
         "created_by": "tester",
         "artifacts": [
             {
-                "source": "/cases/C-1/evidence/rd01.mem",
-                "extraction": "vol -f rd01.mem windows.netscan",
+                "source": "/cases/C-1/evidence/ws01.mem",
+                "extraction": "vol -f ws01.mem windows.netscan",
                 "audit_id": "sift-tester-20261016-001",
                 "content": content,
             }
@@ -202,7 +202,7 @@ def _no_control(line):
 @pytest.mark.parametrize("name", IOC_VIEWS)
 def test_iocs_print_as_values_in_every_view(name, case, monkeypatch, capsys):
     out = _view(name, case, monkeypatch, capsys, iocs=IOCS)
-    assert _iocs_text(out) == (f"172.16.6.12, {UNC}, tdungan (user-account), {SID}"), (
+    assert _iocs_text(out) == (f"192.0.2.62, {UNC}, jdoe (user-account), {SID}"), (
         _iocs_lines(out)
     )
 
@@ -212,14 +212,14 @@ def test_iocs_print_as_values_in_every_view(name, case, monkeypatch, capsys):
 # None as the text: the view shows no IOCs line.
 LONG = "A" * (70 * 1024)
 IOC_SHAPES = {
-    "typed": ([{"value": "tdungan", "type": "user-account"}], "tdungan (user-account)", None),
-    "typed-empty-type": ([{"value": "rd01", "type": ""}], "rd01", None),
-    "untyped-dict": ([{"value": "rd01"}], "rd01", None),
-    "type-map": ({"ipv4": ["10.0.0.1", "10.0.0.2"], "user": "tdungan"},
-                 "ipv4: 10.0.0.1, 10.0.0.2; user: tdungan", None),
-    "list": (["172.16.6.12", UNC], f"172.16.6.12, {UNC}", None),
-    "list-with-gaps": ([None, "", "rd01", []], "rd01", None),
-    "string": ("172.16.6.12", "172.16.6.12", None),
+    "typed": ([{"value": "jdoe", "type": "user-account"}], "jdoe (user-account)", None),
+    "typed-empty-type": ([{"value": "ws01", "type": ""}], "ws01", None),
+    "untyped-dict": ([{"value": "ws01"}], "ws01", None),
+    "type-map": ({"ipv4": ["10.0.0.1", "10.0.0.2"], "user": "jdoe"},
+                 "ipv4: 10.0.0.1, 10.0.0.2; user: jdoe", None),
+    "list": (["192.0.2.62", UNC], f"192.0.2.62, {UNC}", None),
+    "list-with-gaps": ([None, "", "ws01", []], "ws01", None),
+    "string": ("192.0.2.62", "192.0.2.62", None),
     "number": (3389, "3389", None),
     "numbers-in-list": ([3389, 1.5, True], "3389, 1.5, True", None),
     "none": (None, None, None),
@@ -238,14 +238,14 @@ IOC_SHAPES = {
     "html-js": (["<script>alert(1)</script>", "a&b\"c'd"],
                 "<script>alert(1)</script>, a&b\"c'd", None),
     "strings-and-typed-values": (
-        ["C:\\Windows\\System32\\SRLUpdate.exe", "439d9563489045d8c16f47e89033e8390592f6ca",
-         {"value": "\\SRL User Maintenance", "type": "scheduled-task"},
-         {"value": "tdungan", "type": "user-account"}],
-        "C:\\Windows\\System32\\SRLUpdate.exe, 439d9563489045d8c16f47e89033e8390592f6ca, "
-        "\\SRL User Maintenance (scheduled-task), tdungan (user-account)", None),
-    "multiple-hosts": ([{"value": "rd01", "type": "hostname"}, {"value": "dc01", "type": "hostname"},
-                        {"value": "base-wkstn-05", "type": "hostname"}],
-                       "rd01 (hostname), dc01 (hostname), base-wkstn-05 (hostname)", None),
+        ["C:\\Windows\\System32\\AppUpdate.exe", "0123456789abcdef0123456789abcdef01234567",
+         {"value": "\\App User Maintenance", "type": "scheduled-task"},
+         {"value": "jdoe", "type": "user-account"}],
+        "C:\\Windows\\System32\\AppUpdate.exe, 0123456789abcdef0123456789abcdef01234567, "
+        "\\App User Maintenance (scheduled-task), jdoe (user-account)", None),
+    "multiple-hosts": ([{"value": "ws01", "type": "hostname"}, {"value": "dc01", "type": "hostname"},
+                        {"value": "ws05", "type": "hostname"}],
+                       "ws01 (hostname), dc01 (hostname), ws05 (hostname)", None),
 }  # fmt: skip
 
 
@@ -278,9 +278,9 @@ def test_saved_report_file_holds_the_values_defanged(case, monkeypatch, capsys):
         if ln.lstrip().startswith("IOCs:")
     ]
     assert "{" not in line and '"' not in line and "'" not in line, line
-    assert line.endswith(f", tdungan (user-account), {SID}"), line
-    assert "172.16.6.12" not in line  # each IP defanged
-    assert line.count("172[.]16[.]6[.]12") == 2, line
+    assert line.endswith(f", jdoe (user-account), {SID}"), line
+    assert "192.0.2.62" not in line  # each IP defanged
+    assert line.count("192[.]0[.]2[.]62") == 2, line
 
 
 # ------------------------------------------------- quoted evidence, each view
@@ -373,9 +373,9 @@ CONTENT_SHAPES = {
     "non-ascii": ("пользователь\tユーザー\t\u202eexe", ["пользователь    ユーザー    ?exe"],
                   ["пользователь    ユーザー    \\u202eexe"]),
     "html-js": ("<b>\t</b>&\"'", ["<b>     </b>&\"'"], ["<b>     </b>&\"'"]),
-    "multiple-hosts": ("rd01\t172.16.6.11\ndc01\t172.16.4.4",
-                       ["rd01    172.16.6.11", "dc01    172.16.4.4"],
-                       ["rd01    172.16.6.11", "dc01    172.16.4.4"]),
+    "multiple-hosts": ("ws01\t192.0.2.61\ndc01\t192.0.2.44",
+                       ["ws01    192.0.2.61", "dc01    192.0.2.44"],
+                       ["ws01    192.0.2.61", "dc01    192.0.2.44"]),
 }  # fmt: skip
 
 
@@ -403,12 +403,12 @@ def test_tab_in_title_and_interpretation_keeps_its_column(
         case,
         monkeypatch,
         capsys,
-        title="Lateral\tmovement to rd01",
+        title="Lateral\tmovement to ws01",
         interpretation="Remote\tlogon",
     )
     assert "\t" not in out and "\\x09" not in out
     assert "Lateral?" not in out and "Remote?" not in out
-    assert re.search(r"Lateral +movement to rd01", out), out
+    assert re.search(r"Lateral +movement to ws01", out), out
     assert re.search(r"Remote +logon", out), out
 
 
@@ -420,12 +420,12 @@ def test_review_diff_keeps_a_tab_column(case, monkeypatch, capsys):
         case,
         monkeypatch,
         capsys,
-        modified="netscan shows RDP\tfrom 172.16.30.23\t\x1b[2J",
+        modified="netscan shows RDP\tfrom 203.0.113.30\t\x1b[2J",
     )
     obs = [ln for ln in out.split("\n") if re.search(r"[-+] netscan shows RDP", ln)]
     assert len(obs) == 2, obs
     assert f"- {OBS}" in obs[0]
-    assert "+ netscan shows RDP       from 172.16.30.23       ?[2J" in obs[1], obs[1]
+    assert "+ netscan shows RDP       from 203.0.113.30       ?[2J" in obs[1], obs[1]
     assert "\t" not in obs[1] and "RDP?from" not in obs[1]
 
 
@@ -437,7 +437,7 @@ def _rendered(capsys, field, item, modifications):
 def test_render_field_iocs_as_values(capsys):
     item = {"iocs": IOCS}
     assert _rendered(capsys, "iocs", item, {}) == (
-        f"  Label:         172.16.6.12, {UNC}, tdungan (user-account), {SID}\n"
+        f"  Label:         192.0.2.62, {UNC}, jdoe (user-account), {SID}\n"
     )
 
 
@@ -462,9 +462,7 @@ def test_render_field_other_lists_still_joined(capsys):
 
 
 def test_ioc_text_shapes():
-    assert (
-        display.ioc_text(IOCS) == f"172.16.6.12, {UNC}, tdungan (user-account), {SID}"
-    )
+    assert display.ioc_text(IOCS) == f"192.0.2.62, {UNC}, jdoe (user-account), {SID}"
     assert display.ioc_text({"value": "v", "type": None}) == "v"
     assert display.ioc_text({"value": None, "type": "t"}) == "(t)"
     assert display.ioc_text({"value": ["a", "b"], "type": "ipv4"}) == "a, b (ipv4)"

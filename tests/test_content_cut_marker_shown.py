@@ -17,7 +17,7 @@ from vhir_cli.display import one_line
 from .test_finding_iocs_and_tabs_shown import _Prompt, _view, case  # noqa: F401
 
 MARKER = "[cut: 5000 of 10198 chars stored]"
-BODY = "LogonType 3 from 172.16.6.12 " * 200  # longer than any preview
+BODY = "LogonType 3 from 192.0.2.62 " * 200  # longer than any preview
 
 
 def _cut(body):
