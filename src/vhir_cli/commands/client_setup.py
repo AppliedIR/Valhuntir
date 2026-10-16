@@ -2984,14 +2984,19 @@ def _merge_and_write(path: Path, config: dict) -> bool:
     that can't be seen. Callers report the write only when this is True."""
     existing = {}
     if path.is_file():
+        problem = None
         try:
             existing = json.loads(path.read_text())
-        except (ValueError, OSError) as e:
-            existing = e
-        if not isinstance(existing, dict):
-            why = existing if isinstance(existing, Exception) else "not a JSON object"
+        except (UnicodeDecodeError, OSError) as e:
+            problem = f"can't be read ({e})"
+        except ValueError as e:
+            problem = f"isn't valid JSON ({e})"
+        else:
+            if not isinstance(existing, dict):
+                problem = "isn't valid JSON (not a JSON object)"
+        if problem:
             print(
-                f"  Not changed: {path} isn't valid JSON ({why}); MCP servers NOT "
+                f"  Not changed: {path} {problem}; MCP servers NOT "
                 "registered there. Fix it and re-run `vhir setup client`.",
                 file=sys.stderr,
             )

@@ -133,7 +133,22 @@ class TestMergeAndWrite:
 
         assert written is False
         assert json.loads(path.read_text()) == existing
-        assert "Not changed" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Not changed" in err
+        assert "can't be read ([Errno 13] Permission denied)" in err
+        assert "isn't valid JSON" not in err
+
+    def test_undecodable_existing_file_is_reported_as_unreadable(
+        self, tmp_path, capsys
+    ):
+        path = tmp_path / "config.json"
+        path.write_bytes(b'{"note": "\xff"}')
+
+        assert _merge_and_write(path, self._VHIR) is False
+        assert path.read_bytes() == b'{"note": "\xff"}'
+        err = capsys.readouterr().err
+        assert "can't be read (" in err
+        assert "isn't valid JSON" not in err
 
     def test_invalid_json_existing_file_is_left_unchanged(self, tmp_path, capsys):
         path = tmp_path / "config.json"
@@ -141,7 +156,9 @@ class TestMergeAndWrite:
 
         assert _merge_and_write(path, self._VHIR) is False
         assert path.read_text() == "{not json"
-        assert "Not changed" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Not changed" in err
+        assert "isn't valid JSON (" in err
 
     def test_non_object_json_existing_file_is_left_unchanged(self, tmp_path):
         path = tmp_path / "config.json"
