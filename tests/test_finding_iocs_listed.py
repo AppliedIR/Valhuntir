@@ -129,6 +129,10 @@ SHAPES = {
         [_f(1, observation=f"{SHA} then {SHA.lower()}", interpretation="via Bad.com and bad.com")],
         [], {TEXT_ONLY: [SHA.lower(), "bad.com"]},
     ),
+    "text-local-addresses-left-out": (
+        [_f(1, observation="Bound 0.0.0.0, then 127.0.0.1 and 255.255.255.255; beacon to 10.9.8.7.")],
+        [], {TEXT_ONLY: ["10.9.8.7"]},
+    ),
     "dict-form": ([_f(1, {"IPv4": ["1.2.3.4"], "": ["evil.com"], "url": "http://x.io/a"})], [],
                   {"Domain": ["evil.com"], "IPv4": ["1.2.3.4"], "URL": ["http://x.io/a"]}),
     "empty-values-left-out": (
