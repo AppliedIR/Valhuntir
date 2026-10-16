@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import types
 
 import pytest
@@ -831,3 +832,364 @@ class TestLocalCaTrust:
         assert "overrides it" in out
         assert "remove the settings.json entry" in out
         assert "left unchanged" not in out
+
+
+# --- The prompt says what the merge changes, before the diff -----------------
+
+SUMMARY_SOURCE = {
+    "hooks": {
+        "PostToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": "$P/hooks/forensic-audit.sh"}],
+            }
+        ],
+        "UserPromptSubmit": [
+            {"hooks": [{"type": "command", "command": "cat << 'X'\nrules\nX"}]}
+        ],
+    },
+    "permissions": {
+        "deny": ["Edit(**/findings.json)", "Edit(//var/lib/vhir/**)", "Read(~/.x)"]
+    },
+    "sandbox": {
+        "enabled": True,
+        "allowUnsandboxedCommands": False,
+        "failIfUnavailable": True,
+    },
+}
+OLD_BASH = ["Bash(rm -rf *)", "Bash(mkfs*)", "Bash(dd *)"]
+ON = {"enabled": True, "allowUnsandboxedCommands": False, "failIfUnavailable": True}
+
+
+def _summary_box(box, user, source=SUMMARY_SOURCE):
+    (box.repo / "claude-code" / "full" / "settings.json").write_text(
+        json.dumps(source, indent=2)
+    )
+    box.settings.write_text(json.dumps(user, indent=2))
+    return box.settings.read_bytes()
+
+
+def _summary(out):
+    """The summary lines: between the header and "The full change:"."""
+    lines = out.splitlines()
+    start = next(i for i, ln in enumerate(lines) if "vhir would change" in ln)
+    end = lines.index("  The full change:")
+    return [ln.strip() for ln in lines[start + 1 : end]]
+
+
+def _merged_as_at_base(box):
+    """What the merge writes, from the function this change leaves alone."""
+    src = box.repo / "claude-code" / "full" / "settings.json"
+    return cs._merged_settings(box.settings, src, box.home / ".vhir" / "hooks")
+
+
+def test_the_prompt_says_what_changes_before_the_diff(box, capsys):
+    user = {
+        "permissions": {"deny": [*OLD_BASH, "Write(**/findings.json)", "Read(~/.y)"]},
+        "sandbox": {"enabled": False},
+    }
+    _summary_box(box, user)
+    _, asked = box.run("y")
+    out = capsys.readouterr().out
+    scope = "every Claude Code session of this account"
+    assert _summary(out) == [
+        f"- turns the Claude Code sandbox ON for {scope} (it is off now)",
+        f"- sets sandbox.allowUnsandboxedCommands to false for {scope} (it is not "
+        "set now): a command the sandbox blocks is refused, never run outside "
+        "the sandbox",
+        f"- sets sandbox.failIfUnavailable to true for {scope} (it is not set now):"
+        " Claude Code fails when the sandbox can't start, instead of running "
+        "without it",
+        "- removes 4 old Valhuntir deny rules:",
+        "Bash(rm -rf *): nothing replaces it",
+        "Bash(mkfs*): nothing replaces it",
+        "Bash(dd *): nothing replaces it",
+        "Write(**/findings.json): Edit(**/findings.json) replaces it",
+        "- adds 3 deny rules",
+        "- adds the PostToolUse (Bash) hook forensic-audit.sh",
+        "- adds the UserPromptSubmit hook \"cat << 'X'\"",
+    ]
+    # before the diff, and the diff is still all there
+    assert out.index("turns the Claude Code sandbox ON") < out.index("--- current")
+    assert '-    "enabled": false' in out and '+    "enabled": true' in out
+    assert any("[Y/n]" in p for p in asked)
+    assert json.loads(box.settings.read_text())["sandbox"]["enabled"] is True
+
+
+def test_a_sandbox_already_on_gets_no_sandbox_line(box, capsys):
+    _summary_box(box, {"sandbox": dict(ON), "permissions": {"deny": OLD_BASH[:1]}})
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    assert not [ln for ln in got if "sandbox" in ln]
+    assert "Bash(rm -rf *): nothing replaces it" in got  # there is a change to show
+
+
+@pytest.mark.parametrize(
+    ("key", "user_value", "says"),
+    [
+        ("enabled", False, "turns the Claude Code sandbox ON"),
+        (
+            "enabled",
+            "yes",
+            "sandbox ON for every Claude Code session of this "
+            'account (it is "yes" now)',
+        ),  # fmt: skip
+        ("enabled", 1, "(it is 1 now)"),  # 1 is not true to Claude Code's JSON
+        ("allowUnsandboxedCommands", True, "allowUnsandboxedCommands to false"),
+        ("failIfUnavailable", False, "failIfUnavailable to true"),
+    ],
+)
+def test_each_sandbox_key_that_changes_is_named_alone(
+    box, capsys, key, user_value, says
+):
+    _summary_box(box, {"sandbox": {**ON, key: user_value}})
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    (line,) = [ln for ln in got if "sandbox" in ln]
+    assert says in line
+
+
+@pytest.mark.parametrize(
+    ("value", "says"),
+    [
+        (True, "a command the sandbox blocks may run outside the sandbox"),
+        (False, "Claude Code runs without the sandbox when the sandbox can't start"),
+        (None, "(it is true now)"),
+    ],
+)
+def test_a_product_value_off_the_usual_is_named_too(box, capsys, value, says):
+    key = "allowUnsandboxedCommands" if value is True else "failIfUnavailable"
+    source = json.loads(json.dumps(SUMMARY_SOURCE))
+    source["sandbox"][key] = value
+    _summary_box(box, {"sandbox": dict(ON)}, source)
+    box.run("y")
+    (line,) = [ln for ln in _summary(capsys.readouterr().out) if "sandbox" in ln]
+    assert says in line and f"sandbox.{key} to {json.dumps(value)}" in line
+
+
+def test_a_product_that_turns_the_sandbox_off_says_off(box, capsys):
+    source = json.loads(json.dumps(SUMMARY_SOURCE))
+    source["sandbox"]["enabled"] = False
+    _summary_box(box, {"sandbox": dict(ON)}, source)
+    box.run("y")
+    (line,) = [ln for ln in _summary(capsys.readouterr().out) if "sandbox" in ln]
+    assert line == (
+        "- turns the Claude Code sandbox OFF for every Claude Code session of "
+        "this account (it is true now)"
+    )
+
+
+def test_a_rule_the_user_wrote_is_never_shown_as_removed(box, capsys):
+    mine = ["Read(~/.ssh/**)", "Bash(rm -rf /*)", "Bash(dd*)", "Write(**/notes.json)"]
+    _summary_box(box, {"sandbox": dict(ON), "permissions": {"deny": mine}})
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    assert not [ln for ln in got if "remove" in ln or "replaces it" in ln]
+    assert got[0] == "- adds 3 deny rules"
+    assert json.loads(box.settings.read_text())["permissions"]["deny"][:4] == mine
+
+
+def test_an_old_rule_the_product_still_ships_is_not_shown_as_removed(box, capsys):
+    source = json.loads(json.dumps(SUMMARY_SOURCE))
+    source["permissions"]["deny"].append("Bash(dd *)")
+    _summary_box(box, {"sandbox": dict(ON), "permissions": {"deny": OLD_BASH}}, source)
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    assert "- removes 2 old Valhuntir deny rules:" in got
+    assert not [ln for ln in got if ln.startswith("Bash(dd *)")]
+
+
+@pytest.mark.parametrize(
+    ("old", "by"),
+    [
+        ("Read(/var/lib/vhir/**)", None),  # no Read rule ships for it here
+        ("Edit(/var/lib/vhir/**)", "Edit(//var/lib/vhir/**)"),
+        ("Write(/var/lib/vhir/**)", "Edit(//var/lib/vhir/**)"),
+        ("Write(**/findings.json)", "Edit(**/findings.json)"),
+        ("Write(**/todos.json)", None),
+    ],
+)
+def test_a_removed_rule_names_what_replaces_it(box, capsys, old, by):
+    _summary_box(box, {"sandbox": dict(ON), "permissions": {"deny": [old]}})
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    assert (
+        f"{old}: {by} replaces it" in got
+        if by
+        else (f"{old}: nothing replaces it" in got)
+    )
+
+
+def test_hooks_moved_and_removed_are_named(box, capsys):
+    hooks = {
+        "PostToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": "/old/forensic-audit.sh"}],
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": "/x/pre-bash-guard.sh"}],
+            }
+        ],
+    }
+    _summary_box(box, {"sandbox": dict(ON), "hooks": hooks})
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    new = box.home / ".vhir" / "hooks" / "forensic-audit.sh"
+    assert got[1:] == [
+        f"- moves the PostToolUse (Bash) hook forensic-audit.sh to {new} "
+        "(it runs /old/forensic-audit.sh now)",
+        "- adds the UserPromptSubmit hook \"cat << 'X'\"",
+        "- removes the PreToolUse (Bash) hook pre-bash-guard.sh",
+    ]
+
+
+@pytest.mark.parametrize(
+    "old",
+    [
+        ("PostToolUse", "Edit", "/a/x.sh"),  # another matcher
+        ("PreToolUse", "Bash", "/a/x.sh"),  # another event
+        ("PostToolUse", "Bash", "/a/y.sh"),  # another script
+    ],
+)
+def test_a_hook_is_moved_only_from_its_own_event_matcher_and_name(old):
+    got = cs._hook_lines([old], [("PostToolUse", "Bash", "/b/x.sh")])
+    assert got == [
+        "adds the PostToolUse (Bash) hook x.sh",
+        f"removes the {old[0]} ({old[1]}) hook {old[2][3:]}",
+    ]
+
+
+def test_y_prints_the_summary_and_merges_as_before(box, setup, capsys):
+    user = {"permissions": {"deny": OLD_BASH}, "sandbox": {"enabled": False}}
+    before = _summary_box(box, user)
+    want = _merged_as_at_base(box)
+    asked = setup()  # -y, no terminal
+    cap = capsys.readouterr()
+    assert not asked and "Bash(mkfs*): nothing replaces it" in _summary(cap.out)
+    assert json.loads(box.settings.read_text()) == want
+    (bak,) = box.settings.parent.glob("settings.json.vhir-backup-*")
+    assert bak.read_bytes() == before
+    assert f"*** -y: vhir CHANGED {box.settings}" in cap.err
+
+
+def test_without_a_terminal_the_summary_prints_and_nothing_changes(box, capsys):
+    before = _summary_box(box, {"sandbox": {"enabled": False}})
+    result, asked = box.run()
+    out = capsys.readouterr().out
+    assert _summary(out)[0].startswith("- turns the Claude Code sandbox ON for")
+    assert box.settings.read_bytes() == before and not asked
+    assert f"Not changed: {box.settings}. To review and apply" in out
+    assert result == (box.settings, "kept")
+
+
+def test_no_summary_and_no_prompt_when_nothing_changes(box, capsys):
+    _summary_box(box, {})
+    box.run("y")
+    capsys.readouterr()
+    before = box.settings.read_bytes()
+    _, asked = box.run("y")
+    out = capsys.readouterr().out
+    assert box.settings.read_bytes() == before and not asked
+    assert "vhir would change" not in out and "The full change" not in out
+
+
+def test_a_change_the_summary_has_no_line_for_shows_the_diff_alone(box, capsys):
+    _summary_box(box, {})
+    box.run("y")  # deployed as shipped
+    source = json.loads(json.dumps(SUMMARY_SOURCE))
+    source["permissions"]["allow"] = ["mcp__vhir__*"]
+    _summary_box(box, json.loads(box.settings.read_text()), source)
+    capsys.readouterr()
+    box.run("y")
+    out = capsys.readouterr().out
+    assert "The full change" not in out and '+      "mcp__vhir__*"' in out
+
+
+def test_a_project_file_names_the_projects_sessions(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    target = project / ".claude" / "settings.json"
+    target.write_text(json.dumps({"sandbox": {"enabled": False}}))
+    src = tmp_path / "settings.json"
+    src.write_text(json.dumps(SUMMARY_SOURCE))
+    monkeypatch.setattr(cs.Path, "home", staticmethod(lambda: tmp_path / "home"))
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+    assert cs._merge_settings(target, src, project_copies=True) == "kept"
+    got = _summary(capsys.readouterr().out)
+    assert got[0] == (
+        f"- turns the Claude Code sandbox ON for the Claude Code sessions started "
+        f"in {project} (it is off now)"
+    )
+    assert "- adds 5 deny rules" in got  # the product's 3 and the project copies' 2
+
+
+def test_a_file_that_cant_be_read_again_gets_the_diff_alone(box, monkeypatch, capsys):
+    _summary_box(box, {"sandbox": {"enabled": False}})
+    real = cs.Path.read_text
+
+    def read_text(self, *a, **k):  # the merge read it; the summary's read fails
+        if self == box.settings and sys._getframe(1).f_code.co_name == (
+            "_merge_settings"
+        ):
+            raise OSError("gone")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(cs.Path, "read_text", read_text)
+    box.run("y")
+    out = capsys.readouterr().out
+    assert "The full change" not in out and '+    "enabled": true' in out
+    assert json.loads(box.settings.read_text())["sandbox"]["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        [],
+        {"sandbox": "on", "permissions": [], "hooks": []},
+        {"permissions": {"deny": "Bash(rm -rf *)"}, "hooks": {"X": "y"}},
+        {"permissions": {"deny": [1, None, "Bash(mkfs*)"]}},
+        {"hooks": {"X": [1, {"matcher": "m", "hooks": "h"}, {"hooks": [1, {}]}]}},
+    ],
+)
+def test_odd_shapes_in_the_users_file_never_break_the_summary(current, tmp_path):
+    merged = json.loads(json.dumps(SUMMARY_SOURCE))
+    got = cs._settings_summary(tmp_path / "s.json", current, merged)
+    assert "adds 3 deny rules" in got
+    assert ("  Bash(mkfs*): nothing replaces it" in got) == (
+        "[1, None, 'Bash(mkfs*)']" in str(current)
+    )
+
+
+def test_a_sandbox_the_user_never_set_reads_as_off(box, capsys):
+    _summary_box(box, {})
+    box.run("y")
+    got = _summary(capsys.readouterr().out)
+    assert got[0] == (
+        "- turns the Claude Code sandbox ON for every Claude Code session of "
+        "this account (it is off now)"
+    )
+
+
+def test_a_sandbox_key_the_product_leaves_out_gets_no_line(tmp_path):
+    current = {"sandbox": {"failIfUnavailable": True, "enabled": 1}}
+    assert cs._settings_summary(tmp_path / "s.json", current, {"sandbox": {}}) == []
+
+
+def test_a_users_rule_the_merge_would_drop_is_not_called_valhuntir(tmp_path):
+    current = {"permissions": {"deny": ["Bash(curl *)"]}}
+    assert cs._settings_summary(tmp_path / "s.json", current, {}) == []
+
+
+def test_a_hook_listed_twice_is_named_once(tmp_path):
+    entry = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/a/x.sh"}]}
+    merged = {"hooks": {"PostToolUse": [entry, json.loads(json.dumps(entry))]}}
+    got = cs._settings_summary(tmp_path / "s.json", {}, merged)
+    assert got == ["adds the PostToolUse (Bash) hook x.sh"]
+
+
+def test_a_long_inline_hook_is_named_by_its_first_40_characters():
+    assert cs._hook_name("echo " + "x" * 60 + "\nmore") == '"echo ' + "x" * 35 + '"'
