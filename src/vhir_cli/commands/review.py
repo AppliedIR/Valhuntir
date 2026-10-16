@@ -5,7 +5,7 @@ Supports multiple view modes:
   vhir review --findings             — finding summary table
   vhir review --findings --detail    — full findings with all fields
   vhir review --findings --verify    — verify every signed decision (no password)
-  vhir review --iocs                 — IOCs grouped by approval status
+  vhir review --iocs                 — IOC records grouped by status
   vhir review --timeline             — timeline summary
   vhir review --timeline --detail    — full timeline with evidence refs
   vhir review --evidence             — evidence registry
@@ -38,7 +38,12 @@ from vhir_cli.case_io import (
 from vhir_cli.display import cited as _cited
 from vhir_cli.display import display_safe, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
-from vhir_cli.ioc_groups import ioc_groups
+from vhir_cli.ioc_groups import (
+    TEXT_ONLY,
+    not_recorded,
+    record_groups,
+    record_status,
+)
 from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
@@ -380,38 +385,36 @@ def _show_findings_verify(
 
 
 def _show_iocs(case_dir: Path) -> None:
-    """Extract IOCs from findings, grouped by approval status."""
-    findings = load_findings(case_dir)
-    if not findings:
-        print("No findings recorded.")
-        return
-
-    groups = {"APPROVED": [], "DRAFT": [], "REJECTED": []}
-    for f in findings:
-        status = f.get("status", "DRAFT")
-        if status in groups:
-            groups[status].append(f)
-
+    """The case's IOC records, grouped by each record's own status as the
+    Portal shows them, then the values the findings name that no record
+    holds."""
+    records = [r for r in load_iocs(case_dir) if isinstance(r, dict)]
+    by_status: dict[str, list] = {}
+    for r in records:
+        by_status.setdefault(record_status(r), []).append(r)
     labels = {
-        "APPROVED": "IOCs from Approved Findings",
-        "DRAFT": "IOCs from Draft Findings (unverified)",
-        "REJECTED": "IOCs from Rejected Findings",
+        "APPROVED": "Approved IOCs",
+        "DRAFT": "Draft IOCs (unverified)",
+        "REJECTED": "Rejected IOCs",
     }
-
-    records = load_iocs(case_dir)
-    any_iocs = False
-    for status in ("APPROVED", "DRAFT", "REJECTED"):
-        iocs = _extract_iocs_from_findings(groups[status], records)
-        if not iocs:
+    order = [s for s in labels if s in by_status]
+    order += sorted(s for s in by_status if s not in labels)
+    shown = False
+    for status in order:
+        groups = record_groups(by_status[status])
+        if not groups:
             continue
-        any_iocs = True
-        print(f"\n=== {labels[status]} ===")
-        for ioc_type, values in iocs.items():  # text-only values last
-            shown = ", ".join(one_line(v) for v in values)
-            print(f"  {one_line(ioc_type) + ':':<10} {shown}")
-
-    if not any_iocs:
-        print("No IOCs found in findings.")
+        shown = True
+        print(f"\n=== {one_line(labels.get(status, status + ' IOCs'))} ===")
+        for ioc_type, values in groups.items():
+            print(
+                f"  {one_line(ioc_type) + ':':<10} {', '.join(one_line(v) for v in values)}"
+            )
+    if not shown:
+        print("IOC records: none")
+    if rest := not_recorded(load_findings(case_dir), records):
+        print(f"\n=== {TEXT_ONLY} ===")
+        print(f"  {', '.join(one_line(v) for v in rest)}")
 
 
 # The line forensic-mcp ends an artifact's content with when it stored only
@@ -423,14 +426,6 @@ def _split_cut(content: str) -> tuple[str, str]:
     """The content, and the cut line it ends with ("" if none)."""
     m = _CUT_LINE.search(content)
     return (content[: m.start()], m.group(1)) if m else (content, "")
-
-
-def _extract_iocs_from_findings(
-    findings: list[dict], records: list
-) -> dict[str, list[str]]:
-    """The IOCs the findings name, label -> values (`ioc_groups`); `records`
-    are the case's IOC records."""
-    return ioc_groups(findings, records)
 
 
 def _show_timeline(

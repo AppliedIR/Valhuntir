@@ -319,7 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument(
         "--iocs",
         action="store_true",
-        help="Extract IOCs from findings grouped by status",
+        help="IOC records grouped by status, then values no record holds",
     )
     p_review.add_argument(
         "--timeline", action="store_true", help="Show timeline events"
@@ -594,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="End date filter (ISO format; a date alone includes that whole day, UTC)",
     )
     p_report.add_argument(
-        "--ioc", action="store_true", help="IOC report from approved findings"
+        "--ioc", action="store_true", help="IOC report: the approved IOC records"
     )
     p_report.add_argument(
         "--findings", dest="report_findings", help="Finding IDs (comma-separated)"

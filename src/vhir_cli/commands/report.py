@@ -38,7 +38,7 @@ from vhir_cli.defang import (
 )
 from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
-from vhir_cli.ioc_groups import ioc_groups
+from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
 from vhir_cli.ledger_verify import (
     approved_view,
     shown_label,
@@ -201,10 +201,14 @@ def _status_counts(items: list[dict]) -> dict[str, int]:
     return counts
 
 
-def _extract_all_iocs(findings: list[dict], records: list) -> dict[str, list[str]]:
-    """The IOCs the findings name, label -> values (`ioc_groups`); `records`
-    are the case's IOC records."""
-    return ioc_groups(findings, records)
+def _extract_all_iocs(
+    findings: list[dict], records: list, all_records: list | None = None
+) -> dict[str, list[str]]:
+    """The IOC records by label, then the values the findings name that no
+    record of the case holds (`ioc_groups`). `records` are the records
+    listed; `all_records` every IOC record of the case, whatever its status
+    (`records` when not given)."""
+    return ioc_groups(findings, records, all_records)
 
 
 def _report_full(case_dir: Path, args) -> None:
@@ -240,7 +244,7 @@ def _report_full(case_dir: Path, args) -> None:
         "approved_findings": approved_findings,
         "approved_timeline": approved_timeline,
         "approved_iocs": view["iocs"],
-        "iocs": _extract_all_iocs(approved_findings, load_iocs(case_dir)),
+        "iocs": _extract_all_iocs(approved_findings, view["iocs"], load_iocs(case_dir)),
         "verification": verification_json(view),
     }
 
@@ -259,7 +263,7 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
     view = approved_view(case_dir)
-    iocs = _extract_all_iocs(view["findings"], load_iocs(case_dir))
+    iocs = _extract_all_iocs(view["findings"], view["iocs"], load_iocs(case_dir))
     total_iocs = sum(len(v) for v in iocs.values())
 
     lines = []
@@ -341,31 +345,25 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
 
 
 def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
-    """IOC report from approved findings."""
-    approved = approved_view(case_dir)["findings"]
-
-    if not approved:
-        print("No approved findings with IOCs.")
-        return None
-
-    iocs = _extract_all_iocs(approved, load_iocs(case_dir))
-    if not iocs:
-        print("No IOCs found in approved findings.")
-        return None
+    """IOC report: the case's approved IOC records by type, then the values the
+    approved findings name that no IOC record of the case holds."""
+    view = approved_view(case_dir)
+    groups = _extract_all_iocs(view["findings"], view["iocs"], load_iocs(case_dir))
+    records = {k: v for k, v in groups.items() if k != TEXT_ONLY}
 
     lines = []
-    lines.append("IOC REPORT (Approved Findings Only)")
+    lines.append("IOC REPORT (Approved IOCs Only)")
     lines.append("=" * 50)
-    for ioc_type, values in iocs.items():
+    if not records:
+        lines.append("\n  Approved IOC records: none")
+    for ioc_type, values in groups.items():
         lines.append(f"\n  {_d(ioc_type, safe)} ({len(values)}):")
         for v in values:
             lines.append(f"    {_d(v, safe)}")
 
-    total = sum(len(v) for v in iocs.values())
-    lines.append(f"\nTotal: {total} IOCs across {len(iocs)} types")
-
-    output = "\n".join(lines)
-    return output
+    total = sum(len(v) for v in records.values())
+    lines.append(f"\nTotal: {total} IOC records across {len(records)} types")
+    return "\n".join(lines)
 
 
 def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:

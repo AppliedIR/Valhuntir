@@ -645,7 +645,8 @@ def signed_text(item: dict, item_type: str, view: int = 2) -> str:
 # --- IOC values, as forensic-mcp's _process_iocs extracts them ---
 # A copy of forensic-mcp (case/manager.py: _refang_ioc, _normalize_ioc, the
 # IPv4 test in _detect_ioc_type, and _process_iocs' flatten, refang and port
-# strip); forensic-mcp doesn't depend on vhir-cli. A parity test runs both.
+# strip); forensic-mcp doesn't depend on vhir-cli, so a change there needs the
+# same change here.
 
 
 def _refang_ioc(value: str) -> str:
