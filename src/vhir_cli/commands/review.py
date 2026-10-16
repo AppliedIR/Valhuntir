@@ -37,7 +37,7 @@ from vhir_cli.case_io import (
 )
 from vhir_cli.defang import refang
 from vhir_cli.display import cited as _cited
-from vhir_cli.display import display_safe, one_line
+from vhir_cli.display import display_safe, ioc_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.provenance_view import finding_lines, grade_label
 
@@ -280,7 +280,7 @@ def _show_findings_detail(case_dir: Path) -> None:
             f"  Interpretation: {indent_lines(raw.get('interpretation', ''), ' ' * 18)}"
         )
         if f.get("iocs"):
-            print(f"  IOCs:         {f['iocs']}")
+            print(f"  IOCs:         {one_line(ioc_text(raw['iocs']))}")
         # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
         if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
             print(f"  MITRE:        {mitre}")

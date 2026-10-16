@@ -38,7 +38,7 @@ from vhir_cli.defang import (
     refang,
     structured_iocs,
 )
-from vhir_cli.display import cited_text, one_line
+from vhir_cli.display import cited_text, ioc_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ledger_verify import (
     approved_view,
@@ -457,7 +457,7 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
             f"  Interpretation: {_ml(f.get('interpretation', ''), safe, ' ' * 18)}"
         )
         if f.get("iocs"):
-            lines.append(f"  IOCs:         {json.dumps(f['iocs'], default=str)}")
+            lines.append(f"  IOCs:         {_d(ioc_text(f['iocs']), safe)}")
         # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
         if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
             lines.append(f"  MITRE:        {_d(mitre, safe)}")
