@@ -4,6 +4,7 @@ every other vhir command checks."""
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import sys
 from pathlib import Path
@@ -159,6 +160,23 @@ def test_a_finished_update_is_recorded(manifest_dir):
     state = json.loads((home / ".vhir" / "update-state.json").read_text())
     assert state["version"] == __version__ and state["vhir_commit"] == "v1"
     assert state["completed_at"]
+
+
+def test_the_record_names_the_installed_version_not_the_running_one(
+    manifest_dir, capsys
+):
+    """Step 9 records the version installed on disk, read fresh, not the
+    version the running process imported before the pull; the next command
+    then shows no banner."""
+    home = manifest_dir[0]
+    with patch("vhir_cli.__version__", "0.6.1"):
+        _update(home, _args(no_restart=True))
+    state = json.loads((home / ".vhir" / "update-state.json").read_text())
+    installed = importlib.metadata.version("vhir-cli")
+    assert state["version"] == installed != "0.6.1"
+    capsys.readouterr()
+    _vhir(home, "portal")
+    assert BANNER not in capsys.readouterr().err
 
 
 def test_a_record_with_no_version_is_written_before_the_pull(manifest_dir):
