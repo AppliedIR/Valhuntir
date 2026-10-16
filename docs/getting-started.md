@@ -73,7 +73,11 @@ claude
 
 **Other MCP clients** (LibreChat, or any MCP client without a shell): Just start your client — it connects to the gateway at `http://127.0.0.1:4508/mcp` and the active case is resolved automatically from `~/.vhir/active_case`.
 
-### 3. Start Investigating
+### 3. Give It the Host List, Then Ingest
+
+Every ingest waits until you confirm the hosts its evidence names. Before the first ingest, open the Examiner Portal's Hosts tab (`vhir portal`) and upload a list of the machines in scope: one name per line with an optional FQDN, or a CSV or TSV export with a header row. Or give the LLM any inventory to prepare as a draft there. Hosts on the list confirm as the evidence arrives. For any other host, a waiting ingest shows in the Hosts tab: Confirm the proposed machine, or choose Start now to let the run write with its hosts as proposed.
+
+### 4. Start Investigating
 
 Ask your LLM client to analyze evidence:
 
@@ -85,7 +89,7 @@ Ask your LLM client to analyze evidence:
 
 The LLM executes forensic tools via MCP and presents evidence as it finds it. Guide each phase — tell the LLM what to examine, review findings at each stage, and direct next steps. The human acts as the investigation manager. Too much LLM autonomy leads to cascading errors and wasted tokens. The LLM should check in at every major decision point.
 
-### 4. Review and Approve
+### 5. Review and Approve
 
 Findings made by the LLM are staged as DRAFT. Open the Examiner Portal to review:
 
@@ -103,7 +107,7 @@ vhir approve                      # Interactive review
 vhir approve F-alice-001 F-alice-002  # Approve specific findings
 ```
 
-### 5. Generate a Report
+### 6. Generate a Report
 
 ```bash
 vhir report --full --save report.json

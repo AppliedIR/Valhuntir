@@ -70,7 +70,7 @@ The `validate_finding()` tool allows the LLM to pre-check a finding before commi
 
 Discipline resources provide on-demand access to forensic methodology. The LLM can query checkpoint requirements before making significant conclusions, check evidence standards when assessing confidence, and retrieve corroboration suggestions when planning the next analysis step.
 
-## case-mcp (15 tools)
+## case-mcp (16 tools)
 
 Case lifecycle management, evidence operations, export/import, backup, and audit logging.
 
@@ -91,6 +91,7 @@ Case lifecycle management, evidence operations, export/import, backup, and audit
 | `log_external_action` | AUTO | `command`, `output_summary`, `purpose`, `analyst_override` | Record non-MCP tool execution | After running Bash commands outside MCP |
 | `backup_case` | CONFIRM | `destination`, `purpose` | Back up case data files with SHA-256 manifest | At investigation checkpoints |
 | `open_case_dashboard` | SAFE | — | Open the Examiner Portal in the browser | When the examiner wants to review in the browser |
+| `prepare_host_list` | SAFE | `text`, `source` | Store a draft host list for the examiner to review and upload in the Hosts tab. Changes no host state | When the examiner gives an inventory of the machines in scope |
 
 **Safety tiers:**
 - **SAFE**: Read-only, no side effects

@@ -18,7 +18,7 @@ Valhuntir is a forensic investigation platform that connects LLM clients to fore
 |-----------|---------|
 | **sift-gateway** | HTTP gateway aggregating all SIFT-local MCPs behind one endpoint |
 | **forensic-mcp** | Findings, timeline, evidence, TODOs, discipline (23 tools: 9 core + 14 discipline) |
-| **case-mcp** | Case lifecycle, evidence management, export/import, backup, audit (15 tools) |
+| **case-mcp** | Case lifecycle, evidence management, export/import, backup, audit (16 tools) |
 | **report-mcp** | Report generation with 6 profile types (6 tools) |
 | **sift-mcp** | Linux forensic tool execution with FK enrichment (5 tools) |
 | **forensic-rag-mcp** | Semantic search across 22K+ forensic knowledge records (3 tools) |

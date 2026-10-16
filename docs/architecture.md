@@ -90,7 +90,7 @@ The investigation state machine. 23 tools managing findings, timeline events, ev
 
 ### case-mcp
 
-Case lifecycle management. 15 tools for init, activate, close, list, status, evidence registration/verification, export/import, audit summary, action/reasoning logging, backup, and portal access. Tools are classified by safety tier (SAFE/CONFIRM/AUTO).
+Case lifecycle management. 16 tools for init, activate, close, list, status, evidence registration/verification, export/import, audit summary, action/reasoning logging, backup, portal access, and a draft host list. Tools are classified by safety tier (SAFE/CONFIRM/AUTO).
 
 `case_status()` dynamically detects available platform capabilities (opensearch-mcp, wintools-mcp, remnux-mcp, OpenCTI) using `importlib.util.find_spec()` and gateway.yaml parsing. This gives the LLM accurate information about what tools are available in the current deployment.
 

@@ -435,7 +435,7 @@ The portal has 8 tabs:
 | **Overview** | Investigation progress, getting started guide |
 | **Findings** | Core review workflow with provenance chain display |
 | **Timeline** | Chronological events with color-coded ruler |
-| **Hosts** | Systems involved (aggregated from findings) |
+| **Hosts** | The host list, ingest runs waiting for their hosts, proposed machines to confirm, and each machine's names |
 | **Accounts** | User/service accounts (aggregated from findings) |
 | **Evidence** | Registered files with SHA-256 integrity verification |
 | **IOCs** | Indicators extracted from findings with category/status filters |

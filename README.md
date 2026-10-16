@@ -118,7 +118,7 @@ graph LR
     GW["sift-gateway :4508"]
 
     FM["forensic-mcp<br/>23 tools · findings, timeline,<br/>evidence, discipline"]
-    CM["case-mcp<br/>15 tools · case management,<br/>audit queries, backup"]
+    CM["case-mcp<br/>16 tools · case management,<br/>audit queries, backup"]
     RM["report-mcp<br/>6 tools · report generation,<br/>IOC aggregation"]
     SM["sift-mcp<br/>5 tools · Linux forensic<br/>tool execution"]
     RAG["forensic-rag<br/>3 tools · semantic search<br/>22K records"]
@@ -198,7 +198,7 @@ These layers reinforce each other through consistent, contextual repetition acro
 |-----------|---------|------|---------|
 | sift-gateway | SIFT | 4508 | Aggregates SIFT-local MCPs behind one HTTP endpoint |
 | forensic-mcp | SIFT | (via gateway) | Findings, timeline, evidence, TODOs, IOCs, discipline (23 tools) |
-| case-mcp | SIFT | (via gateway) | Case management, audit queries, evidence registration, backup (15 tools) |
+| case-mcp | SIFT | (via gateway) | Case management, audit queries, evidence registration, backup (16 tools) |
 | report-mcp | SIFT | (via gateway) | Report generation with profiles, IOC aggregation, MITRE mapping (6 tools) |
 | sift-mcp | SIFT | (via gateway) | Denylist-protected forensic tool execution on Linux/SIFT (5 tools) |
 | opensearch-mcp | SIFT | (via gateway) | Evidence indexing, structured querying, enrichment (21 tools). Optional. |
