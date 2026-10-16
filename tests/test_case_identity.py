@@ -392,6 +392,36 @@ def test_a_failed_step_is_named_in_one_line(error, line):
 
 
 @needs_sift
+@pytest.mark.parametrize("outcome", ["given", "refused"])
+def test_a_copy_lists_as_a_second_row_before_and_after_a_new_identity(
+    home, capsys, outcome
+):
+    """A `cp -r` copy is a second folder with the same case_id: `case list`
+    shows two rows either way. new-identity changes the identity, not the
+    case_id."""
+
+    def ids():
+        rows = main._case_list_data(home / "cases")["cases"]
+        return sorted(r["id"] for r in rows)
+
+    _, copy, before = _copied(home)
+    assert ids() == ["C-1", "C-1"]
+    if outcome == "given":
+        main._case_new_identity(
+            argparse.Namespace(case_id="C-1-copy", cases_dir=str(home / "cases"))
+        )
+    else:
+        vhir = home / ".vhir"
+        vhir.chmod(0o555)
+        try:
+            _new_identity_fails(home, capsys)
+        finally:
+            vhir.chmod(0o755)
+        assert _files(home, copy) == before
+    assert ids() == ["C-1", "C-1"]
+
+
+@needs_sift
 def test_a_new_identity_records_both_folders(home, capsys):
     case_dir, copy, _ = _copied(home)
     main._case_new_identity(
