@@ -118,7 +118,8 @@ def _label(t) -> str:
 
 def _items(iocs):
     """(type, value) for each value a finding's iocs field holds: a list of
-    strings and {"value", "type"} dicts, or a {type: values} dict. A value
+    values (text or numbers) and {"value", "type"} dicts, or a {type: values}
+    dict. A value
     under a {type: values} key has no type: forensic-mcp flattens that form
     to plain values before it keys them."""
     if isinstance(iocs, dict):
@@ -127,10 +128,10 @@ def _items(iocs):
                 yield None, v
     elif isinstance(iocs, list):
         for i in iocs:
-            if isinstance(i, str):
-                yield None, i
-            elif isinstance(i, dict):
+            if isinstance(i, dict):
                 yield i.get("type"), i.get("value")
+            elif not isinstance(i, (list, tuple)):  # a value, as text or a number
+                yield None, i
 
 
 def _value(v) -> str | None:

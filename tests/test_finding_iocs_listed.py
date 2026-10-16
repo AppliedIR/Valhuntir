@@ -150,7 +150,33 @@ SHAPES = {
         [_f(1, [{"value": 445, "type": "port"}])], [], {TEXT_ONLY: ["445"]},
     ),
     "not-recorded-empty-left-out": (
-        [_f(1, [None, "", "  ", {"value": None, "type": "ip"}, {"type": "ip"}, 5, ["x"]])], [], {},
+        [_f(1, [None, "", "  ", {"value": None, "type": "ip"}, {"type": "ip"}, ["x"]])], [], {},
+    ),
+    "not-recorded-number-items": (
+        [_f(1, [8443, 2.5, "evil.com"])], [], {TEXT_ONLY: ["2.5", "8443", "evil.com"]},
+    ),
+    "recorded-number-item": ([_f(1, [8443])], [_r(1, "8443", None)], {"Unknown": ["8443"]}),
+    # a finding's IOC typed null, as a list or as a number, and its record
+    "finding-ioc-type-null": (
+        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "tdungan", "type": None}])],
+        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "tdungan", None)],
+        {"IPv4": ["203.0.113.7"], "Unknown": ["tdungan"]},
+    ),
+    "finding-ioc-type-list": (
+        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"},
+                {"value": "tdungan", "type": ["user-account"]}])],
+        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "tdungan", ["user-account"])],
+        {"IPv4": ["203.0.113.7"], "['user-account']": ["tdungan"]},
+    ),
+    "finding-ioc-type-int": (
+        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "tdungan", "type": 7}])],
+        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "tdungan", 7)],
+        {"7": ["tdungan"], "IPv4": ["203.0.113.7"]},
+    ),
+    "finding-ioc-odd-types-not-recorded": (
+        [_f(1, [{"value": "10.0.0.1", "type": None}, {"value": "10.0.0.2", "type": ["ip"]},
+                {"value": "10.0.0.3", "type": 7}])],
+        [], {TEXT_ONLY: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]},
     ),
     "text-recorded": (
         [_f(1, observation="Beacon to evil[.]com and 8.8.4.4.")],
@@ -351,6 +377,22 @@ def test_the_executive_summary_counts_the_shape(shape, case, monkeypatch, capsys
     _case_with(case, findings, records)
     out = _cli(monkeypatch, capsys, ["report", "--executive-summary"])
     assert _summary(want) in out, out
+
+
+@pytest.mark.parametrize("type_", [None, ["user-account"], 7])
+def test_review_iocs_lists_a_draft_record_with_an_odd_type(
+    type_,
+    case,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    finding = _f(1, [{"value": "tdungan", "type": type_}], status="DRAFT")
+    _case_with(case, [finding], [_r(1, "tdungan", type_, "DRAFT")])
+    out = _cli(monkeypatch, capsys, ["review", "--iocs"])
+    label = "Unknown" if type_ is None else str(type_)
+    assert out.endswith(
+        f"=== Draft IOCs (unverified) ===\n  {label + ':':<10} tdungan\n"
+    ), out
 
 
 # --- each record's status ---------------------------------------------------------
