@@ -1,7 +1,7 @@
 """`vhir setup hayabusa`: install the current Hayabusa release for this user.
 
-Opt-in. SANS's installer (`sudo cast install teamdfir/sift`) brings Hayabusa
-3.8.1 with the rest of SIFT; this installs the current release only:
+Opt-in. The current SIFT release doesn't install Hayabusa; this installs the
+current Hayabusa release only:
 
 - the Linux x86_64 build: musl when the C library is older than glibc 2.38
   (the gnu build fails on Ubuntu 22.04's 2.35), gnu from 2.38 on;

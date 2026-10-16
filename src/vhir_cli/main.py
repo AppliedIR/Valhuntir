@@ -507,7 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_sub.add_parser(
         "hayabusa",
         help="Install the current Hayabusa release into ~/.local (no sudo); "
-        "sudo cast install teamdfir/sift installs 3.8.1 with the rest of SIFT",
+        "the current SIFT release doesn't include Hayabusa",
     )
 
     # export

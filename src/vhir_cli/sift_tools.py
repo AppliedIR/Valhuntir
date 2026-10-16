@@ -7,11 +7,11 @@ A SANS SIFT image can predate the tool releases Valhuntir needs:
   so every Windows plugin fails with "Cannot write necessary symbol file".
   2.28 added a per-user symbols folder. An older Volatility in a folder the
   user owns (a pipx install, for one) works and isn't reported.
-- Hayabusa missing means the event-log ingest runs no detections. SANS's
-  installer brings 3.8.1; `vhir setup hayabusa` installs the current release
-  alone, so the warning names both.
+- Hayabusa missing means the event-log ingest runs no detections. The
+  current SIFT release doesn't install it; `vhir setup hayabusa` installs the
+  current release, so the warning names that.
 
-SANS's own installer brings both up to date, so the warning names it. This
+SANS's own installer brings Volatility up to date, so the warning names it. This
 module only reports: setup-sift.sh, `vhir setup test` and `vhir update` print
 its warning and carry on.
 
@@ -155,11 +155,10 @@ def volatility_problem() -> str | None:
     return f"Volatility 3 {major}.{minor}.{patch}"
 
 
-# Either installer works; the user chooses
+# The current SIFT release doesn't install Hayabusa
 HAYABUSA_CHOICE = (
-    " For Hayabusa, either: `sudo cast install teamdfir/sift` (installs Hayabusa "
-    "3.8.1 with the rest of SIFT) or `vhir setup hayabusa` (installs the current "
-    "Hayabusa only)."
+    " For Hayabusa, run `vhir setup hayabusa` (installs the current Hayabusa "
+    "release; the current SIFT release doesn't include it)."
 )
 
 

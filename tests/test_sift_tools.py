@@ -30,11 +30,10 @@ TEXT = (
 )
 VOL = "Volatility 3 {}: memory analysis fails"
 HAYABUSA = "Hayabusa missing: no event-log detections"
-# either installer, the user's choice; only when Hayabusa is missing
+# Valhuntir's installer only; only when Hayabusa is missing
 CHOICE = (
-    " For Hayabusa, either: `sudo cast install teamdfir/sift` (installs Hayabusa "
-    "3.8.1 with the rest of SIFT) or `vhir setup hayabusa` (installs the current "
-    "Hayabusa only)."
+    " For Hayabusa, run `vhir setup hayabusa` (installs the current Hayabusa "
+    "release; the current SIFT release doesn't include it)."
 )
 
 
