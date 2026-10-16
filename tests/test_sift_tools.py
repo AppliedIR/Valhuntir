@@ -9,7 +9,10 @@ constants would (its version, then its symbol folders).
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,9 +27,10 @@ from vhir_cli.commands.update import cmd_update
 TEXT = (
     "Some SIFT tools are out of date and parts of Valhuntir won't work with them "
     "({}). Update SIFT with: `sudo cast install teamdfir/sift` "
-    "(about 5 minutes on the SANS OVA; if it reports failed states, run it again, "
-    "since a download outage can cause them), then re-run `./setup-sift.sh` "
-    "with the options you installed with (for example `--remote`)."
+    "(15-20 minutes on the SANS OVA; if it reports failed states, run it again, "
+    "since a download outage can cause them), then re-run "
+    "`~/.vhir/src/sift-mcp/setup-sift.sh` "
+    "with the same options you installed with (your shell history has the command)."
 )
 VOL = "Volatility 3 {}: memory analysis fails"
 HAYABUSA = "Hayabusa missing: no event-log detections"
@@ -135,13 +139,64 @@ def test_no_hayabusa_is_named(box):
 
 def test_the_rerun_advice_keeps_the_install_flags(box):
     # Both `vhir update` and setup-sift.sh print this warning. A remote box
-    # re-run flagless reconfigures the gateway as a local install, so the
-    # re-run advice must not be the bare flagless `./setup-sift.sh`.
+    # re-run flagless reconfigures the gateway as a local install, and the
+    # manifest keeps no flags, so the advice sends the user to their history.
     py = _python(box, "opt", "2.28.2", [_locked(box, "a")])
     _vol(box, "vol", str(py))
     text = sift_tools.warning()
-    assert "with the options you installed with (for example `--remote`)" in text
-    assert "then re-run `./setup-sift.sh`." not in text
+    assert (
+        "` with the same options you installed with "
+        "(your shell history has the command). For Hayabusa" in text
+    )
+    assert "./setup-sift.sh" not in text and "5 minutes" not in text
+
+
+def _manifest(home: Path, manifest) -> None:
+    (home / ".vhir").mkdir(parents=True, exist_ok=True)
+    text = manifest if isinstance(manifest, str) else json.dumps(manifest)
+    (home / ".vhir" / "manifest.json").write_text(text)
+
+
+def test_the_installer_is_named_from_the_manifests_source(box):
+    # `--install-dir` moves the tree: source is the sift-mcp folder itself
+    _manifest(box.home, {"source": "/srv/tools/sift-mcp", "venv": "/srv/venv"})
+    assert sift_tools.installer() == "/srv/tools/sift-mcp/setup-sift.sh"
+    _hayabusa(box, box.bin)
+    py = _python(box, "opt", "2.27.0", [_locked(box, "a")])
+    _vol(box, "vol", str(py))
+    text = sift_tools.warning()
+    assert "then re-run `/srv/tools/sift-mcp/setup-sift.sh` with the same" in text
+    assert "sift-mcp/sift-mcp" not in text and "~/.vhir" not in text
+
+
+def test_an_installer_path_with_a_space_is_quoted_to_paste(box):
+    _manifest(box.home, {"source": "/srv/my tools/sift-mcp"})
+    assert sift_tools.installer() == "'/srv/my tools/sift-mcp/setup-sift.sh'"
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        None,
+        {"venv": "/srv/venv"},
+        {"source": ""},
+        {"source": "  "},
+        {"source": 7},
+        {"source": None},
+        ["source"],
+        "{not json",
+        "",
+    ],
+)
+def test_without_a_source_the_default_installer_is_named(box, manifest):
+    if manifest is not None:
+        _manifest(box.home, manifest)
+    assert sift_tools.installer() == "~/.vhir/src/sift-mcp/setup-sift.sh"
+
+
+def test_an_unreadable_manifest_names_the_default_installer(box):
+    (box.home / ".vhir" / "manifest.json").mkdir(parents=True)  # read raises
+    assert sift_tools.installer() == "~/.vhir/src/sift-mcp/setup-sift.sh"
 
 
 def test_both_are_named_in_one_warning(box):
@@ -321,3 +376,61 @@ def test_vhir_update_ends_with_it_and_the_smoke_test_leaves_it_out(
         smoke.assert_not_called()
     else:
         smoke.assert_called_once_with(sift_tools=False)
+
+
+def _named(installer: str, problems: str) -> str:
+    return TEXT.format(problems).replace(
+        "`~/.vhir/src/sift-mcp/setup-sift.sh`", f"`{installer}`"
+    )
+
+
+def test_setup_sift_runs_the_module_and_gets_the_manifests_installer(box):
+    # setup-sift.sh: `timeout 60 "$VENV_PYTHON" -m vhir_cli.sift_tools 2>/dev/null`
+    _manifest(box.home, {"source": "/opt/ir/sift-mcp"})
+    src = str(Path(sift_tools.__file__).parents[1])
+    paths = [src, os.environ.get("PYTHONPATH", "")]
+    env = {
+        **os.environ,
+        "HOME": str(box.home),
+        "PATH": str(box.bin),  # nothing on it: no Hayabusa, no Volatility
+        "PYTHONPATH": os.pathsep.join(p for p in paths if p),
+    }
+    run = subprocess.run(
+        [sys.executable, "-m", "vhir_cli.sift_tools"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=box.tmp,
+        env=env,
+    )
+    assert run.returncode == 0
+    want = _named("/opt/ir/sift-mcp/setup-sift.sh", HAYABUSA) + CHOICE + "\n"
+    assert run.stdout == want
+
+
+def test_setup_test_prints_the_manifests_installer(box, monkeypatch, capsys):
+    _manifest(box.home, {"source": "/opt/ir/sift-mcp"})
+    monkeypatch.setattr(sift_tools, "volatility_problem", lambda: None)
+    monkeypatch.setattr(sift_tools, "hayabusa_missing", lambda: True)
+    setup._print_sift_tools_warning()
+    want = _named("/opt/ir/sift-mcp/setup-sift.sh", HAYABUSA) + CHOICE
+    assert capsys.readouterr().out == "\n  WARNING: " + want + "\n"
+
+
+def test_vhir_update_names_the_installer_it_updated_from(
+    manifest_dir, capsys, monkeypatch
+):
+    monkeypatch.setattr(sift_tools, "volatility_problem", lambda: None)
+    monkeypatch.setattr(sift_tools, "hayabusa_missing", lambda: True)
+    home = manifest_dir[0]
+    with (
+        patch("pathlib.Path.home", return_value=home),
+        patch("subprocess.run", side_effect=_run(0)),
+        patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
+        patch("vhir_cli.commands.setup._run_connectivity_test"),
+        patch("time.sleep"),
+    ):
+        cmd_update(test_update._make_args(), {})
+    installer = str(home / ".vhir" / "src" / "sift-mcp" / "setup-sift.sh")
+    want = _named(installer, HAYABUSA) + CHOICE
+    assert capsys.readouterr().out.endswith("\n  WARNING: " + want + "\n")

@@ -9,13 +9,15 @@ derivation under the redirected /var/lib/vhir.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from vhir_cli import approval_auth, credentials, keys, ledger
+from vhir_cli import __version__, approval_auth, credentials, keys, ledger
 from vhir_cli.case_io import signed_text
 
 from .signing import NOT_CHECKED
@@ -231,12 +233,63 @@ def test_upgrade_of_a_short_0_6_password_asks_for_a_new_passphrase(
     _typed(monkeypatch, "abc12", PW, PW)
     assert credentials.upgrade("steve", config) is True
     assert keys.check_password(keys.load("steve"), PW)
-    # the release that brought signing is named as it shipped
+    # the installed release is named, whatever it is
     shown = capsys.readouterr()
     out = shown.out + shown.err
-    assert "Valhuntir 0.6.4 needs a passphrase of at least" in out
-    assert "Signing key made for steve (Valhuntir 0.6.4)." in out
-    assert "0.7" not in out
+    assert f"Valhuntir {__version__} needs a passphrase of at least 8 " in out
+    assert f"Signing key made for steve (Valhuntir {__version__})." in out
+
+
+def test_upgrade_names_the_installed_release_not_a_fixed_one(
+    config, monkeypatch, capsys
+):
+    monkeypatch.setattr(credentials, "__version__", "9.8.7")
+    _legacy("abc12")
+    _typed(monkeypatch, "abc12", PW, PW)
+    credentials.upgrade("steve", config)
+    shown = capsys.readouterr()
+    out = shown.out + shown.err
+    assert (
+        "Valhuntir 9.8.7 needs a passphrase of at least 8 characters (yours is 5)"
+        in out
+    )
+    assert "Signing key made for steve (Valhuntir 9.8.7)." in out
+    assert "0.6.4" not in out
+
+
+# The release that brought signing and content hashes, named as the cut-off
+# for older records: the only messages under src/vhir_cli that name 0.6.4.
+_BEFORE_SIGNING = {
+    "commands/approve.py": ["  approved before 0.6.4 by "],
+    "ledger_verify.py": [
+        "approved before 0.6.4 (before signing)",
+        " (approved before 0.6.4, before signing: ",
+    ],
+    "provenance_view.py": ["recorded before 0.6.4", "recorded-before-0.6.4"],
+}
+
+
+def test_no_message_names_0_6_4_except_as_the_signing_cut_off():
+    root = Path(credentials.__file__).parent
+    found = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        docs = {
+            id(n.value)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+        }
+        for n in ast.walk(tree):
+            if (
+                isinstance(n, ast.Constant)
+                and isinstance(n.value, str)
+                and "0.6.4" in n.value
+                and id(n) not in docs
+            ):
+                found.setdefault(path.relative_to(root).as_posix(), []).append(n.value)
+    assert {k: sorted(v) for k, v in found.items()} == {
+        k: sorted(v) for k, v in _BEFORE_SIGNING.items()
+    }
 
 
 def test_upgrade_of_a_0_6_password_under_15_keeps_it_and_recommends_more(

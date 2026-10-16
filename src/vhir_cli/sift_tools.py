@@ -20,7 +20,9 @@ Run as ``python -m vhir_cli.sift_tools``: prints the warning, or nothing.
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -163,6 +165,27 @@ HAYABUSA_CHOICE = (
 )
 
 
+# Named when the manifest has no source: where setup-sift.sh installs by default
+DEFAULT_INSTALLER = "~/.vhir/src/sift-mcp/setup-sift.sh"
+
+
+def installer() -> str:
+    """The setup-sift.sh this install came from, as the user would type it.
+
+    The manifest's source is the sift-mcp folder setup-sift.sh installed from
+    (`--install-dir` moves it). With no manifest, or no source in it, the
+    default install's path.
+    """
+    try:
+        source = json.loads((Path.home() / ".vhir" / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return DEFAULT_INSTALLER
+    source = source.get("source") if isinstance(source, dict) else None
+    if not isinstance(source, str) or not source.strip():
+        return DEFAULT_INSTALLER
+    return shlex.quote(os.path.join(source, "setup-sift.sh"))
+
+
 def hayabusa_missing() -> bool:
     return _which("hayabusa") is None
 
@@ -181,9 +204,9 @@ def warning() -> str | None:
     return (
         "Some SIFT tools are out of date and parts of Valhuntir won't work with them "
         f"({'; '.join(problems)}). Update SIFT with: `sudo cast install teamdfir/sift` "
-        "(about 5 minutes on the SANS OVA; if it reports failed states, run it again, "
-        "since a download outage can cause them), then re-run `./setup-sift.sh` "
-        "with the options you installed with (for example `--remote`)."
+        "(15-20 minutes on the SANS OVA; if it reports failed states, run it again, "
+        f"since a download outage can cause them), then re-run `{installer()}` "
+        "with the same options you installed with (your shell history has the command)."
         + (HAYABUSA_CHOICE if hayabusa else "")
     )
 
