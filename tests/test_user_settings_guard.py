@@ -372,7 +372,9 @@ SERVERS = {
 @pytest.fixture
 def claude_json(box, monkeypatch):
     path = box.home / ".claude.json"
-    monkeypatch.setattr(cs, "_deploy_claude_code_assets", lambda project_dir=None: None)
+    monkeypatch.setattr(
+        cs, "_deploy_claude_code_assets", lambda project_dir=None, remote_ca=None: None
+    )
     calls = []
 
     def fake_add(name, entry):  # what `claude mcp add -s user` stores
@@ -458,7 +460,7 @@ def test_setup_claims_global_controls_only_when_applied(
     monkeypatch.setattr(
         cs,
         "_deploy_claude_code_assets",
-        lambda project_dir=None: (box.settings, status),
+        lambda project_dir=None, remote_ca=None: (box.settings, status),
     )
     monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: False)
     monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: None)
@@ -559,7 +561,9 @@ def test_the_undo_block_prints_even_after_an_error(box, setup, monkeypatch, caps
 
     real = cs._deploy_claude_code_assets
     monkeypatch.setattr(
-        cs, "_deploy_claude_code_assets", lambda p=None: (real(p), boom())[0]
+        cs,
+        "_deploy_claude_code_assets",
+        lambda p=None, remote_ca=None: (real(p, remote_ca=remote_ca), boom())[0],
     )
     with pytest.raises(RuntimeError):
         setup()
@@ -726,6 +730,26 @@ class TestLocalCaTrust:
         assert data["env"]["NODE_EXTRA_CA_CERTS"] == "/corp/ca.pem" != ca
         out = capsys.readouterr().out
         assert "NODE_EXTRA_CA_CERTS" in out and ca in out
+
+    def test_a_remote_project_gets_the_ca_it_was_given(self, box, monkeypatch):
+        # off the SIFT: the project's settings.json, with the CA copied from it
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        monkeypatch.setattr(cs, "_is_sift", lambda: False)
+        monkeypatch.setattr(
+            cs, "_find_claude_code_assets", lambda: box.repo / "claude-code"
+        )
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda p="": "y")
+        project = box.home / "vhir"
+        project.mkdir()
+        cs._deploy_claude_code_assets(project, remote_ca="/l/ca-cert.pem")
+        data = json.loads((project / ".claude" / "settings.json").read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == "/l/ca-cert.pem"
+        other = box.home / "other"
+        other.mkdir()
+        cs._deploy_claude_code_assets(other)  # no CA given: none added
+        data = json.loads((other / ".claude" / "settings.json").read_text())
+        assert "NODE_EXTRA_CA_CERTS" not in data.get("env", {})
 
     def test_process_env_ca_kept_with_notice(self, box, monkeypatch, capsys):
         ca = _tls_box(box)

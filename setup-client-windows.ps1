@@ -772,6 +772,13 @@ if ($errors -gt 0) {
 
 }  # end clientType -eq "claude-code"
 
+# ---- Claude Code: the gateway's CA ----
+# Claude Code trusts the gateway's self-signed CA only through NODE_EXTRA_CA_CERTS.
+if ($clientType -eq "claude-code" -and $gatewayUrl -like "https://*" -and -not $env:NODE_EXTRA_CA_CERTS) {
+    Write-Warn "The gateway uses https. For Claude Code to connect, copy the SIFT's ~/.vhir/tls/ca-cert.pem to this machine, then run (with that copy's full path) and open a new terminal:"
+    Write-Host "    [Environment]::SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\path\to\ca-cert.pem', 'User')"
+}
+
 # =============================================================================
 # Summary
 # =============================================================================

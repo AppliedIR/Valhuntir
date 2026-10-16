@@ -896,7 +896,19 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
             _cleanup_duplicate_backends(servers, output)
             print(f"  Generated: {output}")
 
-        settings = _deploy_claude_code_assets(Path.cwd())
+        remote_ca = None
+        if not sift and _gateway_uses_https(servers):
+            from vhir_cli.gateway import find_ca_cert
+
+            remote_ca = find_ca_cert()
+            if not remote_ca:
+                print(
+                    "  Note: the gateway uses https. If Claude Code can't connect to "
+                    "it, copy the SIFT's ~/.vhir/tls/ca-cert.pem to "
+                    "~/.vhir/tls/ca-cert.pem here and run this again: vhir then has "
+                    "Claude Code trust it."
+                )
+        settings = _deploy_claude_code_assets(Path.cwd(), remote_ca=remote_ca)
         print(f"  Examiner:  {examiner}")
         print("")
         if settings:
@@ -1365,9 +1377,9 @@ def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
 
 
 def _gateway_ca_for_settings(
-    existing_env: dict | None,
+    existing_env: dict | None, remote_ca: str | None = None
 ) -> tuple[str, str, str | None] | None:
-    """How a local Claude Code should trust the gateway's self-signed CA.
+    """How a Claude Code should trust the gateway's self-signed CA.
 
     When the local gateway is configured for TLS and its CA file exists (the
     precondition of get_local_ssl_context), a local client has to trust that
@@ -1382,6 +1394,10 @@ def _gateway_ca_for_settings(
                             sets `value`, which the settings entry overrides;
       None                  no local TLS gateway/CA, or the CA is already it.
 
+    remote_ca is the CA a remote client was given (~/.vhir/tls/ca-cert.pem,
+    copied from the SIFT) when its gateway uses https; without it, the CA is
+    the local gateway's.
+
     The settings env wins over the process environment because Claude Code
     honours settings env for HTTP MCP connections and it overrides the
     process environment, so an unconditional write could silently replace a
@@ -1389,7 +1405,7 @@ def _gateway_ca_for_settings(
     """
     from vhir_cli.gateway import local_gateway_ca_cert
 
-    ca = local_gateway_ca_cert()
+    ca = remote_ca or local_gateway_ca_cert()
     if not ca:
         return None
     env_val = os.environ.get("NODE_EXTRA_CA_CERTS")
@@ -1569,13 +1585,14 @@ def _merge_settings(
     source: Path,
     hooks_dir: Path | None = None,
     project_copies: bool = False,
+    remote_ca: str | None = None,
 ) -> str:
     """Merge the product's hooks, permissions and sandbox into target, only
     with the user's consent (see _write_user_file). Returns its status."""
     merged = _merged_settings(target, source, hooks_dir, project_copies)
     if merged is None:
         return "kept"
-    decision = _gateway_ca_for_settings(merged.get("env"))
+    decision = _gateway_ca_for_settings(merged.get("env"), remote_ca)
     if decision and decision[0] == "add":
         if "env" not in merged:
             merged["env"] = {"NODE_EXTRA_CA_CERTS": decision[1]}
@@ -1643,7 +1660,9 @@ def _deploy_global_rules(
         _deploy_copy(src, rules_dir / name)
 
 
-def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
+def _deploy_claude_code_assets(
+    project_dir: Path | None = None, remote_ca: str | None = None
+) -> tuple | None:
     """Deploy settings.json, hooks, skills, and doc files for Claude Code.
 
     Sources from sift-mcp/claude-code/ directory (shared/ + full/).
@@ -1651,7 +1670,8 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
     On non-SIFT: deploys to project directory.
 
     project_dir is optional on SIFT (global deployment doesn't need it).
-    When None, project-level doc copies are skipped.
+    When None, project-level doc copies are skipped. remote_ca (non-SIFT) is
+    the CA the project's settings have Claude Code trust the gateway with.
 
     A file the user may have edited changes only with their consent (see
     _write_user_file). Returns (settings path, its status) or None.
@@ -1761,7 +1781,12 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         if settings_src:
             settings = (
                 settings_target,
-                _merge_settings(settings_target, settings_src, project_copies=True),
+                _merge_settings(
+                    settings_target,
+                    settings_src,
+                    project_copies=True,
+                    remote_ca=remote_ca,
+                ),
             )
             _report_settings(*settings)
 
@@ -2183,7 +2208,18 @@ def deploy_codex_assets(
     return status
 
 
-_CODEX_CA_MARK = "# vhir-codex-ca"
+_CODEX_CA_MARK = "# vhir-gateway-ca"
+
+
+def _gateway_uses_https(servers: dict) -> bool:
+    """Whether a gateway backend among servers is reached over https."""
+    # the gateway's own backends; a direct wintools or REMnux entry has its own CA
+    direct = (*_INTERNET_MCPS, "wintools-mcp", "remnux-mcp")
+    return any(
+        str(e.get("url", "")).startswith("https://")
+        for n, e in servers.items()
+        if n not in direct
+    )
 
 
 def _shell_rc() -> Path | None:
@@ -2198,7 +2234,7 @@ def _shell_rc() -> Path | None:
 
 
 def _codex_ca_ours(line: str) -> str | None:
-    """The CA path in vhir's `export CODEX_CA_CERTIFICATE=...  # vhir-codex-ca`
+    """The CA path in vhir's `export CODEX_CA_CERTIFICATE=...  # vhir-gateway-ca`
     line, or None for any other line."""
     if not line.rstrip().endswith(_CODEX_CA_MARK):
         return None
@@ -2233,13 +2269,7 @@ def _codex_gateway_ca(servers: dict, remote: bool) -> None:
     do with PATH, unless the user points Codex at a CA bundle of their own."""
     from vhir_cli.gateway import find_ca_cert, local_gateway_ca_cert
 
-    # the gateway's own backends; a direct wintools or REMnux entry has its own CA
-    direct = (*_INTERNET_MCPS, "wintools-mcp", "remnux-mcp")
-    if not any(
-        str(e.get("url", "")).startswith("https://")
-        for n, e in servers.items()
-        if n not in direct
-    ):
+    if not _gateway_uses_https(servers):
         return
     ca = find_ca_cert() if remote else local_gateway_ca_cert()
     if not ca:

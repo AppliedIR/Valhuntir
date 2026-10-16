@@ -77,6 +77,46 @@ replace_file() {
     cat "$1" > "$2"
     rm -f "$1"
 }
+# Codex and Claude Code trust the gateway's self-signed CA only through their
+# environment. set_gateway_ca VAR WHO START [FALLBACK...] sets VAR to the CA in
+# the shell profile when the gateway uses https; WHO names the client, START its
+# start command, FALLBACK a variable the client reads when VAR is unset.
+set_gateway_ca() {
+    local var="$1" who="$2" start="$3" ca line ours="" user="" v val tmp
+    shift 3
+    [[ "$GATEWAY_URL" == https://* ]] || return 0
+    ca="${CA_CERT:-}"
+    [[ -z "$ca" && -f "$HOME/.vhir/tls/ca-cert.pem" ]] && ca="$HOME/.vhir/tls/ca-cert.pem"
+    [[ -n "$ca" && "$ca" != /* ]] && ca="$PWD/$ca"
+    line=$(printf 'export %s=%q  # vhir-gateway-ca' "$var" "$ca")
+    [[ -n "$SHELL_RC" ]] && ours=$(grep -E "^export $var=.*  # vhir-gateway-ca\$" "$SHELL_RC" 2>/dev/null | tail -n 1 || true)
+    for v in "$var" "$@"; do
+        val="${!v:-}"
+        [[ -z "$val" ]] && continue
+        if [[ "$val" != "$ca" && "$(printf 'export %s=%q  # vhir-gateway-ca' "$var" "$val")" != "$ours" ]]; then
+            user="$v=$val"
+        fi
+        break  # a fallback counts only when VAR is unset
+    done
+    if [[ -z "$ca" ]]; then
+        warn "The gateway uses https. If $who can't connect to it, copy the SIFT's ~/.vhir/tls/ca-cert.pem to ~/.vhir/tls/ca-cert.pem here and re-run."
+    elif [[ -n "$user" ]]; then
+        warn "${user%%=*} is set to ${user#*=}, which $who uses instead of the gateway's CA. Add $ca to that bundle, or $who can't connect to the gateway."
+    elif [[ -z "$SHELL_RC" ]]; then
+        warn "No ~/.bashrc or ~/.zshrc to set $who's CA in. Start $who with: $var=$(printf %q "$ca") $start"
+    else
+        if ! grep -qxF "$line" "$SHELL_RC"; then
+            tmp=$(mktemp)
+            { grep -vE "^export $var=.*  # vhir-gateway-ca\$" "$SHELL_RC" > "$tmp" || true; }
+            cat "$tmp" > "$SHELL_RC"
+            rm -f "$tmp"
+            [[ -s "$SHELL_RC" && -n "$(tail -c1 "$SHELL_RC")" ]] && echo >> "$SHELL_RC"
+            echo "$line" >> "$SHELL_RC"
+        fi
+        ok "$SHELL_RC sets $var to $ca, so $who trusts the gateway"
+        info "In a terminal opened before now, run: export $var=$(printf %q "$ca")"
+    fi
+}
 err()    { echo -e "${RED}[ERROR]${NC} $*"; }
 header() { echo -e "\n${BOLD}=== $* ===${NC}\n"; }
 
@@ -178,14 +218,14 @@ if $UNINSTALL; then
         fi
         echo ""
     fi
-    # Codex's CA line, in either profile
+    # The gateway's CA lines (Codex's and Claude Code's), in either profile
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        if [[ -f "$rc" ]] && grep -q '  # vhir-codex-ca$' "$rc" 2>/dev/null; then
+        if [[ -f "$rc" ]] && grep -q '  # vhir-gateway-ca$' "$rc" 2>/dev/null; then
             tmp=$(mktemp)
-            { grep -v '  # vhir-codex-ca$' "$rc" > "$tmp" || true; }
+            { grep -v '  # vhir-gateway-ca$' "$rc" > "$tmp" || true; }
             cat "$tmp" > "$rc"
             rm -f "$tmp"
-            ok "Removed Codex's CA line from $rc"
+            ok "Removed the gateway's CA lines from $rc"
         fi
     done
 
@@ -531,43 +571,8 @@ if [[ "$CLIENT" == "codex" ]]; then
         chmod 600 "$PROFILE"
         ok "Written: $PROFILE"
     fi
-    # Codex trusts the gateway's self-signed CA only through its environment
-    # (CODEX_CA_CERTIFICATE, else SSL_CERT_FILE): its profile can't name one.
-    if [[ "$GATEWAY_URL" == https://* ]]; then
-        CODEX_CA=""
-        [[ -z "$CODEX_CA" && -f "$HOME/.vhir/tls/ca-cert.pem" ]] && CODEX_CA="$HOME/.vhir/tls/ca-cert.pem"
-        [[ -n "$CODEX_CA" && "$CODEX_CA" != /* ]] && CODEX_CA="$PWD/$CODEX_CA"
-        CA_LINE=$(printf 'export CODEX_CA_CERTIFICATE=%q  # vhir-codex-ca' "$CODEX_CA")
-        CA_OURS=""
-        [[ -n "$SHELL_RC" ]] && CA_OURS=$(grep -E '^export CODEX_CA_CERTIFICATE=.*  # vhir-codex-ca$' "$SHELL_RC" 2>/dev/null | tail -n 1 || true)
-        CA_USER=""
-        for var in CODEX_CA_CERTIFICATE SSL_CERT_FILE; do
-            val="${!var:-}"
-            [[ -z "$val" ]] && continue
-            if [[ "$val" != "$CODEX_CA" && "$(printf 'export CODEX_CA_CERTIFICATE=%q  # vhir-codex-ca' "$val")" != "$CA_OURS" ]]; then
-                CA_USER="$var=$val"
-            fi
-            break  # SSL_CERT_FILE is only Codex's fallback
-        done
-        if [[ -z "$CODEX_CA" ]]; then
-            warn "The gateway uses https. If Codex can't connect to it, copy the SIFT's ~/.vhir/tls/ca-cert.pem to ~/.vhir/tls/ca-cert.pem here and re-run."
-        elif [[ -n "$CA_USER" ]]; then
-            warn "${CA_USER%%=*} is set to ${CA_USER#*=}, which Codex uses instead of the gateway's CA. Add $CODEX_CA to that bundle, or Codex can't connect to the gateway."
-        elif [[ -z "$SHELL_RC" ]]; then
-            warn "No ~/.bashrc or ~/.zshrc to set Codex's CA in. Start Codex with: CODEX_CA_CERTIFICATE=$(printf %q "$CODEX_CA") codex -p valhuntir"
-        else
-            if ! grep -qxF "$CA_LINE" "$SHELL_RC"; then
-                tmp=$(mktemp)
-                { grep -v '  # vhir-codex-ca$' "$SHELL_RC" > "$tmp" || true; }
-                cat "$tmp" > "$SHELL_RC"
-                rm -f "$tmp"
-                [[ -s "$SHELL_RC" && -n "$(tail -c1 "$SHELL_RC")" ]] && echo >> "$SHELL_RC"
-                echo "$CA_LINE" >> "$SHELL_RC"
-            fi
-            ok "$SHELL_RC sets CODEX_CA_CERTIFICATE to $CODEX_CA, so Codex trusts the gateway"
-            info "In a terminal opened before now, run: export CODEX_CA_CERTIFICATE=$(printf %q "$CODEX_CA")"
-        fi
-    fi
+    # Codex reads CODEX_CA_CERTIFICATE, else SSL_CERT_FILE: its profile can't name a CA.
+    set_gateway_ca CODEX_CA_CERTIFICATE Codex "codex -p valhuntir" SSL_CERT_FILE
     if [[ -f "$HOME/.codex/config.toml" ]] && grep -Eq '^[[:space:]]*sandbox_mode[[:space:]]*=[[:space:]]*"danger-full-access"' "$HOME/.codex/config.toml"; then
         warn "$HOME/.codex/config.toml sets sandbox_mode = \"danger-full-access\": that widens Codex's sandbox. vhir doesn't edit that file."
     fi
@@ -847,6 +852,12 @@ if (( ERRORS > 0 )); then
 fi
 
 fi  # end CLIENT == claude-code
+
+# ---- Claude Code: the gateway's CA ----
+
+if [[ "$CLIENT" == "claude-code" ]]; then
+    set_gateway_ca NODE_EXTRA_CA_CERTS "Claude Code" claude
+fi
 
 # =============================================================================
 # Summary

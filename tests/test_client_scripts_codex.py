@@ -62,9 +62,11 @@ PROLOGUE = (
 def _helpers(text):
     start = text.index("# A user's file is backed up")
     end = text.index("\n}\n", text.index("replace_file() {")) + 3
-    f = text.index("fetch_skills() {")
-    f = text.rindex("\n", 0, f) + 1
-    return text[start:end] + text[f : text.index("\n}\n", f) + 3]
+    parts = [text[start:end]]
+    for fn in ("fetch_skills() {", "set_gateway_ca() {"):
+        f = text.rindex("\n", 0, text.index(fn)) + 1
+        parts.append(text[f : text.index("\n}\n", f) + 3])
+    return "".join(parts)
 
 
 def _codex_block(text):
@@ -73,9 +75,15 @@ def _codex_block(text):
     return text[start : end.end()]
 
 
+def _claude_block(text):
+    start = text.index("# ---- Claude Code: the gateway's CA ----")
+    end = re.compile(r"^fi\n", re.M).search(text, start)
+    return text[start : end.end()]
+
+
 def _uninstall_block(text):
     start = text.index("    # Codex: Valhuntir's profile, skills and agent")
-    ca = text.find("    # Codex's CA line, in either profile", start)
+    ca = text.find("    # The gateway's CA lines (Codex's and Claude Code's)", start)
     if ca != -1:
         return text[start : text.index("\n    done\n", ca) + 10]
     return text[start : text.index("\n    fi\n\n", start) + 7]
@@ -124,10 +132,19 @@ def run(tmp_path):
         )
         return go(script, env + _codex_block(SCRIPTS[script]), extra)
 
+    def claude(script, url="https://sift.example:4508", rc="", ca="", extra=None):
+        env = (
+            f'CLIENT=claude-code\nGATEWAY_URL="{url}"\n'
+            f"SHELL_RC={shlex.quote(rc)}\nCA_CERT={shlex.quote(ca)}\n"
+        )
+        return go(script, env + _claude_block(SCRIPTS[script]), extra)
+
     def uninstall(script):
         return go(script, _uninstall_block(SCRIPTS[script]))
 
-    return types_ns(home=home, serve=serve, setup=setup, uninstall=uninstall)
+    return types_ns(
+        home=home, serve=serve, setup=setup, claude=claude, uninstall=uninstall
+    )
 
 
 def types_ns(**kw):
@@ -232,7 +249,7 @@ def test_the_script_offers_codex_and_prints_the_start_folder_and_limits(script):
 
 # --- Codex's CA on a TLS gateway ----------------------------------------------
 
-MARK = "  # vhir-codex-ca"
+MARK = "  # vhir-gateway-ca"
 
 
 def _ca(home):
@@ -363,6 +380,116 @@ def test_uninstall_removes_the_ca_line_from_either_profile(run, script):
         assert (run.home / name).read_text() == "alias x=y\nexport P=1\n"
 
 
+# --- Claude Code's CA on a TLS gateway --------------------------------------------
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_an_https_gateway_has_claude_code_trust_its_ca_from_the_shell_profile(
+    run, script
+):
+    ca = _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.claude(script, rc=str(rc))
+    assert code == 0, out
+    assert rc.read_text() == f"alias x=y\nexport NODE_EXTRA_CA_CERTS={ca}{MARK}\n"
+    assert f"export NODE_EXTRA_CA_CERTS={ca}" in out
+    run.claude(script, rc=str(rc))
+    assert _ca_lines(rc) == [f"export NODE_EXTRA_CA_CERTS={ca}{MARK}"]
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_codex_s_and_claude_code_s_ca_lines_live_side_by_side(run, script):
+    ca = _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text(f"export NODE_EXTRA_CA_CERTS=/old/ca.pem{MARK}\n")
+    run.setup(script, rc=str(rc))
+    run.claude(script, rc=str(rc))
+    run.setup(script, rc=str(rc))
+    assert _ca_lines(rc) == [
+        f"export CODEX_CA_CERTIFICATE={ca}{MARK}",
+        f"export NODE_EXTRA_CA_CERTS={ca}{MARK}",
+    ]
+
+
+def test_linux_gives_claude_code_the_join_s_ca_cert(run):
+    _ca(run.home)
+    mine = run.home / "sift-ca.pem"
+    mine.write_text("x")
+    rc = run.home / ".bashrc"
+    rc.write_text("")
+    code, out = run.claude("linux", rc=str(rc), ca="sift-ca.pem")
+    assert code == 0, out
+    assert _ca_lines(rc) == [f"export NODE_EXTRA_CA_CERTS={mine}{MARK}"]
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_claude_code_on_an_http_gateway_leaves_the_profile_alone(run, script):
+    _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.claude(script, url="http://sift.example:4508", rc=str(rc))
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\n" and "NODE_EXTRA" not in out
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_claude_code_s_own_extra_ca_is_named_and_not_overridden(run, script):
+    ca = _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.claude(
+        script, rc=str(rc), extra={"NODE_EXTRA_CA_CERTS": "/etc/corp.pem"}
+    )
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\n"
+    assert "WARN NODE_EXTRA_CA_CERTS is set to /etc/corp.pem" in out
+    assert str(ca) in out and "Claude Code" in out
+    # Codex's fallback is not Claude Code's
+    code, out = run.claude(script, rc=str(rc), extra={"SSL_CERT_FILE": "/e/b.pem"})
+    assert _ca_lines(rc) == [f"export NODE_EXTRA_CA_CERTS={ca}{MARK}"]
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_claude_code_without_the_ca_or_a_profile_is_told_what_to_do(run, script):
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.claude(script, rc=str(rc))
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\n"
+    assert "WARN The gateway uses https. If Claude Code can't connect" in out
+    ca = _ca(run.home)
+    code, out = run.claude(script, rc="")
+    assert code == 0, out
+    assert f"NODE_EXTRA_CA_CERTS={ca} claude" in out
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_uninstall_removes_both_clients_ca_lines(run, script):
+    rc = run.home / ".bashrc"
+    rc.write_text(
+        f"alias x=y\nexport CODEX_CA_CERTIFICATE=/a/ca.pem{MARK}\n"
+        f"export NODE_EXTRA_CA_CERTS=/a/ca.pem{MARK}\nexport P=1\n"
+    )
+    code, out = run.uninstall(script)
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\nexport P=1\n"
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_the_claude_code_branch_sets_its_ca(script):
+    text = SCRIPTS[script]
+    block = _claude_block(text)
+    assert 'set_gateway_ca NODE_EXTRA_CA_CERTS "Claude Code" claude' in block
+    # after the settings are written, before the summary
+    assert text.index("# ---- Claude Code: the gateway's CA") > text.index(
+        "<< 'PYMERGE'"
+    )
+    assert text.index("# ---- Claude Code: the gateway's CA") < text.index(
+        'header "Setup Complete"'
+    )
+
+
 # --- Windows (pwsh) ---------------------------------------------------------------
 
 WIN = (REPO / "setup-client-windows.ps1").read_text()
@@ -480,6 +607,29 @@ def _win_codex(tmp_path, run, url, extra_env=None):
     )
     pre = "".join(f"$env:{k} = '{v}'\n" for k, v in (extra_env or {}).items())
     return _win_run(tmp_path, pre + env + codex, run.serve)
+
+
+def _win_claude(tmp_path, run, url, extra_env=None):
+    block = _win_part("# ---- Claude Code: the gateway's CA", "# =====")
+    env = f'$clientType = "claude-code"\n$gatewayUrl = "{url}"\n'
+    pre = "".join(f"$env:{k} = '{v}'\n" for k, v in (extra_env or {}).items())
+    return _win_run(tmp_path, pre + env + block, run.serve)
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_windows_tells_how_claude_code_trusts_an_https_gateway(run, tmp_path):
+    rc, out = _win_claude(tmp_path, run, "https://sift.example:4508")
+    assert rc == 0, out
+    assert "WARN The gateway uses https. For Claude Code to connect" in out
+    assert "SetEnvironmentVariable('NODE_EXTRA_CA_CERTS'" in out
+    rc, out = _win_claude(tmp_path, run, "http://sift.example:4508")
+    assert rc == 0, out
+    assert "NODE_EXTRA_CA_CERTS" not in out
+    rc, out = _win_claude(
+        tmp_path, run, "https://sift.example:4508", {"NODE_EXTRA_CA_CERTS": "C:/a.pem"}
+    )
+    assert rc == 0, out
+    assert "NODE_EXTRA_CA_CERTS" not in out
 
 
 @pytest.mark.skipif(not PWSH, reason="pwsh not installed")

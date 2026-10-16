@@ -522,7 +522,10 @@ def test_off_sift_claude_code_says_its_shell_isn_t_in_the_case_audit(
     monkeypatch.setattr(
         cs,
         "_deploy_claude_code_assets",
-        lambda project_dir=None: (laptop.home / ".claude" / "settings.json", "new"),
+        lambda project_dir=None, remote_ca=None: (
+            laptop.home / ".claude" / "settings.json",
+            "new",
+        ),
     )
     # even with every control in the laptop's settings as shipped
     monkeypatch.setattr(cs, "settings_applied", lambda path: (True, False))
@@ -583,7 +586,7 @@ def test_uninstall_unlinks_a_linked_skill_folder_and_keeps_its_target(
 
 # --- Codex's CA on a TLS gateway ------------------------------------------------
 
-MARK = "  # vhir-codex-ca"
+MARK = "  # vhir-gateway-ca"
 
 
 @pytest.fixture
@@ -698,6 +701,32 @@ def test_remote_codex_trusts_the_ca_copied_from_the_sift(laptop, monkeypatch, ca
     ca.write_text("-----BEGIN CERTIFICATE-----\n")
     _remote()
     assert _ca_lines(rc) == [f"export CODEX_CA_CERTIFICATE={ca}{MARK}"]
+
+
+def test_remote_claude_code_trusts_the_ca_copied_from_the_sift(
+    laptop, monkeypatch, capsys
+):
+    got = []
+    monkeypatch.setattr(
+        cs,
+        "_deploy_claude_code_assets",
+        lambda project_dir=None, remote_ca=None: got.append(remote_ca),
+    )
+    _remote(client="claude-code")
+    assert got == [None]
+    out = capsys.readouterr().out
+    assert "If Claude Code can't connect" in out and "~/.vhir/tls/ca-cert.pem" in out
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    _remote(client="claude-code")
+    assert got[-1] == str(ca)
+    assert "If Claude Code can't connect" not in capsys.readouterr().out
+    # an http gateway needs no CA
+    _setup(
+        remote=True, sift="http://sift.example:4508", token=TOKEN, client="claude-code"
+    )
+    assert got[-1] is None
 
 
 def test_uninstall_removes_the_ca_line_and_keeps_the_rest(laptop, monkeypatch):
