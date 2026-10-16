@@ -210,12 +210,40 @@ def record_case_path(case_dir: Path) -> None:
             _atomic_write(_paths_file(), json.dumps(paths, indent=2, sort_keys=True))
 
 
+def _put_back(path: Path, data: bytes, mode: int) -> None:
+    """Replace ``path`` with ``data`` and ``mode``, as one rename."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.undo.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _reason(e: Exception) -> str:
+    """One line for a failed step: the file and what went wrong, no errno."""
+    if isinstance(e, OSError) and e.strerror:
+        return f"{e.filename}: {e.strerror}" if e.filename else e.strerror
+    return str(e) or type(e).__name__
+
+
 def new_identity(case_dir: Path) -> str:
     """Give a copied case its own identity; returns the new UUID.
 
     Only a copy can take one: another folder must hold, and be recorded for,
     the same identity. The original keeps its identity, since its stored
     records are named after it. The copy carries no legacy alias.
+
+    All or nothing: the new identity is recorded for this folder first, under
+    the record's lock, then written to CASE.yaml and the host logs. A step
+    that fails leaves CASE.yaml and the logs naming the old identity.
     """
     module = host_identity()
     if module is None:
@@ -228,29 +256,71 @@ def new_identity(case_dir: Path) -> str:
     if not old:
         raise ValueError(f"{case_dir} has no case_uuid to replace.")
     here = str(case_dir.resolve())
-    recorded = _read_paths().get(old)
-    if not recorded or recorded == here or not _holds(recorded, old):
-        raise ValueError(
-            f"{here} holds case identity {old} and no other folder does, so it "
-            "isn't a copy. A new identity would leave its stored records "
-            "under the old one."
-        )
     new = str(uuid.uuid4())
     c12 = new.replace("-", "")[:12]
     try:
-        with module.case_lock(case_dir, shared=False):
-            # One write of both keys, before the logs learn the new identity:
-            # whatever happens after it, the copy no longer reads the
-            # original's older indices.
-            module.update_case_meta(
-                case_dir, {"case_uuid": new, "legacy_alias": "none"}
+        with _paths_lock():
+            paths = _read_paths()
+            recorded = paths.get(old)
+            if not recorded or recorded == here or not _holds(recorded, old):
+                raise ValueError(
+                    f"{here} holds case identity {old} and no other folder does, "
+                    "so it isn't a copy. A new identity would leave its stored "
+                    "records under the old one."
+                )
+            # Recorded before CASE.yaml changes: a record for a folder that
+            # doesn't hold the identity gives way, so it is harmless if a later
+            # step fails, and a record that can't be written changes nothing
+            _atomic_write(
+                _paths_file(),
+                json.dumps({**paths, new: here}, indent=2, sort_keys=True),
             )
-            module.write_case_header(
-                case_dir, c12, f"new identity for a copy of {old}", case_uuid=new
-            )
+            try:
+                with module.case_lock(case_dir, shared=False):
+                    _swap_identity(module, case_dir, old, new, c12)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    _atomic_write(
+                        _paths_file(), json.dumps(paths, indent=2, sort_keys=True)
+                    )
+                raise
     except module.CaseLockBusy as e:
         raise ValueError(
             f"{case_dir} is in use ({e}); try again when it's idle."
         ) from None
-    record_case_path(case_dir)
+    except (OSError, module.HostLogError) as e:
+        raise ValueError(
+            f"{case_dir} keeps case identity {old}: the new identity couldn't be "
+            f"recorded ({_reason(e)})."
+        ) from None
     return new
+
+
+def _swap_identity(module, case_dir: Path, old: str, new: str, c12: str) -> None:
+    """Write the new identity to CASE.yaml and the host logs; the caller holds
+    the case lock. On a failure, CASE.yaml gets its old bytes back and the
+    logs a header naming the old identity again, before the error goes on."""
+    path = case_dir / "CASE.yaml"
+    before, mode = path.read_bytes(), path.stat().st_mode & 0o777
+    old_c12 = module.recorded_c12(case_dir)
+    try:
+        # One write of both keys, before the logs learn the new identity
+        module.update_case_meta(case_dir, {"case_uuid": new, "legacy_alias": "none"})
+        module.write_case_header(
+            case_dir, c12, f"new identity for a copy of {old}", case_uuid=new
+        )
+    except BaseException as e:
+        try:
+            if path.read_bytes() != before:
+                _put_back(path, before, mode)
+            if old_c12 and module.recorded_c12(case_dir) != old_c12:
+                module.write_case_header(
+                    case_dir, old_c12, "new identity undone", case_uuid=old
+                )
+        except (OSError, module.HostLogError) as undo:
+            raise ValueError(
+                f"{case_dir}: the new identity couldn't be recorded ({_reason(e)}), "
+                f"and the old one couldn't be put back ({_reason(undo)}): set "
+                f"case_uuid: {old} in its CASE.yaml."
+            ) from None
+        raise

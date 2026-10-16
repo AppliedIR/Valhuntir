@@ -213,7 +213,7 @@ def test_a_refused_smb_credential_push_says_what_wintools_answered(
         join._push_smb_credentials("pw")
     finally:
         wintools.close()
-    assert wintools.requests == [("POST", "/config/update-smb")] * 3
+    assert wintools.requests == [("POST", "/config/update-smb")] * 2
     err = capsys.readouterr().err
     assert "HTTP 503" in err and "SMB session failed: System error 86" in err
     assert "didn't confirm the new SMB credentials" in err
@@ -550,7 +550,182 @@ def test_an_error_body_that_cannot_be_read_still_retries_and_warns(
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
     join._push_smb_credentials("pw")
-    assert len(tries) == 3
+    assert len(tries) == 2
     err = capsys.readouterr().err
     assert "HTTP 503: (its body couldn't be read: timed out)" in err
     assert "didn't confirm the new SMB credentials" in err
+
+
+QUIET = (
+    "  wintools-mcp at 192.0.2.9:4624 isn't answering. When you run "
+    "setup-windows.ps1 with this join code, it takes the new SMB password.\n"
+)
+
+
+def _wintools_at(home: Path, url: str = "http://192.0.2.9:4624/mcp") -> None:
+    (home / ".vhir" / "gateway.yaml").write_text(
+        yaml.safe_dump(
+            {"backends": {"wintools-mcp": {"url": url, "bearer_token": OWNER}}}
+        )
+    )
+
+
+def _pushes(monkeypatch, *errors):
+    """Each try raises the next error; returns the timeouts and the waits."""
+    import urllib.request
+
+    tries, waits = [], []
+    errors = list(errors)
+
+    def fail(req, **kw):
+        tries.append(kw["timeout"])
+        raise errors.pop(0) if len(errors) > 1 else errors[0]
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    monkeypatch.setattr(time, "sleep", waits.append)
+    return tries, waits
+
+
+def _no_answer():
+    import errno
+    import urllib.error
+
+    return [
+        urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+        urllib.error.URLError(TimeoutError("timed out")),
+        TimeoutError("timed out"),
+        urllib.error.URLError(OSError(errno.EHOSTUNREACH, "No route to host")),
+        urllib.error.URLError(OSError(errno.ENETUNREACH, "Network is unreachable")),
+    ]
+
+
+@pytest.mark.parametrize("error", _no_answer(), ids=repr)
+def test_a_wintools_that_does_not_answer_gets_one_plain_line(
+    home, monkeypatch, capsys, error
+):
+    _wintools_at(home)
+    tries, waits = _pushes(monkeypatch, error)
+    join._push_smb_credentials("pw")
+    assert capsys.readouterr() == (QUIET, "")
+    assert tries == [3, 3] and waits == [3]
+    assert sum(tries) + sum(waits) < 10
+
+
+def test_a_closed_port_gets_the_plain_line_in_under_ten_seconds(home, capsys):
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    _wintools_at(home, f"http://127.0.0.1:{port}/mcp")
+    start = time.monotonic()
+    join._push_smb_credentials("pw")
+    assert time.monotonic() - start < 10
+    assert capsys.readouterr() == (
+        QUIET.replace("192.0.2.9:4624", f"127.0.0.1:{port}"),
+        "",
+    )
+
+
+def test_a_wintools_that_never_replies_gets_the_plain_line(home, monkeypatch, capsys):
+    import socket
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen(4)  # connects, never answers
+        port = s.getsockname()[1]
+        _wintools_at(home, f"http://127.0.0.1:{port}/mcp")
+        start = time.monotonic()
+        join._push_smb_credentials("pw")
+        assert time.monotonic() - start < 8
+    out, err = capsys.readouterr()
+    assert out == QUIET.replace("192.0.2.9:4624", f"127.0.0.1:{port}")
+    assert err == ""
+
+
+def _http(code, body=b'{"error": "bad token"}'):
+    import io
+    import urllib.error
+
+    return urllib.error.HTTPError("u", code, "no", {}, io.BytesIO(body))
+
+
+@pytest.mark.parametrize("code", [403, 503])
+def test_a_wintools_that_answers_with_an_error_still_gets_the_warning(
+    home, monkeypatch, capsys, code
+):
+    _wintools_at(home)
+    tries, waits = _pushes(monkeypatch, _http(code), _http(code))
+    join._push_smb_credentials("pw")
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert f'HTTP {code}: {{"error": "bad token"}}' in err
+    assert "Warning: wintools-mcp didn't confirm the new SMB credentials" in err
+    assert tries == [3, 3] and waits == [3]
+
+
+def test_a_wintools_that_answered_once_then_went_quiet_still_gets_the_warning(
+    home, monkeypatch, capsys
+):
+    _wintools_at(home)
+    _pushes(monkeypatch, _http(503), TimeoutError("timed out"))
+    join._push_smb_credentials("pw")
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "HTTP 503" in err and "Warning: wintools-mcp didn't confirm" in err
+
+
+def test_a_failure_that_is_not_silence_still_gets_the_warning(
+    home, monkeypatch, capsys
+):
+    import urllib.error
+
+    _wintools_at(home)
+    _pushes(monkeypatch, urllib.error.URLError(ssl.SSLError("bad cert")))
+    join._push_smb_credentials("pw")
+    out, err = capsys.readouterr()
+    assert out == "" and "Warning: wintools-mcp didn't confirm" in err
+
+
+def test_a_push_that_lands_on_the_retry_says_so_and_nothing_else(
+    home, monkeypatch, capsys
+):
+    import urllib.request
+
+    _wintools_at(home)
+    tries = []
+
+    class Ok:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def flaky(req, **kw):
+        tries.append(kw["timeout"])
+        if len(tries) == 1:
+            raise TimeoutError("timed out")
+        return Ok()
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    join._push_smb_credentials("pw")
+    assert capsys.readouterr() == ("  SMB credentials pushed to wintools-mcp\n", "")
+    assert tries == [3, 3]
+
+
+@pytest.mark.parametrize(
+    "doc", [None, {"backends": {}}, {"backends": {"wintools-mcp": {"url": ""}}}]
+)
+def test_no_wintools_configured_means_no_push_and_no_line(
+    home, monkeypatch, capsys, doc
+):
+    import urllib.request
+
+    if doc is not None:
+        (home / ".vhir" / "gateway.yaml").write_text(yaml.safe_dump(doc))
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("push"))
+    join._push_smb_credentials("pw")
+    assert capsys.readouterr() == ("", "")

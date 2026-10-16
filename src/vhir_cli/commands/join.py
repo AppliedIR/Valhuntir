@@ -644,8 +644,9 @@ def _setup_firewall(wintools_ip: str) -> None:
     )
 
 
-def _set_smb_password(join_code: str) -> None:
-    """Give vhir-smb this join code's password and push it to wintools-mcp."""
+def _set_smb_password(join_code: str, push: bool = True) -> None:
+    """Give vhir-smb this join code's password and push it to wintools-mcp
+    (unless ``push`` is false: the caller pushes it later)."""
     import subprocess
 
     derived_password = derive_smb_password(join_code)
@@ -661,7 +662,8 @@ def _set_smb_password(join_code: str) -> None:
         raise RuntimeError(f"Failed to set SMB password: {e}") from e
 
     # Push updated SMB credentials to wintools-mcp if configured
-    _push_smb_credentials(derived_password)
+    if push:
+        _push_smb_credentials(derived_password)
 
 
 def check_share_path(path: str) -> None:
@@ -916,12 +918,14 @@ def _setup_samba_share(join_code: str) -> str | None:
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to add user to sift group: {e}") from e
 
-    _set_smb_password(join_code)
+    _set_smb_password(join_code, push=False)
 
-    # Prompt for wintools IP
+    # Prompt for wintools IP, then push: the push can wait on a wintools that
+    # isn't running, and the question comes first
     import ipaddress
 
     wintools_ip = _ask("Enter the Windows machine's IP address: ", "").strip()
+    _push_smb_credentials(derive_smb_password(join_code))
     if not wintools_ip:
         if reconfigure_ip:  # the share stays as it is, as with "n"
             _mark_case_for_kept_share()
@@ -1200,6 +1204,24 @@ def _wintools_ssl_context():
     return ctx
 
 
+def _no_answer(error: Exception) -> bool:
+    """True for a try that found nothing answering: a timeout, a refused
+    connection, or no route to the host."""
+    import errno
+    import urllib.error
+
+    if isinstance(error, urllib.error.URLError) and not isinstance(
+        error, urllib.error.HTTPError
+    ):
+        error = error.reason if isinstance(error.reason, Exception) else error
+    if isinstance(error, (TimeoutError, ConnectionRefusedError)):
+        return True
+    return isinstance(error, OSError) and error.errno in (
+        errno.EHOSTUNREACH,
+        errno.ENETUNREACH,
+    )
+
+
 def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
     """Push updated SMB credentials to wintools-mcp after smbpasswd change."""
     import urllib.request
@@ -1232,11 +1254,12 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
     )
     import time as _time
 
-    kwargs: dict = {"timeout": 5}
+    kwargs: dict = {"timeout": 3}
     if update_url.startswith("https"):
         kwargs["context"] = _wintools_ssl_context()
     last = "no answer"
-    for attempt in range(3):
+    silent = True  # every try timed out or found nothing listening
+    for attempt in range(2):
         try:
             with urllib.request.urlopen(req, **kwargs):
                 print("  SMB credentials pushed to wintools-mcp")
@@ -1247,16 +1270,25 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
             except Exception as read_error:  # a body that never comes
                 body = f"(its body couldn't be read: {read_error})"
             last = f"HTTP {e.code}: {body}"
+            silent = False
             print(
                 f"  wintools-mcp answered the SMB credential push: {last}",
                 file=sys.stderr,
             )
         except Exception as e:
             last = str(e) or type(e).__name__
-        if attempt < 2:
-            _time.sleep(5)
-    # wintools may not be running yet (normal during first setup): the Windows
-    # installer derives the same password from the join code.
+            silent = silent and _no_answer(e)
+        if attempt < 1:
+            _time.sleep(3)
+    if silent:
+        # wintools isn't running yet (normal during first setup): the Windows
+        # installer derives the same password from the join code
+        print(
+            f"  wintools-mcp at {parsed.netloc.rpartition('@')[2]} isn't answering. "
+            "When you run setup-windows.ps1 with this join code, it takes the new "
+            "SMB password."
+        )
+        return
     print(
         f"  Warning: wintools-mcp didn't confirm the new SMB credentials ({last}). "
         "The Windows installer gives them to it when it runs with the join code "

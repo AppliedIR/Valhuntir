@@ -222,23 +222,217 @@ def test_reopening_a_copied_closed_case_is_refused(home, monkeypatch, capsys):
     assert (home / ".vhir" / "active_case").read_text() == pointer
 
 
-@needs_sift
-def test_a_new_identity_cut_short_still_drops_the_legacy_alias(home, monkeypatch):
-    from sift_common import host_identity
-
+def _copied(home):
+    """An original and its `cp -r` copy; the copy's files as they are now."""
     case_dir, _ = _init(home)
     copy = home / "cases" / "C-1-copy"
     shutil.copytree(case_dir, copy)
+    return case_dir, copy, _files(home, copy)
 
-    def fail(*a, **k):
-        raise OSError("disk full")
 
-    monkeypatch.setattr(host_identity, "write_case_header", fail)
-    with pytest.raises(SystemExit):
+def _files(home, copy):
+    """What a failed new identity must leave as it was."""
+    case_yaml = copy / "CASE.yaml"
+    return {
+        "case": case_yaml.read_bytes(),
+        "mode": case_yaml.stat().st_mode,
+        "headers": _headers(copy),
+        "paths": (home / ".vhir" / "case-paths.json").read_bytes(),
+    }
+
+
+def _new_identity_fails(home, capsys) -> str:
+    with pytest.raises(SystemExit) as stopped:
         main._case_new_identity(
             argparse.Namespace(case_id="C-1-copy", cases_dir=str(home / "cases"))
         )
-    assert _meta(copy)["legacy_alias"] == "none"
+    assert stopped.value.code == 1
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "Errno" not in err
+    return err
+
+
+@needs_sift
+@pytest.mark.parametrize("locked", ["folder", "lock file"])
+def test_a_new_identity_that_cant_be_recorded_changes_nothing(home, capsys, locked):
+    from vhir_cli.case_identity import copy_of
+
+    case_dir, copy, before = _copied(home)
+    vhir = home / ".vhir"
+    if locked == "lock file":
+        (vhir / "case-paths.lock").chmod(0o400)
+    vhir.chmod(0o555)
+    try:
+        err = _new_identity_fails(home, capsys)
+    finally:
+        vhir.chmod(0o755)
+        (vhir / "case-paths.lock").chmod(0o600)
+    assert _files(home, copy) == before
+    assert f"keeps case identity {_meta(case_dir)['case_uuid']}" in err
+    assert "Permission denied" in err
+    assert copy_of(copy)  # still a copy: `case list` shows the one identity
+
+
+@needs_sift
+@pytest.mark.parametrize("step", ["update_case_meta", "write_case_header"])
+def test_a_new_identity_cut_short_puts_the_old_one_back(
+    home, monkeypatch, capsys, step
+):
+    from sift_common import host_identity
+
+    from vhir_cli.case_identity import copy_of
+
+    case_dir, copy, before = _copied(home)
+
+    def fail(*a, **k):
+        raise OSError(28, "No space left on device", str(copy / "x"))
+
+    monkeypatch.setattr(host_identity, step, fail)
+    err = _new_identity_fails(home, capsys)
+    assert "No space left on device" in err
+    assert _files(home, copy) == before
+    assert copy_of(copy)
+    assert _meta(case_dir)["case_uuid"] == _meta(copy)["case_uuid"]
+
+
+@needs_sift
+def test_a_header_written_before_its_failure_is_undone(home, monkeypatch, capsys):
+    from sift_common import host_identity
+
+    case_dir, copy, before = _copied(home)
+    real = host_identity.write_case_header
+    calls = []
+
+    def lands_then_fails(*a, **k):
+        calls.append(a[1])
+        real(*a, **k)
+        if len(calls) == 1:
+            raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(host_identity, "write_case_header", lands_then_fails)
+    _new_identity_fails(home, capsys)
+    old_c12 = before["headers"][-1]["c12"]
+    assert calls[1] == old_c12 and calls[0] != old_c12
+    assert _headers(copy)[-1]["c12"] == old_c12
+    assert _headers(copy)[-1]["reason"] == "new identity undone"
+    assert (copy / "CASE.yaml").read_bytes() == before["case"]
+    assert host_identity.recorded_c12(copy) == old_c12
+
+
+@needs_sift
+def test_a_case_yaml_that_cant_be_put_back_says_what_to_set(home, monkeypatch, capsys):
+    from sift_common import host_identity
+
+    from vhir_cli import case_identity
+
+    case_dir, copy, _ = _copied(home)
+
+    def fail(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    def no_undo(path, data, mode):
+        raise OSError(30, "Read-only file system", str(path))
+
+    monkeypatch.setattr(host_identity, "write_case_header", fail)
+    monkeypatch.setattr(case_identity, "_put_back", no_undo)
+    err = _new_identity_fails(home, capsys)
+    old = _meta(case_dir)["case_uuid"]
+    assert f"set case_uuid: {old} in its CASE.yaml" in err
+    assert "Read-only file system" in err and "No space left" in err
+
+
+@needs_sift
+def test_a_record_step_that_fails_changes_nothing(home, monkeypatch, capsys):
+    from vhir_cli import case_identity
+
+    _, copy, before = _copied(home)
+
+    def fail(path, content):
+        raise OSError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(case_identity, "_atomic_write", fail)
+    err = _new_identity_fails(home, capsys)
+    assert _files(home, copy) == before
+    assert "case-paths.json: Permission denied" in err
+
+
+def test_a_put_back_that_fails_leaves_the_file_and_no_temp_file(tmp_path, monkeypatch):
+    from vhir_cli import case_identity
+
+    target = tmp_path / "CASE.yaml"
+    target.write_bytes(b"case_uuid: new\n")
+
+    def fail(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(case_identity.os, "replace", fail)
+    with pytest.raises(OSError, match="No space left"):
+        case_identity._put_back(target, b"case_uuid: old\n", 0o644)
+    assert target.read_bytes() == b"case_uuid: new\n"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize(
+    ("error", "line"),
+    [
+        (
+            OSError(13, "Permission denied", "/c/CASE.yaml"),
+            "/c/CASE.yaml: Permission denied",
+        ),
+        (OSError(5, "Input/output error"), "Input/output error"),
+        (OSError("lock held"), "lock held"),
+        (ValueError("bad header"), "bad header"),
+        (ValueError(), "ValueError"),
+    ],
+)
+def test_a_failed_step_is_named_in_one_line(error, line):
+    from vhir_cli.case_identity import _reason
+
+    assert _reason(error) == line
+
+
+@needs_sift
+@pytest.mark.parametrize("outcome", ["given", "refused"])
+def test_a_copy_lists_as_a_second_row_before_and_after_a_new_identity(
+    home, capsys, outcome
+):
+    """A `cp -r` copy is a second folder with the same case_id: `case list`
+    shows two rows either way. new-identity changes the identity, not the
+    case_id."""
+
+    def ids():
+        rows = main._case_list_data(home / "cases")["cases"]
+        return sorted(r["id"] for r in rows)
+
+    _, copy, before = _copied(home)
+    assert ids() == ["C-1", "C-1"]
+    if outcome == "given":
+        main._case_new_identity(
+            argparse.Namespace(case_id="C-1-copy", cases_dir=str(home / "cases"))
+        )
+    else:
+        vhir = home / ".vhir"
+        vhir.chmod(0o555)
+        try:
+            _new_identity_fails(home, capsys)
+        finally:
+            vhir.chmod(0o755)
+        assert _files(home, copy) == before
+    assert ids() == ["C-1", "C-1"]
+
+
+@needs_sift
+def test_a_new_identity_records_both_folders(home, capsys):
+    case_dir, copy, _ = _copied(home)
+    main._case_new_identity(
+        argparse.Namespace(case_id="C-1-copy", cases_dir=str(home / "cases"))
+    )
+    paths = json.loads((home / ".vhir" / "case-paths.json").read_text())
+    assert paths == {
+        _meta(case_dir)["case_uuid"]: str(case_dir.resolve()),
+        _meta(copy)["case_uuid"]: str(copy.resolve()),
+    }
+    assert not list(copy.glob(".CASE.yaml.*"))
 
 
 @needs_sift
@@ -256,6 +450,8 @@ def test_new_identity_waits_for_the_case_to_be_idle(home, capsys):
             )
     assert "in use" in capsys.readouterr().err
     assert _meta(copy)["case_uuid"] == before
+    paths = json.loads((home / ".vhir" / "case-paths.json").read_text())
+    assert list(paths) == [before]  # the new identity's record is taken back
 
 
 @needs_sift
