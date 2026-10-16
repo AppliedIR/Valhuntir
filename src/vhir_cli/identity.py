@@ -24,13 +24,10 @@ def _sanitize_slug(raw: str) -> str:
     """Sanitize a raw string into a valid examiner slug.
 
     Lowercases, replaces invalid characters with hyphens, strips leading/trailing
-    hyphens, and truncates to 20 characters.
+    hyphens, and truncates to 20 characters. Empty when nothing is left, so the
+    caller can say so and fall back to the OS user.
     """
-    slug = re.sub(r"[^a-z0-9-]", "-", raw.lower()).strip("-")[:20]
-    if not slug:
-        return "unknown"
-    slug = slug.lstrip("-")
-    return slug if slug else "unknown"
+    return re.sub(r"[^a-z0-9-]", "-", raw.lower()).strip("-")[:20]
 
 
 def get_examiner_identity(flag_override: str | None = None) -> dict:
@@ -57,7 +54,8 @@ def get_examiner_identity(flag_override: str | None = None) -> dict:
                 f"Falling back to OS user '{os_user}'.",
                 file=sys.stderr,
             )
-            examiner = os_user
+            # An OS user name with no letters or digits leaves no name at all
+            examiner = _sanitize_slug(os_user) or "unknown"
             source = "os_user"
         return {
             "os_user": os_user,
