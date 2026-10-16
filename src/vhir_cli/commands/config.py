@@ -18,13 +18,10 @@ def _credential(action, name: str, config_path: Path, **kw) -> None:
         sys.exit(1)
 
 
-def cmd_enrol(args, identity: dict) -> None:
-    """`vhir enrol --name NAME [--reset | --forgot | --upgrade]`: a LAN
-    examiner's credential, set up at this terminal by the person named."""
+def _refuse_invalid_name(name: str) -> None:
+    """Exit 1, saying the rule, when `name` isn't a valid examiner name."""
     from vhir_cli.identity import valid_name
 
-    config_path = Path.home() / ".vhir" / "config.yaml"
-    name = args.name
     if not valid_name(name):
         print(
             f"Invalid examiner name: {name!r} (lower-case letters, digits and hyphens, "
@@ -32,6 +29,14 @@ def cmd_enrol(args, identity: dict) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def cmd_enrol(args, identity: dict) -> None:
+    """`vhir enrol --name NAME [--reset | --forgot | --upgrade]`: a LAN
+    examiner's credential, set up at this terminal by the person named."""
+    config_path = Path.home() / ".vhir" / "config.yaml"
+    name = args.name
+    _refuse_invalid_name(name)
     if args.reset:
         _credential(credentials.reset, name, config_path)
     elif args.forgot:
@@ -86,6 +91,7 @@ def cmd_config(args, identity: dict) -> None:
 
     examiner_val = getattr(args, "examiner", None)
     if examiner_val:
+        _refuse_invalid_name(examiner_val)
         try:
             config_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
