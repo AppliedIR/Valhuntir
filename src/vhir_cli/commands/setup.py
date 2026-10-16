@@ -4,6 +4,7 @@ Subcommands:
 - vhir setup client   — Configure LLM client
 - vhir setup test     — Test connectivity
 - vhir setup join-code — Generate join code
+- vhir setup hayabusa  — Install the current Hayabusa release for this user
 """
 
 from __future__ import annotations
@@ -32,17 +33,39 @@ def cmd_setup(args, identity: dict) -> None:
         cmd_setup_join_code(args, identity)
         return
 
+    if action == "hayabusa":
+        from vhir_cli.commands.hayabusa import cmd_setup_hayabusa
+
+        cmd_setup_hayabusa(args, identity)
+        return
+
     # No subcommand — redirect to 'vhir setup client'
     print(
-        "Usage: vhir setup <client|test|join-code>\n"
+        "Usage: vhir setup <client|test|join-code|hayabusa>\n"
         "Run 'vhir setup client' to configure your LLM client.",
         file=sys.stderr,
     )
     sys.exit(1)
 
 
-def _run_connectivity_test() -> None:
-    """Test connectivity to the gateway and all MCP backends."""
+def _print_sift_tools_warning() -> None:
+    """Print the out-of-date SIFT tools warning, if there is one."""
+    from vhir_cli.sift_tools import warning
+
+    try:
+        text = warning()
+    except Exception as e:  # noqa: BLE001 — the check itself couldn't run
+        print(f"\n  SIFT tools: couldn't check ({type(e).__name__}: {e})")
+        return
+    if text:
+        print("\n  WARNING: " + text)
+
+
+def _run_connectivity_test(sift_tools: bool = True) -> None:
+    """Test connectivity to the gateway and all MCP backends.
+
+    `sift_tools`: say which SIFT tools are out of date (vhir update says it at
+    its own end instead)."""
     import json
     import re
     import shutil
@@ -189,6 +212,52 @@ def _run_connectivity_test() -> None:
     elif bwrap and socat:
         print("    socat: OK")
 
+    # --- Codex's managed layer (a box set up for Codex) ---
+    from vhir_cli.commands.codex_controls import state_lines
+
+    codex = state_lines()
+    if codex:
+        print("\n  Codex controls:")
+        for line in codex:
+            print(line)
+
+    # --- OpenSearch snapshots: what vhir backup needs to save the indices ---
+    from vhir_cli.commands.update import (
+        _resolve_opensearch_mcp_repo,
+        _tell_snapshot_setup,
+    )
+
+    try:
+        repo = _resolve_opensearch_mcp_repo(Path.home() / ".vhir" / "src" / "sift-mcp")
+    except Exception as e:  # noqa: BLE001 — an unreadable folder on the way
+        print(f"\n  OpenSearch snapshots: couldn't find opensearch-mcp ({e})")
+        repo = None
+    if repo is not None and _tell_snapshot_setup(
+        repo / "scripts" / "setup-opensearch.sh"
+    ):
+        from vhir_cli.commands import backup
+
+        try:  # backup's own path: its staging, the repository verified, a snapshot of nothing
+            from opensearch_mcp.client import get_client
+
+            cause = backup.snapshot_staging_check(get_client())
+        except Exception as e:  # noqa: BLE001 — the check itself couldn't run
+            cause = f"{type(e).__name__}: {e}"
+        if cause:
+            print(
+                "\n  OpenSearch is set up for snapshots, but vhir backup's own run fails:"
+            )
+            print(f"    - {cause}")
+            if backup._snapshot_setup_error(cause):
+                for line in backup._snapshot_setup_hint(cause).splitlines():
+                    print(f"    {line}")
+        else:
+            print("\n  OpenSearch snapshots: OK (vhir backup can save the indices)")
+
+    # --- SIFT tools Valhuntir runs (a warning only) ---
+    if sift_tools:
+        _print_sift_tools_warning()
+
     # Resolve gateway URL
     from vhir_cli.gateway import get_local_gateway_url, get_local_ssl_context
 
@@ -238,6 +307,7 @@ def _run_connectivity_test() -> None:
         return
 
     ok_count = 0
+    stopped_count = 0
     fail_count = 0
 
     print()
@@ -245,15 +315,24 @@ def _run_connectivity_test() -> None:
         bstatus = health.get("status", "unknown")
         if bstatus == "ok":
             tools = health.get("tools", "?")
-            print(f"  {name:25s} OK ({tools} tools)")
+            print(f"  {name:25s} running ({tools} tools)")
             ok_count += 1
+        elif bstatus == "stopped":
+            print(f"  {name:25s} not started (the gateway retries every 30 s)")
+            stopped_count += 1
         else:
             err = health.get("error", "unknown error")
             print(f"  {name:25s} FAIL ({err})")
             fail_count += 1
 
-    print(f"\n{ok_count} of {ok_count + fail_count} backends operational.", end="")
+    total = ok_count + stopped_count + fail_count
+    print(f"\n{ok_count} of {total} backends running.", end="")
+    if stopped_count:
+        print(f" {stopped_count} not started.", end="")
     if fail_count:
-        print(f" {fail_count} failed.")
-    else:
-        print()
+        print(f" {fail_count} failed.", end="")
+    print()
+    print(
+        "This checks each backend's own process, not the services behind it "
+        "(OpenSearch, OpenCTI, REMnux, the Windows host)."
+    )

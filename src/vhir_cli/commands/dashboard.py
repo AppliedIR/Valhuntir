@@ -1,4 +1,4 @@
-"""Open the Examiner Portal or legacy dashboard in a browser."""
+"""Open the Examiner Portal in a browser."""
 
 from __future__ import annotations
 
@@ -63,5 +63,6 @@ def cmd_portal(args, identity: dict) -> None:
 
 
 def cmd_dashboard(args, identity: dict) -> None:
-    """Open the legacy dashboard (v1)."""
-    _open_url(args, identity, "/dashboard/", "Dashboard")
+    """The legacy dashboard is retired: say so, and open the Portal."""
+    print("The legacy dashboard is retired; use `vhir portal`.")
+    cmd_portal(args, identity)

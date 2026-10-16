@@ -54,7 +54,9 @@ class TestCmdSetup:
         output = capsys.readouterr().out
         assert "Connectivity Test" in output
         assert "forensic-mcp" in output
-        assert "OK" in output
+        # the backends' own lines: the sandbox line above them depends on the host
+        assert "running (15 tools)" in output and "running (6 tools)" in output
+        assert "2 of 2 backends running." in output
 
     def test_setup_test_gateway_offline(self, capsys):
         args = MagicMock()

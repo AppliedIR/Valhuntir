@@ -114,3 +114,26 @@ def warn_if_unconfigured(identity: dict) -> None:
             f"Tip: For audit accountability, use individual OS accounts rather than shared ones.\n",
             file=sys.stderr,
         )
+
+
+# --- Examiner names: one rule for the CLI, the portal and the gateway's join ---
+# The gateway's join handler keeps a copy of this rule; a parity test pins it.
+
+NAME_RE = _EXAMINER_RE
+_NOT_NAME_CHAR = re.compile(r"[^a-z0-9-]")
+_LEADING = re.compile(r"^[^a-z0-9]+")
+
+
+def valid_name(name: str) -> bool:
+    """True when `name` meets the examiner name rule."""
+    return isinstance(name, str) and NAME_RE.fullmatch(name) is not None
+
+
+def join_name(raw: str) -> str:
+    """A machine's host name as an examiner name: lower case, the part before
+    the first ".", other characters outside [a-z0-9-] as "-", leading
+    non-alphanumerics removed, cut to 20 characters. The caller refuses a
+    result that still isn't `valid_name`."""
+    name = str(raw).lower().split(".", 1)[0]
+    name = _LEADING.sub("", _NOT_NAME_CHAR.sub("-", name))
+    return name[:20]

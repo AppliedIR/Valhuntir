@@ -19,7 +19,7 @@ OpenCTI-mcp is always optional (requires an OpenCTI instance).
 - Ubuntu 22.04+ (SIFT Workstation recommended)
 - Python 3.10+
 - Git
-- sudo access (required — creates the HMAC verification ledger at `/var/lib/vhir/verification/`)
+- sudo access (required — creates the ledger and signing-key folders under `/var/lib/vhir/`)
 
 ### Install
 
@@ -31,7 +31,7 @@ git clone https://github.com/AppliedIR/sift-mcp.git && cd sift-mcp
 The installer:
 1. Creates a Python virtual environment
 2. Installs MCP servers, gateway, and vhir CLI via pip
-3. Creates the HMAC verification ledger directory at `/var/lib/vhir/verification/` (requires sudo)
+3. Creates `/var/lib/vhir/` with `ledger/`, `keys/`, `passwords/` and `verification/` (the 0.6 records), owned by the examiner account, mode 700 (requires sudo)
 4. Sets examiner identity
 5. Generates `gateway.yaml` configuration
 6. Creates a systemd service for the gateway (optional)
@@ -51,8 +51,11 @@ The installer:
 ```powershell
 git clone https://github.com/AppliedIR/wintools-mcp.git
 cd wintools-mcp
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\setup-windows.ps1
 ```
+
+`Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default.
 
 The installer:
 1. Requires typing `security_hole` to acknowledge the security implications
@@ -112,6 +115,8 @@ This generates:
 - Local CA certificate and gateway TLS certificate at `~/.vhir/tls/`
 - Bearer token (`vhir_gw_` prefix) in `gateway.yaml`
 - Gateway binds to `0.0.0.0:4508` with TLS
+
+A Claude Code running locally on the SIFT box is pointed at that CA automatically: `vhir setup client` and `vhir update` add `env.NODE_EXTRA_CA_CERTS` = `~/.vhir/tls/ca-cert.pem` to the managed `~/.claude/settings.json` so it trusts the self-signed gateway CA (unless you already set `NODE_EXTRA_CA_CERTS`, which is kept). A value you export in your shell afterwards is overridden by the one in `settings.json`; to use your own bundle, add the gateway CA to it and remove the `settings.json` entry.
 
 The installer prints per-OS remote client setup commands with a join code.
 
@@ -210,7 +215,7 @@ backends:
   windows-triage-mcp:
     type: stdio
     command: ["python", "-m", "windows_triage"]
-  opencti-mcp:
+  threatintel-mcp:                # opencti-mcp in configurations from before
     type: stdio
     command: ["python", "-m", "opencti_mcp"]
   wintools-mcp:
@@ -261,22 +266,11 @@ api_keys:
 - `FORENSIC_DISCIPLINE.md` and `TOOL_REFERENCE.md` for LLM context
 - `CLAUDE.md` referencing AGENTS.md
 
-### Claude Desktop
+### Codex
 
-`vhir setup client --client=claude-desktop` generates `claude_desktop_config.json`:
+`vhir setup client --client=codex` (on SIFT, or with `--remote` on another machine) writes `~/.codex/valhuntir.config.toml` (0600), which `codex -p valhuntir` reads: every backend with its bearer token, `sandbox_mode = "workspace-write"`, `approval_policy = "on-request"`, `project_doc_max_bytes = 0`, and the instructions. The user's `~/.codex/config.toml` is never written. The skills go to `~/.agents/skills/` and the finding skeptic's agent to `~/.codex/agents/`.
 
-```json
-{
-  "mcpServers": {
-    "vhir": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://127.0.0.1:4508/mcp",
-               "--header", "Authorization:${AUTH_HEADER}"],
-      "env": { "AUTH_HEADER": "Bearer <your-token>" }
-    }
-  }
-}
-```
+Claude Desktop is no longer supported: the commands it runs aren't audited, so `vhir setup client` refuses it.
 
 ### External MCPs
 

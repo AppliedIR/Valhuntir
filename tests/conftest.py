@@ -5,12 +5,16 @@ Every module-level path into it points at a temporary directory for each
 test, and the two that are built inside functions are skipped. A guard
 records any access under /var/lib/vhir anyway: it refuses the access and
 fails the test, even where the code under test swallows the OSError.
+
+The examiner's record of case folders (~/.vhir/case-paths.json) is kept
+out the same way: a test with the real HOME records into a temporary folder.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -77,19 +81,65 @@ def _forbid_var_lib_vhir():
 
 
 @pytest.fixture(autouse=True)
+def _a_terminal(monkeypatch):
+    """Every test runs as if the examiner were at a terminal: approve and
+    reject check for one first. The no-terminal rows run the CLI in a new
+    session, where this patch doesn't reach."""
+    from vhir_cli import approval_auth
+
+    monkeypatch.setattr(approval_auth, "require_terminal", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_var_lib_vhir(tmp_path_factory, monkeypatch):
-    from vhir_cli import approval_auth, verification
+    from vhir_cli import approval_auth, keys, ledger, verification
     from vhir_cli.commands import backup, update
 
     root = tmp_path_factory.mktemp("var_lib_vhir")
     for mod, name, sub in (
         (verification, "VERIFICATION_DIR", "verification"),
         (approval_auth, "_PASSWORDS_DIR", "passwords"),
+        (keys, "KEYS_DIR", "keys"),
+        (ledger, "LEDGER_DIR", "ledger"),
         (backup, "VERIFICATION_DIR", "verification"),  # imported by name
         (backup, "_PASSWORDS_DIR", "passwords"),
         (backup, "_SNAPSHOTS_DIR", "snapshots"),
     ):
         monkeypatch.setattr(mod, name, root / sub)
+    # the installer makes both: the case lock lives in ledger/, and signing
+    # checks for both before any prompt
+    (root / "ledger").mkdir(mode=0o700)
+    (root / "keys").mkdir(mode=0o700)
     # Built inside functions: the legacy pins/ migration and update's check.
     monkeypatch.setattr(approval_auth, "_maybe_migrate_pin_dir", lambda: None)
     monkeypatch.setattr(update, "_ensure_password_dir", lambda: None)
+
+
+_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_case_paths(tmp_path_factory, monkeypatch):
+    """The record of which folder holds each case (~/.vhir/case-paths.json,
+    and its lock beside it) is the examiner's own: a test that runs with the
+    real HOME records into a temporary folder instead. A test that sets HOME
+    keeps its own."""
+    from vhir_cli import case_identity
+
+    real = case_identity._paths_file
+    spare = tmp_path_factory.mktemp("home") / ".vhir" / "case-paths.json"
+    monkeypatch.setattr(
+        case_identity,
+        "_paths_file",
+        lambda: spare if Path.home() == _HOME else real(),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_terminal_for_join_questions(monkeypatch):
+    """join-code asks on /dev/tty when stdout is captured; pytest captures
+    it, so a run from a terminal would wait there. No test may: they get
+    the no-terminal answers unless they set their own."""
+    from vhir_cli.commands import join
+
+    monkeypatch.setattr(join, "TTY", "/nonexistent/tty", raising=False)
