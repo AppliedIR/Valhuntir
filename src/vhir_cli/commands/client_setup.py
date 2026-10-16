@@ -2281,11 +2281,12 @@ def _codex_gateway_ca(servers: dict, remote: bool) -> None:
             )
         return
     if sys.platform == "win32":
+        ps_ca = str(ca).replace("'", "''")  # a ' doubles inside PowerShell's '...'
         print(
             "  Note: Codex trusts the gateway only with CODEX_CA_CERTIFICATE set. "
             "Run this once, then open a new terminal:\n"
             f"    [Environment]::SetEnvironmentVariable('CODEX_CA_CERTIFICATE', "
-            f"'{ca}', 'User')"
+            f"'{ps_ca}', 'User')"
         )
         return
     start = f"CODEX_CA_CERTIFICATE={shlex.quote(ca)} codex -p valhuntir"

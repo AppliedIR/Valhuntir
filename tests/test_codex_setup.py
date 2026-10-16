@@ -703,6 +703,45 @@ def test_remote_codex_trusts_the_ca_copied_from_the_sift(laptop, monkeypatch, ca
     assert _ca_lines(rc) == [f"export CODEX_CA_CERTIFICATE={ca}{MARK}"]
 
 
+def _windows_ca_note(monkeypatch, capsys, ca):
+    import vhir_cli.gateway as gw
+
+    monkeypatch.setattr(gw, "find_ca_cert", lambda: ca)
+    monkeypatch.setattr(cs, "_gateway_uses_https", lambda s: True)
+    monkeypatch.setattr(cs.sys, "platform", "win32")
+    cs._codex_gateway_ca({}, remote=True)
+    monkeypatch.undo()
+    line = capsys.readouterr().out.splitlines()[-1]
+    assert line.startswith("    [Environment]::SetEnvironmentVariable(")
+    return line[line.index(", ") + 2 : line.rindex(", ")]
+
+
+def test_the_windows_ca_line_keeps_an_apostrophe_in_the_path(monkeypatch, capsys):
+    ca = r"C:\Users\O'Brien\.vhir\tls\ca-cert.pem"
+    assert _windows_ca_note(monkeypatch, capsys, ca) == (
+        r"'C:\Users\O''Brien\.vhir\tls\ca-cert.pem'"
+    )
+
+
+@pytest.mark.skipif(not shutil.which("pwsh"), reason="pwsh not installed")
+def test_powershell_reads_the_windows_ca_line_back_as_the_path(monkeypatch, capsys):
+    ca = r"C:\Users\O'Brien's\.vhir\tls\ca-cert.pem"
+    literal = _windows_ca_note(monkeypatch, capsys, ca)
+    p = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"Write-Output {literal}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert (p.returncode, p.stdout.strip()) == (0, ca), p.stderr
+
+
 def test_remote_claude_code_trusts_the_ca_copied_from_the_sift(
     laptop, monkeypatch, capsys
 ):
