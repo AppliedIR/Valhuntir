@@ -380,9 +380,13 @@ def _show_findings_verify(
             and me in (i.get("approved_by"), i.get("rejected_by"))
         }
         code = result.exit_code
+        total = len(result.items)
         result.items = [v for v in result.items if v.item_id in mine]
+        shown = f"{len(result.items)} of {total} item{'' if total == 1 else 's'}"
         print(render(result).rsplit("\n", 1)[0])
-        print(f"Exit {code} (the whole case; --mine only filters what's shown)")
+        print(
+            f"Exit {code} (the whole case; --mine only filters what's shown: {shown})"
+        )
         sys.exit(code)
     print(render(result))
     sys.exit(result.exit_code)
@@ -459,7 +463,7 @@ def _show_timeline(
         for raw in timeline:
             t = display_safe(raw)  # for printing inline
             print(f"\n{'=' * 60}")
-            print(f"  [{t['id']}] {t.get('timestamp', '?')}")
+            print(f"  [{t['id']}] {t['timestamp'] if raw.get('timestamp') else '?'}")
             print(f"{'=' * 60}")
             print(f"  Status:      {t.get('status', '?')}")
             print(

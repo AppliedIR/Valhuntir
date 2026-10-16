@@ -16,13 +16,21 @@ import shutil
 import sys
 from pathlib import Path
 
-from vhir_cli.case_io import _atomic_write, get_case_dir
+from vhir_cli.case_io import DEFAULT_CASES_DIR, _atomic_write, get_case_dir
 from vhir_cli.commands.evidence import _log_evidence_action
 
 
 def cmd_prune_ingest_manifests(args, identity: dict) -> None:
     """Move ingest manifests out of evidence registry into audit dir."""
     case_id = getattr(args, "case_id", None)
+    if case_id and ("/" in case_id or "\\" in case_id):
+        cases_dir = os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR)
+        print(
+            f"Error resolving case: a case ID is the folder name under {cases_dir}, "
+            "not a path. For a case folder elsewhere, set VHIR_CASE_DIR.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     try:
         case_dir = get_case_dir(case_id)
     except Exception as e:
