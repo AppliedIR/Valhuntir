@@ -15,6 +15,7 @@ scratch HOME.
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -50,7 +51,7 @@ src="$SERVE/${url#*/sift-mcp/main/}"
 if [ -n "$out" ]; then cat "$src" > "$out"; else cat "$src"; fi
 """
 TOOLS = ["cat", "mkdir", "dirname", "mktemp", "rm", "cmp", "diff", "sed", "chmod",
-         "grep", "date", "cp", "printf"]  # fmt: skip
+         "grep", "date", "cp", "printf", "readlink", "tail"]  # fmt: skip
 PROLOGUE = (
     "set -euo pipefail\nRED=; GREEN=; YELLOW=; BLUE=; BOLD=; NC=\n"
     'info() { echo "INFO $*"; }; ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }\n'
@@ -74,6 +75,9 @@ def _codex_block(text):
 
 def _uninstall_block(text):
     start = text.index("    # Codex: Valhuntir's profile, skills and agent")
+    ca = text.find("    # Codex's CA line, in either profile", start)
+    if ca != -1:
+        return text[start : text.index("\n    done\n", ca) + 10]
     return text[start : text.index("\n    fi\n\n", start) + 7]
 
 
@@ -98,24 +102,27 @@ def run(tmp_path):
         if shutil.which(t):
             (bin_ / t).symlink_to(shutil.which(t))
 
-    def go(script, body):
+    def go(script, body, extra=None):
         f = home / f"block-{len(list(home.glob('block-*')))}.sh"
         f.write_text(PROLOGUE + _helpers(SCRIPTS[script]) + body)
         p = subprocess.run(
             ["/bin/bash", str(f)],
-            env={"HOME": str(home), "PATH": str(bin_), "SERVE": str(serve)},
+            env={"HOME": str(home), "PATH": str(bin_), "SERVE": str(serve)}
+            | (extra or {}),
             capture_output=True,
             text=True,
             timeout=60,
+            cwd=home,
         )
         return p.returncode, p.stdout + p.stderr
 
-    def setup(script):
+    def setup(script, url="https://sift.example:4508", rc="", ca="", extra=None):
         env = (
-            'CLIENT=codex\nGATEWAY_URL="https://sift.example:4508"\n'
+            f'CLIENT=codex\nGATEWAY_URL="{url}"\n'
             f'GATEWAY_TOKEN="{TOKEN}"\nBACKENDS="forensic-mcp\ncase-mcp"\n'
+            f"SHELL_RC={shlex.quote(rc)}\nCA_CERT={shlex.quote(ca)}\n"
         )
-        return go(script, env + _codex_block(SCRIPTS[script]))
+        return go(script, env + _codex_block(SCRIPTS[script]), extra)
 
     def uninstall(script):
         return go(script, _uninstall_block(SCRIPTS[script]))
@@ -221,6 +228,139 @@ def test_the_script_offers_codex_and_prints_the_start_folder_and_limits(script):
     assert '2) CLIENT="codex" ;;' in text
     assert "cd ~/vhir && codex -p valhuntir" in text
     assert "aren't in the case" in text and "user-switchable" in text
+
+
+# --- Codex's CA on a TLS gateway ----------------------------------------------
+
+MARK = "  # vhir-codex-ca"
+
+
+def _ca(home):
+    ca = home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True, exist_ok=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    return ca
+
+
+def _ca_lines(rc):
+    return [ln for ln in rc.read_text().splitlines() if ln.endswith(MARK)]
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_an_https_gateway_has_codex_trust_its_ca_from_the_shell_profile(run, script):
+    ca = _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text("alias ll='ls -l'")  # no final newline
+    code, out = run.setup(script, rc=str(rc))
+    assert code == 0, out
+    assert rc.read_text() == (
+        f"alias ll='ls -l'\nexport CODEX_CA_CERTIFICATE={ca}{MARK}\n"
+    )
+    assert f"export CODEX_CA_CERTIFICATE={ca}" in out
+    # a re-run keeps one line; a stale path is replaced
+    run.setup(script, rc=str(rc))
+    assert _ca_lines(rc) == [f"export CODEX_CA_CERTIFICATE={ca}{MARK}"]
+    rc.write_text(f"export CODEX_CA_CERTIFICATE=/old/ca.pem{MARK}\nalias x=y\n")
+    run.setup(script, rc=str(rc))
+    assert rc.read_text() == f"alias x=y\nexport CODEX_CA_CERTIFICATE={ca}{MARK}\n"
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_the_ca_line_quotes_a_path_with_spaces(run, script):
+    home = run.home
+    ca = _ca(home)
+    rc = home / ".bashrc"
+    rc.write_text("")
+    if script == "linux":
+        odd = home / "my certs" / "ca $x.pem"
+        odd.parent.mkdir()
+        odd.write_text("x")
+        run.setup(script, rc=str(rc), ca=str(odd))
+        ca = odd
+    else:
+        run.setup(script, rc=str(rc))
+    (line,) = _ca_lines(rc)
+    p = subprocess.run(
+        ["/bin/bash", "-c", f'{line}\nprintf %s "$CODEX_CA_CERTIFICATE"'],
+        capture_output=True,
+        text=True,
+    )
+    assert p.stdout == str(ca)
+
+
+def test_linux_takes_the_join_s_ca_cert_and_makes_it_absolute(run):
+    _ca(run.home)
+    mine = run.home / "sift-ca.pem"
+    mine.write_text("x")
+    rc = run.home / ".bashrc"
+    rc.write_text("")
+    code, out = run.setup("linux", rc=str(rc), ca="sift-ca.pem")
+    assert code == 0, out
+    assert _ca_lines(rc) == [f"export CODEX_CA_CERTIFICATE={mine}{MARK}"]
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_an_http_gateway_leaves_the_profile_alone(run, script):
+    _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.setup(script, url="http://sift.example:4508", rc=str(rc))
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\n" and "CODEX_CA" not in out
+
+
+@pytest.mark.parametrize("var", ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"])
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_a_bundle_the_user_set_is_named_and_not_overridden(run, script, var):
+    ca = _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.setup(script, rc=str(rc), extra={var: "/etc/corp-bundle.pem"})
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\n"
+    assert f"WARN {var} is set to /etc/corp-bundle.pem" in out and str(ca) in out
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_vhir_s_own_value_in_the_environment_still_updates_the_line(run, script):
+    ca = _ca(run.home)
+    rc = run.home / ".bashrc"
+    rc.write_text(f"export CODEX_CA_CERTIFICATE=/old/ca.pem{MARK}\n")
+    code, out = run.setup(
+        script, rc=str(rc), extra={"CODEX_CA_CERTIFICATE": "/old/ca.pem"}
+    )
+    assert code == 0, out
+    assert _ca_lines(rc) == [f"export CODEX_CA_CERTIFICATE={ca}{MARK}"]
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_without_the_ca_here_the_script_says_how_to_get_it(run, script):
+    rc = run.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    code, out = run.setup(script, rc=str(rc))
+    assert code == 0, out
+    assert rc.read_text() == "alias x=y\n"
+    assert "WARN The gateway uses https" in out and "ca-cert.pem" in out
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_without_a_shell_profile_the_script_prints_the_start_line(run, script):
+    ca = _ca(run.home)
+    code, out = run.setup(script, rc="")
+    assert code == 0, out
+    assert f"CODEX_CA_CERTIFICATE={ca} codex -p valhuntir" in out
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS))
+def test_uninstall_removes_the_ca_line_from_either_profile(run, script):
+    for name in (".bashrc", ".zshrc"):
+        (run.home / name).write_text(
+            f"alias x=y\nexport CODEX_CA_CERTIFICATE=/a/ca.pem{MARK}\nexport P=1\n"
+        )
+    code, out = run.uninstall(script)
+    assert code == 0, out
+    for name in (".bashrc", ".zshrc"):
+        assert (run.home / name).read_text() == "alias x=y\nexport P=1\n"
 
 
 # --- Windows (pwsh) ---------------------------------------------------------------
@@ -330,3 +470,32 @@ def test_windows_uninstall_removes_only_vhir_s_codex_files(win):
 def test_windows_offers_codex_and_prints_the_limits():
     assert '"2" { "codex" }' in WIN
     assert "codex -p valhuntir" in WIN and "user-switchable" in WIN
+
+
+def _win_codex(tmp_path, run, url, extra_env=None):
+    codex = _win_part("# ---- Codex: Valhuntir's profile", "# ---- Claude Code assets")
+    env = (
+        f'$clientType = "codex"\n$gatewayUrl = "{url}"\n'
+        f'$gatewayToken = "{TOKEN}"\n$backends = @("forensic-mcp", "case-mcp")\n'
+    )
+    pre = "".join(f"$env:{k} = '{v}'\n" for k, v in (extra_env or {}).items())
+    return _win_run(tmp_path, pre + env + codex, run.serve)
+
+
+@pytest.mark.skipif(not PWSH, reason="pwsh not installed")
+def test_windows_tells_how_codex_trusts_an_https_gateway(run, tmp_path):
+    rc, out = _win_codex(tmp_path, run, "https://sift.example:4508")
+    assert rc == 0, out
+    assert "WARN The gateway uses https" in out
+    assert "SetEnvironmentVariable('CODEX_CA_CERTIFICATE'" in out
+    rc, out = _win_codex(tmp_path, run, "http://sift.example:4508")
+    assert rc == 0, out
+    assert "CODEX_CA_CERTIFICATE" not in out
+    rc, out = _win_codex(
+        tmp_path,
+        run,
+        "https://sift.example:4508",
+        {"CODEX_CA_CERTIFICATE": "C:/ca.pem"},
+    )
+    assert rc == 0, out
+    assert "CODEX_CA_CERTIFICATE" not in out

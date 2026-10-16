@@ -579,3 +579,138 @@ def test_uninstall_unlinks_a_linked_skill_folder_and_keeps_its_target(
     cs._uninstall_project()
     assert not link.exists() and not link.is_symlink()
     assert (target / "SKILL.md").read_text() == "kept\n"
+
+
+# --- Codex's CA on a TLS gateway ------------------------------------------------
+
+MARK = "  # vhir-codex-ca"
+
+
+@pytest.fixture
+def tls_box(box, monkeypatch):
+    """The SIFT box with its gateway on TLS, and the user's ~/.bashrc."""
+    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    gw = box.home / ".vhir" / "gateway.yaml"
+    gw.write_text(gw.read_text() + "gateway:\n  tls:\n    certfile: cert.pem\n")
+    box.ca = box.home / ".vhir" / "tls" / "ca-cert.pem"
+    box.ca.parent.mkdir()
+    box.ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    box.rc = box.home / ".bashrc"
+    box.rc.write_text("alias ll='ls -l'")  # no final newline
+    return box
+
+
+def _tls_setup(**kw):
+    _setup(sift="https://127.0.0.1:4508", **kw)
+
+
+def _ca_lines(rc):
+    return [x for x in rc.read_text().splitlines() if x.endswith(MARK)]
+
+
+def test_a_tls_gateway_has_codex_trust_its_ca_from_the_shell_profile(tls_box, capsys):
+    tls_box.rc.chmod(0o600)
+    _tls_setup()
+    assert tls_box.rc.read_text() == (
+        f"alias ll='ls -l'\nexport CODEX_CA_CERTIFICATE={tls_box.ca}{MARK}\n"
+    )
+    assert tls_box.rc.stat().st_mode & 0o777 == 0o600
+    out = capsys.readouterr().out
+    assert f"export CODEX_CA_CERTIFICATE={tls_box.ca}" in out
+    # a re-run changes nothing and says nothing
+    _tls_setup()
+    assert _ca_lines(tls_box.rc) == [f"export CODEX_CA_CERTIFICATE={tls_box.ca}{MARK}"]
+    assert "Codex CA:" not in capsys.readouterr().out
+
+
+def test_a_stale_ca_line_is_replaced_even_when_the_shell_exported_it(
+    tls_box, monkeypatch
+):
+    tls_box.rc.write_text(f"export CODEX_CA_CERTIFICATE=/old/ca.pem{MARK}\nalias x=y\n")
+    monkeypatch.setenv("CODEX_CA_CERTIFICATE", "/old/ca.pem")
+    _tls_setup()
+    assert tls_box.rc.read_text() == (
+        f"alias x=y\nexport CODEX_CA_CERTIFICATE={tls_box.ca}{MARK}\n"
+    )
+
+
+def test_vhir_update_adds_the_ca_line_to_an_existing_install(tls_box):
+    tls_box.ca.unlink()
+    _tls_setup()
+    assert _ca_lines(tls_box.rc) == []
+    tls_box.ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    assert cs.deploy_codex_assets() == "unchanged"
+    assert _ca_lines(tls_box.rc) == [f"export CODEX_CA_CERTIFICATE={tls_box.ca}{MARK}"]
+
+
+@pytest.mark.parametrize("var", ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"])
+def test_a_bundle_the_user_set_is_named_and_not_overridden(
+    tls_box, monkeypatch, capsys, var
+):
+    monkeypatch.setenv(var, "/etc/corp-bundle.pem")
+    _tls_setup()
+    assert tls_box.rc.read_text() == "alias ll='ls -l'"
+    out = capsys.readouterr().out
+    assert f"{var} is set to /etc/corp-bundle.pem" in out and str(tls_box.ca) in out
+
+
+def test_without_a_shell_profile_the_start_line_is_printed(tls_box, capsys):
+    tls_box.rc.unlink()
+    _tls_setup()
+    assert not tls_box.rc.exists()
+    out = capsys.readouterr().out
+    assert f"CODEX_CA_CERTIFICATE={tls_box.ca} codex -p valhuntir" in out
+
+
+def test_a_linked_shell_profile_is_written_through_its_link(tls_box):
+    real = tls_box.home / "dotfiles" / "bashrc"
+    real.parent.mkdir()
+    real.write_text("alias x=y\n")
+    tls_box.rc.unlink()
+    tls_box.rc.symlink_to(real)
+    _tls_setup()
+    assert tls_box.rc.is_symlink()
+    assert (
+        real.read_text()
+        == f"alias x=y\nexport CODEX_CA_CERTIFICATE={tls_box.ca}{MARK}\n"
+    )
+
+
+def test_an_http_gateway_leaves_the_shell_profile_alone(box, capsys):
+    rc = box.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    _setup(windows="192.0.2.5:4624", windows_token="vhir_wt_" + "cd" * 12)
+    assert rc.read_text() == "alias x=y\n"
+    assert "CODEX_CA" not in capsys.readouterr().out
+
+
+def test_remote_codex_trusts_the_ca_copied_from_the_sift(laptop, monkeypatch, capsys):
+    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    rc = laptop.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    _remote()
+    assert rc.read_text() == "alias x=y\n"
+    assert "copy the SIFT's ~/.vhir/tls/ca-cert.pem" in capsys.readouterr().out
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\n")
+    _remote()
+    assert _ca_lines(rc) == [f"export CODEX_CA_CERTIFICATE={ca}{MARK}"]
+
+
+def test_uninstall_removes_the_ca_line_and_keeps_the_rest(laptop, monkeypatch):
+    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    ca = laptop.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("x")
+    rc = laptop.home / ".bashrc"
+    rc.write_text("alias x=y\n")
+    _remote()
+    # the line as an earlier setup wrote it, then a line of the user's
+    rc.write_text(f"alias x=y\nexport CODEX_CA_CERTIFICATE={ca}{MARK}\nexport P=1\n")
+    monkeypatch.setattr(cs, "_prompt_yn_strict", lambda m: True)
+    cs._uninstall_project()
+    assert rc.read_text() == "alias x=y\nexport P=1\n"

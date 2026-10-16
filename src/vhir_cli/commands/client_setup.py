@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -2148,6 +2149,7 @@ def deploy_codex_assets(
             path, _codex_profile_text(servers, instructions, [])
         )
         _codex_config_conflicts()
+        _codex_gateway_ca(servers, remote=True)
         return status
     deploy_skills(Path.home() / ".agents" / "skills")
     agents = _sift_root_dir("agents")
@@ -2177,7 +2179,141 @@ def deploy_codex_assets(
     text = _codex_profile_text(servers, instructions, sections)
     status = _write_codex_profile(path, text)
     _codex_config_conflicts()
+    _codex_gateway_ca(servers, remote=False)
     return status
+
+
+_CODEX_CA_MARK = "# vhir-codex-ca"
+
+
+def _shell_rc() -> Path | None:
+    """The shell profile the installers edit: ~/.bashrc, else ~/.zshrc (on
+    macOS ~/.zshrc first, as setup-client-macos.sh), through a link."""
+    names = (".zshrc", ".bashrc") if sys.platform == "darwin" else (".bashrc", ".zshrc")
+    for name in names:
+        rc = Path.home() / name
+        if rc.is_file():
+            return rc.resolve()
+    return None
+
+
+def _codex_ca_ours(line: str) -> str | None:
+    """The CA path in vhir's `export CODEX_CA_CERTIFICATE=...  # vhir-codex-ca`
+    line, or None for any other line."""
+    if not line.rstrip().endswith(_CODEX_CA_MARK):
+        return None
+    try:
+        words = shlex.split(line, comments=True)
+    except ValueError:
+        return None
+    if len(words) == 2 and words[0] == "export":
+        name, _, value = words[1].partition("=")
+        if name == "CODEX_CA_CERTIFICATE" and value:
+            return value
+    return None
+
+
+def _rewrite_rc(rc: Path, lines: list[str]) -> None:
+    """Replace rc with `lines`, keeping its mode."""
+    tmp = rc.with_name(rc.name + ".vhir-new")
+    tmp.write_bytes("".join(lines).encode("utf-8", "surrogateescape"))
+    shutil.copymode(rc, tmp)
+    os.replace(tmp, rc)
+
+
+def _rc_lines(rc: Path) -> list[str]:
+    return rc.read_bytes().decode("utf-8", "surrogateescape").splitlines(True)
+
+
+def _codex_gateway_ca(servers: dict, remote: bool) -> None:
+    """Codex trusts the gateway's self-signed CA only through its environment
+    (CODEX_CA_CERTIFICATE, else SSL_CERT_FILE): its profile can't name one,
+    and without it every gateway backend fails with "error sending request".
+    For a TLS gateway, export it from the shell profile, as the installers
+    do with PATH, unless the user points Codex at a CA bundle of their own."""
+    from vhir_cli.gateway import find_ca_cert, local_gateway_ca_cert
+
+    # the gateway's own backends; a direct wintools or REMnux entry has its own CA
+    direct = (*_INTERNET_MCPS, "wintools-mcp", "remnux-mcp")
+    if not any(
+        str(e.get("url", "")).startswith("https://")
+        for n, e in servers.items()
+        if n not in direct
+    ):
+        return
+    ca = find_ca_cert() if remote else local_gateway_ca_cert()
+    if not ca:
+        if remote:
+            print(
+                "  Note: the gateway uses https. If Codex can't connect to it, "
+                "copy the SIFT's ~/.vhir/tls/ca-cert.pem to ~/.vhir/tls/ca-cert.pem "
+                "here and run this again: vhir then has Codex trust it."
+            )
+        return
+    if sys.platform == "win32":
+        print(
+            "  Note: Codex trusts the gateway only with CODEX_CA_CERTIFICATE set. "
+            "Run this once, then open a new terminal:\n"
+            f"    [Environment]::SetEnvironmentVariable('CODEX_CA_CERTIFICATE', "
+            f"'{ca}', 'User')"
+        )
+        return
+    start = f"CODEX_CA_CERTIFICATE={shlex.quote(ca)} codex -p valhuntir"
+    rc = _shell_rc()
+    try:
+        lines = _rc_lines(rc) if rc else []
+    except OSError as e:
+        print(f"  Note: {rc} couldn't be read ({e}). Start Codex with:\n    {start}")
+        return
+    ours = next((v for v in map(_codex_ca_ours, lines) if v), None)
+    for var in ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"):
+        value = os.environ.get(var)
+        if value and value not in (ca, ours):  # the user's own bundle
+            print(
+                f"  Note: {var} is set to {value}, which Codex uses instead of "
+                f"the gateway's CA. Add {ca} to that bundle, or Codex can't "
+                "connect to the gateway."
+            )
+            return
+        if value and var == "CODEX_CA_CERTIFICATE":
+            break  # SSL_CERT_FILE is only Codex's fallback
+    if rc is None:
+        print(
+            "  Note: no ~/.bashrc or ~/.zshrc to set Codex's CA in. "
+            f"Start Codex with:\n    {start}"
+        )
+        return
+    line = f"export CODEX_CA_CERTIFICATE={shlex.quote(ca)}  {_CODEX_CA_MARK}\n"
+    if ours == ca and line in lines:
+        return
+    kept = [x for x in lines if not _codex_ca_ours(x)]
+    if kept and not kept[-1].endswith("\n"):
+        kept[-1] += "\n"
+    try:
+        _rewrite_rc(rc, kept + [line])
+    except OSError as e:
+        print(f"  Note: {rc} couldn't be changed ({e}). Start Codex with:\n    {start}")
+        return
+    print(f"  Codex CA:  {rc} sets CODEX_CA_CERTIFICATE to {ca},")
+    print("             so Codex trusts the gateway. In a terminal opened before")
+    print(f"             now, run: export CODEX_CA_CERTIFICATE={shlex.quote(ca)}")
+
+
+def _uninstall_codex_ca() -> None:
+    """Remove vhir's CODEX_CA_CERTIFICATE line from the shell profile."""
+    rc = _shell_rc()
+    try:
+        lines = _rc_lines(rc) if rc else []
+    except OSError:
+        return
+    if not any(_codex_ca_ours(x) for x in lines):
+        return
+    print(f"  {rc}: the line that has Codex trust the gateway ({_CODEX_CA_MARK})")
+    if not _prompt_yn_strict("  Remove it?"):
+        print("  Skipped.")
+        return
+    _rewrite_rc(rc, [x for x in lines if not _codex_ca_ours(x)])
+    print("  Removed.")
 
 
 _GITHUB_RAW = "https://raw.githubusercontent.com/AppliedIR/sift-mcp/main"
@@ -2311,6 +2447,7 @@ def _uninstall_codex() -> None:
     _remove_listed(
         "Codex files to remove", found + _our_skills(Path.home() / ".agents" / "skills")
     )
+    _uninstall_codex_ca()
 
 
 def _uninstall_claude_copies(claude_dir: Path | None = None) -> None:

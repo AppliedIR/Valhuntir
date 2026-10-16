@@ -526,6 +526,12 @@ if ($clientType -eq "codex") {
         (Select-String -LiteralPath $codexConfig -Pattern '^\s*sandbox_mode\s*=\s*"danger-full-access"' -Quiet)) {
         Write-Warn "$codexConfig sets sandbox_mode = `"danger-full-access`": that widens Codex's sandbox. vhir doesn't edit that file."
     }
+    # Codex trusts the gateway's self-signed CA only through its environment
+    # (CODEX_CA_CERTIFICATE, else SSL_CERT_FILE): its profile can't name one.
+    if ($gatewayUrl -like "https://*" -and -not $env:CODEX_CA_CERTIFICATE) {
+        Write-Warn "The gateway uses https. For Codex to connect, copy the SIFT's ~/.vhir/tls/ca-cert.pem to this machine, then run (with that copy's full path) and open a new terminal:"
+        Write-Host "    [Environment]::SetEnvironmentVariable('CODEX_CA_CERTIFICATE', 'C:\path\to\ca-cert.pem', 'User')"
+    }
     if ($errors -gt 0) {
         Write-Warn "$errors Codex file(s) could not be fetched. Re-run, or fetch them by hand."
     }

@@ -178,6 +178,16 @@ if $UNINSTALL; then
         fi
         echo ""
     fi
+    # Codex's CA line, in either profile
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        if [[ -f "$rc" ]] && grep -q '  # vhir-codex-ca$' "$rc" 2>/dev/null; then
+            tmp=$(mktemp)
+            { grep -v '  # vhir-codex-ca$' "$rc" > "$tmp" || true; }
+            cat "$tmp" > "$rc"
+            rm -f "$tmp"
+            ok "Removed Codex's CA line from $rc"
+        fi
+    done
 
 
     if [[ ! -d "$DEPLOY_DIR" ]]; then
@@ -520,6 +530,43 @@ if [[ "$CLIENT" == "codex" ]]; then
         replace_file "$PROFILE.vhir-new" "$PROFILE"
         chmod 600 "$PROFILE"
         ok "Written: $PROFILE"
+    fi
+    # Codex trusts the gateway's self-signed CA only through its environment
+    # (CODEX_CA_CERTIFICATE, else SSL_CERT_FILE): its profile can't name one.
+    if [[ "$GATEWAY_URL" == https://* ]]; then
+        CODEX_CA=""
+        [[ -z "$CODEX_CA" && -f "$HOME/.vhir/tls/ca-cert.pem" ]] && CODEX_CA="$HOME/.vhir/tls/ca-cert.pem"
+        [[ -n "$CODEX_CA" && "$CODEX_CA" != /* ]] && CODEX_CA="$PWD/$CODEX_CA"
+        CA_LINE=$(printf 'export CODEX_CA_CERTIFICATE=%q  # vhir-codex-ca' "$CODEX_CA")
+        CA_OURS=""
+        [[ -n "$SHELL_RC" ]] && CA_OURS=$(grep -E '^export CODEX_CA_CERTIFICATE=.*  # vhir-codex-ca$' "$SHELL_RC" 2>/dev/null | tail -n 1 || true)
+        CA_USER=""
+        for var in CODEX_CA_CERTIFICATE SSL_CERT_FILE; do
+            val="${!var:-}"
+            [[ -z "$val" ]] && continue
+            if [[ "$val" != "$CODEX_CA" && "$(printf 'export CODEX_CA_CERTIFICATE=%q  # vhir-codex-ca' "$val")" != "$CA_OURS" ]]; then
+                CA_USER="$var=$val"
+            fi
+            break  # SSL_CERT_FILE is only Codex's fallback
+        done
+        if [[ -z "$CODEX_CA" ]]; then
+            warn "The gateway uses https. If Codex can't connect to it, copy the SIFT's ~/.vhir/tls/ca-cert.pem to ~/.vhir/tls/ca-cert.pem here and re-run."
+        elif [[ -n "$CA_USER" ]]; then
+            warn "${CA_USER%%=*} is set to ${CA_USER#*=}, which Codex uses instead of the gateway's CA. Add $CODEX_CA to that bundle, or Codex can't connect to the gateway."
+        elif [[ -z "$SHELL_RC" ]]; then
+            warn "No ~/.bashrc or ~/.zshrc to set Codex's CA in. Start Codex with: CODEX_CA_CERTIFICATE=$(printf %q "$CODEX_CA") codex -p valhuntir"
+        else
+            if ! grep -qxF "$CA_LINE" "$SHELL_RC"; then
+                tmp=$(mktemp)
+                { grep -v '  # vhir-codex-ca$' "$SHELL_RC" > "$tmp" || true; }
+                cat "$tmp" > "$SHELL_RC"
+                rm -f "$tmp"
+                [[ -s "$SHELL_RC" && -n "$(tail -c1 "$SHELL_RC")" ]] && echo >> "$SHELL_RC"
+                echo "$CA_LINE" >> "$SHELL_RC"
+            fi
+            ok "$SHELL_RC sets CODEX_CA_CERTIFICATE to $CODEX_CA, so Codex trusts the gateway"
+            info "In a terminal opened before now, run: export CODEX_CA_CERTIFICATE=$(printf %q "$CODEX_CA")"
+        fi
     fi
     if [[ -f "$HOME/.codex/config.toml" ]] && grep -Eq '^[[:space:]]*sandbox_mode[[:space:]]*=[[:space:]]*"danger-full-access"' "$HOME/.codex/config.toml"; then
         warn "$HOME/.codex/config.toml sets sandbox_mode = \"danger-full-access\": that widens Codex's sandbox. vhir doesn't edit that file."
