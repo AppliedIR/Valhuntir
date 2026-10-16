@@ -20,7 +20,8 @@ from .test_signed_decisions import IDENT, _signed, _status, case  # noqa: F401
 
 LINE = (
     "  IOC-steve-001 stays DRAFT: cited by F-steve-001 (APPROVED) and "
-    "F-steve-002 ({}). Decide it on its own: vhir approve IOC-steve-001"
+    "F-steve-002 ({}). It is approved only when every finding that cites it is "
+    "approved. To reject it now: vhir reject IOC-steve-001"
 )
 
 
@@ -43,6 +44,28 @@ def test_an_ioc_split_between_findings_is_named_with_each_citing_one(
     assert "To be signed: F-steve-001, T-steve-001" in out
     assert _signed() == [("F-steve-001", "approve"), ("T-steve-001", "approve")]
     assert _status(case, "iocs.json", "IOC-steve-001") == "DRAFT"
+    assert verify_case(case).exit_code == 0
+
+
+@pytest.mark.parametrize("other", ["REJECTED", "DRAFT"])
+def test_the_line_names_only_a_route_that_decides_the_ioc(case, capsys, other):
+    # `vhir approve IOC-x` can't find an IOC, and the Portal's IOCs tab has no
+    # decision controls, so neither is named
+    _second_cites(case, other)
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    (line,) = [x for x in capsys.readouterr().out.splitlines() if "stays DRAFT" in x]
+    assert "vhir approve" not in line and "IOCs tab" not in line
+
+
+def test_following_the_line_rejects_the_ioc_and_signs_it(case, capsys):
+    _second_cites(case, "REJECTED")
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    (line,) = [x for x in capsys.readouterr().out.splitlines() if "stays DRAFT" in x]
+    command = line.split("To reject it now: ", 1)[1].split()
+    assert command[:2] == ["vhir", "reject"]
+    A._approve_specific(case, command[2:], IDENT, case / "cfg", decision="reject")
+    assert _status(case, "iocs.json", "IOC-steve-001") == "REJECTED"
+    assert ("IOC-steve-001", "reject") in _signed()
     assert verify_case(case).exit_code == 0
 
 
@@ -90,8 +113,8 @@ def test_three_citing_findings_are_named_in_id_order():
     )  # fmt: skip
     assert decide.held_line(h.id, h.coupled_from, h.citing) == (
         "IOC-steve-001 stays DRAFT: cited by F-steve-001 (APPROVED), F-steve-002 "
-        "(DRAFT) and F-steve-003 (REJECTED). Decide it on its own: vhir approve "
-        "IOC-steve-001"
+        "(DRAFT) and F-steve-003 (REJECTED). It is approved only when every finding "
+        "that cites it is approved. To reject it now: vhir reject IOC-steve-001"
     )
 
 

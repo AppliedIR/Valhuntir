@@ -157,8 +157,9 @@ def held_line(item_id: str, finding_id: str, citing=()) -> str:
         named = [f"{one_line(f)} ({one_line(s)})" for f, s in citing]
         names = " and ".join([", ".join(named[:-1]), named[-1]] if named[1:] else named)
         return (
-            f"{one_line(item_id)} stays DRAFT: cited by {names}. Decide it on its "
-            f"own: vhir approve {one_line(item_id)}"
+            f"{one_line(item_id)} stays DRAFT: cited by {names}. It is approved only "
+            f"when every finding that cites it is approved. To reject it now: "
+            f"vhir reject {one_line(item_id)}"
         )
     return (
         f"{one_line(item_id)} is linked to {one_line(finding_id)}, which was edited "
