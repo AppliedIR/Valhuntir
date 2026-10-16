@@ -29,6 +29,21 @@
    "observation": "windows.netscan on rd01 memory lists, among 170 entries: an inbound RDP connection 172.16.30.23:55264 -> 172.16.6.11:3389 ESTABLISHED (svchost.exe PID 960, TermService) created 14:38:47 UTC; an outbound RDP connection from explorer.exe (PID 6664) 172.16.6.11:59665 -> 172.16.7.15:3389 ESTABLISHED created 14:47:21 UTC; SMB 172.16.6.11:61814 -> 172.16.6.14:445 ESTABLISHED (System) created 14:54:00 UTC; inbound SMB 172.16.6.18:63026 -> 172.16.6.11:445 ESTABLISHED created 14:43:02 UTC; WinRM 172.16.6.11:54867 -> 172.16.5.21:5985 ESTABLISHED (svchost.exe PID 3300, WinRM) created 15:24:11 UTC.",
    "status": "APPROVED",
    "title": "rd01 memory: live RDP, SMB and WinRM sessions to and from five internal hosts at capture time (172.16.30.23, 172.16.7.15, 172.16.6.14, 172.16.6.18, 172.16.5.21)"
+  },
+  {
+   "id": "F-steve-003",
+   "interpretation": "The beacon names evil[.]com and evil2[.]com; 203.0.113.7:8443 is the address they resolved to.",
+   "iocs": [
+    "evil[.]com",
+    "203.0.113.7:8443",
+    {
+     "type": "domain-name",
+     "value": "evil2[.]com"
+    }
+   ],
+   "observation": "svchost.exe (PID 3300) connected to 203.0.113.7:8443 after resolving evil[.]com and evil2[.]com.",
+   "status": "APPROVED",
+   "title": "rd01: beacon to evil[.]com and evil2[.]com at 203.0.113.7:8443"
   }
  ],
  "records": [
@@ -112,6 +127,33 @@
    "status": "APPROVED",
    "type": "ipv4-addr",
    "value": "172.16.5.21"
+  },
+  {
+   "id": "IOC-steve-010",
+   "source_findings": [
+    "F-steve-003"
+   ],
+   "status": "APPROVED",
+   "type": "domain-name",
+   "value": "evil.com"
+  },
+  {
+   "id": "IOC-steve-011",
+   "source_findings": [
+    "F-steve-003"
+   ],
+   "status": "APPROVED",
+   "type": "ipv4-addr",
+   "value": "203.0.113.7"
+  },
+  {
+   "id": "IOC-steve-012",
+   "source_findings": [
+    "F-steve-003"
+   ],
+   "status": "APPROVED",
+   "type": "domain-name",
+   "value": "evil2.com"
   }
  ]
 }

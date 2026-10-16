@@ -1,11 +1,12 @@
 """The IOCs a set of findings names, grouped under one label each, as `vhir
 review --iocs` and the reports list them.
 
-Each value is listed once. Two values are the same IOC when they normalise to
-the same text, as forensic-mcp compares IOCs when it records them: a hash
-case-insensitively, a dotted name case-insensitively and without a trailing
-dot, a path with a backslash case-insensitively. The first label a value gets
-is kept, and it is shown as first written.
+Each value is listed once. Two values are the same IOC when they key to the
+same text, as forensic-mcp keys an IOC when it records it: refanged, an IPv4
+address without its :port, then a hash case-insensitively, a dotted name
+case-insensitively and without a trailing dot, a path with a backslash
+case-insensitively. The first label a value gets is kept, and it is shown as
+first written.
 
 Every value in a finding's `iocs` is listed under its type's label. A value
 with no type (a plain string, or a type that is empty or null) takes the type
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import re
 
+from vhir_cli.case_io import _is_ipv4, _refang_ioc, normalize_ioc
 from vhir_cli.defang import refang
 
 # How a stored IOC type is labelled; any other type is shown as stored
@@ -62,16 +64,16 @@ PATTERNS = (
 )
 
 
-def ioc_key(value: str) -> str:
-    """The text two values are compared by (forensic-mcp's `_normalize_ioc`)."""
-    v = value.strip()
-    if re.match(r"^[a-fA-F0-9]{32,64}$", v):
-        return v.lower()
-    if "." in v and not v.replace(".", "").isdigit():
-        return v.lower().rstrip(".")
-    if "\\" in v:
-        return v.lower()
-    return v
+def ioc_key(value: str, type_=None) -> str:
+    """The text two values are compared by: the key forensic-mcp records an
+    IOC under (forensic_mcp/case/manager.py `_process_iocs`, as
+    case_io.ioc_values copies it). The value is refanged, an IPv4 address
+    loses its :port (typed "ipv4-addr", or untyped and read as IPv4), then
+    normalised."""
+    v = _refang_ioc(value.strip())
+    if type_ == "ipv4-addr" if type_ else _is_ipv4(v):
+        v = re.sub(r":\d{1,5}$", "", v)
+    return normalize_ioc(v)
 
 
 def _sentence_end(value: str) -> str:
@@ -138,7 +140,7 @@ def ioc_groups(findings: list, records: list) -> dict[str, list[str]]:
     for r in records or []:
         typed = isinstance(r, dict) and not _no_type(r.get("type"))
         if typed and r.get("value") is not None:
-            record_type.setdefault(ioc_key(str(r["value"])), r["type"])
+            record_type.setdefault(ioc_key(str(r["value"]), r["type"]), r["type"])
     findings = [f for f in findings or [] if isinstance(f, dict)]
 
     listed: dict[str, tuple[str, str]] = {}  # key -> (label, as first written)
@@ -147,7 +149,7 @@ def ioc_groups(findings: list, records: list) -> dict[str, list[str]]:
             if value is None:
                 continue
             value = value if isinstance(value, str) else str(value)
-            key = ioc_key(value)
+            key = ioc_key(value, t)
             if not key or key in listed:
                 continue
             if _no_type(t):

@@ -39,12 +39,14 @@ def _r(n, value, type_, status="APPROVED"):
             "status": status, "source_findings": ["F-tester-001"]}  # fmt: skip
 
 
-# The examiner's dry-run case: two approved findings and their nine records
+# The examiner's dry-run case: two approved findings and their nine records,
+# then a finding that names defanged and host:port values, and their records
 DRY_RUN = json.loads((FIXTURE / "ioc_lists_dry_run_case.json").read_text())
 DRY_RUN_LIST = {
+    "Domain": ["evil2[.]com", "evil[.]com"],
     "File": [UNC],
     "IPv4": ["172.16.30.23", "172.16.5.21", "172.16.6.12", "172.16.6.14",
-             "172.16.6.18", "172.16.7.15"],
+             "172.16.6.18", "172.16.7.15", "203.0.113.7:8443"],
     "Unknown": [SID],
     "user-account": ["tdungan"],
     TEXT_ONLY: ["172.16.6.11", "C:\\Windows\\system32\\cmd.exe"],
@@ -104,6 +106,34 @@ SHAPES = {
         [_f(1, ["10.9.8.7", SHA, "b" * 40, "c" * 32, "C:\\Temp\\x.exe", "bad.ru", "hello"])], [],
         {"Domain": ["bad.ru"], "File": ["C:\\Temp\\x.exe"], "IPv4": ["10.9.8.7"],
          "MD5": ["c" * 32], "SHA1": ["b" * 40], "SHA256": [SHA], "Unknown": ["hello"]},
+    ),
+    "string-defanged-record": (
+        [_f(1, ["evil[.]com"], observation="Beacon to evil[.]com.")],
+        [_r(1, "evil.com", "domain-name")], {"Domain": ["evil[.]com"]},
+    ),
+    "string-ip-port-record": (
+        [_f(1, ["203.0.113.7:8443"], observation="Beacon to 203.0.113.7:8443.")],
+        [_r(1, "203.0.113.7", "ipv4-addr")], {"IPv4": ["203.0.113.7:8443"]},
+    ),
+    "typed-defanged-in-text": (
+        [_f(1, [{"value": "evil2[.]com", "type": "domain-name"}], observation="Beacon to evil2.com.")],
+        [], {"Domain": ["evil2[.]com"]},
+    ),
+    "typed-ip-port-in-text": (
+        [_f(1, [{"value": "203.0.113.7:8443", "type": "ipv4-addr"}], observation="Beacon to 203.0.113.7.")],
+        [], {"IPv4": ["203.0.113.7:8443"]},
+    ),
+    "defanged-recorded-and-text-not-recorded": (
+        [_f(1, ["evil[.]com"], observation="Beacon to evil[.]com, then bad[.]ru.")],
+        [_r(1, "evil.com", "domain-name")], {"Domain": ["evil[.]com"], TEXT_ONLY: ["bad.ru"]},
+    ),
+    "domain-keeps-its-port": (
+        [_f(1, ["evil.com:443"], observation="Beacon to evil.com:443.")],
+        [_r(1, "evil.com:443", "unknown")], {"Unknown": ["evil.com:443"], TEXT_ONLY: ["evil.com"]},
+    ),
+    "ip-port-typed-other-than-ipv4-addr-keeps-it": (
+        [_f(1, [{"value": "203.0.113.7:8443", "type": "ipv4"}], observation="Beacon to 203.0.113.7.")],
+        [], {"IPv4": ["203.0.113.7:8443"], TEXT_ONLY: ["203.0.113.7"]},
     ),
     "first-label-kept": (
         [_f(1, [{"value": "1.2.3.4", "type": "ipv4-addr"}]),
@@ -187,10 +217,24 @@ def test_each_stored_type_reads_as_its_label(stored):
 @pytest.mark.parametrize(
     "value, key",
     [(SHA, SHA.lower()), (" " + "C" * 40 + " ", "c" * 40), ("Evil.COM.", "evil.com"),
-     ("10.1.2.3", "10.1.2.3"), (UNC.upper(), UNC.lower()), ("Tdungan", "Tdungan")],
+     ("10.1.2.3", "10.1.2.3"), (UNC.upper(), UNC.lower()), ("Tdungan", "Tdungan"),
+     ("evil[.]com", "evil.com"), ("hxxp://Evil[.]com/a", "http://evil.com/a"),
+     ("user[@]evil.com", "user@evil.com"), (" 203.0.113.7:8443 ", "203.0.113.7"),
+     ("203[.]0[.]113[.]7:8443", "203.0.113.7"), ("10.0.0.1/24", "10.0.0.1/24"),
+     ("300.1.1.1:80", "300.1.1.1:80"), ("evil.com:443", "evil.com:443")],
 )  # fmt: skip
 def test_values_compare_as_forensic_mcp_records_them(value, key):
     assert ioc_key(value) == key
+
+
+@pytest.mark.parametrize(
+    "type_, key",
+    [("ipv4-addr", "203.0.113.7"), (None, "203.0.113.7"), ("", "203.0.113.7"),
+     ("ipv4", "203.0.113.7:8443"), ("domain-name", "203.0.113.7:8443"),
+     (["ipv4-addr"], "203.0.113.7:8443")],
+)  # fmt: skip
+def test_an_ipv4_loses_its_port_as_forensic_mcp_types_it(type_, key):
+    assert ioc_key("203.0.113.7:8443", type_) == key
 
 
 def test_the_findings_and_records_are_left_as_they_were():
@@ -285,4 +329,6 @@ def test_a_saved_ioc_report_lists_the_strings(case, monkeypatch, capsys):  # noq
     unc = UNC.replace("172.16.6.12", "172[.]16[.]6[.]12")  # its IP defanged too
     assert f"  File (1):\n    {unc}" in saved and f"  Unknown (1):\n    {SID}" in saved
     assert "172[.]16[.]6[.]12" in saved and "172.16.6.12" not in saved
-    assert "Total: 11 IOCs across 5 types" in saved
+    assert "  Domain (2):\n    evil2[.]com\n    evil[.]com\n" in saved
+    assert "    203[.]0[.]113[.]7:8443\n" in saved
+    assert "Total: 14 IOCs across 6 types" in saved
