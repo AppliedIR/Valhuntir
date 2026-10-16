@@ -27,11 +27,19 @@ from vhir_cli.case_io import (
     get_case_dir,
     load_case_meta,
     load_findings,
+    load_iocs,
     load_timeline,
     load_todos,
 )
+from vhir_cli.defang import (
+    _NETWORK_TYPES,
+    defang_iocs,
+    network_ioc,
+    refang,
+    structured_iocs,
+)
+from vhir_cli.display import cited_text, one_line
 from vhir_cli.display import lines as indent_lines
-from vhir_cli.display import one_line
 from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
 from vhir_cli.ledger_verify import (
     approved_view,
@@ -112,13 +120,49 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
         ):
             stored = report(case_dir, args, safe=False)
         stored = stored if stored is not None else output
-        _save_output(case_dir, save, stored + "\n\n" + "\n".join(block))
+        _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
-def _save_output(case_dir: Path, save_path: str | None, content: str) -> None:
-    """Write report content to file if --save is specified."""
+def _report_iocs(case_dir: Path, view: dict) -> list[str]:
+    """The IOCs of the case that are domains, URLs or IPv4 addresses, live,
+    longest first (a URL before the host it holds): the values in the approved
+    findings' `iocs` fields, and the case's IOC records approved or cited by
+    an approved finding, as report-mcp gathers them. A name a finding's text
+    merely mentions isn't one. Hashes, paths and the rest aren't."""
+    findings = view.get("findings") or []
+    approved = {f.get("id") for f in findings}
+    kept: set[str] = set()
+
+    def take(value, typed: bool) -> None:
+        if (v := network_ioc(value, typed)) is not None:
+            kept.add(v)
+
+    for value, typed in structured_iocs(findings):
+        take(value, typed)
+    case_iocs = [  # the case's IOCs that one of the approved findings cites
+        i for i in load_iocs(case_dir)
+        if isinstance(i, dict) and isinstance(i.get("source_findings"), list)
+        and approved.intersection(map(str, i["source_findings"]))
+    ]  # fmt: skip
+    for ioc in [*(view.get("iocs") or []), *case_iocs]:  # approved, or so cited
+        if isinstance(ioc, dict) and any(
+            t in str(ioc.get("type", "")).lower() for t in _NETWORK_TYPES
+        ):
+            take(ioc.get("value", ""), True)
+    return sorted(kept, key=lambda v: (-len(v), v))
+
+
+def _save_output(
+    case_dir: Path, save_path: str | None, content: str, view: dict | None
+) -> None:
+    """Write report content to file if --save is specified. A text report
+    (`view` given) has every IOC of the case defanged, its block too: nothing
+    reads its text back. JSON (`view` None) keeps them live: it is input for
+    tools."""
     if not save_path:
         return
+    if view is not None:
+        content = defang_iocs(content, _report_iocs(case_dir, view))
     out = Path(save_path)
     if not out.is_absolute():
         reports_dir = case_dir / "reports"
@@ -184,6 +228,9 @@ def _extract_all_iocs(findings: list[dict]) -> dict[str, list[str]]:
 
         # Text extraction from observation/interpretation
         text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
+        # Analysts habitually defang indicators in notes; every pattern below
+        # matches the live form only, so normalise before matching.
+        text = refang(text)
         ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
         for ip in re.findall(ipv4_pattern, text):
             if not ip.startswith(("0.", "127.", "255.")):
@@ -244,7 +291,7 @@ def _report_full(case_dir: Path, args) -> None:
 
     output = json.dumps(report, indent=2, default=str)
     print(output)
-    _save_output(case_dir, getattr(args, "save", None), output)
+    _save_output(case_dir, getattr(args, "save", None), output, None)  # JSON: live
 
 
 def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | None:
@@ -422,18 +469,16 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         elif f["id"] in view["labels"]:
             shown = shown_label(view["labels"][f["id"]])
             lines.append(f"  Verification: {_d(shown, safe)}")
-        lines.append(f"  Confidence:   {_d(f.get('confidence', '?'), safe)}")
-        if f.get("confidence_justification"):
-            lines.append(f"  Justification: {_d(f['confidence_justification'], safe)}")
-        lines.append(f"  Evidence:     {_d(', '.join(f.get('audit_ids', [])), safe)}")
+        lines.append(f"  Evidence:     {_d(cited_text(f.get('audit_ids')), safe)}")
         lines.append(f"  Observation:  {_ml(f.get('observation', ''), safe, ' ' * 16)}")
         lines.append(
             f"  Interpretation: {_ml(f.get('interpretation', ''), safe, ' ' * 18)}"
         )
         if f.get("iocs"):
             lines.append(f"  IOCs:         {json.dumps(f['iocs'], default=str)}")
-        if f.get("mitre_techniques"):
-            lines.append(f"  MITRE:        {_d(f['mitre_techniques'], safe)}")
+        # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
+        if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
+            lines.append(f"  MITRE:        {_d(mitre, safe)}")
         if f.get("approved_at"):
             lines.append(f"  Approved:     {_d(f['approved_at'], safe)}")
         if f.get("rejected_at"):

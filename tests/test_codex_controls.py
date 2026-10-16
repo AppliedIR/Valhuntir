@@ -76,6 +76,10 @@ def test_with_consent_it_installs_root_owned_copies(box):
     assert cc.codex_controls_state(["codex"]) == "on"
 
 
+def test_the_skeptic_s_tool_check_is_installed_with_the_other_hooks():
+    assert ("codex-skeptic-tools.sh", "shared/hooks/codex-skeptic-tools.sh") in cc.HOOKS
+
+
 def test_without_a_terminal_the_commands_are_printed_and_nothing_runs(box, capsys):
     assert cc.deploy_codex_controls() == "printed"
     out = capsys.readouterr().out

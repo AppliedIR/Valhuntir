@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli import credentials, keys, ledger
+from vhir_cli import approval_auth, case_io, credentials, keys, ledger
 from vhir_cli.case_io import (
     case_id_of,
     compute_content_hash,
@@ -78,15 +78,26 @@ class Decision:
 
 
 def item_type(item_id: str) -> str:
-    if item_id.startswith("IOC-"):
-        return "ioc"
-    return "timeline" if item_id.startswith("T-") else "finding"
+    return case_io.id_kind(item_id)  # one rule, which import_bundle also enforces
 
 
 def cascades(
     direct: list[Decision], findings, timeline, iocs, skipped=()
 ) -> list[Decision]:
     """The cascades of `direct`, planned from the post-edit items."""
+    return split_cascades(direct, findings, timeline, iocs, skipped)[0]
+
+
+def split_cascades(
+    direct: list[Decision], findings, timeline, iocs, skipped=()
+) -> tuple[list[Decision], list[tuple[str, str]]]:
+    """The cascades of `direct`, and the timeline events held back from them:
+    `(event id, finding id)` for each event linked to a finding edited here or
+    in an earlier review.
+
+    An event was made from its finding's text, so it would be signed with the
+    text the edit replaced. It needs its own decision, and stays as it is until
+    the examiner decides it."""
     edited = {d.id: d.item for d in direct}
     findings = [edited.get(f.get("id"), f) for f in findings if isinstance(f, dict)]
     decided = {
@@ -94,12 +105,28 @@ def cascades(
         for d in direct
         if d.type == "finding" and d.decision in ("approve", "reject", "edit")
     }
+    changed = {d.id for d in direct if d.type == "finding" and d.modifications}
+    changed |= {f.get("id") for f in findings if f.get("examiner_modifications")}
     exclude = {d.id for d in direct} | set(skipped)
-    return [
-        Decision(c["item"], c["type"], "approve" if c["status_after"] == "APPROVED" else "reject",
-                 c["status_after"], loaded=copy.deepcopy(c["item"]), coupled_from=c["coupled_from"])
-        for c in plan_cascades(decided, findings, timeline, iocs, exclude)
-    ]  # fmt: skip
+    planned, held = [], []
+    for c in plan_cascades(decided, findings, timeline, iocs, exclude):
+        if c["type"] == "timeline" and c["coupled_from"] in changed:
+            held.append((c["item"]["id"], c["coupled_from"]))
+            continue
+        planned.append(
+            Decision(c["item"], c["type"], "approve" if c["status_after"] == "APPROVED" else "reject",
+                     c["status_after"], loaded=copy.deepcopy(c["item"]), coupled_from=c["coupled_from"])
+        )  # fmt: skip
+    return planned, held
+
+
+def held_line(event_id: str, finding_id: str) -> str:
+    """Why a linked event isn't signed, and what to do about it."""
+    return (
+        f"{one_line(event_id)} is linked to {one_line(finding_id)}, which was edited "
+        f"after the event was made from it. It won't be signed. Decide it on its own: "
+        f"vhir approve {one_line(event_id)}"
+    )
 
 
 def confirm_plan(
@@ -107,14 +134,19 @@ def confirm_plan(
     planned: list[Decision],
     display: Callable[[dict], None],
     lead: str = "",
+    held: list[tuple[str, str]] = (),
 ) -> None:
-    """Print every cascaded item, after the direct ones, then `lead` and the
-    ids to be signed, just above the prompt."""
+    """Print every cascaded item, after the direct ones, then the linked
+    events held back, `lead` and the ids to be signed, just above the prompt."""
     if planned:
         print(f"\n{len(planned)} item(s) decided with them:")
     for c in planned:
         display(c.item)
         print(f"  cascade from {one_line(c.coupled_from)}: {c.decision}")
+    if held:
+        print(f"\n{len(held)} linked item(s) not signed:")
+    for event_id, finding_id in held:
+        print(f"  {held_line(event_id, finding_id)}")
     ids = ", ".join(one_line(d.id) for d in direct + planned)
     if lead:
         print(lead)
@@ -428,7 +460,13 @@ def sign_and_commit(
              "after `vhir config --forgot-password`")  # fmt: skip
     except credentials.AttemptsExhausted:
         keep("attempts", "No attempts are left.", "after the lockout ends")
-    except Exception as e:  # noqa: BLE001 - a keys file damaged, no terminal, …
+    except approval_auth.NoTerminal:  # no examiner here (an AI's run): nothing saved
+        refused = direct + planned
+        action = "reject" if all(d.decision == "reject" for d in refused) else "approve"
+        case_io.record_no_terminal(case_dir, examiner, action, [d.id for d in refused])
+        print(case_io.NO_TERMINAL_REFUSAL, file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - a keys file damaged, …
         keep(
             type(e).__name__,
             f"The passphrase prompt couldn't go ahead: {one_line(str(e))}",
@@ -450,7 +488,9 @@ def sign_and_commit(
         ) as lock:
             lists, unreadable = _reload(case_dir)
             if not unreadable:
-                every, discarded = _still_as_shown(lists, direct, planned, skipped)
+                every, discarded = _still_as_shown(
+                    lists, direct, planned, skipped, case_dir
+                )
             if every:
                 at = datetime.now(timezone.utc).isoformat()
                 items = [_find(lists, d.type, d.id) for d in every]
@@ -492,7 +532,7 @@ def sign_and_commit(
             sys.exit(130)
         print(
             "\nInterrupted after the decisions were signed; case data may not be "
-            f"saved. Re-run the same command for: {', '.join(d.id for d in every)}",
+            f"saved. Re-run the same command for: {', '.join(one_line(d.id) for d in every)}",
             file=sys.stderr,
         )
         sys.exit(130)
@@ -516,7 +556,7 @@ def sign_and_commit(
                         file=sys.stderr,
                     )
             print(
-                f"{e}\nSome of these decisions may already be signed. "
+                f"{one_line(str(e))}\nSome of these decisions may already be signed. "
                 "`vhir review --verify` lists each one as a failure, with its fix. If it "
                 "reports UNPARSEABLE_LINE on the last line, restore the chain from a copy first.",
                 file=sys.stderr,
@@ -550,7 +590,7 @@ def sign_and_commit(
                 f"(head seq {r['head_seq']} sha256:{r['head_hash']})"
             )
         for note in ref_notes:
-            print(f"  WARNING: {note}", file=sys.stderr)
+            print(f"  WARNING: {one_line(note)}", file=sys.stderr)
     if todo_error is not None:
         try:
             save_unsigned(case_dir, examiner, [], "TODO not written", todos)
@@ -564,8 +604,8 @@ def sign_and_commit(
         )
     if save_error is not None:
         print(
-            f"Signed decisions were recorded; case data was not saved ({save_error}); "
-            f"re-run the same command for: {', '.join(d.id for d in every)}",
+            f"Signed decisions were recorded; case data was not saved ({one_line(str(save_error))}); "
+            f"re-run the same command for: {', '.join(one_line(d.id) for d in every)}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -619,12 +659,35 @@ def _spliced(current: dict, d: Decision) -> dict:
     return out
 
 
-def _still_as_shown(lists, direct, planned, skipped):
+def _checks_as_shown(case_dir, d: Decision, item: dict, trail=None) -> bool:
+    """A direct decision's approval checks, run again on `item`, give the
+    result and failed checks it was shown with (none were run: True). An audit
+    log they can't read raises approval_checks.AuditUnreadable."""
+    if d.checks is None or case_dir is None:
+        return True
+    from vhir_cli import approval_checks
+
+    now = approval_checks.check_item(case_dir, item, d.type, trail=trail)
+    return (now["result"], approval_checks.failed_items(now)) == (
+        d.checks["result"],
+        approval_checks.failed_items(d.checks),
+    )
+
+
+def _still_as_shown(lists, direct, planned, skipped, case_dir=None):
     """Per item, under the lock: the decisions to sign (each direct one whose
-    item is unchanged since it was shown, with its edit spliced in; each
-    cascade that was shown and still holds), and a loud line for each one
-    discarded. A cascade that only now appears wasn't shown, so it isn't signed."""
+    item is unchanged since it was shown, and whose approval checks give what
+    was shown, with its edit spliced in; each cascade that was shown and
+    still holds), and a loud line for each one discarded. A cascade that only
+    now appears wasn't shown, so it isn't signed."""
     discarded, kept = [], []
+    trail = None
+    if case_dir is not None:  # the trail read once for every item's checks
+        from vhir_cli import approval_checks
+
+        trail = approval_checks.PlanTrail(case_dir, [
+            (x, d.type) for d in direct
+            if d.checks is not None and isinstance(x := _find(lists, d.type, d.id), dict)])  # fmt: skip
     for d in direct:
         if _changed(d, _find(lists, d.type, d.id)):
             discarded.append(
@@ -632,11 +695,20 @@ def _still_as_shown(lists, direct, planned, skipped):
                 f"your {d.decision} decision on it was not signed or saved. Review it again."
             )
             continue
-        kept.append(d)
         lst = lists[d.type]
-        for i, x in enumerate(lst):
-            if isinstance(x, dict) and x.get("id") == d.id:
-                lst[i] = _spliced(x, d)
+        at = next(
+            i for i, x in enumerate(lst) if isinstance(x, dict) and x.get("id") == d.id
+        )
+        spliced = _spliced(lst[at], d)
+        if not _checks_as_shown(case_dir, d, spliced, trail):
+            discarded.append(
+                f"  DISCARDED: {one_line(d.id)}: its approval checks changed after you saw "
+                f"them; your {d.decision} decision on it was not signed or saved. "
+                "Review it again."
+            )
+            continue
+        kept.append(d)
+        lst[at] = spliced
     shown = {(c.id, c.status_after, c.coupled_from): c for c in planned}
     again = cascades(kept, lists["finding"], lists["timeline"], lists["ioc"], skipped)
     now = {(c.id, c.status_after, c.coupled_from) for c in again}
@@ -675,7 +747,7 @@ def _activity_log(case_dir, identity, every, items, mode) -> None:
     if failed:
         print(
             f"  WARNING: the activity log (approvals.jsonl, unsigned) wasn't written for: "
-            f"{', '.join(failed)}. The signed decisions stand.",
+            f"{', '.join(map(one_line, failed))}. The signed decisions stand.",
             file=sys.stderr,
         )
 
@@ -693,7 +765,7 @@ def _report(case_id, every, head, examiner, public) -> None:
                 f"  cascade from {one_line(c.coupled_from)}: {c.decision} {one_line(c.id)}"
             )
     fp = keys.fingerprint(keys.unb64(public))
-    print(f"{ledger.format_head(case_id, head)} | {examiner} {fp}")
+    print(f"{ledger.format_head(one_line(case_id), head)} | {examiner} {fp}")
     print(
         f"  Optional, to anchor later: --expect-head {head[0]}:{head[1]} --expect-key {examiner}={fp}"
     )

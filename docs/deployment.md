@@ -51,8 +51,11 @@ The installer:
 ```powershell
 git clone https://github.com/AppliedIR/wintools-mcp.git
 cd wintools-mcp
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\setup-windows.ps1
 ```
+
+`Set-ExecutionPolicy -Scope Process` allows scripts for this PowerShell window only. Windows 10/11 refuses to run them by default.
 
 The installer:
 1. Requires typing `security_hole` to acknowledge the security implications
@@ -112,6 +115,8 @@ This generates:
 - Local CA certificate and gateway TLS certificate at `~/.vhir/tls/`
 - Bearer token (`vhir_gw_` prefix) in `gateway.yaml`
 - Gateway binds to `0.0.0.0:4508` with TLS
+
+A Claude Code running locally on the SIFT box is pointed at that CA automatically: `vhir setup client` and `vhir update` add `env.NODE_EXTRA_CA_CERTS` = `~/.vhir/tls/ca-cert.pem` to the managed `~/.claude/settings.json` so it trusts the self-signed gateway CA (unless you already set `NODE_EXTRA_CA_CERTS`, which is kept). A value you export in your shell afterwards is overridden by the one in `settings.json`; to use your own bundle, add the gateway CA to it and remove the `settings.json` entry.
 
 The installer prints per-OS remote client setup commands with a join code.
 

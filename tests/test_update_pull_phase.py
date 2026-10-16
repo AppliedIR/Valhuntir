@@ -102,6 +102,9 @@ def _run(world, *, fetch_err="", installed_timeout=False):
         patch("subprocess.run", side_effect=run),
         patch.object(update, "_resolve_opensearch_mcp_repo", lambda src: world.os_repo),
         patch.object(update, "_ensure_password_dir", lambda: None),
+        # A moved vhir HEAD starts the new code in a new process; here the
+        # rest of the update runs in this one (test_update_reexec covers it).
+        patch.object(update, "_reexec_after_pull", MagicMock(), create=True),
         patch("sys.stdin.isatty", return_value=False),
     ):
         try:

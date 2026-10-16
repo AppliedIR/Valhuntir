@@ -104,7 +104,7 @@ Forensic tool execution on Linux/SIFT. 5 tools — 4 discovery plus `run_command
 
 ### wintools-mcp
 
-Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (31 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
+Forensic tool execution on Windows. 10 tools with catalog-gated execution — only tools defined in YAML catalog files (25 entries) can run. 20+ dangerous binaries are unconditionally blocked by a hardcoded denylist. Argument sanitization blocks shell metacharacters, response-file syntax, and dangerous flags. Separate deployment on a Windows workstation, port 4624.
 
 ### opensearch-mcp
 
@@ -134,7 +134,7 @@ Shared YAML data package with no runtime state. Three data directories:
 
 | Directory | Content | Entries |
 |-----------|---------|---------|
-| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 59 tools across 17 categories |
+| `data/tools/` | Tool catalogs with forensic context (caveats, corroboration, field meanings, investigation patterns) | 56 tools across 17 categories |
 | `data/artifacts/` | Artifact descriptions with interpretation guidance | 53 artifacts (Windows + Linux) |
 | `data/discipline/` | Forensic discipline rules and reminders | Rules, anti-patterns, checkpoints |
 
@@ -173,7 +173,7 @@ Typical full deployment with three VMs on a single host.
         ▼                           ▼
 ┌── REMnux VM (optional) ─┐  ┌── Windows VM (optional) ──────────────┐
 │  remnux-mcp :3000        │  │  wintools-mcp :4624                   │
-│  200+ analysis tools     │  │  31 cataloged tools                   │
+│  200+ analysis tools     │  │  25 cataloged tools                   │
 └──────────────────────────┘  │  SMB ──► Case Directory (on SIFT)     │
                               └───────────────────────────────────────┘
 ```
@@ -260,7 +260,6 @@ When the LLM records a finding via `record_finding()`, forensic-mcp validates it
 - Enforces audit_id on each artifact and verifies it exists in the audit trail
 - Rejects artifacts whose source files are not in the evidence registry
 - Classifies provenance tier (MCP > HOOK > SHELL > NONE, with NONE rejected)
-- Scores grounding based on whether reference sources (RAG, triage, threat intel) were consulted
 
 This is structural enforcement, not prompt-based — the tool itself enforces quality standards.
 
@@ -310,22 +309,6 @@ Nine layers of defense-in-depth protect the integrity of forensic findings. See 
 | L9 | Kernel sandbox (bubblewrap namespaces) | Kernel |
 
 The signed ledger (L2) records every decision with the examiner's signature, which `vhir review --verify` checks; what a verified result does and doesn't show is in the [stated limits](security.md#stated-limits). The other layers are advisory defense-in-depth. Only Claude Code gets L3-L4 and L9. The structural controls (L1, L6, L8) and cryptographic controls (L2, L7) apply to all clients.
-
-## Grounding Score
-
-Grounding measures whether the investigation consulted authoritative reference sources before making a claim. It's separate from provenance (which tracks where the evidence came from) — grounding tracks whether you checked your work against external knowledge.
-
-When a finding is staged, forensic-mcp checks the audit trail for usage of three reference backends:
-
-| Level | Criteria | Meaning |
-|-------|----------|---------|
-| **STRONG** | 2+ reference sources consulted | Claim is cross-referenced against authoritative knowledge |
-| **PARTIAL** | 1 source consulted, or finding traces to registered evidence | Some external validation performed |
-| **WEAK** | No reference sources consulted, no evidence chain | Claim lacks external validation |
-
-Reference sources: forensic-rag (Sigma rules, MITRE ATT&CK, forensic artifacts), windows-triage (known-good baseline), opencti (threat intelligence).
-
-Grounding is advisory — it does not block a finding. It's returned in the `record_finding()` response so the analyst and examiner can assess how well-supported a claim is. A WEAK finding may be perfectly valid, but the examiner knows the investigator didn't cross-reference it.
 
 ## Case Directory Structure
 

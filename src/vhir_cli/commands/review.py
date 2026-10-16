@@ -20,10 +20,12 @@ import sys
 from pathlib import Path
 
 from vhir_cli.case_io import (
+    CORRUPT_LINE,
     _at_or_after,
     _at_or_before,
     display_instant,
     get_case_dir,
+    iter_jsonl_entries,
     load_audit_index,
     load_case_meta,
     load_findings,
@@ -31,7 +33,10 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
     load_withdrawals,
+    no_terminal_line,
 )
+from vhir_cli.defang import refang
+from vhir_cli.display import cited as _cited
 from vhir_cli.display import display_safe, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
@@ -110,6 +115,9 @@ def _show_summary(case_dir: Path) -> None:
     open_t = sum(1 for t in todos if t.get("status") == "open")
     completed_t = sum(1 for t in todos if t.get("status") == "completed")
     print(f"TODOs: {len(todos)} total ({open_t} open, {completed_t} completed)")
+    refused = no_terminal_line(case_dir)
+    if refused:
+        print(refused)
 
 
 def _show_todos(case_dir: Path, open_only: bool = False) -> None:
@@ -162,9 +170,10 @@ def _show_findings_table(case_dir: Path) -> None:
 
 
 def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
-    """One line per audit id: where it came from, and the tool or command."""
+    """One line per audit id: where it came from, and the tool or command. An
+    id that isn't text has no audit record."""
     for raw_eid in audit_ids:
-        entry = audit_index.get(raw_eid)
+        entry = audit_index.get(raw_eid) if isinstance(raw_eid, str) else None
         eid = one_line(raw_eid)
         if entry:
             entry = display_safe(entry)  # for printing inline
@@ -189,18 +198,37 @@ def _print_evidence_chain(audit_ids: list, audit_index: dict) -> None:
 
 def _show_withdrawn(case_dir: Path) -> None:
     """Candidate findings withdrawn after challenge, with the skeptic's evidence."""
+    unread: list[str] = []
     try:
-        withdrawals = load_withdrawals(case_dir)
+        withdrawals = load_withdrawals(case_dir, unread)
     except Exception as e:  # a damaged audit line: say so, never "none"
         print(f"Withdrawn candidates couldn't be read: {e}")
+        sys.exit(1)
+    if unread:  # never "none" while a log holding withdrawals went unread
+        _print_withdrawn(case_dir, withdrawals)
+        for log in unread:
+            print(f"Couldn't read {log}: a candidate withdrawn there isn't shown.")
         sys.exit(1)
     if not withdrawals:
         print("No candidate findings withdrawn after challenge.")
         return
-    audit_index = load_audit_index(case_dir)
+    _print_withdrawn(case_dir, withdrawals)
+
+
+def _print_withdrawn(case_dir: Path, withdrawals: list[dict]) -> None:
+    if not withdrawals:
+        return
+    # Only the skeptic's calls are resolved below: index just those.
+    wanted = {
+        eid
+        for raw in withdrawals
+        for eid in _cited(raw["result_summary"].get("skeptic_audit_ids"))
+        if isinstance(eid, str)
+    }
+    audit_index = load_audit_index(case_dir, wanted)
     print(f"{len(withdrawals)} candidate finding(s) withdrawn after challenge")
     for raw in withdrawals:
-        skeptic_ids = raw["result_summary"].get("skeptic_audit_ids") or []
+        skeptic_ids = _cited(raw["result_summary"].get("skeptic_audit_ids"))
         entry = display_safe(raw)  # for printing inline
         result = entry["result_summary"]
         print(f"\n{'=' * 60}")
@@ -213,7 +241,7 @@ def _show_withdrawn(case_dir: Path) -> None:
             f"  Observation:   {indent_lines(raw['result_summary'].get('observation', ''), ' ' * 17)}"
         )
         print(f"  Contradiction: {result.get('contradiction', '')}")
-        if isinstance(skeptic_ids, list) and skeptic_ids:
+        if skeptic_ids:
             print("\n  Skeptic's tool calls:")
             _print_evidence_chain(skeptic_ids, audit_index)
 
@@ -225,7 +253,15 @@ def _show_findings_detail(case_dir: Path) -> None:
         print("No findings recorded.")
         return
 
-    audit_index = load_audit_index(case_dir)
+    # Only the audit_ids these findings cite are ever resolved below, so keep
+    # the index bounded by that instead of by the whole audit trail.
+    wanted = {
+        eid
+        for f in findings
+        for eid in _cited(f.get("audit_ids"))
+        if isinstance(eid, str)
+    }
+    audit_index = load_audit_index(case_dir, wanted)
 
     for raw in findings:
         f = display_safe(raw)  # for printing inline
@@ -238,15 +274,17 @@ def _show_findings_detail(case_dir: Path) -> None:
         if f.get("confidence_justification"):
             print(f"  Justification: {f['confidence_justification']}")
         print("\n".join(finding_lines(f)))
-        print(f"  Evidence:     {', '.join(f.get('audit_ids', []))}")
+        audit_ids = _cited(raw.get("audit_ids"))
+        print(f"  Evidence:     {', '.join(one_line(eid) for eid in audit_ids)}")
         print(f"  Observation:  {indent_lines(raw.get('observation', ''), ' ' * 16)}")
         print(
             f"  Interpretation: {indent_lines(raw.get('interpretation', ''), ' ' * 18)}"
         )
         if f.get("iocs"):
             print(f"  IOCs:         {f['iocs']}")
-        if f.get("mitre_techniques"):
-            print(f"  MITRE:        {f['mitre_techniques']}")
+        # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
+        if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
+            print(f"  MITRE:        {mitre}")
         if f.get("approved_at"):
             print(f"  Approved:     {f['approved_at']}")
         if f.get("rejected_at"):
@@ -254,7 +292,6 @@ def _show_findings_detail(case_dir: Path) -> None:
             print(f"  Reason:       {f.get('rejection_reason', '?')}")
 
         # Evidence chain
-        audit_ids = raw.get("audit_ids", [])
         if audit_ids:
             print("\n  Evidence Chain:")
             _print_evidence_chain(audit_ids, audit_index)
@@ -409,6 +446,9 @@ def _extract_iocs_from_findings(findings: list[dict]) -> dict[str, set[str]]:
 
 def _extract_text_iocs(text: str, collected: dict[str, set[str]]) -> None:
     """Extract common IOC patterns from free text."""
+    # Analysts habitually defang indicators in notes; every pattern below
+    # matches the live form only, so normalise before matching.
+    text = refang(text)
     ipv4_pattern = r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b"
     for ip in re.findall(ipv4_pattern, text):
         if not ip.startswith(("0.", "127.", "255.")):
@@ -465,8 +505,8 @@ def _show_timeline(
             print(
                 f"  Description: {indent_lines(raw.get('description', ''), ' ' * 15)}"
             )
-            if t.get("audit_ids"):
-                print(f"  Evidence:    {', '.join(t['audit_ids'])}")
+            if audit_ids := _cited(raw.get("audit_ids")):
+                print(f"  Evidence:    {', '.join(one_line(e) for e in audit_ids)}")
             if t.get("source"):
                 print(f"  Source:      {t['source']}")
             if t.get("approved_at"):
@@ -534,47 +574,40 @@ def _show_evidence(case_dir: Path) -> None:
 def _show_audit(case_dir: Path, limit: int) -> None:
     """Show audit trail entries from audit/."""
     entries = []
+    # A page of `limit` rows only needs each file's tail; a limit below 1 keeps
+    # its old meaning of "everything" (entries[-0:] is the whole list).
+    want = limit if limit >= 1 else None
 
     # Read from audit/
     audit_dir = case_dir / "audit"
     if audit_dir.is_dir():
         for jsonl_file in audit_dir.glob("*.jsonl"):
-            try:
-                with open(jsonl_file, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            print(
-                                f"  Warning: skipping corrupt audit line in {jsonl_file.name}",
-                                file=sys.stderr,
-                            )
+            try:  # each entry as it is read, so those before a refusal are kept
+                for entry in iter_jsonl_entries(jsonl_file, want):
+                    if entry is CORRUPT_LINE:
+                        print(
+                            f"  Warning: skipping corrupt audit line in {one_line(jsonl_file.name)}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        entries.append(entry)
             except OSError as e:
-                print(f"  Warning: could not read {jsonl_file}: {e}", file=sys.stderr)
-                continue
+                print(
+                    f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                    file=sys.stderr,
+                )
 
     # Read approvals
     approvals_file = case_dir / "approvals.jsonl"
     if approvals_file.exists():
         try:
-            with open(approvals_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        print(
-                            "  Warning: skipping corrupt approval line", file=sys.stderr
-                        )
-                        continue
-                    entry["tool"] = "approval"
-                    entry["mcp"] = "vhir-cli"
-                    entries.append(entry)
+            for entry in iter_jsonl_entries(approvals_file, want):
+                if entry is CORRUPT_LINE:
+                    print("  Warning: skipping corrupt approval line", file=sys.stderr)
+                    continue
+                entry["tool"] = "approval"
+                entry["mcp"] = "vhir-cli"
+                entries.append(entry)
         except OSError as e:
             print(f"  Warning: could not read {approvals_file}: {e}", file=sys.stderr)
 

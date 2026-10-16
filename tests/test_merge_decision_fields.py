@@ -68,6 +68,13 @@ def _finding(fid, **extra):
     return item
 
 
+def _peer_copy(fid, **extra):
+    """A local copy of a peer's item, as a merge stores it: no `created_by`."""
+    item = _finding(fid, **extra)
+    del item["created_by"]
+    return item
+
+
 @pytest.fixture
 def case_dir(tmp_path, monkeypatch):
     return _case(tmp_path, "INC-2026-TEST", "tester", monkeypatch)
@@ -123,7 +130,7 @@ def _report(case_dir, fid, capsys):
 
 @pytest.mark.parametrize("how", ["added", "overwritten"])
 def test_merge_stores_no_incoming_approval_or_rejection_fields(case_dir, how):
-    save_findings(case_dir, [_finding("F-tester-001")])
+    save_findings(case_dir, [_peer_copy("F-tester-001")])
     fid = "F-other-001" if how == "added" else "F-tester-001"
     item = _finding(
         fid, status="APPROVED", modified_at=NEWER, title="incoming", **DECISION
@@ -213,11 +220,17 @@ def test_merge_keeps_a_peers_content_fields(tmp_path, monkeypatch):
 
 
 def test_merge_newer_peer_version_replaces_a_local_draft(case_dir):
-    save_findings(case_dir, [_finding("F-tester-001")])
-    item = _finding("F-tester-001", title="revised", modified_at=NEWER)
-    result = import_bundle(case_dir, {"findings": [item], "timeline": []})
-    assert result["findings"]["updated"] == 1
-    assert load_findings(case_dir)[0]["title"] == "revised"
+    """A local copy of a peer's item (no `created_by`) takes the newer version;
+    an item this case recorded never does, however new the incoming copy."""
+    save_findings(case_dir, [_peer_copy("F-tester-001"), _finding("F-tester-002")])
+    items = [
+        _finding(fid, title="revised", modified_at=NEWER)
+        for fid in ("F-tester-001", "F-tester-002")
+    ]
+    result = import_bundle(case_dir, {"findings": items, "timeline": []})
+    stored = {f["id"]: f["title"] for f in load_findings(case_dir)}
+    assert stored == {"F-tester-001": "revised", "F-tester-002": "Finding F-tester-002"}
+    assert (result["findings"]["updated"], result["findings"]["own"]) == (1, 1)
 
 
 def test_merge_keeps_a_local_approved_finding(case_dir, identity, pw_config):
@@ -232,10 +245,18 @@ def test_merge_keeps_a_local_approved_finding(case_dir, identity, pw_config):
 
 
 def test_merge_skips_an_older_incoming_version(case_dir):
-    save_findings(case_dir, [_finding("F-tester-001", modified_at=NEWER)])
+    save_findings(case_dir, [_peer_copy("F-tester-001", modified_at=NEWER)])
     item = _finding("F-tester-001", title="older", modified_at="2026-01-01T00:00:00Z")
     result = import_bundle(case_dir, {"findings": [item], "timeline": []})
     assert result["findings"]["skipped"] == 1
+    assert load_findings(case_dir)[0]["title"] == "Finding F-tester-001"
+
+
+def test_an_older_copy_of_an_item_this_case_recorded_counts_as_own(case_dir):
+    save_findings(case_dir, [_finding("F-tester-001", modified_at=NEWER)])
+    item = _finding("F-tester-001", title="older", modified_at="2026-01-01T00:00:00Z")
+    result = import_bundle(case_dir, {"findings": [item], "timeline": []})
+    assert (result["findings"]["own"], result["findings"]["skipped"]) == (1, 0)
     assert load_findings(case_dir)[0]["title"] == "Finding F-tester-001"
 
 

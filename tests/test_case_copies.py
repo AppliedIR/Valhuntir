@@ -508,7 +508,7 @@ def test_no_restart_says_what_the_old_gateway_still_does():
 
     from vhir_cli.commands import update
 
-    src = inspect.getsource(update.cmd_update)
+    src = inspect.getsource(update._finish_update)
     assert "must wait for the gateway restart" in src
     assert "gateway applies every staged entry as the committer's decision" in src
 
@@ -516,9 +516,10 @@ def test_no_restart_says_what_the_old_gateway_still_does():
 def test_a_decision_signed_while_a_backup_copies_the_files_fails_it(
     tmp_path, monkeypatch
 ):
-    """The chain copies are written first; a line appended while the case
-    files are copied would leave a backup whose files are newer than its
-    chain. The backup fails, and none is left under the backup's name."""
+    """The chain copies are written with the writer set, under the lock; a
+    line appended while the rest of the case is copied would leave a backup
+    whose files are newer than its chain. The backup fails, and none is left
+    under the backup's name."""
     import vhir_cli.commands.backup as B
 
     case = tmp_path / "cases" / "C-B"
@@ -528,22 +529,27 @@ def test_a_decision_signed_while_a_backup_copies_the_files_fails_it(
         {"id": "F-steve-001", "title": "t", "status": "APPROVED", "created_by": "steve"}
     ]))  # fmt: skip
     sign_approved(case, "steve")
-    real = B.shutil.copy2
+    real = B._copy_file_hashing
     signed = []
 
-    def copy2(src, dst, **kw):
-        if not signed:  # a signer commits after the chain copies were written
+    def copy(src, dst):
+        # a signer commits while the rest is copied, after the lock is released
+        if (
+            not signed
+            and Path(src).name not in B._WRITER_SET
+            and "ledger" not in Path(src).parts
+        ):
             signed.append(1)
             sign_approved(case, "steve")
-        return real(src, dst, **kw)
+        return real(src, dst)
 
-    monkeypatch.setattr(B.shutil, "copy2", copy2)
+    monkeypatch.setattr(B, "_copy_file_hashing", copy)
     with pytest.raises(
         OSError, match="a decision was signed during the backup; run it again"
     ):
         B.create_backup_data(case, str(tmp_path / "backups"), "steve")
     assert signed and not list((tmp_path / "backups").glob("C-B-*[0-9]"))
-    monkeypatch.setattr(B.shutil, "copy2", real)
+    monkeypatch.setattr(B, "_copy_file_hashing", real)
     out = B.create_backup_data(case, str(tmp_path / "backups"), "steve")
     assert Path(out["backup_path"]).name.startswith("C-B-")
 

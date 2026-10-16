@@ -324,6 +324,21 @@ class TestReportFindings:
         assert "Lateral movement via PsExec" in output
         assert "Observation:" in output
 
+    def test_how_it_was_graded_is_not_shown(self, case_dir, identity, capsys):
+        """Confidence and its justification are for review, not the report."""
+        finding = {"id": "F-tester-001", "status": "APPROVED", "title": "t",
+                   "confidence": "HIGH", "confidence_justification": "why-HIGH-text",
+                   "audit_ids": ["ev-001"], "observation": "o", "interpretation": "i",
+                   "examiner": "tester"}  # fmt: skip
+        save_findings(case_dir, [finding])
+        sign_approved(case_dir)
+        capsys.readouterr()
+        cmd_report(_make_args(report_findings="F-tester-001"), identity)
+        output = capsys.readouterr().out
+        assert "Observation:" in output
+        assert "Confidence" not in output
+        assert "Justification" not in output and "why-HIGH-text" not in output
+
     def test_multiple_findings(self, case_dir, sample_findings, identity, capsys):
         cmd_report(_make_args(report_findings="F-tester-001,F-tester-002"), identity)
         output = capsys.readouterr().out
@@ -405,3 +420,41 @@ class TestReportSavePathSecurity:
         assert saved.exists()
         data = json.loads(saved.read_text())
         assert data["report_type"] == "full"
+
+
+# --- A finding's MITRE ids, as forensic-mcp stores them -----------------------
+
+
+@pytest.mark.parametrize(
+    "fields,shown",
+    [
+        ({"mitre_ids": ["T1059.001", "T1105"]}, "['T1059.001', 'T1105']"),
+        ({"mitre_techniques": ["T1003"]}, "['T1003']"),
+        ({}, None),
+    ],
+    ids=["mitre_ids", "older-mitre_techniques", "neither"],
+)
+def test_a_findings_mitre_ids_are_shown_in_report_and_review(
+    case_dir, identity, capsys, fields, shown
+):
+    """forensic-mcp stores a finding's ids as mitre_ids; mitre_techniques is
+    an IOC's field, read for a finding only when it has no mitre_ids."""
+    from vhir_cli.commands.review import _show_findings_detail
+
+    finding = {"id": "F-tester-001", "status": "APPROVED", "title": "t", "confidence": "LOW",
+               "audit_ids": ["ev-001"], "observation": "o", "interpretation": "i",
+               "examiner": "tester", **fields}  # fmt: skip
+    save_findings(case_dir, [finding])
+    sign_approved(case_dir)
+    capsys.readouterr()
+    cmd_report(_make_args(report_findings="F-tester-001"), identity)
+    report = capsys.readouterr().out
+    _show_findings_detail(case_dir)
+    review = capsys.readouterr().out
+    for out in (report, review):
+        mitre = [
+            line.strip()
+            for line in out.splitlines()
+            if line.strip().startswith("MITRE:")
+        ]
+        assert mitre == ([f"MITRE:        {shown}"] if shown else []), out

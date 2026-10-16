@@ -4,8 +4,8 @@
 ~/.claude/settings.json (flipping the user's sandbox.enabled), overwrote
 ~/.claude/CLAUDE.md, the rules, commands and hooks, and wiped an unparseable
 settings.json: no prompt, no backup. Now an unchanged file isn't touched; a
-change is shown and asked about on a terminal (default No), with a backup
-first; without a terminal nothing changes. A product file still at a version
+change is shown and asked about on a terminal (default Yes; n/no keeps), with
+a backup first; without a terminal nothing changes. A product file still at a version
 vhir shipped is updated with a notice. Everything here is under tmp_path.
 """
 
@@ -139,7 +139,15 @@ def test_answering_no_keeps_the_file(box):
     before = _write_user(box.settings)
     _, asked = box.run("n")
     assert box.settings.read_bytes() == before
-    assert any("[y/N]" in p for p in asked)
+    assert any("[Y/n]" in p for p in asked)
+
+
+def test_a_mistyped_refusal_keeps_the_file_and_writes_no_backup(box):
+    before = _write_user(box.settings)
+    _, asked = box.run("nope")
+    assert box.settings.read_bytes() == before
+    assert not list(box.settings.parent.glob("settings.json.vhir-backup-*"))
+    assert any("[Y/n]" in p for p in asked)
 
 
 def test_answering_yes_applies_after_a_backup(box, capsys):
@@ -280,10 +288,14 @@ def test_uninstall_removes_a_shipped_claude_md_and_restores_the_backup(box):
     assert md.read_text() == "MINE\n" and not md.with_suffix(".md.bak").exists()
 
 
-def test_the_default_answer_is_no(box):
+def test_the_default_answer_is_yes(box):
+    # Enter applies the change (keeping a backup of the old file).
     before = _write_user(box.settings)
-    box.run("")
-    assert box.settings.read_bytes() == before
+    result, _ = box.run("")
+    assert json.loads(box.settings.read_text())["sandbox"]["enabled"] is True
+    baks = list(box.settings.parent.glob("settings.json.vhir-backup-*"))
+    assert len(baks) == 1 and baks[0].read_bytes() == before
+    assert result[1] == "written"
 
 
 # --- CORRECTION 1 -------------------------------------------------------------
@@ -560,7 +572,7 @@ def test_the_undo_block_prints_even_after_an_error(box, setup, monkeypatch, caps
 def test_ask_user_files_asks_on_a_terminal_even_with_y(box, setup, capsys):
     before = _write_user(box.settings)
     asked = setup("n", ask_user_files=True)
-    assert box.settings.read_bytes() == before and any("[y/N]" in p for p in asked)
+    assert box.settings.read_bytes() == before and any("[Y/n]" in p for p in asked)
     assert not _undo_lines(capsys.readouterr().out)
 
 
@@ -656,3 +668,142 @@ def test_anchor_no_deprecated_hook_no_backup_and_no_undo_line(box, setup, capsys
     out = capsys.readouterr().out
     assert "pre-bash-guard" not in out
     assert not list(box.home.rglob("pre-bash-guard.sh*"))
+
+
+def _tls_box(box):
+    """Make `box`'s local gateway use TLS with a CA present, keeping
+    sift_mcp_dir so the claude-code assets are still found. Returns the CA's
+    absolute path (what a local client must trust)."""
+    (box.home / ".vhir" / "gateway.yaml").write_text(
+        f"sift_mcp_dir: {box.repo}\n"
+        "gateway:\n  port: 4508\n  tls:\n    certfile: /x/server-cert.pem\n"
+    )
+    ca = box.home / ".vhir" / "tls" / "ca-cert.pem"
+    ca.parent.mkdir(parents=True, exist_ok=True)
+    ca.write_text("dummy")
+    return str(ca)
+
+
+class TestLocalCaTrust:
+    """A local Claude Code must trust the gateway's self-signed CA under a
+    TLS (--remote) gateway, or every gateway MCP connection fails with
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE. The deploy adds env.NODE_EXTRA_CA_CERTS
+    to settings.json when the local gateway uses TLS and the CA exists — but
+    never over a NODE_EXTRA_CA_CERTS the user already set (which Claude Code
+    honours and which overrides the process environment)."""
+
+    def test_update_adds_ca_env_on_tls_box(self, box, monkeypatch):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        box.run("y")  # the `vhir update` redeploy shape (no URL)
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == ca
+
+    def test_setup_client_adds_ca_env_on_tls_box(self, box, monkeypatch):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda p="": "y")
+        cs._deploy_claude_code_assets(box.home)  # the `vhir setup client` shape
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == ca
+
+    def test_no_ca_env_on_http_box(self, box, monkeypatch):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        box.run("y")  # box's default gateway.yaml has no tls block
+        data = json.loads(box.settings.read_text())
+        assert "NODE_EXTRA_CA_CERTS" not in data.get("env", {})
+
+    def test_existing_settings_ca_kept_with_notice(self, box, monkeypatch, capsys):
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        box.settings.write_text(
+            json.dumps({"env": {"NODE_EXTRA_CA_CERTS": "/corp/ca.pem"}})
+        )
+        capsys.readouterr()
+        box.run("y")
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == "/corp/ca.pem" != ca
+        out = capsys.readouterr().out
+        assert "NODE_EXTRA_CA_CERTS" in out and ca in out
+
+    def test_process_env_ca_kept_with_notice(self, box, monkeypatch, capsys):
+        ca = _tls_box(box)
+        monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/proc/ca.pem")
+        capsys.readouterr()
+        box.run("y")
+        data = json.loads(box.settings.read_text())
+        assert "NODE_EXTRA_CA_CERTS" not in data.get("env", {})
+        out = capsys.readouterr().out
+        assert "/proc/ca.pem" in out and ca in out
+
+    @pytest.mark.parametrize("bad", ["a-string", 7, [1, 2], None])
+    def test_a_non_object_env_is_left_alone_with_a_note(
+        self, box, monkeypatch, capsys, bad
+    ):
+        # A settings.json whose env isn't an object must not crash the deploy:
+        # keep the file, add nothing, and tell the user to add the CA by hand.
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        box.settings.write_text(json.dumps({"env": bad}))
+        capsys.readouterr()
+        box.run("y")  # must not raise
+        data = json.loads(box.settings.read_text())
+        assert data["env"] == bad  # the user's env is untouched
+        out = capsys.readouterr().out
+        assert "isn't an object" in out and ca in out
+
+    def test_settings_applied_ignores_the_ca_env_on_a_tls_box(self, box, monkeypatch):
+        # Every control deployed, no CA env, then the gateway goes TLS: the CA
+        # env is a connectivity convenience, not a control, so the box still
+        # reads as fully applied (not a false "controls NOT in effect").
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        box.run("y")  # HTTP box: deploys every control, no CA env
+        _tls_box(box)
+        assert cs.settings_applied(box.settings) == (True, False)
+
+    def test_an_empty_settings_value_is_kept_not_overwritten(
+        self, box, monkeypatch, capsys
+    ):
+        # A deliberate "" blocks trust at runtime (settings win); presence, not
+        # truthiness, so it is kept with a notice, never silently replaced.
+        monkeypatch.delenv("NODE_EXTRA_CA_CERTS", raising=False)
+        ca = _tls_box(box)
+        box.settings.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": ""}}))
+        capsys.readouterr()
+        box.run("y")
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == ""
+        out = capsys.readouterr().out
+        assert ca in out
+
+    def test_a_shell_value_overridden_by_our_ca_prints_a_notice(
+        self, box, monkeypatch, capsys
+    ):
+        # Our CA is in settings (wins at runtime); a different shell value is
+        # silently overridden, so say so.
+        ca = _tls_box(box)
+        box.settings.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": ca}}))
+        monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/corp/bundle.pem")
+        capsys.readouterr()
+        box.run("y")
+        data = json.loads(box.settings.read_text())
+        assert data["env"]["NODE_EXTRA_CA_CERTS"] == ca
+        out = capsys.readouterr().out
+        assert "/corp/bundle.pem" in out
+
+    def test_the_override_notice_names_removing_the_settings_entry(
+        self, box, monkeypatch, capsys
+    ):
+        # Adding the gateway CA to the shell bundle alone can't restore that
+        # bundle's trust: the settings entry still wins. The notice says so,
+        # and gives the step that does: remove the settings.json entry.
+        ca = _tls_box(box)
+        box.settings.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": ca}}))
+        monkeypatch.setenv("NODE_EXTRA_CA_CERTS", "/corp/bundle.pem")
+        capsys.readouterr()
+        box.run("y")
+        out = " ".join(capsys.readouterr().out.split())
+        assert "overrides it" in out
+        assert "remove the settings.json entry" in out
+        assert "left unchanged" not in out

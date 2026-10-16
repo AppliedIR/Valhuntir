@@ -295,7 +295,7 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         )
     if typed is None:
         approval_auth._check_lockout(examiner)
-        typed = approval_auth.getpass_prompt(f"0.6 passphrase for {examiner}: ")
+        typed = approval_auth.getpass_prompt(f"Current passphrase for {examiner}: ")
     reading = approval_auth.verify_password(config_path, examiner, typed)
     if reading is None:
         approval_auth._record_failure(examiner)  # nothing is moved

@@ -17,7 +17,7 @@ The recommended workflow uses OpenSearch for evidence indexing. Without OpenSear
 2. Register evidence         → evidence_register() or vhir evidence register
 3. Ingest and index          → idx_ingest() to parse evidence into OpenSearch
 4. Scope the investigation   → idx_case_summary() for hosts, artifacts, time ranges
-5. Check for detections      → idx_list_detections() for Hayabusa/Sigma alerts
+5. Check for detections      → idx_list_detections() for Hayabusa detection alerts (count and query)
 6. Enrich programmatically   → idx_enrich_triage() + idx_enrich_intel()
 7. Search and analyze        → idx_search(), idx_aggregate(), idx_timeline()
 8. Deep analysis             → run_command() with SIFT tools, run_windows_command()
@@ -234,11 +234,11 @@ Examples of what you can ask the LLM:
 
 ### Windows Tools (via wintools-mcp)
 
-wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 31 cataloged tools across 7 categories: Zimmerman suite (14), Sysinternals (5), memory analysis (4), timeline (3), malware analysis (3), collection (1), and scripts (1).
+wintools-mcp runs on a separate Windows workstation and provides catalog-gated tool execution. Only tools defined in YAML catalog files can run. 25 cataloged tools across 6 categories: Zimmerman suite (14), Sysinternals (3), timeline (3), malware analysis (3), memory (1), and collection (1). It's for analysing evidence already in the case, not for collecting it. A KAPE module or winpmem can still collect if asked. That's a known limitation.
 
 Additional capabilities:
 - `batch_scan` — run a tool against all files in a directory with safety bounds
-- `list_kape_targets` — list KAPE targets/modules for evidence parsing
+- `list_kape_targets` — list the KAPE modules, which process files already collected into the case (KAPE targets aren't run)
 - `get_share_info` — get SMB share paths for evidence access
 
 **Evidence access:** Valhuntir configures an authenticated SMB share from the Windows workstation to the case directory on SIFT. This allows wintools-mcp to read evidence files, write parsed output to the extractions directory, and record audit trail entries — all without manually copying files between systems. The gateway proxies tool calls to wintools-mcp over HTTPS with Bearer token authentication. See the [Deployment Guide](deployment.md) for SMB setup and firewall configuration, or the [wintools-mcp README](https://github.com/AppliedIR/wintools-mcp) for detailed configuration.
@@ -387,13 +387,9 @@ When a finding is recorded, `record_finding()` classifies its provenance by scan
 | **SHELL** | Not in audit trail — provided via `supporting_commands` | Self-reported |
 | **NONE** | Not found anywhere | **Rejected** by hard gate |
 
-The finding is stamped with its provenance tier. Findings with NONE provenance and no supporting commands are automatically rejected.
+The tier is a gate, not stored on the finding: findings with NONE provenance and no supporting commands are automatically rejected.
 
 The **Evidence Provenance Chain** — visible in the Examiner Portal on each finding — traces the full path from finding back to registered evidence: which evidence file was input, which tool processed it, and what output was extracted. This lets the examiner verify any claim back to its source.
-
-### Grounding Score
-
-When a finding is staged, forensic-mcp checks whether the investigation consulted authoritative reference sources (forensic-rag, windows-triage, opencti). Findings are scored STRONG (2+ sources), PARTIAL (1 source or evidence chain to registered files), or WEAK (none). The score is advisory — it nudges the LLM to cross-reference but does not block the finding.
 
 ### IOC Auto-Extraction
 

@@ -336,9 +336,10 @@ Invoke-WebRequest https://github.com/AppliedIR/wintools-mcp/archive/refs/heads/m
 Expand-Archive wintools.zip -DestinationPath .; cd wintools-mcp-main
 ```
 
-Then run the installer:
+Then run the installer. Windows 10/11 refuses to run scripts by default, so the first line allows them for this PowerShell window only:
 
 ```
+Set-ExecutionPolicy -Scope Process Bypass -Force
 .\scripts\setup-windows.ps1
 ```
 
@@ -658,7 +659,7 @@ All thresholds clamp to a sane lower bound (operator typo of `0` won't disable s
 |------|---------|
 | [sift-mcp](https://github.com/AppliedIR/sift-mcp) | Monorepo: 11 SIFT packages (forensic-mcp, case-mcp, report-mcp, sift-mcp, sift-gateway, case-dashboard, forensic-knowledge, forensic-rag, windows-triage, opencti, sift-common) |
 | [opensearch-mcp](https://github.com/AppliedIR/opensearch-mcp) | Evidence indexing + querying via OpenSearch (21 tools, 15 parsers). Optional. |
-| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (10 tools, 31 catalog entries) |
+| [wintools-mcp](https://github.com/AppliedIR/wintools-mcp) | Windows forensic tool execution (10 tools, 25 catalog entries) |
 | [Valhuntir](https://github.com/AppliedIR/Valhuntir) | CLI, architecture reference |
 
 ## Updating

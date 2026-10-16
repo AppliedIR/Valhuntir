@@ -47,10 +47,14 @@ from vhir_cli.case_io import (
     load_timeline,
     load_todos,
     load_withdrawals,
+    no_terminal_line,
+    refuse_without_terminal,
     save_todos,
     signed_text,
 )
 from vhir_cli.display import MULTI_LINE as _MULTI_LINE
+from vhir_cli.display import cited as _cited
+from vhir_cli.display import cited_text as _cited_text
 from vhir_cli.display import lines as _lines
 from vhir_cli.display import one_line as _one_line
 
@@ -58,8 +62,13 @@ from vhir_cli.display import one_line as _one_line
 def cmd_approve(args, identity: dict) -> None:
     """Approve findings/timeline events (or re-attest 0.6 approvals)."""
     case_dir = get_case_dir(getattr(args, "case", None))
+    refuse_without_terminal(case_dir, identity["examiner"], "approve", args.ids)
     config_path = Path.home() / ".vhir" / "config.yaml"
     show_signed = getattr(args, "show_signed", False)
+
+    refused = no_terminal_line(case_dir)
+    if refused:  # attempts with no examiner at a terminal (an AI's run)
+        print(refused)
 
     review = getattr(args, "review", False)
     if review and args.ids:
@@ -77,8 +86,9 @@ def cmd_approve(args, identity: dict) -> None:
         )
         return
 
+    unread: list[str] = []
     try:
-        withdrawn = len(load_withdrawals(case_dir))
+        withdrawn = len(load_withdrawals(case_dir, unread))
     except Exception as e:  # the count is information; a bad line mustn't block
         print(f"  Warning: withdrawn candidates not counted: {e}", file=sys.stderr)
         withdrawn = 0
@@ -88,6 +98,12 @@ def cmd_approve(args, identity: dict) -> None:
         if withdrawn
         else ""
     )
+    if unread:  # a withdrawal in a log that wasn't read isn't counted: say so
+        withdrawn_line = (
+            f"  {withdrawn} candidate finding(s) withdrawn after challenge counted;"
+            f" {', '.join(unread)} couldn't be read, so there may be more"
+            " — `vhir review --withdrawn`"
+        )
 
     if review:
         _review_mode(
@@ -163,7 +179,7 @@ def _preflight(identity: dict, config_path: Path, case_dir: Path) -> bool:
         sys.exit(1)
     copy = decide.copy_problem(case_dir)
     if copy:  # signing would extend another folder's chain
-        print(copy, file=sys.stderr)
+        print(_one_line(copy), file=sys.stderr)  # names the case's folders and id
         sys.exit(1)
     return new_passphrase
 
@@ -261,6 +277,7 @@ def _approve_specific(
 
     new_passphrase = _preflight(identity, config_path, case_dir)
     direct = []
+    trail = approval_checks.PlanTrail(case_dir, [(i, decide.item_type(i["id"])) for i in picked])  # fmt: skip
     for item in picked:
         loaded = copy.deepcopy(item)
         _display_item(item)
@@ -281,15 +298,15 @@ def _approve_specific(
             item, kind, decision, _STATUS_AFTER[decision], loaded=loaded,
             reason=reason, note=note or "", modifications=_modifications(loaded, item),
         )  # fmt: skip
-        if not _approval_checked(case_dir, chosen):
+        if not _approval_checked(case_dir, chosen, trail):
             continue
         direct.append(chosen)
     if not direct:
         print("Nothing to sign.")
         return
-    planned = decide.cascades(direct, findings, timeline, iocs)
+    planned, held = decide.split_cascades(direct, findings, timeline, iocs)
     print(f"\n{len(direct)} item(s) to {decision}.")
-    decide.confirm_plan(direct, planned, _display_item)
+    decide.confirm_plan(direct, planned, _display_item, held=held)
     decide.sign_and_commit(
         case_dir, identity, direct, planned, new_passphrase=new_passphrase
     )
@@ -345,6 +362,7 @@ def _interactive_review(
     skipped: set[str] = set()  # skipped by the examiner: never cascaded
     todos_to_create: list[dict] = []
     not_reviewed = 0
+    trail = approval_checks.PlanTrail(case_dir, [(i, decide.item_type(i["id"])) for i in all_items])  # fmt: skip
     for n, item in enumerate(all_items):
         _print_decision_header(item)
         choice = _prompt_choice(choices)
@@ -364,7 +382,7 @@ def _interactive_review(
             _show_as_signed(item, loaded, "approve", False)
             chosen = decide.Decision(item, kind, "approve", "APPROVED", loaded=loaded,
                                      note=note_text, modifications=_modifications(loaded, item))  # fmt: skip
-            if not _approval_checked(case_dir, chosen):
+            if not _approval_checked(case_dir, chosen, trail):
                 skipped.add(item["id"])
                 continue
             direct.append(chosen)
@@ -417,8 +435,8 @@ def _interactive_review(
             print(withdrawn_line)
         print("Nothing to sign.")
         return
-    planned = decide.cascades(direct, findings, timeline, iocs, skipped)
-    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line)
+    planned, held = decide.split_cascades(direct, findings, timeline, iocs, skipped)
+    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line, held=held)
     decide.sign_and_commit(
         case_dir,
         identity,
@@ -518,14 +536,16 @@ def _reattest(
     )
 
 
-def _approval_checked(case_dir: Path, d: decide.Decision) -> bool:
+def _approval_checked(case_dir: Path, d: decide.Decision, trail=None) -> bool:
     """Run the approval checks on a direct approval and show, before the
     passphrase, its roots, its grade and any failed check. A failed check
     needs a reason typed at the terminal; with none, the item stays DRAFT
     (False). Other decisions pass through."""
     if d.decision != "approve" or d.type not in ("finding", "timeline"):
         return True
-    d.checks = approval_checks.check_item(case_dir, d.item, d.type, note=_hashing_note)
+    d.checks = approval_checks.check_item(
+        case_dir, d.item, d.type, note=_hashing_note, trail=trail
+    )
     for line in _approval_lines(d.item, d.checks):
         print(line)
     if d.checks["result"] != "failed":
@@ -599,6 +619,17 @@ def _prompt_choice(choices: tuple[str, ...] = _APPROVE_CHOICES) -> str:
         print("  Invalid choice.")
 
 
+class _EditLoader(yaml.SafeLoader):
+    """SafeLoader that keeps an unquoted date or time as the text typed: a
+    stored timestamp is text, and the examiner's form of it is what's signed."""
+
+
+_EditLoader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
 def _apply_edit(item: dict, identity: dict) -> None:
     """Open item in $EDITOR as YAML, track modifications."""
     editor = os.environ.get("EDITOR", "vi")
@@ -625,61 +656,57 @@ def _apply_edit(item: dict, identity: dict) -> None:
             if key in item:
                 editable[key] = item[key]
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
-        tmpfile = f.name
-
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+    tmpfile = f.name
     try:
-        subprocess.run([editor, tmpfile], check=True, timeout=3600)
-    except subprocess.TimeoutExpired:
-        print("  Editor timed out after 1 hour.", file=sys.stderr)
+        # written in the try, so a failed dump removes it too; closed for the
+        # editor, which reopens it by name
+        with f:
+            yaml.dump(editable, f, default_flow_style=False, allow_unicode=True)
         try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except subprocess.CalledProcessError as e:
-        print(f"  Editor exited with error: {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except OSError as e:
-        print(f"  Failed to launch editor '{editor}': {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
+            subprocess.run([editor, tmpfile], check=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            print("  Editor timed out after 1 hour.", file=sys.stderr)
+            return
+        except subprocess.CalledProcessError as e:
+            print(f"  Editor exited with error: {e}", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"  Failed to launch editor '{editor}': {e}", file=sys.stderr)
+            return
 
-    try:
-        with open(tmpfile) as f:
-            edited = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        print(f"  Edited file contains invalid YAML: {e}", file=sys.stderr)
         try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
-    except OSError as e:
-        print(f"  Failed to read edited file: {e}", file=sys.stderr)
-        try:
-            os.unlink(tmpfile)
-        except OSError:
-            pass
-        return
+            with open(tmpfile) as f:
+                edited = yaml.load(f, Loader=_EditLoader) or {}
+        except yaml.YAMLError as e:
+            print(f"  Edited file contains invalid YAML: {e}", file=sys.stderr)
+            return
+        except OSError as e:
+            print(f"  Failed to read edited file: {e}", file=sys.stderr)
+            return
     finally:
         try:
             os.unlink(tmpfile)
         except OSError:
             pass
 
+    if not isinstance(edited, dict):
+        print("  The edited file isn't a set of fields; the item is unchanged.",
+              file=sys.stderr)  # fmt: skip
+        return
+    # Only the fields offered are applied: any other key (an id, a status,
+    # the evidence) is named and left as it was.
+    other = sorted(str(k) for k in edited if k not in editable)
+    if other:
+        print(f"  Not editable here, left unchanged: {_one_line(', '.join(other))}",
+              file=sys.stderr)  # fmt: skip
+
     # Diff and record modifications
     modifications = {}
     now = datetime.now(timezone.utc).isoformat()
     for key, new_val in edited.items():
+        if key not in editable:
+            continue
         old_val = editable.get(key)
         if new_val != old_val:
             modifications[key] = {
@@ -755,15 +782,35 @@ def _create_todos(case_dir: Path, todos_to_create: list[dict], identity: dict) -
     save_todos(case_dir, todos)
 
 
-def _challenge_line(challenged) -> str:
+def _challenge_is_clean(challenged, prior) -> bool:
+    """Upheld, with no contradiction, no check that contradicts or didn't run,
+    and no earlier challenge of what the finding ran: the one challenge that
+    needs no more than its line."""
+    if not isinstance(challenged, dict) or challenged.get("outcome") != "stands":
+        return False
+    if challenged.get("contradiction") or prior:
+        return False
+    checks = challenged.get("checks", [])
+    return isinstance(checks, list) and not any(
+        not isinstance(c, dict) or c.get("result") in ("contradicts", "not run")
+        for c in checks
+    )
+
+
+def _challenge_line(challenged, item=None) -> str:
     """The finding's challenge state, in one line."""
+    item = item if isinstance(item, dict) else {}
     if not isinstance(challenged, dict):
-        return "Not challenged"
+        return (
+            "Not challenged (imported)"
+            if item.get("imported_from")
+            else "Not challenged"
+        )
     ids = challenged.get("skeptic_audit_ids") or []
     ids = ", ".join(str(i) for i in ids) if isinstance(ids, list) else str(ids)
     outcome = challenged.get("outcome")
     if outcome == "stands":
-        return f"Challenged (client-reported): stands — skeptic: {ids}"
+        return f"Challenged (client-reported): upheld — skeptic: {ids}"
     if outcome == "revised":
         return f"Challenged (client-reported): revised after challenge — skeptic: {ids}"
     if outcome == "withdrawn":
@@ -771,18 +818,56 @@ def _challenge_line(challenged) -> str:
             "Challenged (client-reported): withdrawn, not applied, staged for "
             f"your decision — skeptic: {ids or 'none'}"
         )
+    if outcome == "contested":
+        return f"Challenged (client-reported): contested — skeptic: {ids or 'none'}"
+    if outcome == "not_challenged":
+        return f"Not challenged: {challenged.get('reason', '')}"
     return f"Challenged (client-reported): {outcome}"
 
 
-def _challenge_reasons(challenged) -> list[str]:
-    """The marker's stated contradiction and the server's refusal, escaped."""
-    if not isinstance(challenged, dict):
+def _challenge_reasons(challenged, item=None) -> list[str]:
+    """What the examiner should look at under the challenge line, escaped:
+    each check (with what its ids ran, so an author's own `date` run shows),
+    the stated contradiction, the server's refusal, and an earlier challenge
+    of what the finding ran. Nothing for a clean upheld challenge."""
+    item = item if isinstance(item, dict) else {}
+    prior = item.get("prior_challenge")
+    prior = prior if isinstance(prior, list) else []
+    marker = challenged if isinstance(challenged, dict) else {}
+    if _challenge_is_clean(challenged, prior):
         return []
     lines = []
-    if challenged.get("contradiction"):
-        lines.append(f"Contradiction (client-reported): {challenged['contradiction']}")
-    if challenged.get("refused"):
-        lines.append(f"Server: {challenged['refused']}")
+    checks = marker.get("checks")
+    for c in checks if isinstance(checks, list) else []:
+        if not isinstance(c, dict):
+            continue
+        ran = c.get("ran") if isinstance(c.get("ran"), dict) else {}
+        ids = c.get("audit_ids") if isinstance(c.get("audit_ids"), list) else []
+        cited = ", ".join(
+            f"{a} (ran: {ran[a]})" if isinstance(a, str) and a in ran else str(a)
+            for a in ids
+        )
+        line = f"Check {c.get('name', '')}: {c.get('result', '')}"
+        line += f" — {c['reason']}" if c.get("reason") else ""
+        line += f" — {cited}" if cited else ""
+        lines.append(line)
+    if marker.get("contradiction"):
+        lines.append(f"Contradiction (client-reported): {marker['contradiction']}")
+    if marker.get("refused"):
+        lines.append(f"Server: {marker['refused']}")
+    for p in prior:
+        if not isinstance(p, dict):
+            continue
+        new = p.get("new_since") if isinstance(p.get("new_since"), list) else []
+        since = (
+            "new since: " + ", ".join(
+                f"{n.get('ran', '')} ({n.get('audit_id', '')})" for n in new if isinstance(n, dict))
+            if new else "no new evidence"
+        )  # fmt: skip
+        lines.append(
+            f"Previously {p.get('kind', '')} ({p.get('ref', '')}): "
+            f"{p.get('contradiction', '')} — {since}"
+        )
     return [_safe(line) for line in lines]
 
 
@@ -911,8 +996,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
     """Everything the examiner decides on, before the password prompt."""
     print(f"{'─' * 60}")
     if "title" in item:
-        print(f"  {_safe(_challenge_line(item.get('challenged')))}")
-        for line in _challenge_reasons(item.get("challenged")):
+        print(f"  {_safe(_challenge_line(item.get('challenged'), item))}")
+        for line in _challenge_reasons(item.get("challenged"), item):
             print(f"    {line}")
         print(f"  [{_safe(item['id'])}]  {_safe(item.get('title', 'Untitled'))}")
         meta = [
@@ -924,8 +1009,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
             )
             if item.get(key)
         ]
-        if item.get("audit_ids"):
-            meta.append(f"Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+        if _cited(item.get("audit_ids")):
+            meta.append(f"Evidence: {_safe(_cited_text(item['audit_ids']))}")
         if meta:
             print(f"  {' | '.join(meta)}")
         print(f"  Observation: {_safe(item.get('observation', ''))}")
@@ -939,8 +1024,8 @@ def _print_pending_item(item: dict, timeline: list[dict]) -> None:
     else:
         print(f"  [{_safe(item['id'])}]  {_safe(item.get('timestamp', '?'))}")
         print(f"  Description: {_safe(item.get('description', ''))}")
-        if item.get("audit_ids"):
-            print(f"  Evidence: {_safe(', '.join(map(str, item['audit_ids'])))}")
+        if _cited(item.get("audit_ids")):
+            print(f"  Evidence: {_safe(_cited_text(item['audit_ids']))}")
 
 
 def _print_decision_header(item: dict) -> None:
@@ -982,8 +1067,8 @@ def _display_item(item: dict) -> None:
     title = item.get("title", item.get("description", "Untitled"))
     print(f"  [{_one_line(item['id'])}]  {_one_line(title)}")
     if "title" in item:  # under the title, which can't hide it
-        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
-        for line in _challenge_reasons(item.get("challenged")):
+        print(f"  {_one_line(_challenge_line(item.get('challenged'), item))}")
+        for line in _challenge_reasons(item.get("challenged"), item):
             print(f"    {line}")
     if examiner:
         print(f"  Examiner: {_one_line(examiner)}", end="")
@@ -991,10 +1076,8 @@ def _display_item(item: dict) -> None:
         print(f"  | By: {_one_line(created_by)}", end="")
     if item.get("confidence"):
         print(f"  | Confidence: {_one_line(item['confidence'])}", end="")
-    if item.get("audit_ids"):
-        print(
-            f"  | Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}", end=""
-        )
+    if _cited(item.get("audit_ids")):
+        print(f"  | Evidence: {_one_line(_cited_text(item['audit_ids']))}", end="")
     print()
     print(f"{'─' * 60}")
 
@@ -1012,8 +1095,8 @@ def _display_item(item: dict) -> None:
         # It's a timeline event
         print(f"  Timestamp: {_one_line(item.get('timestamp', '?'))}")
         print(f"  Description: {_lines(item.get('description', ''), ' ' * 15)}")
-        if item.get("audit_ids"):
-            print(f"  Evidence: {_one_line(', '.join(map(str, item['audit_ids'])))}")
+        if _cited(item.get("audit_ids")):
+            print(f"  Evidence: {_one_line(_cited_text(item['audit_ids']))}")
     print()
 
 
@@ -1095,16 +1178,14 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
             _render_field("Title", item, modifications, "title")
         else:
             print(f"  Title:          {_one_line(item.get('title', ''))}")
-        print(f"  {_one_line(_challenge_line(item.get('challenged')))}")
-        for line in _challenge_reasons(item.get("challenged")):
+        print(f"  {_one_line(_challenge_line(item.get('challenged'), item))}")
+        for line in _challenge_reasons(item.get("challenged"), item):
             print(f"    {line}")
         _render_field("Confidence", item, modifications, "confidence")
         _render_field("Observation", item, modifications, "observation")
         _render_field("Interpretation", item, modifications, "interpretation")
-        if item.get("audit_ids"):
-            print(
-                f"  Evidence:       {_one_line(', '.join(map(str, item['audit_ids'])))}"
-            )
+        if _cited(item.get("audit_ids")):
+            print(f"  Evidence:       {_one_line(_cited_text(item['audit_ids']))}")
         for label, field in (("MITRE", "mitre_ids"), ("IOCs", "iocs"),
                              ("Context", "context"),
                              ("Justification", "confidence_justification")):  # fmt: skip
@@ -1140,7 +1221,7 @@ def _render_terminal_diff(item: dict, delta_entry: dict) -> None:
     for field in sorted(set(body) - shown):
         value = body[field]
         text = value if isinstance(value, str) else json.dumps(value, default=str)
-        label = field.replace("_", " ").capitalize()
+        label = _one_line(field.replace("_", " ").capitalize())  # a key is case data
         print(f"  {label}:{' ' * max(1, 15 - len(label))}{_one_line(text)}")
 
     # Note
@@ -1346,6 +1427,8 @@ def _review_mode(
     direct: list[decide.Decision] = []
     todo_entries: list[dict] = []
     skipped: list[tuple[str, str]] = []
+    trail = approval_checks.PlanTrail(case_dir, [
+        (x, decide.item_type(x["id"])) for e in selected if (x := item_by_id.get(e.get("id", "")))])  # fmt: skip
     for entry in selected:
         item_id, action = entry.get("id", ""), str(entry.get("action", "")).lower()
         if action == "todo":
@@ -1405,7 +1488,7 @@ def _review_mode(
         chosen = decide.Decision(item, kind, action, after, loaded=loaded,
                                  reason=entry.get("rejection_reason", "") or entry.get("reason", ""),
                                  note=entry.get("note", ""), modifications=mods, delta_entry=entry)  # fmt: skip
-        if not _approval_checked(case_dir, chosen):
+        if not _approval_checked(case_dir, chosen, trail):
             skipped.append(
                 (item_id, "a check failed and no reason was typed; left DRAFT")
             )
@@ -1458,13 +1541,13 @@ def _review_mode(
                 finish()
         print("Nothing to sign.")
         return
-    planned = decide.cascades(direct, findings, timeline, iocs)
+    planned, held = decide.split_cascades(direct, findings, timeline, iocs)
     print(f"\n{'=' * 60}")
     print(
         f"  Sign {len(direct)} decision(s) from pending reviews, {len(todo_entries)} TODO(s)"
     )
     print(f"{'=' * 60}")
-    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line)
+    decide.confirm_plan(direct, planned, _display_item, lead=withdrawn_line, held=held)
     decide.sign_and_commit(
         case_dir, identity, direct, planned, new_passphrase=new_passphrase,
         inside_lock=finish,

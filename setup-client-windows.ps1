@@ -564,6 +564,15 @@ $settingsObj = @{
                         command = $hookPath.Replace('\', '/')
                     }
                 )
+            },
+            @{
+                matcher = "Skill"
+                hooks = @(
+                    @{
+                        type = "command"
+                        command = $hookPath.Replace('\', '/')
+                    }
+                )
             }
         )
     }
@@ -646,8 +655,22 @@ if (Test-Path $settingsPath) {
             $existing | Add-Member -NotePropertyName hooks -NotePropertyValue $settingsObj.hooks
         } else {
             foreach ($hookType in @("UserPromptSubmit", "PreToolUse", "PostToolUse")) {
+                if (-not $settingsObj.hooks.$hookType) { continue }
                 if (-not $existing.hooks.$hookType) {
                     $existing.hooks | Add-Member -NotePropertyName $hookType -NotePropertyValue $settingsObj.hooks.$hookType
+                } else {
+                    # an entry the file lacks (by matcher and command) is added, so a
+                    # new one (the Skill matcher) reaches an existing file
+                    $have = @{}
+                    foreach ($e in @($existing.hooks.$hookType)) {
+                        foreach ($h in @($e.hooks)) { $have["$($e.matcher)|$($h.command)"] = $true }
+                    }
+                    $added = @($existing.hooks.$hookType)
+                    foreach ($e in $settingsObj.hooks.$hookType) {
+                        $keys = @($e.hooks | ForEach-Object { "$($e.matcher)|$($_.command)" })
+                        if (-not ($keys | Where-Object { $have[$_] })) { $added += $e }
+                    }
+                    $existing.hooks.$hookType = $added
                 }
             }
         }

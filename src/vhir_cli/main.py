@@ -80,7 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # backup
-    p_backup = sub.add_parser("backup", help="Back up case data")
+    p_backup = sub.add_parser(
+        "backup",
+        help="Back up case data",
+        epilog="Exit 1 (PARTIAL) when a part asked for, such as the OpenSearch indices, "
+        "couldn't be included; the files backup is kept and valid without it.",
+    )
     p_backup.add_argument("destination", nargs="?", help="Backup destination directory")
     p_backup.add_argument("--case", help="Case ID (default: active case)")
     p_backup.add_argument("--include-evidence", action="store_true")
@@ -95,8 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-unreadable",
         action="store_true",
         help=(
-            "Leave out paths that can't be read, found or followed; "
-            "list them in the manifest"
+            "Leave out paths that can't be read, found or followed, files that "
+            "aren't regular (a named pipe, socket or device) and a case-root "
+            "backup-manifest.json or .backup-in-progress; list them in the "
+            "manifest. Without it, any of these stops the backup"
         ),
     )
     p_backup.add_argument(
@@ -104,7 +111,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # restore
-    p_restore = sub.add_parser("restore", help="Restore a case from backup")
+    p_restore = sub.add_parser(
+        "restore",
+        help="Restore a case from backup",
+        epilog="Nothing outside the case folder is written until every file has "
+        "verified. Exit 1 (PARTIAL) when the files verified but a later step (the 0.6 "
+        "records, the indices) failed: the folder keeps its .restore-in-progress "
+        "marker, and a restore into it is refused; restore to another folder, or "
+        "remove it and restore again.",
+    )
     p_restore.add_argument("backup_path", help="Path to backup directory")
     p_restore.add_argument(
         "--skip-opensearch", action="store_true", help="Skip OpenSearch index restore"
@@ -489,6 +504,12 @@ def build_parser() -> argparse.ArgumentParser:
         "ends its earlier gateway tokens (for re-joining under one's own name)",
     )
 
+    setup_sub.add_parser(
+        "hayabusa",
+        help="Install the current Hayabusa release into ~/.local (no sudo); "
+        "sudo cast install teamdfir/sift installs 3.8.1 with the rest of SIFT",
+    )
+
     # export
     p_export = sub.add_parser("export", help="Export findings + timeline as JSON")
     p_export.add_argument("--file", required=True, help="Output file path")
@@ -684,10 +705,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Install GPU (CUDA) PyTorch for knowledge search (~5.4 GB)",
     )
+    # Set by update itself, when it runs Steps 4.5-9 from the code it pulled
+    p_update.add_argument("--after-pull", default=None, help=argparse.SUPPRESS)
 
     # portal / dashboard
     sub.add_parser("portal", help="Open the Examiner Portal in your browser")
-    sub.add_parser("dashboard", help="Open the legacy dashboard (v1)")
+    sub.add_parser(
+        "dashboard", help="Retired: opens the Examiner Portal (use `vhir portal`)"
+    )
 
     # Plugin discovery — external packages register subcommands
     from importlib.metadata import entry_points
@@ -703,6 +728,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _warn_if_update_incomplete() -> None:
+    """Warn when the installed code is newer than the last update that ran to
+    the end (an older vhir update ran its own steps after pulling this code)."""
+    import json
+
+    vhir = Path.home() / ".vhir"
+    try:
+        manifest = json.loads((vhir / "manifest.json").read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(manifest, dict):
+        return
+    try:
+        state = json.loads((vhir / "update-state.json").read_text())
+    except (OSError, ValueError):
+        state = None
+    installed_at = str(manifest.get("installed_at", ""))
+    if not isinstance(state, dict) or str(state.get("completed_at", "")) < installed_at:
+        state = None  # setup-sift.sh ran since
+    git = manifest.get("git")
+    commit = git.get("vhir", "") if isinstance(git, dict) else ""
+    if state is not None:
+        stale = (
+            state.get("version") != __version__ or state.get("vhir_commit") != commit
+        )
+    else:
+        # No record that counts: an updater before 0.6.4.1 wrote updated_at
+        # and no record. (Every updater 0.6.0-0.6.4 writes updated_at.)
+        stale = "updated_at" in manifest
+    if stale:
+        bar = "=" * 72
+        print(
+            f"{bar}\n"
+            "  UPDATE INCOMPLETE: run `vhir update` again\n"
+            f"  vhir {__version__} is installed, but the last update did not finish\n"
+            "  with it: the forensic controls, the manifest and the gateway may be\n"
+            "  from the older release.\n"
+            f"{bar}",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
     parser = build_parser()
     argcomplete.autocomplete(parser)
@@ -711,6 +778,11 @@ def main() -> None:
     if not args.command:
         parser.print_help()
         sys.exit(0)
+
+    # config is skipped too: setup-sift.sh runs `vhir config` mid-install,
+    # before it rewrites the manifest, so the check would fire during a setup.
+    if args.command not in ("update", "config"):
+        _warn_if_update_incomplete()
 
     # Identity check on every command
     flag_override = getattr(args, "examiner_override", None)
@@ -875,10 +947,12 @@ def _case_status(args, identity: dict) -> None:
         print(str(e), file=sys.stderr)
         return
 
-    print(f"Case: {data['case_id']}")
-    print(f"  Name:     {data['name']}")
-    print(f"  Status:   {data['status']}")
-    print(f"  Examiner: {data['examiner']}")
+    from vhir_cli.display import one_line  # CASE.yaml's values are the case's data
+
+    print(f"Case: {one_line(data['case_id'])}")
+    print(f"  Name:     {one_line(data['name'])}")
+    print(f"  Status:   {one_line(data['status'])}")
+    print(f"  Examiner: {one_line(data['examiner'])}")
     print(f"  Path:     {data['path']}")
     print(
         f"  Findings: {data['finding_count']} ({data['finding_draft']} draft, {data['finding_approved']} approved)"
@@ -969,11 +1043,15 @@ def _case_list(args, identity: dict) -> None:
         print("No cases found.")
         return
 
+    from vhir_cli.display import one_line  # each CASE.yaml's values are its case's data
+
     print(f"{'Case ID':<25} {'Status':<10} Name")
     print("-" * 65)
     for c in cases:
         marker = " (active)" if c["active"] else ""
-        print(f"{c['id']:<25} {c['status']:<10} {c['name']}{marker}")
+        print(
+            f"{one_line(c['id']):<25} {one_line(c['status']):<10} {one_line(c['name'])}{marker}"
+        )
 
 
 def _case_init_data(

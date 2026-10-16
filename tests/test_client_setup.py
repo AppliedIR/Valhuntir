@@ -1,12 +1,14 @@
 """Tests for vhir setup client command."""
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from vhir_cli.commands.client_setup import (
+    _LIBRECHAT_POST_INSTALL,
     _MSLEARN_MCP,
     DESKTOP_DROPPED,
     _claude_mcp_add,
@@ -22,6 +24,7 @@ from vhir_cli.commands.client_setup import (
     _remove_vhir_mcp_entries,
     _save_gateway_config,
     _wizard_client,
+    _write_user_file,
     cmd_setup_client,
 )
 
@@ -453,6 +456,19 @@ class TestCmdSetupClient:
 
         assert not (tmp_path / ".mcp.json").exists()
         assert (tmp_path / "librechat_mcp.yaml").is_file()
+
+    def test_librechat_next_steps_keep_the_setup_guide_s_six_tools_loaded(self):
+        """The printed next steps name the six tools the setup guide keeps
+        loaded, by their MCP names: case-mcp's case_status, not get_case_status."""
+        listed = re.findall(r"^     - (\w+) +\((\S+)\)$", _LIBRECHAT_POST_INSTALL, re.M)
+        assert listed == [
+            ("run_command", "sift-mcp"),
+            ("record_finding", "forensic-mcp"),
+            ("get_findings", "forensic-mcp"),
+            ("record_timeline_event", "forensic-mcp"),
+            ("log_reasoning", "case-mcp"),
+            ("case_status", "case-mcp"),
+        ]
 
 
 class TestWizardClient:
@@ -920,3 +936,52 @@ def test_readme_and_getting_started_name_neither_desktop_nor_cherry_studio():
     for doc in ("README.md", "docs/getting-started.md"):
         text = (repo / doc).read_text()
         assert "Claude Desktop" not in text and "Cherry" not in text, doc
+
+
+class TestWriteUserFileDefaultYes:
+    """The controls prompt defaults to Yes. On a terminal, Enter or y/yes
+    applies the change (keeping a backup of the old file); only n/no keeps
+    the file. The non-terminal branch is unchanged.
+    """
+
+    def _tty(self, monkeypatch, answer):
+        import types
+
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: True))
+        monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+
+    def test_enter_applies_with_backup(self, tmp_path, monkeypatch):
+        # Enter (empty answer) on a terminal applies the change. RED at 2a99ba1,
+        # where the default was No and Enter kept the file.
+        self._tty(monkeypatch, "")
+        path = tmp_path / "settings.json"
+        path.write_text("old\n")
+        status = _write_user_file(path, "new\n", "it differs from vhir's profile")
+        assert status == "written"
+        assert path.read_text() == "new\n"
+        backups = list(tmp_path.glob(path.name + ".vhir-backup-*"))
+        assert len(backups) == 1
+        assert backups[0].read_text() == "old\n"
+
+    def test_n_keeps(self, tmp_path, monkeypatch):
+        self._tty(monkeypatch, "n")
+        path = tmp_path / "settings.json"
+        path.write_text("old\n")
+        status = _write_user_file(path, "new\n", "it differs from vhir's profile")
+        assert status == "kept"
+        assert path.read_text() == "old\n"
+
+    def test_no_tty_not_changed(self, tmp_path, monkeypatch):
+        import types
+
+        monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+
+        def _no_input(prompt=""):
+            raise AssertionError("must not prompt without a terminal")
+
+        monkeypatch.setattr("builtins.input", _no_input)
+        path = tmp_path / "settings.json"
+        path.write_text("old\n")
+        status = _write_user_file(path, "new\n", "it differs from vhir's profile")
+        assert status == "kept"
+        assert path.read_text() == "old\n"

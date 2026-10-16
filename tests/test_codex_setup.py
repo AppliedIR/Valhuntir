@@ -81,6 +81,7 @@ def box(tmp_path, monkeypatch):
         "shared/hooks/forensic-audit.sh",
         "shared/hooks/codex-stdin-capture.sh",
         "full/hooks/case-dir-check.sh",
+        "shared/hooks/codex-skeptic-tools.sh",
     ):
         (repo / "claude-code" / hook).parent.mkdir(parents=True, exist_ok=True)
         (repo / "claude-code" / hook).write_text(f"#!/bin/bash\n# {hook}\n")  # fmt: skip
@@ -204,6 +205,7 @@ def test_the_profile_holds_every_backend_with_its_token_and_no_tool_prompt(box, 
     p = _profile(box)
     assert p["sandbox_mode"] == "workspace-write"
     assert p["approval_policy"] == "on-request"
+    assert p["web_search"] == "disabled"  # hosted tools fire no hooks
     assert p["project_doc_max_bytes"] == 0
     for name in BACKENDS:
         assert p["mcp_servers"][name] == {
@@ -242,6 +244,8 @@ def test_config_toml_is_never_written_and_a_refused_value_is_named(box, capsys):
     assert box.config.read_text() == text
     out = capsys.readouterr().out
     assert 'sets sandbox_mode = "danger-full-access"' in out
+    assert "replace with their own (the workspace, ~/.vhir read-only)" in out
+    assert "stops with an error" not in out  # Codex replaces it: measured, no error
     assert "vhir doesn't edit that file" in out
 
 
@@ -427,6 +431,8 @@ def test_remote_codex_writes_the_profile_and_prints_the_limits(laptop, capsys):
     _remote()
     p = tomllib.loads(laptop.profile.read_text())
     assert laptop.profile.stat().st_mode & 0o777 == 0o600
+    # no managed requirements here: the profile's own lines are the controls
+    assert p["sandbox_mode"] == "workspace-write" and p["web_search"] == "disabled"
     assert p["mcp_servers"]["forensic-mcp"] == {
         "url": "https://sift.example:4508/mcp/forensic-mcp",
         "http_headers": {"Authorization": f"Bearer {TOKEN}"},

@@ -283,8 +283,9 @@ def test_a_restore_refuses_another_case_s_chain(box, tmp_path, capsys):
 
 @pytest.mark.parametrize(
     "rel,why,code",
-    [("./ledger/chains/0123456789abcdef.jsonl", "is case 'another-case', not hashes", 0),
-     # a `..` component refuses the whole restore, before anything is written
+    # a path not in normal form, or with a `..` component, refuses the whole
+    # restore, before anything is written
+    [("./ledger/chains/0123456789abcdef.jsonl", "isn't a file path its backup writes", 1),
      ("ledger/x/../chains/0123456789abcdef.jsonl", "lists a file outside the case folder", 1),
      ("../escaped.jsonl", "lists a file outside the case folder", 1)],
 )  # fmt: skip
@@ -342,3 +343,36 @@ def test_a_crafted_keys_json_adds_nothing(box, tmp_path, capsys):
         signer["fingerprint"]
     ]
     assert keys.load("victim") is None
+
+
+def test_a_restore_lists_a_key_the_box_already_holds(box, tmp_path, capsys):
+    """Every signing key the restored case carries is listed, held here or
+    not: a second restore names the signer, with no KEY ADDED."""
+    path, signer, _ = _signed_backup(box, tmp_path)
+    credentials.merge_restored_keys("steve", [signer["public_key"]])  # held already
+    assert box.restore(path) == 0
+    out = capsys.readouterr().out
+    assert "  Signing keys in the restored case:\n" in out
+    assert f"\n    steve {signer['fingerprint']}\n" in out
+    assert "KEY ADDED" not in out
+
+
+def test_a_key_in_two_chains_is_listed_once(tmp_path, monkeypatch, capsys):
+    from vhir_cli import case_copies
+
+    rows = [{"examiner": e, "fingerprint": fp, "public_key": pk, "chain_id": c}
+            for e, fp, pk, c in (("steve", "SHA256:b", "PK-b", "c1"), ("steve", "SHA256:b", "PK-b", "c2"),
+                                 ("alice", "SHA256:a", "PK-a", "c3"))]  # fmt: skip
+    monkeypatch.setattr(case_copies, "case_keys", lambda d: {"keys": rows})
+    monkeypatch.setattr(
+        credentials,
+        "merge_restored_keys",
+        lambda e, pubs: ["SHA256:a"] if e == "alice" else [],
+    )
+    B._merge_keys(tmp_path)
+    assert capsys.readouterr().out == (
+        "  Signing keys in the restored case:\n"
+        "    alice SHA256:a\n"
+        "    steve SHA256:b\n"
+        "  KEY ADDED alice SHA256:a\n"
+    )

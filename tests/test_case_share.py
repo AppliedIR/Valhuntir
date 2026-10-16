@@ -40,47 +40,45 @@ def _accounts(monkeypatch, members=(), others=()):
     monkeypatch.setattr(grp, "getgrgid", lambda gid: group)
 
 
-def _nsswitch(tmp_path, passwd="files systemd", group="files systemd"):
-    f = tmp_path / "nsswitch.conf"
-    f.write_text(f"# local\npasswd:   {passwd}\ngroup:    {group}\nhosts: files dns\n")
-    return str(f)
-
-
-def test_a_group_only_the_installer_uses_is_the_shares(tmp_path, monkeypatch):
+def test_a_group_only_the_installer_uses_is_the_shares(monkeypatch):
     _accounts(monkeypatch, members=["ex1"])
-    assert join.private_primary_group("ex1", _nsswitch(tmp_path)) == "ex1"
+    assert join.private_primary_group("ex1") == "ex1"
 
 
 @pytest.mark.parametrize(
     "members, others", [(["ex1", "ana"], []), ([], ["ana"])], ids=["listed", "primary"]
 )
-def test_a_group_another_account_can_use_stops_join(
-    tmp_path, monkeypatch, members, others
-):
+def test_a_group_another_account_can_use_stops_join(monkeypatch, members, others):
     _accounts(monkeypatch, members=members, others=others)
     with pytest.raises(RuntimeError, match=r"isn't ex1's alone \(ana can use it\)"):
-        join.private_primary_group("ex1", _nsswitch(tmp_path))
+        join.private_primary_group("ex1")
 
 
 @pytest.mark.parametrize(
     "passwd, group",
-    [("files sss", "files"), ("files", "files ldap"), ("compat winbind", "compat")],
+    [
+        ("files systemd sss", "files systemd sss"),
+        ("files sss", "files"),
+        ("files", "files ldap"),
+        ("compat winbind", "compat"),
+    ],
 )
-def test_accounts_that_cant_all_be_listed_stop_join(
-    tmp_path, monkeypatch, passwd, group
+def test_non_local_account_sources_in_nsswitch_dont_stop_join(
+    monkeypatch, passwd, group
 ):
+    """A stock SIFT VM lists sss. The box is trusted, so only local accounts
+    are checked, whatever /etc/nsswitch.conf lists."""
     _accounts(monkeypatch)
-    with pytest.raises(RuntimeError, match="can't all be listed"):
-        join.private_primary_group("ex1", _nsswitch(tmp_path, passwd, group))
+    conf = f"passwd: {passwd}\ngroup: {group}\nhosts: files dns\n"
+    read_text = join.Path.read_text
 
+    def read(path, *args, **kwargs):
+        if str(path) == "/etc/nsswitch.conf":
+            return conf
+        return read_text(path, *args, **kwargs)
 
-def test_only_local_sources_with_actions_or_no_nsswitch_at_all_are_listable(
-    tmp_path, monkeypatch
-):
-    _accounts(monkeypatch)
-    conf = _nsswitch(tmp_path, "files [NOTFOUND=return] systemd", "compat")
-    assert join.private_primary_group("ex1", conf) == "ex1"
-    assert join.private_primary_group("ex1", str(tmp_path / "none")) == "ex1"
+    monkeypatch.setattr(join.Path, "read_text", read)
+    assert join.private_primary_group("ex1") == "ex1"
 
 
 # -- repointing follows samba.yaml's share
@@ -331,13 +329,3 @@ def test_sharing_a_case_no_longer_writes_the_marker_itself(case, tmp_path, monke
     _joined(monkeypatch, tmp_path)
     main._set_case_wintools_permissions(case)
     assert not (case / ".vhir-share-case").exists()
-
-
-# -- nsswitch's comments
-
-
-def test_a_commented_out_source_isnt_read(tmp_path, monkeypatch):
-    _accounts(monkeypatch)
-    conf = tmp_path / "nsswitch.conf"
-    conf.write_text("passwd: files systemd # sss\ngroup: files # ldap\n")
-    assert join.private_primary_group("ex1", str(conf)) == "ex1"

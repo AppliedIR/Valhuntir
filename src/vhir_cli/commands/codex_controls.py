@@ -4,7 +4,7 @@
 follows it) keeps Codex's own sandbox on, keeps its shell off the signing
 store, the gateway's tokens and the Valhuntir profile, and runs Valhuntir's
 hooks: the case-data guard, the audit (with the text typed into a running
-shell) and the start-up check. The hooks run from root-owned copies in
+shell), the start-up check and the finding-skeptic's tool check. The hooks run from root-owned copies in
 `/etc/codex/vhir-hooks/`.
 
 The file is ours when it carries the marker line. An administrator's own
@@ -33,6 +33,7 @@ HOOKS = (
     ("forensic-audit.sh", "shared/hooks/forensic-audit.sh"),
     ("codex-stdin-capture.sh", "shared/hooks/codex-stdin-capture.sh"),
     ("case-dir-check.sh", "full/hooks/case-dir-check.sh"),
+    ("codex-skeptic-tools.sh", "shared/hooks/codex-skeptic-tools.sh"),
 )
 # Beside the audit hook when sift-mcp ships them: the MCP routes it marks
 OPTIONAL = (

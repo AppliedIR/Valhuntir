@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -515,15 +517,6 @@ def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     # would break a venv that links those files from the cache.
     subprocess.run(["uv", "pip", "uninstall", *py, *names], timeout=600, check=True)
     subprocess.run(["uv", "cache", "clean", *names], timeout=600)
-    check = subprocess.run(
-        ["uv", "pip", "check", *py], capture_output=True, text=True, timeout=120
-    )
-    if check.returncode != 0:
-        print(
-            f"  The removal didn't finish ({(check.stdout + check.stderr).strip()}).\n"
-            f"  Finish it: uv pip uninstall --python {venv_python} {' '.join(names)}",
-            file=sys.stderr,
-        )
 
 
 def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
@@ -589,52 +582,146 @@ def _check_opensearch_version(source: Path) -> None:
         return  # No opensearch-mcp repo found — opensearch not installed
 
     os_path = repo / "docker" / "docker-compose.yml"
+    setup_script = os_path.parent.parent / "scripts" / "setup-opensearch.sh"
     if not os_path.is_file():
-        return
+        return _cant_check_snapshots(f"{os_path} is missing")
     text = os_path.read_text()
     m = re.search(r"opensearchproject/opensearch:(\S+)", text)
     if not m:
-        return
+        return _cant_check_snapshots(f"{os_path} names no opensearch image")
     pinned = m.group(1)
 
     # Check running container version
-    result = subprocess.run(
-        ["docker", "inspect", "--format", "{{.Config.Image}}", "vhir-opensearch"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Config.Image}}", "vhir-opensearch"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return _cant_check_snapshots(f"docker: {e}")
     if result.returncode != 0:
-        return  # Container not running
+        return _cant_check_snapshots(
+            "docker inspect vhir-opensearch: "
+            + (result.stderr.strip().splitlines() or ["failed"])[0]
+        )
     running_image = result.stdout.strip()
     running_m = re.search(r"opensearchproject/opensearch:(\S+)", running_image)
     if not running_m:
-        return
+        return _cant_check_snapshots(f"the container runs {running_image!r}")
     running = running_m.group(1)
+    if running == pinned:
+        _tell_snapshot_setup(setup_script)
 
     if running != pinned:
         print(
             f"\n  OpenSearch version mismatch: running {running}, code requires {pinned}."
         )
-        print("  Upgrading requires recreating the container. Indexed search data")
-        print("  will be cleared and must be reingested. Case records (findings,")
-        print("  timeline, evidence) are NOT affected.")
-        setup_script = os_path.parent.parent / "scripts" / "setup-opensearch.sh"
+        print("  Upgrading recreates the container. Its indexed data is kept: it")
+        print("  lives in a Docker volume the new container uses. Case records")
+        print("  (findings, timeline, evidence) are NOT affected.")
         try:
             answer = input("\n  Upgrade OpenSearch now? [y/N] ").strip().lower()
         except EOFError:
             answer = ""
         if answer in ("y", "yes"):
             print(f"  Running {setup_script}...")
-            result = subprocess.run(
-                ["bash", str(setup_script)],
-                timeout=300,
-            )
-            if result.returncode != 0:
+            try:
+                result = subprocess.run(["bash", str(setup_script)], timeout=300)
+            except subprocess.TimeoutExpired:  # the rest of update still runs
+                print(
+                    "  OpenSearch upgrade: setup-opensearch.sh didn't finish in 5 minutes"
+                    " and was stopped;\n  the container may still be starting (docker ps)."
+                    f" Run it again:\n    bash {shlex.quote(str(setup_script))}",
+                    file=sys.stderr,
+                )
+                print()
+                return
+            # setup-opensearch.sh exits 3: OpenSearch runs, but snapshots aren't set up
+            if result.returncode == 3:
+                print(
+                    "  OpenSearch was upgraded, but its snapshots aren't set up; see above.",
+                    file=sys.stderr,
+                )
+            elif result.returncode != 0:
                 print("  OpenSearch upgrade failed.", file=sys.stderr)
         else:
-            print(f"  Skipped. To upgrade later: bash {setup_script}")
+            print(f"  Skipped. To upgrade later: bash {shlex.quote(str(setup_script))}")
         print()
+
+
+_SNAPSHOT_REPO = "/usr/share/opensearch/snapshots"
+_SNAPSHOT_MOUNT_FORMAT = (
+    '{{range .Mounts}}{{if eq .Destination "/usr/share/opensearch/snapshots"}}'
+    "{{.Type}} {{.Source}} {{.RW}}{{end}}{{end}}"
+)
+
+
+def _cant_check_snapshots(reason: str) -> None:
+    print(f"\n  Couldn't check whether OpenSearch is set up for snapshots ({reason}).")
+
+
+def _tell_snapshot_setup(setup_script: Path) -> bool | None:
+    """Say so when the running container can't take vhir backup's snapshots: the
+    same two things setup-opensearch.sh checks (the bind, the node's path.repo).
+    True when it can, False when it can't, None when that couldn't be checked."""
+    try:
+        r = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                _SNAPSHOT_MOUNT_FORMAT,
+                "vhir-opensearch",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode != 0:
+            raise OSError(
+                (r.stderr.strip().splitlines() or ["docker inspect failed"])[0]
+            )
+        from opensearch_mcp.client import get_client
+
+        reply = get_client().nodes.info(
+            metric="settings", filter_path="nodes.*.settings.path.repo"
+        )
+    except Exception as e:  # noqa: BLE001 — any failure is "couldn't check", said once
+        return _cant_check_snapshots(f"{type(e).__name__}: {e}")
+    problems = []
+    if r.stdout.strip() != "bind /var/lib/vhir/snapshots true":
+        problems.append(
+            "the container has no read-write bind of /var/lib/vhir/snapshots at "
+            f"{_SNAPSHOT_REPO} (docker inspect: {r.stdout.strip()!r})"
+        )
+    try:
+        nodes = reply["nodes"]
+        repos = [n["settings"]["path"]["repo"] for n in nodes.values()]
+        ok = bool(nodes) and all(
+            _SNAPSHOT_REPO in ([x] if isinstance(x, str) else x) for x in repos
+        )
+    except (KeyError, TypeError, AttributeError):
+        ok = False
+    if not ok:
+        problems.append(
+            f"couldn't confirm that OpenSearch's path.repo includes {_SNAPSHOT_REPO} "
+            f"(_nodes/settings: '{json.dumps(reply, separators=(',', ':'))[:160]}')"
+        )
+    if not problems:
+        return True
+    print(
+        "\n  OpenSearch isn't set up for snapshots, so `vhir backup --include-opensearch`"
+    )
+    print("  can't save its indices:")
+    for line in problems:
+        print(f"    - {line}")
+    print(
+        "  To set it up (it recreates the vhir-opensearch container; its indexed data"
+    )
+    print(f"  is kept), run:\n    bash {shlex.quote(str(setup_script))}\n")
+    return False
 
 
 def _redeploy_clients(manifest: dict) -> list[str]:
@@ -686,7 +773,9 @@ def _redeploy_clients(manifest: dict) -> list[str]:
 def cmd_update(args, identity: dict) -> None:
     """Pull latest code and redeploy Valhuntir installation."""
     check_only = getattr(args, "check", False)
-    no_restart = getattr(args, "no_restart", False)
+    after_pull = getattr(args, "after_pull", None)
+    if not isinstance(after_pull, str):
+        after_pull = None
 
     # Step 1: Preflight
     manifest_path = Path.home() / ".vhir" / "manifest.json"
@@ -734,7 +823,10 @@ def cmd_update(args, identity: dict) -> None:
         sys.exit(1)
 
     # Keep uv current (handles stale installs and pre-existing user installs)
-    subprocess.run(["uv", "self", "update", "--quiet"], capture_output=True, timeout=60)
+    if after_pull is None:
+        subprocess.run(
+            ["uv", "self", "update", "--quiet"], capture_output=True, timeout=60
+        )
 
     repos = [("sift-mcp", source), ("vhir", vhir_dir)]
 
@@ -742,7 +834,7 @@ def cmd_update(args, identity: dict) -> None:
     os_repo = _resolve_opensearch_mcp_repo(source)
     if os_repo is not None:
         repos.append(("opensearch-mcp", os_repo))
-    elif _opensearch_mcp_installed_but_missing(source):
+    elif after_pull is None and _opensearch_mcp_installed_but_missing(source):
         # Package is installed in the venv but no git repo found anywhere.
         # Silent skip was the v0.6.1 bug — make it visibly actionable.
         print(
@@ -752,6 +844,21 @@ def cmd_update(args, identity: dict) -> None:
             "    cd <path-to-opensearch-mcp> && git pull && uv pip install -e .\n",
             file=sys.stderr,
         )
+
+    if after_pull is not None:  # Steps 1-4 ran in the process that started this one
+        pre_update_git, torch_record = _read_handoff(after_pull, repos)
+        _finish_update(
+            args,
+            identity,
+            manifest,
+            manifest_path,
+            venv,
+            source,
+            repos,
+            pre_update_git,
+            torch_record,
+        )
+        return
 
     # Step 2: Fetch + compare
     for name, path in repos:
@@ -824,6 +931,12 @@ def cmd_update(args, identity: dict) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    # The fetch (Step 2) has succeeded and the pull is next: record the update
+    # as started (version ""), so any stop before Step 9 keeps every command
+    # warning until a later run finishes. A stop at Step 2 (e.g. offline) never
+    # reaches here, so the record stays the last complete update's.
+    _write_update_state("", pre_update_git.get("vhir", ""))
     pulled = False  # a repo's HEAD moved in this run
     for name, path in repos:
         if not path.is_dir():
@@ -980,6 +1093,104 @@ def cmd_update(args, identity: dict) -> None:
     if sys.stdin.isatty():  # with no terminal, --final's note names them
         _offer_opencti_cleanup(venv_python, checker, lock)
 
+    # This process loaded vhir-cli before the pull: when the pull changed it,
+    # Steps 4.5-9 run in a new process, from the new code.
+    if "vhir" in pre_update_git and pre_update_git["vhir"] != _git_head(vhir_dir):
+        _reexec_after_pull(args, venv, venv_python, pre_update_git, torch_record)
+    _finish_update(
+        args,
+        identity,
+        manifest,
+        manifest_path,
+        venv,
+        source,
+        repos,
+        pre_update_git,
+        torch_record,
+    )
+
+
+def _reexec_after_pull(
+    args, venv: str, venv_python: str, pre_update_git: dict, torch_record: str
+) -> NoReturn:
+    """Replace this process with `vhir update --after-pull` from the new code."""
+    script = Path(venv) / "bin" / "vhir"
+    handoff = json.dumps(
+        {"pre_update_git": pre_update_git, "torch_record": torch_record}
+    )
+    argv = [venv_python, str(script), "update", "--after-pull", handoff]
+    if getattr(args, "no_restart", False):
+        argv.append("--no-restart")
+    if not script.is_file():
+        _update_incomplete(f"{script} was not found")
+    print("  Continuing the update with the new code...", flush=True)
+    sys.stderr.flush()
+    try:
+        os.execv(venv_python, argv)
+    except OSError as e:
+        _update_incomplete(f"Cannot start the new code: {e}")
+    sys.exit(1)  # execv returns only by raising
+
+
+def _update_incomplete(reason: str) -> NoReturn:
+    bar = "=" * 72
+    print(
+        f"\n{bar}\n"
+        "  UPDATE INCOMPLETE: run `vhir update` again\n"
+        f"  {reason}.\n"
+        "  The new code is installed, but the forensic controls, the manifest and\n"
+        "  the gateway restart were not done with it.\n"
+        f"{bar}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _read_handoff(text: str, repos: list[tuple[str, Path]]) -> tuple[dict, str]:
+    """The pre-pull heads and torch choice the first process passed on."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("pre_update_git"), dict):
+        record = data.get("torch_record")
+        return data["pre_update_git"], record if isinstance(record, str) else ""
+    return {name: _git_head(path) for name, path in repos if path.is_dir()}, ""
+
+
+def _write_update_state(version: str, vhir_commit: str) -> None:
+    """Record an update's progress; every vhir command compares it with the
+    installed code (main._warn_if_update_incomplete). version "" is written
+    just before the pull, so any stop before Step 9 keeps warning; the full
+    record (the running process's version) is written after Step 9."""
+    state = {
+        "version": version,
+        "vhir_commit": vhir_commit,
+        "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    path = Path.home() / ".vhir" / "update-state.json"
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(state, indent=2) + "\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"  Warning: could not record the update: {e}", file=sys.stderr)
+
+
+def _finish_update(
+    args,
+    identity: dict,
+    manifest: dict,
+    manifest_path: Path,
+    venv: str,
+    source: Path,
+    repos: list[tuple[str, Path]],
+    pre_update_git: dict,
+    torch_record: str,
+) -> None:
+    """Steps 4.5-9, after the pull and the install."""
+    no_restart = getattr(args, "no_restart", False)
+
     # Step 4.5: Ensure password storage directory exists
     _ensure_password_dir()
 
@@ -1043,17 +1254,35 @@ def cmd_update(args, identity: dict) -> None:
         )
     else:
         print("  Restarting gateway... ", end="", flush=True)
-        result = subprocess.run(
-            ["systemctl", "--user", "restart", "vhir-gateway"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        restart_ok = result.returncode == 0
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "restart", "vhir-gateway"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            restart_ok = result.returncode == 0
+            failure = result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            # systemd carries on with the restart: report the state it reached
+            try:
+                state = (
+                    subprocess.run(
+                        ["systemctl", "--user", "is-active", "vhir-gateway"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    ).stdout.strip()
+                    or "unknown"
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                state = "unknown"
+            restart_ok = state == "active"
+            failure = f"no answer in 60 s; the gateway is {state}"
         if restart_ok:
             print("done")
         else:
-            print(f"failed ({result.stderr.strip()})")
+            print(f"failed ({failure})")
             print("  Check with: systemctl --user status vhir-gateway")
             restart_ok = False
 
@@ -1072,12 +1301,15 @@ def cmd_update(args, identity: dict) -> None:
         print("  Running connectivity test...")
         from vhir_cli.commands.setup import _run_connectivity_test
 
-        _run_connectivity_test()
+        _run_connectivity_test(sift_tools=False)
 
     # Step 9: Summary
     hashes = manifest.get("git", {})
     parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
+    from vhir_cli import __version__
+
+    _write_update_state(__version__, manifest.get("git", {}).get("vhir", ""))
     if "claude-code" in clients or "codex" in clients:
         print("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)
@@ -1086,6 +1318,11 @@ def cmd_update(args, identity: dict) -> None:
         from vhir_cli.gateway import RECONNECT_HINT
 
         print(f"  {RECONNECT_HINT}")
+
+    # Last, so it isn't scrolled away: SIFT tools too old for Valhuntir
+    from vhir_cli.commands.setup import _print_sift_tools_warning
+
+    _print_sift_tools_warning()
 
 
 def _print_share_rejoin_notice() -> None:

@@ -5,10 +5,13 @@ Local-first: flat case directory. Collaboration via export/merge.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -23,6 +26,218 @@ DEFAULT_CASES_DIR = str(Path.home() / "cases")
 
 class CaseError(Exception):
     """Raised when case directory cannot be resolved or validation fails."""
+
+
+class CaseFileNotRegular(CaseError, OSError):
+    """A case file that is there but isn't a regular file: reading a named
+    pipe would block, so it is refused by name. `why` says what it is."""
+
+    def __init__(self, text: str, why: str = "not a regular file"):
+        super().__init__(text)
+        self.why = why
+
+
+class CaseFileNotText(CaseError, ValueError):
+    """A case file that isn't UTF-8 text: refused by name, never read as an
+    empty file (an empty CASE.yaml would read as no case at all)."""
+
+
+def not_text(path) -> CaseFileNotText:
+    return CaseFileNotText(
+        f"{path} isn't UTF-8 text. Put the case's own file back, then try again."
+    )
+
+
+_BACK = "Put the case's own file back, then try again."
+_NOT_REGULAR = {  # what the file is -> what the refusal says it is
+    "not a regular file": "isn't a regular file (a named pipe, socket or device).",
+    "a folder": "is a folder, not a file.",
+    "a symbolic link": "is a symbolic link, so it wasn't read: a case log is read "
+    "only under its own name.",
+    "another name links to it": "has another name linking to it, so it wasn't read.",
+}
+
+
+# An audit log is never to be changed: a refusal over one leaves it as it is
+KEPT = "The log was left unchanged: audit logs are evidence and stay as they are."
+# a log that isn't the one the case wrote (a FIFO, a folder, a link, a second
+# name): a next step that still leaves it as it is
+REPORT = "Keep the case as it is and report it to whoever manages this case."
+
+
+def kept(why: str = "") -> str:
+    """The step a refusal over an audit log gives: never a change to it."""
+    return f"{KEPT} {REPORT}" if why in _NOT_REGULAR else KEPT
+
+
+def is_audit_log(path) -> bool:
+    return Path(path).parent.name == "audit"
+
+
+def _not_regular(path, why: str = "not a regular file") -> CaseFileNotRegular:
+    step = kept(why) if is_audit_log(path) else _BACK
+    return CaseFileNotRegular(f"{path} {_NOT_REGULAR[why]} {step}", why)
+
+
+def case_file_there(path: Path) -> bool:
+    """Whether a case file is there to read: False when it's absent. One that
+    is there but isn't a regular file (a named pipe, socket or device) raises
+    CaseFileNotRegular; checking never opens it."""
+    if not path.exists():
+        return False
+    if not path.is_file():
+        raise _not_regular(path)
+    return True
+
+
+# The longest line, and the most bytes, one case log may hold. A line is
+# parsed whole, and a parse costs up to about 34 times the line.
+LINE_CAP = 16 << 20
+FILE_BUDGET = 256 << 20
+DOC_CAP = 16 << 20  # a case document (findings.json, keys.json, ...), read whole
+_HOLDS = {  # a case file's name -> what it holds, as the refusal names it
+    "approvals.jsonl": "approval records",
+    "findings.json": "findings",
+    "timeline.json": "timeline events",
+    "iocs.json": "IOCs",
+    "keys.json": "signing-key records",
+    "verification.jsonl": "0.6 approval records",
+}
+
+
+def holds(path) -> str:
+    """What a case file holds, in words: an audit/ log holds audit entries."""
+    p = Path(path)
+    if p.name in _HOLDS:
+        return _HOLDS[p.name]
+    return "audit entries" if p.parent.name == "audit" else "case records"
+
+
+class CaseFileTooLarge(CaseError, OSError):
+    """A case log with a line longer than LINE_CAP, or more than FILE_BUDGET
+    bytes: refused by name, never held whole. `why` says which; `line` is
+    the line's number, or None for the whole file."""
+
+    def __init__(self, path, line: int | None = None, limit: int | None = None):
+        limit = FILE_BUDGET if limit is None else limit
+        self.why = (f"line {line} is longer than {LINE_CAP >> 20} MiB" if line
+                    else f"larger than {limit >> 20} MiB")  # fmt: skip
+        what = (f"{path} line {line} is longer than {LINE_CAP >> 20} MiB, so the file "
+                "wasn't read past it." if line else
+                f"{path} is larger than {limit >> 20} MiB, so it wasn't read.")  # fmt: skip
+        step = (f"It holds the case's audit entries. {KEPT}" if is_audit_log(path) else
+                f"It holds the case's {holds(path)}: keep a copy of it before you move "
+                "it out of the case, then try again.")  # fmt: skip
+        super().__init__(f"{what} {step}")
+        self.line = line
+
+
+def _open_regular_fd(path, log: bool = False, budget: int | None = None) -> int:
+    """Opened non-blocking and checked on the open descriptor before any read,
+    so a FIFO (or a link to one) never blocks and a device is never read. A
+    log (`log`) is also opened only under its own name (no symbolic link, no
+    second name) and only while it is within FILE_BUDGET."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if log else 0)
+    try:
+        fd = os.open(os.fspath(path), flags)
+    except OSError as e:
+        if log and e.errno == errno.ELOOP:
+            raise _not_regular(path, "a symbolic link") from None
+        raise
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            raise _not_regular(path, "a folder")
+        if not stat.S_ISREG(st.st_mode):
+            raise _not_regular(path)
+        if log and st.st_nlink != 1:
+            raise _not_regular(path, "another name links to it")
+        budget = FILE_BUDGET if budget is None else budget
+        if log and st.st_size > budget:
+            raise CaseFileTooLarge(path, limit=budget)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def read_regular(path) -> bytes:
+    """A regular file's bytes, for a case file read as one document."""
+    with os.fdopen(_open_regular_fd(path), "rb") as f:
+        return f.read()
+
+
+def open_log_unbudgeted(path):
+    """A case log opened as `case_lines` opens it (a regular file, under its
+    own name, with no second name), but with no FILE_BUDGET: only for a reader
+    whose memory doesn't grow with the log (the approval checks' scan)."""
+    return os.fdopen(_open_regular_fd(path, log=True, budget=sys.maxsize), "rb")
+
+
+def case_lines(path):
+    """Each line of a case log, as bytes with its newline; the file is checked
+    now (`_open_regular_fd`). A line longer than LINE_CAP, or more than
+    FILE_BUDGET bytes in all, raises CaseFileTooLarge naming it: a line is
+    never held whole, and never split into records."""
+    return _capped_lines(os.fdopen(_open_regular_fd(path, log=True), "rb"), path)
+
+
+def _read_whole(path, limit: int) -> bytes:
+    """A case file's bytes, checked as a log is and read in one read, up to
+    `limit` by its size when opened and as it is read; never split into lines."""
+    with os.fdopen(_open_regular_fd(path, log=True, budget=limit), "rb") as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:  # it grew while read
+        raise CaseFileTooLarge(path, limit=limit)
+    return data
+
+
+def read_case_document(path) -> bytes:
+    """A case document's bytes (findings.json, timeline.json, iocs.json,
+    keys.json), read whole up to DOC_CAP."""
+    return _read_whole(path, DOC_CAP)
+
+
+def read_case_log_whole(path) -> bytes:
+    """A case log's bytes, read whole up to FILE_BUDGET: only for a reader that
+    must select a prefix of the bytes before it splits them into lines (the
+    0.6 approval sources, whose prefix a genesis froze). Any other log is read
+    with `case_lines`, a line at a time."""
+    return _read_whole(path, FILE_BUDGET)
+
+
+def _capped_lines(f, path):
+    with f:
+        n = total = 0
+        while raw := f.readline(LINE_CAP + 2):
+            n += 1
+            total += len(raw)
+            # the cap counts a line's content, not its \n or \r\n
+            end = 2 if raw.endswith(b"\r\n") else 1 if raw.endswith(b"\n") else 0
+            if len(raw) - end > LINE_CAP:
+                raise CaseFileTooLarge(path, n)
+            if total > FILE_BUDGET:  # it grew while read
+                raise CaseFileTooLarge(path)
+            yield raw
+
+
+class open_regular:  # noqa: N801 - used as open() is
+    """A case log read as text (UTF-8) line by line, as `case_lines` reads it:
+    `with open_regular(p) as f: for line in f`. Lines end at \\n, \\r\\n or a
+    lone \\r, as a file opened in text mode splits them (each given with \\n)."""
+
+    def __init__(self, path):
+        self._lines = case_lines(path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._lines.close()
+
+    def __iter__(self):
+        for raw in self._lines:
+            yield from io.StringIO(raw.decode("utf-8"), newline=None)
 
 
 def _validate_case_id(case_id: str) -> None:
@@ -140,11 +355,13 @@ def get_examiner(case_dir: Path | None = None) -> str:
 def load_case_meta(case_dir: Path) -> dict:
     """Load CASE.yaml metadata."""
     meta_file = case_dir / "CASE.yaml"
-    if not meta_file.exists():
+    if not case_file_there(meta_file):
         return {}
     try:
-        with open(meta_file) as f:
+        with open(meta_file, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
+    except UnicodeDecodeError:
+        raise not_text(meta_file) from None
     except (yaml.YAMLError, OSError):
         return {}
 
@@ -181,7 +398,7 @@ def load_findings(case_dir: Path) -> list[dict]:
     if not findings_file.exists():
         return []
     try:
-        return json.loads(findings_file.read_text())
+        return json.loads(read_regular(findings_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt findings.json ({findings_file}): {e}", file=sys.stderr)
         return []
@@ -201,7 +418,7 @@ def load_timeline(case_dir: Path) -> list[dict]:
     if not timeline_file.exists():
         return []
     try:
-        return json.loads(timeline_file.read_text())
+        return json.loads(read_regular(timeline_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt timeline.json ({timeline_file}): {e}", file=sys.stderr)
         return []
@@ -221,7 +438,7 @@ def load_todos(case_dir: Path) -> list[dict]:
     if not todos_file.exists():
         return []
     try:
-        return json.loads(todos_file.read_text())
+        return json.loads(read_regular(todos_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt todos.json ({todos_file}): {e}", file=sys.stderr)
         return []
@@ -241,7 +458,7 @@ def load_iocs(case_dir: Path) -> list[dict]:
     if not iocs_file.exists():
         return []
     try:
-        return json.loads(iocs_file.read_text())
+        return json.loads(read_regular(iocs_file).decode())
     except json.JSONDecodeError as e:
         print(f"WARNING: Corrupt iocs.json ({iocs_file}): {e}", file=sys.stderr)
         return []
@@ -317,7 +534,7 @@ def load_approval_log(case_dir: Path) -> list[dict]:
         return []
     entries = []
     corrupt_lines = 0
-    with open(log_file, encoding="utf-8") as f:
+    with open_regular(log_file) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -661,8 +878,9 @@ def verify_approval_integrity(case_dir: Path) -> list[dict]:
 # --- Audit Index ---
 
 
-def load_withdrawals(case_dir: Path) -> list[dict]:
-    """The candidate findings withdrawn after challenge, oldest first.
+def load_withdrawals(case_dir: Path, unread: list | None = None) -> list[dict]:
+    """The candidate findings withdrawn after challenge, oldest first. `unread`
+    gets each audit log that couldn't be read (a withdrawal there isn't seen).
 
     Each is a record_finding audit entry whose result is WITHDRAWN. An entry
     repeated in the trail counts once, by audit id and time together, so two
@@ -670,14 +888,16 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     """
     from vhir_cli.commands.audit_cmd import _load_audit_entries
 
+    def withdrawn(entry) -> bool:
+        if not isinstance(entry, dict) or entry.get("tool") != "record_finding":
+            return False
+        result = entry.get("result_summary")
+        return isinstance(result, dict) and result.get("status") == "WITHDRAWN"
+
     seen: set[tuple] = set()
     withdrawals = []
-    for entry in _load_audit_entries(case_dir):
-        if not isinstance(entry, dict) or entry.get("tool") != "record_finding":
-            continue
-        result = entry.get("result_summary")
-        if not isinstance(result, dict) or result.get("status") != "WITHDRAWN":
-            continue
+    # only the withdrawals are kept while the trail is read, never the whole trail
+    for entry in _load_audit_entries(case_dir, keep=withdrawn, unread=unread):
         key = (entry.get("audit_id"), entry.get("ts"))
         if key not in seen:
             seen.add(key)
@@ -685,10 +905,109 @@ def load_withdrawals(case_dir: Path) -> list[dict]:
     return withdrawals
 
 
-def load_audit_index(case_dir: Path) -> dict[str, dict]:
+NO_TERMINAL = "NO_TERMINAL"
+NO_TERMINAL_REFUSAL = (
+    "Approving and rejecting need the examiner at a terminal (/dev/tty isn't "
+    "available). Nothing was signed or saved."
+)
+
+
+def record_no_terminal(
+    case_dir: Path, examiner: str, action: str, ids: list[str]
+) -> None:
+    """One audit line for an approve or reject refused for want of a terminal,
+    written as `vhir exec` writes its lines (no audit id): the examiner sees
+    it at the next approve and review, and in `vhir audit`."""
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "mcp": "cli-approve",
+        "tool": action,
+        "examiner": examiner,
+        "case_id": case_id_of(case_dir),
+        "source": "cli",
+        "params": {"ids": list(ids)},
+        "result_summary": {"status": NO_TERMINAL, "reason": "no terminal"},
+    }
+    try:
+        (case_dir / "audit").mkdir(parents=True, exist_ok=True)
+        with open(case_dir / "audit" / "cli-approve.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        print(
+            f"WARNING: the refusal wasn't written to the audit trail: {e}",
+            file=sys.stderr,
+        )
+
+
+def refuse_without_terminal(case_dir: Path, examiner: str, action: str, ids) -> None:
+    """At an approve or reject's start, before any preflight: with no
+    examiner at a terminal, record the attempt, say so, and exit 1. Nothing
+    is read from the signing folders, so a sandbox that hides them still gets
+    the notice."""
+    from vhir_cli import approval_auth
+
+    try:
+        approval_auth.require_terminal()
+    except approval_auth.NoTerminal:
+        record_no_terminal(case_dir, examiner, action, [str(i) for i in ids or []])
+        print(NO_TERMINAL_REFUSAL, file=sys.stderr)
+        sys.exit(1)
+
+
+def load_no_terminal(case_dir: Path) -> list[dict]:
+    """The approve and reject attempts refused for want of a terminal, oldest
+    first, each once (by its time and its ids)."""
+    from vhir_cli.commands.audit_cmd import _load_audit_entries
+
+    seen: set[str] = set()
+    out = []
+    for entry in _load_audit_entries(case_dir):
+        if not isinstance(entry, dict) or entry.get("tool") not in (
+            "approve",
+            "reject",
+        ):
+            continue
+        result = entry.get("result_summary")
+        if not isinstance(result, dict) or result.get("status") != NO_TERMINAL:
+            continue
+        key = json.dumps(
+            [entry.get("ts"), entry.get("params")], default=str, sort_keys=True
+        )
+        if key not in seen:
+            seen.add(key)
+            out.append(entry)
+    return out
+
+
+def no_terminal_line(case_dir: Path) -> str:
+    """ "<n> approve/reject attempt(s) refused: no terminal (latest <time>,
+    <ids>) …", or "" when there are none. Information: never blocks."""
+    from vhir_cli.display import one_line
+
+    try:
+        refused = load_no_terminal(case_dir)
+    except Exception as e:  # noqa: BLE001 - a bad line mustn't block the command
+        return f"  Warning: refused approve/reject attempts not counted: {one_line(str(e))}"
+    if not refused:
+        return ""
+    latest = refused[-1]
+    params = latest.get("params") if isinstance(latest.get("params"), dict) else {}
+    ids = params.get("ids") if isinstance(params.get("ids"), list) else []
+    return (
+        f"  {len(refused)} approve/reject attempt(s) refused: no terminal (latest "
+        f"{one_line(latest.get('ts', '?'))}, {one_line(', '.join(map(str, ids)))}) "
+        "— not you? see `vhir audit`"
+    )
+
+
+def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str, dict]:
     """Scan audit/*.jsonl and build {audit_id: {**entry, "_source_file": filename}}.
 
-    Used by review --detail to resolve evidence chains.
+    Used by review --detail to resolve evidence chains. Pass `wanted` to keep
+    only those audit_ids, so the index stays bounded by what the caller
+    resolves rather than by the size of the audit trail.
     """
     audit_dir = case_dir / "audit"
     index: dict[str, dict] = {}
@@ -696,7 +1015,9 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
         return index
     for jsonl_file in sorted(audit_dir.glob("*.jsonl")):
         try:
-            with open(jsonl_file, encoding="utf-8") as f:
+            # a regular file only: a FIFO or a link to a device is refused by
+            # name, never waited on or read without end
+            with open_regular(jsonl_file) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -704,14 +1025,192 @@ def load_audit_index(case_dir: Path) -> dict[str, dict]:
                     try:
                         entry = json.loads(line)
                         eid = entry.get("audit_id", "")
-                        if eid:
+                        if eid and (wanted is None or eid in wanted):
                             entry["_source_file"] = jsonl_file.name
                             index[eid] = entry
                     except json.JSONDecodeError:
                         continue
+        except (CaseFileNotRegular, CaseFileTooLarge) as e:
+            from vhir_cli.display import one_line  # a file name is the case's data
+
+            print(
+                f"  Warning: could not read {one_line(f'{jsonl_file}: {e}')}",
+                file=sys.stderr,
+            )
         except OSError:
             continue
     return index
+
+
+# --- Audit trail tails ---
+
+_TAIL_BLOCK = 65536
+# A page of `limit` rows needs at most `limit` entries per file, but audit files
+# are ordered by their writer's own clock and some are appended over SMB from a
+# Windows host, so read a wide margin: enough that a run of out-of-order appends
+# has to be very long before it can push a newer entry out of the window, and
+# short enough to stay flat in the size of the trail.
+_TAIL_OVERREAD = 4
+_TAIL_MIN = 2000
+
+
+class _ReadWhole(Exception):
+    """The tail can't be read as the full reader reads the file: read it whole."""
+
+
+def _iter_lines_reversed(fh, block: int = _TAIL_BLOCK):
+    """Yield the raw lines of an open binary file from last to first, split at
+    \\n as `case_lines` splits them (without the \\n). A line longer than
+    LINE_CAP raises _ReadWhole once its length is past the cap, so a line with
+    no \\n is never held whole; its pieces are joined once, when it ends."""
+    fd = fh.fileno()
+    pos = os.fstat(fd).st_size
+    pieces: list[bytes] = []  # the line being read, its last piece first
+    held = 0
+    while pos > 0:
+        step = min(block, pos)
+        pos -= step
+        chunk = os.pread(fd, step, pos)
+        if len(chunk) != step:  # cut short while read
+            raise _ReadWhole
+        parts = chunk.split(b"\n")
+        pieces.append(parts[-1])
+        held += len(parts[-1])
+        if len(parts) > 1:
+            yield _whole(pieces)  # emptied, so the line isn't held twice
+            yield from (_capped(p) for p in reversed(parts[1:-1]))
+            pieces.append(parts[0])
+            held = len(parts[0])
+        if held > LINE_CAP + 1:  # past the cap even counting a \r before its \n
+            raise _ReadWhole
+    if pieces:
+        yield _whole(pieces)
+
+
+def _whole(pieces: list[bytes]) -> bytes:
+    """The line held in `pieces` (its last piece first), which are cleared."""
+    line = b"".join(reversed(pieces))
+    pieces.clear()
+    return _capped(line)
+
+
+def _capped(line: bytes) -> bytes:
+    """`line`, unless it is longer than LINE_CAP not counting a \\r that ends
+    it (the full reader refuses it, naming its number)."""
+    if len(line) - line.endswith(b"\r") > LINE_CAP:
+        raise _ReadWhole
+    return line
+
+
+CORRUPT_LINE = object()  # what iter_jsonl_entries gives for a line that isn't JSON
+
+
+def _iter_entries(path: Path, keep=None):
+    """Every entry of a case log in file order, read forwards by
+    `open_regular`, each as it is read; CORRUPT_LINE for each corrupt line.
+    `keep` tests objects only: any other value is given to the caller, whose
+    read it stops as a whole read's does."""
+    with open_regular(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                yield CORRUPT_LINE
+                continue
+            if keep is None or not isinstance(entry, dict) or keep(entry):
+                yield entry
+
+
+def iter_jsonl_entries(path: Path, limit: int | None, keep=None):
+    """The entries `tail_jsonl_entries` returns, in file order, and
+    CORRUPT_LINE for each corrupt line it counts. A full read yields each entry as it is read,
+    so a caller keeps what came before a line the reader refuses."""
+    if limit is not None:
+        try:
+            entries, corrupt = _read_tail(path, limit, keep)
+        except _ReadWhole:
+            pass
+        else:
+            yield from entries
+            yield from [CORRUPT_LINE] * corrupt
+            return
+    yield from _iter_entries(path, keep)
+
+
+def tail_jsonl_entries(
+    path: Path, limit: int | None, keep=None
+) -> tuple[list[dict], int]:
+    """Read the newest entries of an append-ordered JSONL file.
+
+    With `limit` set, the file is read backwards and only enough of its tail is
+    parsed to cover a page of `limit` rows, so cost is proportional to the page
+    rather than to the whole trail. `keep(entry)` restricts which entries count
+    towards that page; entries it rejects are dropped. If the region read turns
+    out not to be in non-decreasing `ts` order the rest of the file is read too,
+    so a file written by a skewed clock falls back to a full scan. Disorder
+    entirely outside that region cannot be seen: an entry stamped far in the
+    future but written long ago would show up in a full scan and not here.
+
+    `limit=None` reads the whole file forwards (used by `vhir audit summary`,
+    which aggregates every line anyway).
+
+    The file is opened and checked as `case_lines` opens a case log (only under
+    its own name, a regular file within FILE_BUDGET), and its lines are split
+    and capped as `open_regular` reads them. Whatever the tail can't read as
+    that full reader would (a line over LINE_CAP, one that isn't UTF-8 or
+    isn't an object, a ts that isn't text, or disorder) is read by it instead,
+    so the file is refused or read exactly as a full read would.
+
+    Returns (entries in file order, count of corrupt lines in the region read).
+    """
+    entries: list[dict] = []
+    corrupt = 0
+    for entry in iter_jsonl_entries(path, limit, keep):
+        if entry is CORRUPT_LINE:
+            corrupt += 1
+        else:
+            entries.append(entry)
+    return entries, corrupt
+
+
+def _read_tail(path: Path, limit: int, keep) -> tuple[list[dict], int]:
+    want = max(limit * _TAIL_OVERREAD, _TAIL_MIN)
+    entries: list[dict] = []
+    corrupt = 0
+    later_ts: str | None = None
+    with os.fdopen(_open_regular_fd(path, log=True), "rb") as fh:
+        for raw in _iter_lines_reversed(fh):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                raise _ReadWhole from None
+            del raw
+            # a lone \r ends a line too, as open_regular splits it; last first
+            lines = list(io.StringIO(text, newline=None)) if "\r" in text else [text]
+            del text
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    corrupt += 1
+                    continue
+                ts = entry.get("ts", "") if isinstance(entry, dict) else None
+                if not isinstance(ts, str) or (later_ts is not None and ts > later_ts):
+                    raise _ReadWhole  # the full read decides, as it would alone
+                later_ts = ts
+                if keep is None or keep(entry):
+                    entries.append(entry)
+                    if len(entries) >= want:
+                        entries.reverse()
+                        return entries, corrupt
+    entries.reverse()
+    return entries, corrupt
 
 
 # --- Export / Merge ---
@@ -790,6 +1289,47 @@ def _at_or_before(ts: object, end: str) -> bool:
     return value <= bound
 
 
+def _changed_at(item: dict) -> object:
+    """When this case last changed the item: modified_at, else staged, else
+    (an imported copy carries neither) when it came in."""
+    imp = item.get("imported_from")
+    return (
+        item.get("modified_at")
+        or item.get("staged")
+        or (imp.get("imported_at", "") if isinstance(imp, dict) else "")
+    )
+
+
+_NO_TIME = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _rev_key(ts: object) -> datetime:
+    """A revision time to compare: a naive one read as UTC; one that isn't a
+    string, or doesn't parse, is no time (the oldest)."""
+    return _utc(ts) or _NO_TIME
+
+
+def _revised_at(item: object) -> object:
+    """When the item's content last changed: its author's modified_at (else
+    staged), found down the imported_from.original chain, or a later edit
+    made on the way (examiner_modifications). A copy's own time is a decision
+    made there, which never travels, so it isn't a revision."""
+    best = ""
+    while isinstance(item, dict):
+        imp = item.get("imported_from")
+        orig = imp.get("original") if isinstance(imp, dict) else None
+        if not isinstance(orig, dict):  # the author's own record
+            own = next((t for t in (item.get("modified_at"), item.get("staged"))
+                        if isinstance(t, str) and t), "")  # fmt: skip
+            return max(best, own, key=_rev_key)
+        mods = item.get("examiner_modifications")
+        for m in mods.values() if isinstance(mods, dict) else ():
+            if isinstance(m, dict) and isinstance(m.get("modified_at"), str):
+                best = max(best, m["modified_at"], key=_rev_key)
+        item = orig
+    return best
+
+
 def export_bundle(case_dir: Path, since: str = "") -> dict:
     """Export findings + timeline as JSON for sharing.
 
@@ -804,23 +1344,21 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
 
+    untimed = {}
     if since:
-        findings = [
-            f
-            for f in findings
-            if _at_or_after(f.get("modified_at", f.get("staged", "")), since)
-        ]
-        timeline = [
-            t
-            for t in timeline
-            if _at_or_after(t.get("modified_at", t.get("staged", "")), since)
-        ]
+        # an item with no time at all (imported before 0.6.4) can't be judged:
+        # left out, and counted so the export says so
+        untimed = {k: sum(not _changed_at(i) for i in v)
+                   for k, v in (("findings", findings), ("timeline", timeline))}  # fmt: skip
+        findings = [f for f in findings if _at_or_after(_changed_at(f), since)]
+        timeline = [t for t in timeline if _at_or_after(_changed_at(t), since)]
 
     from vhir_cli import case_copies
 
     # the case's copies first (CopyFailed is an OSError), then carried along
     copied = case_copies.write_case_copies(case_id_of(case_dir), case_dir)
     return {
+        **({"untimed": untimed} if any(untimed.values()) else {}),
         "case_id": meta.get("case_id", ""),
         "examiner": get_examiner(case_dir),
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -828,6 +1366,78 @@ def export_bundle(case_dir: Path, since: str = "") -> dict:
         "timeline": timeline,
         "ledger": case_copies.bundle_block(case_id_of(case_dir), case_dir, copied),
     }
+
+
+# the deepest a bundle's item may nest (the item is level 1; each list and
+# object counts): a relay hop adds 2, and every writer must still store it
+_MAX_ITEM_DEPTH = 100
+
+
+def _too_deep(item: object, limit: int = _MAX_ITEM_DEPTH) -> bool:
+    """Whether `item` nests deeper than `limit` levels, counted with an
+    explicit stack, never by recursion, so the check can't hit the limit it
+    guards."""
+    stack = [(item, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return True
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
+    return False
+
+
+def bundle_too_deep() -> dict:
+    """The refusal for a bundle json can't decode for its depth (RecursionError,
+    from about 1000 levels): what each reader of a bundle file returns."""
+    return {"status": "error", "message": (
+        f"The bundle nests deeper than {_MAX_ITEM_DEPTH} levels; nothing was merged. "
+        "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
+
+
+def id_kind(item_id: str) -> str:
+    """The kind an item's id names, as approval, review and the portal read
+    it: an id starting IOC- is an IOC's, T- a timeline event's, any other a
+    finding's."""
+    if item_id.startswith("IOC-"):
+        return "ioc"
+    return "timeline" if item_id.startswith("T-") else "finding"
+
+
+# every id a Valhuntir writer makes: printable ASCII, no space
+_PLAIN_ID = re.compile(r"[!-~]+")
+
+_KIND_FAULTS = {
+    "timeline": "has a timeline event's id (it starts with T-)",
+    "ioc": "has an IOC's id (it starts with IOC-)",
+}
+
+
+def _unmergeable(items: object, kind: str) -> str:
+    """Why the merge can't take a bundle's findings or timeline (`kind`:
+    finding or timeline), or "": it takes a list of objects, each id text when
+    it's set and naming that kind, none nested deeper than the writers can
+    store."""
+    if not isinstance(items, list):
+        return "isn't a list"
+    for n, item in enumerate(items):
+        if not isinstance(item, dict):
+            return f"item {n} isn't an object"
+        item_id = item.get("id")
+        if not isinstance(item_id, (str, type(None))):
+            return f"item {n} has an id that isn't text"
+        if item_id and id_kind(item_id) != kind:  # approval would read another kind
+            if kind == "timeline":
+                return f"item {n} has an id that doesn't start with T-"
+            return f"item {n} {_KIND_FAULTS[id_kind(item_id)]}"
+        if item_id and not _PLAIN_ID.fullmatch(item_id):  # a look-alike of another id
+            return (
+                f"item {n} has an id with a space, a control character or a "
+                "character outside ASCII"
+            )
+        if _too_deep(item):
+            return f"item {n} nests deeper than {_MAX_ITEM_DEPTH} levels"
+    return ""
 
 
 def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
@@ -842,12 +1452,17 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
         bundle = {"findings": bundle}
     if not isinstance(bundle, dict):
         return {"status": "error", "message": "Bundle must be a JSON object or array"}
+    for key, kind in (("findings", "finding"), ("timeline", "timeline")):
+        # refused by name, before the case is touched
+        if key in bundle and (why := _unmergeable(bundle[key], kind)):
+            return {"status": "error", "message": (
+                f"The bundle's {key} {why}; nothing was merged. "
+                "Fix the bundle or ask for a new export, then merge again.")}  # fmt: skip
     # Where each item comes from (a bare array names no case or examiner)
     origin = {
         "case_id": str(bundle.get("case_id") or ""),
         "examiner": str(bundle.get("examiner") or ""),
         "exported_at": str(bundle.get("exported_at") or ""),
-        "imported_at": datetime.now(timezone.utc).isoformat(),
     }
     # Host identity is this case's own: another case's machine ids and keys
     # never come in with its findings and timeline items.
@@ -864,6 +1479,7 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
 
     findings_result = {"added": 0, "updated": 0, "skipped": 0}
     timeline_result = {"added": 0, "updated": 0, "skipped": 0}
+    writes: list = []  # both merged in memory first: a failure writes neither
 
     # A bundle's chains are never added: they are data, and its keys and
     # heads anchors (decisions don't travel by import; restore carries them).
@@ -872,19 +1488,27 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
     # One case-lock span around both merges and their saves, as every writer
     # of the case files: a decision committed meanwhile can't be overwritten.
     with ledger.case_lock(case_id_of(case_dir)):
+        # stamped once the lock is held: an import that waited for it stores
+        # its items after this time, never before it (export --since reads it)
+        origin["imported_at"] = datetime.now(timezone.utc).isoformat()
         # A local file that can't be read as JSON would merge as empty and be
         # written back holding only the bundle's items: refuse before writing either.
+        # So is an id held twice, in a local file or the bundle: the merge would
+        # compare against one copy and write over the other (an APPROVED one too).
         for key, filename in (
             ("findings", "findings.json"),
             ("timeline", "timeline.json"),
         ):
             local_file = case_dir / filename
-            if key not in bundle or not local_file.exists():
+            if key not in bundle:
+                continue
+            if duplicated := _duplicate_ids(bundle[key]):
+                return _duplicates_refused(f"The bundle's {key}", duplicated)
+            if not local_file.exists():
                 continue
             try:
                 text = local_file.read_text()
-                if text.strip():
-                    json.loads(text)
+                local = json.loads(text) if text.strip() else []
             except (OSError, ValueError) as e:
                 return {
                     "status": "error",
@@ -893,20 +1517,59 @@ def import_bundle(case_dir: Path, bundle: dict | list) -> dict:
                         "Fix or restore it, then merge again."
                     ),
                 }
+            if duplicated := _duplicate_ids(local):
+                return _duplicates_refused(filename, duplicated)
         if "findings" in bundle:
             findings_result = _merge_items(
-                case_dir, "findings.json", bundle["findings"], "id", origin
+                case_dir, "findings.json", bundle["findings"], "id", origin, writes
             )
         if "timeline" in bundle:
             timeline_result = _merge_items(
-                case_dir, "timeline.json", bundle["timeline"], "id", origin
+                case_dir, "timeline.json", bundle["timeline"], "id", origin, writes
             )
+        # every file's text first: one that can't be made writes none
+        texts = [(p, json.dumps(v, indent=2, default=str)) for p, v in writes]
+        for path, text in texts:
+            _protected_write(path, text)
 
     return {
         "status": "merged",
         "findings": findings_result,
         "timeline": timeline_result,
         "ledger": anchors,
+    }
+
+
+def _duplicate_ids(items: object) -> list:
+    """The ids held more than once, keyed as the merge keys them (raw values).
+    Non-dict items and an empty or unhashable id are left to the merge."""
+    seen: set = set()
+    duplicated: dict = {}  # an ordered set: first-seen order, constant-time lookups
+    for item in items if isinstance(items, list) else []:
+        item_id = item.get("id") if isinstance(item, dict) else None
+        try:
+            if item_id and item_id in seen:
+                duplicated[item_id] = None
+            seen.add(item_id)
+        except TypeError:  # unhashable
+            continue
+    return list(duplicated)
+
+
+def _duplicates_refused(where: str, duplicated: list) -> dict:
+    # the ids are case or bundle data: one line, their controls shown as "?",
+    # each capped
+    from vhir_cli.display import one_line
+
+    shown = [one_line(i) for i in duplicated[:5]]
+    named = ", ".join(i if len(i) <= 80 else i[:80] + "…" for i in shown)
+    more = f" and {len(duplicated) - 5} more" if len(duplicated) > 5 else ""
+    return {
+        "status": "error",
+        "message": (
+            f"{where} holds an id more than once ({named}{more}); nothing was merged. "
+            "Keep one item per id, then merge again."
+        ),
     }
 
 
@@ -1010,10 +1673,12 @@ def _merge_items(
     filename: str,
     incoming: list[dict],
     id_field: str,
-    origin: dict | None = None,
+    origin: dict | None,
+    writes: list,
 ) -> dict:
     """Merge incoming items into a local JSON file using last-write-wins.
-    With `origin` (an import), each item added or updated is stamped with it."""
+    With `origin` (an import), each item added or updated is stamped with it.
+    The merged list isn't written: (file, list) is appended to `writes`."""
     local_file = case_dir / filename
     local: list[dict] = []
     if local_file.exists():
@@ -1027,6 +1692,7 @@ def _merge_items(
     updated = 0
     skipped = 0
     protected = 0
+    own = 0
 
     # Protected fields that cannot be smuggled via merge
     _MERGE_PROTECTED_FIELDS = {
@@ -1078,9 +1744,11 @@ def _merge_items(
             if existing.get("status") in ("APPROVED", "REJECTED"):  # decided here
                 protected += 1
                 continue
-            inc_ts = item.get("modified_at", item.get("staged", ""))
-            loc_ts = existing.get("modified_at", existing.get("staged", ""))
-            if _parse_ts(inc_ts) > _parse_ts(loc_ts):
+            if existing.get("created_by"):  # recorded here: a copy never replaces it
+                own += 1
+                continue
+            inc_ts, loc_ts = _revised_at(item), _revised_at(existing)
+            if _rev_key(inc_ts) > _rev_key(loc_ts):
                 idx = next(i for i, x in enumerate(local) if x.get(id_field) == item_id)
                 local[idx] = cleaned
                 local_by_id[item_id] = cleaned
@@ -1088,10 +1756,11 @@ def _merge_items(
             else:
                 skipped += 1
 
-    _protected_write(local_file, json.dumps(local, indent=2, default=str))
+    writes.append((local_file, local))
     return {
         "added": added,
         "updated": updated,
         "skipped": skipped,
         "protected": protected,
+        "own": own,
     }

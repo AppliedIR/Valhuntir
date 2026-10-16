@@ -64,7 +64,8 @@ def test_controls_not_applied_claim_no_row_of_the_client(client):
 def test_the_codex_guard_row_claims_no_relative_path_rule_and_names_apply_patch():
     (guard,) = [r for r in controls.ROWS if r[0] == "Case-data guard"]
     assert "relative path is refused" not in guard[2] + guard[3]
-    assert "apply_patch edits aren't checked" in guard[3]
+    assert "an apply_patch is checked by the paths its headers name" in guard[3]
+    assert "aren't checked" not in guard[3]
     assert "another folder isn't checked correctly" in guard[3]
 
 

@@ -1,7 +1,8 @@
 """vhir's client settings deny the Edit tool on the deployed skills and
 agents and on the Codex folders, anchor every settings and vhir rule at the
 home folder too ("**/" matches inside the session's folder only), and keep
-the AI's tools off host identity's records and the case paths map."""
+the AI's tools off host identity's records and the case paths map, and off
+the gateway's tokens and Claude Code's own state (read rules)."""
 
 from __future__ import annotations
 
@@ -21,6 +22,17 @@ HOST = {
     "Edit(**/.vhir/case-paths.json)",
     "Edit(~/.vhir/case-paths.json)",
 }
+
+
+READS = {
+    "Read(**/.vhir/gateway.yaml)",
+    "Read(~/.vhir/gateway.yaml)",
+    "Read(~/.claude.json)",
+}
+
+
+def test_the_gateway_s_tokens_and_claude_code_s_state_are_not_read():
+    assert READS <= cs._FORENSIC_DENY_RULES
 
 
 def test_the_home_folders_and_host_records_are_denied():

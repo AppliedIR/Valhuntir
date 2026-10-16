@@ -801,6 +801,37 @@ def test_a_folder_registered_while_a_log_cant_be_read_says_derivation_unchecked(
     assert r.get("derivation_note", "").startswith("derivation unchecked: "), r
 
 
+@pytest.mark.parametrize(
+    "what, why",
+    [("fifo", "not a regular file"), ("folder", "a folder"),
+     ("link", "a symbolic link"), ("long line", "line 1 is longer than 0 MiB")],
+)  # fmt: skip
+def test_a_stored_derivation_note_says_what_the_log_is_without_path_or_advice(
+    case, monkeypatch, what, why
+):
+    """The note is stored, printed and shown in the portal: the log's case-relative
+    name and what's wrong with it, never its absolute path or advice to act on."""
+    from vhir_cli import case_io
+
+    log = case / "audit" / "sift-mcp.jsonl"
+    if what == "fifo":
+        os.mkfifo(log)
+    elif what == "folder":
+        log.mkdir()
+    elif what == "link":
+        (case / "elsewhere.jsonl").write_text("{}\n")
+        log.symlink_to(case / "elsewhere.jsonl")
+    else:  # a line over the cap, the cap made small
+        monkeypatch.setattr(case_io, "LINE_CAP", 8)
+        log.write_text('{"a": "0123456789"}\n')
+    p = case / "evidence" / "mem.raw"
+    p.write_bytes(b"M" * 100)
+    r = register_evidence_data(case, str(p), "tester")
+    assert r["derivation_note"] == (
+        f"derivation unchecked: audit/sift-mcp.jsonl can't be read ({why})"
+    ), r
+
+
 def test_registering_a_legacy_entry_again_adds_its_stat_fields(case):
     """An entry from before stat fields: the same file again fills them in, so
     the approval check's fast path can vouch for it."""

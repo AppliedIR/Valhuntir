@@ -597,6 +597,28 @@ def test_an_ioc_cascade_needs_its_value_in_the_source_s_signed_iocs(case, steve)
     assert _status(result, "IOC-steve-002") == "CASCADE_UNSUPPORTED"
 
 
+@pytest.mark.parametrize(
+    ("cited", "stored"),
+    [  # a finding's IOC, and the value forensic-mcp stored and signed for it
+        ("evil(dot)com", "evil(dot)com"),
+        ("bad[dot]example.com", "bad[dot]example.com"),
+        ("C:\\Tools\\hxxp\\a.exe", "C:\\Tools\\http\\a.exe"),
+        ("hxxpserver.local", "httpserver.local"),
+    ],
+)
+def test_an_ioc_signed_as_staging_stored_it_verifies(case, steve, cited, stored):
+    """The cascade check reads the finding's IOCs by the rule they were stored
+    and signed under, so a case signed before any change of that rule verifies."""
+    f = _finding(iocs=[cited])
+    ioc = {"id": "IOC-steve-001", "value": stored, "type": "domain", "status": "DRAFT"}
+    _save(case, findings=[f], iocs=[ioc])
+    _sign(case, steve, [(f, "finding", "approve", "APPROVED", None),
+                        (ioc, "ioc", "approve", "APPROVED", f["id"])])  # fmt: skip
+    done = {"status": "APPROVED", "approved_by": "steve", "approved_at": AT}
+    _save(case, findings=[dict(f, **done)], iocs=[dict(ioc, **done)])
+    assert _status(verify_case(case), "IOC-steve-001") == "VALID"
+
+
 # --- Several chains ----------------------------------------------------------
 
 
@@ -1072,6 +1094,47 @@ def test_a_finding_reusing_a_signed_timeline_id_fails_the_case(case, steve):
     assert approved_view(case)["findings"] == []
 
 
+@pytest.mark.parametrize(
+    "kind,file,item,bundle",
+    [
+        ("timeline", "timeline",
+         {"id": "T-steve-001", "timestamp": "2026-10-01T00:00:00Z", "description": "e",
+          "status": "DRAFT"},
+         {"findings": [{"id": "T-steve-001", "title": "FORGED", "status": "DRAFT"}]}),
+        ("finding", "findings", _finding(),
+         {"timeline": [{"id": "F-steve-001", "timestamp": "2026-10-01T00:00:00Z",
+                        "description": "FORGED", "status": "DRAFT"}]}),
+        ("ioc", "iocs",
+         {"id": "IOC-steve-001", "value": "10.0.0.5", "type": "ipv4-addr", "status": "DRAFT"},
+         {"findings": [{"id": "IOC-steve-001", "title": "FORGED", "status": "DRAFT"}]}),
+    ],
+    ids=["peer-finding-on-an-approved-event", "peer-event-on-an-approved-finding",
+         "peer-finding-on-an-approved-ioc"],
+)  # fmt: skip
+def test_a_peer_bundle_reusing_an_approved_items_id_as_another_kind_is_refused(
+    case, steve, kind, file, item, bundle
+):
+    """The bundle is refused, so the approved item stays VALID and the case
+    verifies."""
+    from vhir_cli.case_io import import_bundle
+
+    _save(case, **{file: [item]})
+    _sign(case, steve, [(item, kind, "approve", "APPROVED", None)])
+    _save(
+        case,
+        **{file: [dict(item, status="APPROVED", approved_by="steve", approved_at=AT)]},
+    )
+    assert _status(verify_case(case), item["id"]) == "VALID"
+    result = import_bundle(case, {"case_id": "C9", "examiner": "bob", **bundle})
+    assert result["status"] == "error"
+    after = verify_case(case)
+    assert (after.failures, after.exit_code, _status(after, item["id"])) == (
+        [],
+        0,
+        "VALID",
+    )
+
+
 def test_nothing_is_shown_as_approved_while_the_case_fails(case, steve):
     _three(case, steve)
     lines = _chain_lines()
@@ -1389,6 +1452,23 @@ def test_hiding_the_signed_0_6_prefix_never_lets_a_forged_or_rolled_back_line_co
     )
     assert result.exit_code == 2
     assert not {"F-steve-001", "F-steve-003"} & set(_shown(case))
+
+
+def test_bytes_after_a_frozen_prefix_never_hide_its_latest_approval(case, steve):
+    """The 0.6 file held OLD then NEW, NEW with no newline after it, when the
+    genesis froze it. Bytes appended later run on from NEW's line; the frozen
+    prefix still holds NEW, so the finding rolled back to OLD is altered."""
+    old, new, l_old, l_new = _old_new()
+    box = _legacy([l_old, l_new])
+    box.write_text(l_old + "\n" + l_new)  # as the genesis freezes it: no last newline
+    fresh = _finding(9)
+    _save(case, findings=[new, fresh])
+    _approve(case, steve, fresh)  # genesis freezes the 0.6 file
+    box.write_bytes(box.read_bytes() + b"X\n")  # appended after signing
+    _roll_back(case, old)
+    result = verify_case(case)
+    assert _status(result, "F-steve-001") == "ALTERED_AFTER_APPROVAL"
+    assert "F-steve-001" not in _shown(case)
 
 
 def test_a_genesis_whose_frozen_prefix_no_source_holds_fails_the_case(case, steve):

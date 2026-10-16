@@ -564,6 +564,15 @@ SETTINGS_CONTENT=$(cat << SETTINGS
             "command": "$DEPLOY_DIR/.claude/hooks/forensic-audit.sh"
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$DEPLOY_DIR/.claude/hooks/forensic-audit.sh"
+          }
+        ]
       }
     ]
   },
@@ -672,13 +681,14 @@ if "hooks" in incoming:
         if hook_type not in existing_hooks:
             existing_hooks[hook_type] = entries
         else:
-            existing_cmds = set()
+            # by matcher and command: one hook can serve two matchers (Bash, Skill)
+            existing_keys = set()
             for entry in existing_hooks[hook_type]:
                 for h in entry.get("hooks", []):
-                    existing_cmds.add(h.get("command", ""))
+                    existing_keys.add((entry.get("matcher", ""), h.get("command", "")))
             for entry in entries:
-                new_cmds = [h.get("command", "") for h in entry.get("hooks", [])]
-                if not any(c in existing_cmds for c in new_cmds):
+                new_keys = [(entry.get("matcher", ""), h.get("command", "")) for h in entry.get("hooks", [])]
+                if not any(k in existing_keys for k in new_keys):
                     existing_hooks[hook_type].append(entry)
 
 if "permissions" in incoming:

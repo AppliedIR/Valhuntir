@@ -1,7 +1,8 @@
 """The case's own copies of its signed history, so it verifies on any box.
 
-Close, export and backup write them under `case_dir/ledger/`, holding the
-case lock, so a copy never catches a write half done:
+Close and export write them under `case_dir/ledger/`, and backup under the
+backup's own `ledger/` (it never writes in the case), holding the case lock,
+so a copy never catches a write half done:
 - `chains/<chain_id>.jsonl`: a byte copy of this box's chain for the case;
 - `legacy-<chain_id>.jsonl`: a byte copy of this box's 0.6 file, the history
   that chain's genesis froze (a case with no chain keeps 0.6's
@@ -128,10 +129,8 @@ def store_hidden() -> Path | None:
     return None
 
 
-def write_case_copies(case_id: str, case_dir: Path) -> dict:
-    """Write this box's chain, its 0.6 history and the case's keys into the
-    case, under the case lock. Returns {"chain_id", "copies": [(what,
-    path)], "keys", "heads"}. Raises CopyFailed."""
+def refuse_hidden_store() -> None:
+    """CopyFailed when the store can't be seen from here (see store_hidden)."""
     hidden = store_hidden()
     if hidden is not None:
         raise CopyFailed(
@@ -139,6 +138,16 @@ def write_case_copies(case_id: str, case_dir: Path) -> dict:
             "can't be seen (a sandboxed shell, such as the AI's, hides them), so "
             "the case's signed history can't be copied. Run this in your own terminal"
         )
+
+
+def write_case_copies(
+    case_id: str, case_dir: Path, into: Path | None = None, inside_lock=None
+) -> dict:
+    """Write this box's chain, its 0.6 history and the case's keys into the
+    case (or the folder `into`, a backup's), under the case lock, after
+    `inside_lock()` has run under it too. Returns {"chain_id", "copies":
+    [(what, path)], "keys", "heads"}. Raises CopyFailed."""
+    refuse_hidden_store()
     box = ledger.chain_path(case_id)
     try:
         lock = ledger.case_lock(case_id, timeout=LOCK_SECONDS).acquire()
@@ -149,16 +158,19 @@ def write_case_copies(case_id: str, case_dir: Path) -> dict:
     except ledger.LedgerBusy as e:
         raise CopyFailed(f"{e}; try again") from e
     try:
-        return _write_copies(case_id, Path(case_dir), box)
+        if inside_lock is not None:
+            inside_lock()
+        return _write_copies(case_id, Path(case_dir), box, into)
     finally:
         if lock is not None:
             lock.release()
 
 
-def _write_copies(case_id: str, case_dir: Path, box: Path) -> dict:
+def _write_copies(case_id: str, case_dir: Path, box: Path, into=None) -> dict:
     from vhir_cli import verification
 
-    base = copy_dir(case_dir)
+    target = Path(into) if into is not None else case_dir
+    base = copy_dir(target)
     copies: list[tuple[str, Path]] = []
     legacy = verification.VERIFICATION_DIR / f"{case_id}.jsonl"
     try:
@@ -176,7 +188,7 @@ def _write_copies(case_id: str, case_dir: Path, box: Path) -> dict:
                 )
         elif legacy.exists():  # no signed line yet: 0.6's own close copy
             copies.append(
-                add_copy(case_dir / "verification.jsonl", legacy.read_bytes(), own=True)
+                add_copy(target / "verification.jsonl", legacy.read_bytes(), own=True)
             )
         summary = case_keys(case_dir)
         if cid:
@@ -280,27 +292,32 @@ def case_keys(case_dir: Path) -> dict:
 
 def summary_lines(case_id: str, summary: dict) -> list[str]:
     """The printed summary of close, export and backup: every signing key
-    with its full fingerprint, and each chain's head."""
+    with its full fingerprint, and each chain's head. Every value is shown on
+    one line, its control characters as "?": a bundle's are another box's data."""
+    from vhir_cli.display import one_line as s
+
     lines = []
     if summary.get("keys"):
         lines.append("Signing keys:")
         for k in summary["keys"]:
             lines.append(
-                f"  {k['examiner']} {k['fingerprint']} (chain {k['chain_id']} "
-                f"seq {k['first_seq']}-{k['last_seq']}; {k['label']})"
+                f"  {s(k['examiner'])} {s(k['fingerprint'])} (chain {s(k['chain_id'])} "
+                f"seq {s(k['first_seq'])}-{s(k['last_seq'])}; {s(k['label'])})"
             )
     for h in summary.get("heads", []):
         lines.append(
-            ledger.format_head(case_id, (h["seq"], h["hash"]), f"chain {h['chain_id']}")
+            ledger.format_head(
+                s(case_id), (s(h["seq"]), s(h["hash"])), f"chain {s(h['chain_id'])}"
+            )
         )
     if summary.get("own_diverged"):
         lines.append(
-            f"Chain {summary['own_diverged']}: a copy in the case differs from this box's "
+            f"Chain {s(summary['own_diverged'])}: a copy in the case differs from this box's "
             "chain; the key and head above are this box's own."
         )
     for cid in summary.get("diverged", []):
         lines.append(
-            f"Chain {cid}: its copies diverge, so no key or head is taken from it; "
+            f"Chain {s(cid)}: its copies diverge, so no key or head is taken from it; "
             "`vhir review --verify` names them."
         )
     return lines

@@ -141,9 +141,9 @@ Forensic tool execution on Linux/SIFT. A denylist blocks destructive system comm
 | `check_tools` | `tool_names` (list) | Check tool installation status | To verify tools are available before a workflow |
 | `suggest_tools` | `artifact_type`, `question` | Suggest relevant tools with corroboration guidance | When deciding how to analyze a specific artifact type |
 
-### Tool Catalog (59 FK entries)
+### Tool Catalog (56 FK entries)
 
-The forensic-knowledge package provides YAML definitions for 59 tools across 17 categories. When sift-mcp executes a cataloged tool, the response is enriched with:
+The forensic-knowledge package provides YAML definitions for 56 tools across 17 categories. When sift-mcp executes a cataloged tool, the response is enriched with:
 
 | Field | Description |
 |-------|-------------|
@@ -167,7 +167,7 @@ Accuracy content (caveats, field_meanings) is always delivered — these prevent
 | volatility | vol3 |
 | timeline | hayabusa, log2timeline, mactime, psort |
 | sleuthkit | fls, icat, mmls, blkls |
-| malware | yara, strings, ssdeep, binwalk, capa, densityscout, moneta, hollows_hunter, sigcheck, maldump, 1768_cobalt |
+| malware | yara, strings, ssdeep, binwalk, capa, densityscout, sigcheck, maldump, 1768_cobalt |
 | network | tshark, zeek |
 | file_analysis | bulk_extractor |
 | registry | regripper |
@@ -341,7 +341,7 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
-| `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | List Hayabusa/Sigma detection alerts | To review automated detections |
+| `idx_list_detections` | `severity`, `detector_type`, `limit` (50), `offset` | Hayabusa detection alerts (count and query) | To review automated detections |
 
 ### Host Tools (2)
 
@@ -401,7 +401,7 @@ Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
-| `list_kape_targets` | `list_type` ("targets" or "modules") | List KAPE targets/modules in structured categories | When planning evidence parsing with KAPE |
+| `list_kape_targets` | `list_type` ("modules", the only listing) | List the KAPE modules in structured categories; targets aren't run, so aren't listed | When planning a KAPE module run over files collected into the case |
 
 ### Batch Execution (1)
 
@@ -415,17 +415,16 @@ Forensic tool execution on Windows. Catalog-gated — only tools defined in YAML
 |------|-----------|-------------|---------------------|
 | `run_windows_command` | `command` (list), `purpose`, `timeout`, `save_output`, `input_files` | Execute a cataloged forensic tool | Core tool — every Windows forensic analysis action |
 
-### Tool Catalog (31 entries)
+### Tool Catalog (25 entries)
 
 | File | Count | Tools |
 |------|-------|-------|
 | `zimmerman.yaml` | 14 | AmcacheParser, AppCompatCacheParser, EvtxECmd, JLECmd, LECmd, MFTECmd, PECmd, RBCmd, RECmd, SBECmd, SQLECmd, SrumECmd, WxTCmd, bstrings |
-| `sysinternals.yaml` | 5 | autorunsc, sigcheck, strings, handle, procdump |
-| `memory.yaml` | 4 | winpmem, dumpit, moneta, hollows_hunter |
+| `sysinternals.yaml` | 3 | autorunsc, sigcheck, strings |
+| `memory.yaml` | 1 | winpmem |
 | `timeline.yaml` | 3 | Hayabusa, chainsaw, mactime |
 | `analysis.yaml` | 3 | capa, yara, densityscout |
 | `collection.yaml` | 1 | KAPE |
-| `scripts.yaml` | 1 | Get-InjectedThreadEx |
 
 ### Security Model
 

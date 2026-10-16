@@ -42,6 +42,20 @@ def lines(text, indent: str) -> str:
     return f"\n{indent}".join(one_line(line) for line in str(text).split("\n"))
 
 
+def cited(value) -> list:
+    """The audit ids a record cites, as a list: a list as it is, None as none,
+    any other value as one id. Whatever the shape, it is shown, never a crash."""
+    if isinstance(value, list):
+        return value
+    return [] if value is None else [value]
+
+
+def cited_text(value) -> str:
+    """The cited audit ids as one text, as every view shows them; the print
+    site still makes it safe for its line."""
+    return ", ".join(str(eid) for eid in cited(value))
+
+
 def display_safe(value):
     """A copy of loaded case records to print inline from: every string, keys
     included, by `one_line`. Numbers, booleans and None are unchanged. A block

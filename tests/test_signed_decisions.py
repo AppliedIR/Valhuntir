@@ -128,6 +128,95 @@ def test_the_prompt_comes_last_after_every_cascade_is_listed(case, monkeypatch, 
     )
 
 
+@pytest.mark.parametrize("edited", [True, False])
+def test_a_linked_event_of_a_finding_edited_here_is_not_signed(case, capsys, edited):
+    """The event was made from the finding's text: signed with it, it would
+    carry the text the edit replaced. It is named, and stays DRAFT."""
+    text = "Lateral movement to SRV01" if edited else None
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg", interpretation=text)
+    out = capsys.readouterr().out
+    held = (
+        "T-steve-001 is linked to F-steve-001, which was edited after the event was made "
+        "from it. It won't be signed. Decide it on its own: vhir approve T-steve-001"
+    )
+    if edited:
+        assert _signed() == [("F-steve-001", "approve"), ("IOC-steve-001", "approve")]
+        assert _status(case, "timeline.json", "T-steve-001") == "DRAFT"
+        assert f"  {held}" in out.splitlines()
+        assert "To be signed: F-steve-001, IOC-steve-001" in out
+    else:
+        assert ("T-steve-001", "approve") in _signed()
+        assert held not in out
+    assert verify_case(case).exit_code == 0
+
+
+def test_editing_an_approved_finding_in_review_signs_no_linked_event(
+    case, capsys, monkeypatch
+):
+    """An edit keeps the finding's status; a DRAFT event linked to it isn't
+    approved with the old text along with it."""
+    events = (case / "timeline.json").read_text()
+    (case / "timeline.json").write_text("[]")
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    (case / "timeline.json").write_text(events)
+    entry = {"id": "F-steve-001", "type": "finding", "action": "edit", "examiner": "steve",
+             "modifications": {"interpretation": {"original": "i", "modified": "SRV01"}}}  # fmt: skip
+    (case / "pending-reviews.json").write_text(
+        json.dumps({"case_id": "C-9", "items": [entry]})
+    )
+    capsys.readouterr()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    A._review_mode(case, IDENT, case / "cfg")
+    out = capsys.readouterr().out
+    assert ("F-steve-001", "edit") in _signed()
+    assert ("T-steve-001", "approve") not in _signed()
+    assert _status(case, "timeline.json", "T-steve-001") == "DRAFT"
+    assert "T-steve-001 is linked to F-steve-001, which was edited after" in out
+
+
+def _review(case, entry, monkeypatch):
+    (case / "pending-reviews.json").write_text(
+        json.dumps({"case_id": "C-9", "items": [entry]})
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    A._review_mode(case, IDENT, case / "cfg")
+
+
+def _edit(fid):
+    return {"id": fid, "type": "finding", "action": "edit", "examiner": "steve",
+            "modifications": {"title": {"original": "PsExec", "modified": "A backup agent"}}}  # fmt: skip
+
+
+@pytest.mark.parametrize("route", ["approve", "review"])
+def test_a_finding_edited_in_an_earlier_review_signs_no_linked_event(
+    case, capsys, monkeypatch, route
+):
+    """The edit was signed on its own; approving the finding later, with no
+    new edit, still leaves its event for its own decision."""
+    _review(case, _edit("F-steve-001"), monkeypatch)
+    assert _signed() == [("F-steve-001", "edit")]
+    capsys.readouterr()
+    if route == "approve":
+        A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    else:
+        _review(case, {"id": "F-steve-001", "type": "finding", "action": "approve",
+                       "examiner": "steve"}, monkeypatch)  # fmt: skip
+    out = capsys.readouterr().out
+    assert _status(case, "findings.json", "F-steve-001") == "APPROVED"
+    assert ("T-steve-001", "approve") not in _signed()
+    assert _status(case, "timeline.json", "T-steve-001") == "DRAFT"
+    assert "  T-steve-001 is linked to F-steve-001, which was edited after" in out
+    assert verify_case(case).exit_code == 0
+
+
+def test_an_earlier_edit_of_another_finding_holds_nothing(case, capsys, monkeypatch):
+    _review(case, _edit("F-steve-002"), monkeypatch)
+    capsys.readouterr()
+    A._approve_specific(case, ["F-steve-001"], IDENT, case / "cfg")
+    assert ("T-steve-001", "approve") in _signed()
+    assert "which was edited after" not in capsys.readouterr().out
+
+
 def test_show_signed_prints_the_signed_view(case, capsys):
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", show_signed=True)
     assert '  Signed view: {"confidence": "LOW"' in capsys.readouterr().out
@@ -386,7 +475,7 @@ def test_a_short_0_6_password_is_replaced_inline_and_the_decision_signed(
                         lambda p="": prompts.append(p) or next(answers))  # fmt: skip
     A._approve_specific(case, ["F-steve-002"], IDENT, case / "cfg", note="kept")
     # the 0.6 password and the new passphrase twice, before the item; then the final prompt
-    assert prompts[:3] == ["0.6 passphrase for steve: ", "New passphrase: ",
+    assert prompts[:3] == ["Current passphrase for steve: ", "New passphrase: ",
                            "Confirm new passphrase: "]  # fmt: skip
     assert len(prompts) == 4
     assert prompts[-1].startswith("Your new passphrase to sign 1 decisions")

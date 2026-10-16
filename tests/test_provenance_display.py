@@ -373,6 +373,115 @@ def test_a_hash_still_being_computed_names_its_job_never_reads_as_a_hash():
     assert "sha256=pending" not in text
 
 
+# --- a query's returned records (one chain stored once per record) -------------
+
+RECS4 = [("rec1", "1" * 64), ("rec2", "2" * 64), ("rec3", "3" * 64), ("rec4", "4" * 64)]
+
+
+def _ingest_op():
+    # the ingest writes no output file: its `to` is empty
+    return link("recorded-id", "opensearch-steve-ingest", f"{X}/2/stdout.bin", HOUT, "", "")  # fmt: skip
+
+
+def _record_link(rid, chash):
+    # a returned record: the query's link names it, with no file at either end
+    return link("recorded-id", "opensearch-steve-003", "", "", "", "",
+                document={"_index": "case-x-vol", "_id": rid, "content_hash": chash})  # fmt: skip
+
+
+def _records_chain(recs):
+    chain = []
+    for rid, chash in recs:
+        chain += [*RUN, _ingest_op(), _record_link(rid, chash)]
+    return chain
+
+
+def test_records_from_one_ingest_show_the_ingest_chain_once_and_each_record_once():
+    f = finding("F-steve-030", "a query returned four records from one ingest", "FULL",
+                art("FULL", chain=_records_chain(RECS4)))  # fmt: skip
+    text = "\n".join(provenance_block({"findings": [f]}))
+    # the ingest chain, stored once per returned record, shows once
+    for step in ("[registered-path] sift-steve-001", "[hash+place] sift-steve-002",
+                 "[recorded-id] opensearch-steve-ingest"):  # fmt: skip
+        assert text.count(step) == 1, step
+    # each record shows once, named, with its content hash
+    for rid, chash in RECS4:
+        assert f"record {rid} in case-x-vol sha256={chash[:16]}" in text
+    assert "-> (no file)" in text  # the ingest op has no output file
+
+
+def test_a_returned_record_link_shows_no_sha256_question():
+    f = finding("F-steve-031", "one returned record", "FULL", art(
+        "FULL", chain=[*RUN, _ingest_op(), _record_link("rec1", HDOC)]))  # fmt: skip
+    text = "\n".join(finding_lines(f))
+    assert "sha256=?" not in text
+    assert f": record rec1 in case-x-vol sha256={HDOC[:16]}" in text
+    assert "-> (no file)" in text
+
+
+def test_two_record_links_differing_only_in_entry_sha256_both_show():
+    a = _record_link("recX", HDOC)
+    b = _record_link("recX", HDOC)
+    b["entry_sha256"] = "f" * 64
+    f = finding("F-steve-032", "same record, two entry hashes", "FULL",
+                art("FULL", chain=[a, b]))  # fmt: skip
+    text = "\n".join(finding_lines(f))
+    # dedupe keys on the whole stored link, so both entry hashes survive
+    named = [ln for ln in text.splitlines() if "record recX in case-x-vol" in ln]
+    assert len(named) == 2
+    assert "sha256=?" not in text
+
+
+def test_a_record_with_no_content_hash_reads_no_hash_not_sha256_question():
+    # a record recorded before 0.6.4 carries no content hash
+    f = finding("F-steve-034", "a record with no content hash", "FULL", art(
+        "FULL", chain=[*RUN, _ingest_op(), _record_link("rec1", "")]))  # fmt: skip
+    text = "\n".join(finding_lines(f))
+    assert "record rec1 in case-x-vol (no hash)" in text
+    assert "sha256=?" not in text
+
+
+# --- records from two ingests interleaved stay under their own ingest ----------
+
+
+def _ingest(aid, src, sha):
+    return link("recorded-id", aid, src, sha, "", "")  # one ingest op: `to` empty
+
+
+def _rec(rid, idx, chash):
+    return link("recorded-id", "opensearch-steve-003", "", "", "", "",
+                document={"_index": idx, "_id": rid, "content_hash": chash})  # fmt: skip
+
+
+def test_interleaved_records_from_two_ingests_each_stay_under_their_own_ingest():
+    a = [*RUN, _ingest("opensearch-steve-ingest-a", f"{X}/2/a.bin", HOUT)]
+    b = [*RUN, _ingest("opensearch-steve-ingest-b", f"{X}/2/b.bin", HCSV)]
+    # a query returning records A1, B1, A2: `_follow` stores each record's whole
+    # ingest chain before the record, so A's chain appears twice
+    chain = [*a, _rec("recA1", "case-a", "1" * 64),
+             *b, _rec("recB1", "case-b", "2" * 64),
+             *a, _rec("recA2", "case-a", "3" * 64)]  # fmt: skip
+    f = finding("F-steve-033", "two ingests interleaved", "FULL",
+                art("FULL", chain=chain))  # fmt: skip
+    text = "\n".join(finding_lines(f))
+    # each ingest chain shows once
+    assert text.count("[recorded-id] opensearch-steve-ingest-a") == 1
+    assert text.count("[recorded-id] opensearch-steve-ingest-b") == 1
+    lines = text.splitlines()
+
+    def at(needle):
+        return next(i for i, ln in enumerate(lines) if needle in ln)
+
+    # A2 renders under A's ingest, before B's ingest: not after B's chain
+    assert (
+        at("ingest-a")
+        < at("record recA1 in case-a")
+        < at("record recA2 in case-a")
+        < at("ingest-b")
+        < at("record recB1 in case-b")
+    )
+
+
 def test_each_candidate_of_an_ambiguous_artifact_is_listed_by_the_fields_it_has():
     cands = [
         {"audit_id": "sift-steve-040", "entry_sha256": "e" * 64, "path": f"{X}/4/a.csv",

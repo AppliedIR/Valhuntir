@@ -14,6 +14,11 @@ import hashlib
 import io
 import json
 import os
+import pickle
+import re
+import resource
+import select
+import signal
 import sys
 import types
 from pathlib import Path
@@ -22,7 +27,12 @@ import pytest
 import yaml
 
 from vhir_cli import approval_auth, approval_checks, keys, ledger
-from vhir_cli.case_io import compute_content_hash, load_findings, signed_text
+from vhir_cli.case_io import (
+    compute_content_hash,
+    load_findings,
+    load_withdrawals,
+    signed_text,
+)
 from vhir_cli.commands import approve as A
 from vhir_cli.commands.evidence import register_evidence_data
 from vhir_cli.ledger_verify import approved_view, verification_block, verify_case
@@ -134,7 +144,7 @@ def verdict(d: Path, item_id: str = FID):
 ROUTES = ["ids", "interactive", "review"]
 
 
-def run(route, d, capsys, monkeypatch, reason: str | None = ""):
+def run(route, d, capsys, monkeypatch, reason: str | None = "", ids=(FID,)):
     """Approve the finding through one CLI path, the terminal answering
     `reason` (None: no terminal). Returns (what was printed before the
     passphrase, everything printed)."""
@@ -150,13 +160,13 @@ def run(route, d, capsys, monkeypatch, reason: str | None = ""):
     cfg = d.parent / "config.yaml"
     try:
         if route == "ids":
-            A._approve_specific(d, [FID], IDENT, cfg)
+            A._approve_specific(d, list(ids), IDENT, cfg)
         elif route == "interactive":
             A._interactive_review(d, IDENT, cfg)
         else:
             (d / "pending-reviews.json").write_text(json.dumps({"case_id": CASE_ID, "items": [
-                {"id": FID, "type": "finding", "action": "approve", "staged_by": "analyst1"}
-            ]}))  # fmt: skip
+                {"id": i, "type": "finding", "action": "approve", "staged_by": "analyst1"}
+                for i in ids]}))  # fmt: skip
             A._review_mode(d, IDENT, cfg)
     except SystemExit:
         pass
@@ -213,6 +223,21 @@ def _second_finding(d: Path) -> None:
     f2["content_hash"] = compute_content_hash(f2)
     (d / "findings.json").chmod(0o644)
     (d / "findings.json").write_text(json.dumps(fs + [f2], indent=2))
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_each_path_reads_the_audit_trail_once_to_show_and_once_to_sign(
+    case, capsys, monkeypatch, route
+):
+    """However many items: one read for what is shown, one under the lock."""
+    _second_finding(case)
+    made, real = [], approval_checks.audit_lines
+    monkeypatch.setattr(approval_checks, "audit_lines",
+                        lambda c, w=None: made.append(sorted(w)) or real(c, w))  # fmt: skip
+    run(route, case, capsys, monkeypatch, ids=(FID, "F-analyst1-002"))
+    got = {f["id"]: f["status"] for f in load_findings(case)}
+    assert got == {FID: "APPROVED", "F-analyst1-002": "APPROVED"}
+    assert made == [["sift-analyst1-001", "sift-analyst1-002"]] * 2
 
 
 def test_a_v4_line_after_v3_lines_verifies_with_both(case, monkeypatch):
@@ -707,7 +732,8 @@ def test_a_cited_document_unchanged_is_ok(case, capsys, monkeypatch, content_has
     run("ids", case, capsys, monkeypatch)
     doc = next(i for i in last_line()["checks"]["items"] if i["check"] == "DOC")
     assert status(case) == "APPROVED" and doc["detail"] == "unchanged"
-    assert stub.calls == [(DOC["_index"], DOC["_id"], approval_checks.DOC_TIMEOUT)]
+    # once when the checks are shown, once more under the case lock before signing
+    assert stub.calls == [(DOC["_index"], DOC["_id"], approval_checks.DOC_TIMEOUT)] * 2
 
 
 def test_a_cited_document_changed_holds_the_approval(
@@ -1103,3 +1129,264 @@ def test_the_json_report_keeps_every_override_reason(case, capsys, monkeypatch):
     out = capsys.readouterr().out
     report, _ = json.JSONDecoder().raw_decode(out[out.index("{") :])
     assert report["verification"]["overrides"] == {FID: [REASON]}
+
+
+# --- Audit logs the checks can't read --------------------------------------
+# A log the approval checks can't read (mode 000, a FIFO, a dangling link) or
+# an `audit/` they can't list could hold another entry for a chained id: the
+# approval names each one, signs nothing and takes no override. A held FIFO
+# never blocks the withdrawal count. Under the case lock the CLI runs the
+# checks again; an item whose checks changed after they were shown isn't signed.
+
+_NON_ROOT_POSIX = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="FIFOs are POSIX, and mode 000 doesn't stop root",
+)
+
+
+def M(why: str) -> str:
+    denied = re.findall(r"(?:^|, )([^,(]+) \(Permission denied\)", why)
+    return (
+        f"The approval checks couldn't read {why}: an entry there could change their "
+        "result. Nothing was signed, and nothing in audit/ was changed: audit logs "
+        "are evidence and stay as they are."
+        + (f" Check the permissions of {', '.join(denied)}, then approve again."
+           if denied else "")
+    )  # fmt: skip
+
+
+def _within(fn, timeout=8.0):
+    """What `fn` returns in a forked child, or ("blocked",) if it doesn't
+    within `timeout` (the child is then killed)."""
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        try:
+            with open("/proc/self/statm") as f:
+                size = int(f.read().split()[0]) * os.sysconf("SC_PAGE_SIZE")
+            resource.setrlimit(resource.RLIMIT_AS, (size + (1 << 30), size + (1 << 30)))
+            out = ("ok", fn())
+        except BaseException as e:  # noqa: BLE001 - reported to the parent
+            out = ("raised", f"{type(e).__name__}: {e}")
+        os.write(w, pickle.dumps(out))
+        os._exit(0)
+    os.close(w)
+    try:
+        ready, _, _ = select.select([r], [], [], timeout)
+        if not ready:
+            os.kill(pid, signal.SIGKILL)
+            return ("blocked",)
+        data = b""
+        while chunk := os.read(r, 65536):
+            data += chunk
+        return pickle.loads(data)
+    finally:
+        os.close(r)
+        os.waitpid(pid, 0)
+
+
+@pytest.fixture
+def held():
+    fds: list[int] = []
+
+    def hold(path, payload: bytes = b""):
+        """`path` as a FIFO another process holds open, with `payload` in it."""
+        path.unlink(missing_ok=True)
+        os.mkfifo(path)
+        fd = os.open(path, os.O_RDWR)
+        if payload:
+            os.write(fd, payload)
+        fds.append(fd)
+
+    yield hold
+    for fd in fds:
+        os.close(fd)
+
+
+def _duplicate(d) -> bytes:
+    """A second line for the chain's second entry, in another log."""
+    first, second = (d / "audit" / "sift-mcp.jsonl").read_text().splitlines()
+    return (second + "\n").encode()
+
+
+def _lines() -> int:
+    path = ledger.chain_path(CASE_ID)
+    return len(ledger.read_lines(path)) if path.exists() else 0
+
+
+# --------------------------------------------------------------------------
+# audit_lines
+
+
+@_NON_ROOT_POSIX
+def test_audit_lines_names_every_log_it_cant_read(case, held):
+    (case / "audit" / "claude-code.jsonl").write_text('{"audit_id": "claude-x"}\n')
+    os.chmod(case / "audit" / "claude-code.jsonl", 0)
+    held(case / "audit" / "wintools-mcp.jsonl", _duplicate(case))
+    assert _within(lambda: approval_checks.audit_lines(case)) == (
+        "raised",
+        "AuditUnreadable: "
+        + M("audit/claude-code.jsonl (Permission denied), "
+            "audit/wintools-mcp.jsonl (not a regular file)"),
+    )  # fmt: skip
+
+
+@_NON_ROOT_POSIX
+@pytest.mark.parametrize("mode", [0o000, 0o311], ids=["mode-000", "mode-0311"])
+def test_an_audit_folder_that_cant_be_listed_is_named(case, mode):
+    os.chmod(case / "audit", mode)
+    try:
+        got = _within(lambda: approval_checks.audit_lines(case))
+    finally:
+        os.chmod(case / "audit", 0o755)
+    assert got == ("raised", "AuditUnreadable: " + M("audit/ (Permission denied)"))
+
+
+@_NON_ROOT_POSIX
+def test_a_missing_folder_and_an_empty_log_read_as_before(case):
+    (case / "audit" / "empty.jsonl").write_text("")
+    trail = approval_checks.audit_lines(case)
+    assert sorted(trail) == ["sift-analyst1-001", "sift-analyst1-002"]
+    for log in (case / "audit").iterdir():
+        log.unlink()
+    (case / "audit").rmdir()
+    assert approval_checks.audit_lines(case) == {}
+
+
+# --------------------------------------------------------------------------
+# vhir approve, through main()
+
+
+def _approve_main(monkeypatch, capsys):
+    from vhir_cli.main import main
+
+    monkeypatch.setattr(
+        approval_auth, "read_tty_line", lambda prompt="": "approve anyway"
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt="": "a")
+    monkeypatch.setattr(sys, "argv", ["vhir", "approve", FID])
+    with pytest.raises(SystemExit) as e:
+        main()
+    return e.value.code, capsys.readouterr()
+
+
+@_NON_ROOT_POSIX
+@pytest.mark.parametrize(
+    "setup,why",
+    [
+        ("dup-mode000", "audit/wintools-mcp.jsonl (Permission denied)"),
+        ("cited-mode000", "audit/sift-mcp.jsonl (Permission denied)"),
+        ("dangling", "audit/wintools-mcp.jsonl (a symbolic link)"),
+        ("folder-mode000", "audit/ (Permission denied)"),
+    ],
+)
+def test_vhir_approve_refuses_when_a_log_cant_be_read(
+    case, monkeypatch, capsys, setup, why
+):
+    log = case / "audit" / "wintools-mcp.jsonl"
+    if setup == "dup-mode000":
+        log.write_bytes(_duplicate(case))
+        os.chmod(log, 0)
+    elif setup == "cited-mode000":
+        os.chmod(case / "audit" / "sift-mcp.jsonl", 0)
+    elif setup == "dangling":
+        log.symlink_to(case / "audit" / "gone.jsonl")
+    else:
+        os.chmod(case / "audit", 0)
+    try:
+        code, out = _approve_main(monkeypatch, capsys)
+    finally:
+        os.chmod(case / "audit", 0o755)
+    assert code == 1
+    assert f"Error: {M(why)}" in out.err.splitlines()
+    assert _lines() == 0 and status(case) == "DRAFT"
+
+
+@_NON_ROOT_POSIX
+def test_a_readable_duplicate_is_still_a_failed_check_that_can_be_overridden(
+    case, monkeypatch, capsys
+):
+    (case / "audit" / "wintools-mcp.jsonl").write_bytes(_duplicate(case))
+    _, out = run("ids", case, capsys, monkeypatch, reason="")
+    assert "ENTRY_DUPLICATE sift-analyst1-002" in out and status(case) == "DRAFT"
+
+
+# --------------------------------------------------------------------------
+# under the lock, after the passphrase
+
+
+def _at_the_passphrase(monkeypatch, change):
+    def typed(prompt=""):
+        change()
+        return PASSPHRASE
+
+    monkeypatch.setattr(approval_auth, "getpass_prompt", typed)
+
+
+@_NON_ROOT_POSIX
+def test_a_log_made_unreadable_while_the_passphrase_is_typed_signs_nothing(
+    case, monkeypatch, capsys
+):
+    log = case / "audit" / "wintools-mcp.jsonl"
+
+    def change():
+        log.write_bytes(_duplicate(case))
+        os.chmod(log, 0)
+
+    monkeypatch.setattr(approval_auth, "read_tty_line", lambda prompt="": "")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "a")
+    _at_the_passphrase(monkeypatch, change)
+    from vhir_cli.commands import approve as A
+
+    with pytest.raises(SystemExit) as e:
+        A._approve_specific(case, [FID], {"examiner": "analyst1", "os_user": "rig",
+                                          "analyst": "analyst1"}, case.parent / "c.yaml")  # fmt: skip
+    err = capsys.readouterr().err
+    assert e.value.code == 1
+    why = M("audit/wintools-mcp.jsonl (Permission denied)")
+    assert f"The commit couldn't go ahead: {why}" in err
+    assert "Nothing was signed. Your 1 decision(s) and TODO(s) were saved, unsigned, to " \
+           "pending-reviews.json" in err  # fmt: skip
+    assert _lines() == 0 and status(case) == "DRAFT"
+    pending = json.loads((case / "pending-reviews.json").read_text())
+    assert [i["id"] for i in pending["items"]] == [FID]
+
+
+@_NON_ROOT_POSIX
+def test_checks_that_change_while_the_passphrase_is_typed_discard_the_decision(
+    case, monkeypatch, capsys
+):
+    """A readable duplicate appears after the checks were shown as ok."""
+    log = case / "audit" / "wintools-mcp.jsonl"
+    monkeypatch.setattr(approval_auth, "read_tty_line", lambda prompt="": "")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "a")
+    _at_the_passphrase(monkeypatch, lambda: log.write_bytes(_duplicate(case)))
+    from vhir_cli.commands import approve as A
+
+    with pytest.raises(SystemExit) as e:
+        A._approve_specific(case, [FID], {"examiner": "analyst1", "os_user": "rig",
+                                          "analyst": "analyst1"}, case.parent / "c.yaml")  # fmt: skip
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert e.value.code == 1
+    assert (
+        f"  DISCARDED: {FID}: its approval checks changed after you saw them; your "
+        "approve decision on it was not signed or saved. Review it again."
+    ) in text.splitlines()
+    assert "1 decision(s) were discarded, as listed above" in text
+    assert _lines() == 0 and status(case) == "DRAFT"
+
+
+# --------------------------------------------------------------------------
+# the withdrawal count
+
+
+@_NON_ROOT_POSIX
+@pytest.mark.parametrize("which", ["audit log", "approvals.jsonl"])
+def test_the_withdrawal_count_doesnt_wait_on_a_held_fifo(case, held, which):
+    path = case / (
+        "audit/wintools-mcp.jsonl" if which == "audit log" else "approvals.jsonl"
+    )
+    held(path, b'{"tool": "record_finding"}\n')
+    assert _within(lambda: load_withdrawals(case)) == ("ok", [])

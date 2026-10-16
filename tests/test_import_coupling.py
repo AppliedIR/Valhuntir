@@ -113,6 +113,12 @@ R1_R2 = {
 
 
 def test_imported_events_dont_carry_the_coupling_or_get_signed(case):
+    # the local event as a peer's copy (no created_by), which last-write-wins
+    # replaces; an event this case recorded is never replaced by a merge
+    peer_copy = {
+        k: v for k, v in _auto_event("F-steve-001").items() if k != "created_by"
+    }
+    (case / "timeline.json").write_text(json.dumps([peer_copy]))
     import_bundle(case, R1_R2)
     stored = _timeline(case)
     assert stored["T-steve-001"]["description"].startswith(

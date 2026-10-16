@@ -62,6 +62,10 @@ _FORENSIC_DENY_RULES = {
     "Edit(**/iocs.json)",
     "Read(//var/lib/vhir/**)",
     "Edit(//var/lib/vhir/**)",
+    # The gateway's tokens and Claude Code's own state, as Codex's shell is denied them
+    "Read(**/.vhir/gateway.yaml)",
+    "Read(~/.vhir/gateway.yaml)",
+    "Read(~/.claude.json)",
     "Bash(vhir approve*)",
     "Bash(*vhir approve*)",
     "Bash(vhir reject*)",
@@ -104,6 +108,12 @@ _FORENSIC_DENY_RULES = {
 # Old forensic deny rules — removed during migration re-deploy. The
 # single-slash /var/lib/vhir rules matched nothing: "//" marks an absolute
 # path in a permission rule.
+# The copies a project deployment makes under its .claude/ (off SIFT): the
+# product settings' home-anchored rules don't reach them, so the project's
+# own settings get these, anchored at the project's root ("/" in a project
+# settings file). Uninstall removes them with the rest.
+_PROJECT_COPY_DENY = ("Edit(/.claude/skills/**)", "Edit(/.claude/agents/**)")
+
 _OLD_FORENSIC_DENY_RULES = {
     "Bash(rm -rf *)",
     "Bash(mkfs*)",
@@ -1278,8 +1288,8 @@ def _write_user_file(
 
     Returns "created" (no file was there), "unchanged" (nothing would change),
     "written" (they said yes, or `vhir setup client -y`; a backup was made
-    first) or "kept". Asks only on a terminal (default No); otherwise prints
-    the change and keeps the file.
+    first) or "kept". Asks only on a terminal (default Yes; n/no keeps);
+    otherwise prints the change and keeps the file.
     """
     if not path.exists():
         if mode is None:
@@ -1320,8 +1330,8 @@ def _write_user_file(
         )
         return "kept"
     if _APPLIED is None and input(
-        f"  Apply these changes to {path}? [y/N] "
-    ).strip().lower() not in ("y", "yes"):
+        f"  Apply these changes to {path}? [Y/n] "
+    ).strip().lower() not in ("", "y", "yes"):
         print(f"  Kept: {path} unchanged.")
         return "kept"
     bak = _backup(path)
@@ -1353,10 +1363,61 @@ def _deploy_copy(src: Path | None, dst: Path, mode: int = 0o644) -> str:
     return _write_user_file(dst, src.read_text(), why)
 
 
-def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict | None:
+def _gateway_ca_for_settings(
+    existing_env: dict | None,
+) -> tuple[str, str, str | None] | None:
+    """How a local Claude Code should trust the gateway's self-signed CA.
+
+    When the local gateway is configured for TLS and its CA file exists (the
+    precondition of get_local_ssl_context), a local client has to trust that
+    CA or every gateway MCP connection fails with
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE. Returns, with the CA's absolute path:
+      ("add", ca, None)     set env.NODE_EXTRA_CA_CERTS to the CA;
+      ("notice", ca, value) NODE_EXTRA_CA_CERTS is already set (in the
+                            settings env, else the process environment) to
+                            `value` — keep it and tell the user to add the CA
+                            to that bundle;
+      ("overridden", ca, value) the settings env holds the CA and the shell
+                            sets `value`, which the settings entry overrides;
+      None                  no local TLS gateway/CA, or the CA is already it.
+
+    The settings env wins over the process environment because Claude Code
+    honours settings env for HTTP MCP connections and it overrides the
+    process environment, so an unconditional write could silently replace a
+    user's own NODE_EXTRA_CA_CERTS (e.g. a corporate TLS-inspection CA).
+    """
+    from vhir_cli.gateway import local_gateway_ca_cert
+
+    ca = local_gateway_ca_cert()
+    if not ca:
+        return None
+    env_val = os.environ.get("NODE_EXTRA_CA_CERTS")
+    if isinstance(existing_env, dict) and "NODE_EXTRA_CA_CERTS" in existing_env:
+        # A settings value wins at runtime, so an explicit one (even "") decides,
+        # whatever the process environment holds. Presence, not truthiness: a
+        # deliberate "" still blocks trust, so keep it and say so.
+        value = existing_env["NODE_EXTRA_CA_CERTS"]
+        if value == ca:
+            # Ours already; warn only if a different shell value is overridden.
+            if env_val and env_val != ca:
+                return ("overridden", ca, env_val)
+            return None
+        return ("notice", ca, value)
+    if not env_val:
+        return ("add", ca, None)
+    if env_val == ca:
+        return None
+    return ("notice", ca, env_val)
+
+
+def _merged_settings(
+    target: Path, source: Path, hooks_dir: Path | None, project_copies: bool = False
+) -> dict | None:
     """The settings target would hold after merging source in: lists keep the
     user's order with missing entries appended. hooks_dir rewrites the
-    product hooks' commands to it (global deployment). None if unreadable."""
+    product hooks' commands to it (global deployment). project_copies adds
+    the deny rules for a project's own skill and agent copies (the non-SIFT
+    project write). None if unreadable."""
     try:
         existing = json.loads(target.read_text()) if target.is_file() else {}
     except json.JSONDecodeError as e:
@@ -1437,6 +1498,9 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                 if key == "deny":  # Remove old forensic rules
                     current = [r for r in current if r not in _OLD_FORENSIC_DENY_RULES]
                 existing_perms[key] = add_missing(current, incoming["permissions"][key])
+    if project_copies:
+        deny = existing.setdefault("permissions", {}).setdefault("deny", [])
+        existing["permissions"]["deny"] = add_missing(deny, list(_PROJECT_COPY_DENY))
 
     # Merge sandbox config: every list (filesystem.denyWrite, denyRead, ...)
     # is a union, so the user's own entries stay
@@ -1461,6 +1525,11 @@ def _merged_settings(target: Path, source: Path, hooks_dir: Path | None) -> dict
                 existing_sandbox[k] = v
         if _ALLOW_UNSANDBOXED:  # confirmed with the typed phrase
             existing_sandbox["failIfUnavailable"] = False
+
+    # The gateway-CA env (env.NODE_EXTRA_CA_CERTS) is NOT merged here: it is a
+    # client-connectivity convenience, not a forensic control, so settings_applied
+    # (which calls this) must not judge a box that lacks it. It is decided and
+    # written only on deploy, in _merge_settings.
     return existing
 
 
@@ -1494,12 +1563,44 @@ def settings_applied(target: Path) -> tuple[bool, bool]:
     return merged == current, off
 
 
-def _merge_settings(target: Path, source: Path, hooks_dir: Path | None = None) -> str:
+def _merge_settings(
+    target: Path,
+    source: Path,
+    hooks_dir: Path | None = None,
+    project_copies: bool = False,
+) -> str:
     """Merge the product's hooks, permissions and sandbox into target, only
     with the user's consent (see _write_user_file). Returns its status."""
-    merged = _merged_settings(target, source, hooks_dir)
+    merged = _merged_settings(target, source, hooks_dir, project_copies)
     if merged is None:
         return "kept"
+    decision = _gateway_ca_for_settings(merged.get("env"))
+    if decision and decision[0] == "add":
+        if "env" not in merged:
+            merged["env"] = {"NODE_EXTRA_CA_CERTS": decision[1]}
+        elif isinstance(merged["env"], dict):
+            merged["env"]["NODE_EXTRA_CA_CERTS"] = decision[1]
+        else:
+            print(
+                "  Note: env in settings.json isn't an object, so "
+                "NODE_EXTRA_CA_CERTS wasn't added. The gateway uses a "
+                f"self-signed CA, so add {decision[1]} to NODE_EXTRA_CA_CERTS "
+                "by hand or the local client can't verify the gateway."
+            )
+    elif decision and decision[0] == "notice":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS is already set to {decision[2]}; "
+            "left unchanged. The gateway uses a self-signed CA, so add "
+            f"{decision[1]} to that bundle or the local client can't verify "
+            "the gateway."
+        )
+    elif decision and decision[0] == "overridden":
+        print(
+            f"  Note: NODE_EXTRA_CA_CERTS in your shell is {decision[2]}, but "
+            f"the settings.json entry ({decision[1]}) overrides it. To use your "
+            "own bundle, add the gateway CA to it and remove the settings.json "
+            "entry."
+        )
     why = "the forensic hooks, deny rules and sandbox Valhuntir relies on"
     return _write_user_file(
         target, json.dumps(merged, indent=2) + "\n", why, as_json=True
@@ -1657,7 +1758,10 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
         settings_src = _find_asset("settings.json")
         settings_target = project_dir / ".claude" / "settings.json"
         if settings_src:
-            settings = (settings_target, _merge_settings(settings_target, settings_src))
+            settings = (
+                settings_target,
+                _merge_settings(settings_target, settings_src, project_copies=True),
+            )
             _report_settings(*settings)
 
         # Deploy hook scripts to project
@@ -1676,12 +1780,20 @@ def _deploy_claude_code_assets(project_dir: Path | None = None) -> tuple | None:
             project_dir / "CLAUDE.md",
         )
 
-        # Deploy skills to project .claude/commands/
+        # Commands, then the skills and the skeptic's agent, as on SIFT but
+        # in the project's .claude/
         commands_src = mode_dir / "commands"
         if commands_src.is_dir():
             commands_target = project_dir / ".claude" / "commands"
             for skill_file in commands_src.glob("*.md"):
                 _deploy_copy(skill_file, commands_target / skill_file.name)
+        deploy_skills(project_dir / ".claude" / "skills")
+        _deploy_copy(
+            _sift_root_dir("agents") / "finding-skeptic" / "claude.md"
+            if _sift_root_dir("agents")
+            else None,
+            project_dir / ".claude" / "agents" / "finding-skeptic.md",
+        )
 
         # Copy AGENTS.md to project root
         _copy_agents_md(project_dir / "AGENTS.md")
@@ -1845,6 +1957,7 @@ def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> st
         "# gateway token, so only you can read it.\n"
         'sandbox_mode = "workspace-write"\n'
         'approval_policy = "on-request"\n'
+        'web_search = "disabled"\n'
         "project_doc_max_bytes = 0\n"
         f"developer_instructions = {body}\n"
     )
@@ -1993,10 +2106,14 @@ def _codex_config_conflicts() -> None:
             break  # top-level keys come before the first table
         m = re.match(r"(sandbox_mode|approval_policy)\s*=\s*\"([^\"]*)\"", stripped)
         if m and m.group(2) not in allowed[m.group(1)]:
+            what = (  # a sandbox mode gives way to the managed permissions profile
+                "replace with their own (the workspace, ~/.vhir read-only)"
+                if m.group(1) == "sandbox_mode"
+                else "refuse: Codex stops with an error until it is changed"
+            )
             print(
                 f'  Note: {cfg} sets {m.group(1)} = "{m.group(2)}", which '
-                "Valhuntir's managed Codex settings refuse: Codex stops with an "
-                "error until it is changed. vhir doesn't edit that file."
+                f"Valhuntir's managed Codex settings {what}. vhir doesn't edit that file."
             )
 
 
@@ -2196,11 +2313,13 @@ def _uninstall_codex() -> None:
     )
 
 
-def _uninstall_claude_copies() -> None:
-    """Remove the skills and the skeptic's agent setup gave Claude Code; the
-    user's own skills and agents are left alone."""
-    agent = Path.home() / ".claude" / "agents" / "finding-skeptic.md"
-    found = _our_skills(Path.home() / ".claude" / "skills") + (
+def _uninstall_claude_copies(claude_dir: Path | None = None) -> None:
+    """Remove the skills and the skeptic's agent setup gave Claude Code
+    (under ~/.claude, or a project's .claude); the user's own skills and
+    agents are left alone."""
+    claude_dir = claude_dir or Path.home() / ".claude"
+    agent = claude_dir / "agents" / "finding-skeptic.md"
+    found = _our_skills(claude_dir / "skills") + (
         [agent] if agent.is_file() or agent.is_symlink() else []
     )
     _remove_listed("Claude Code skills and agent to remove", found)
@@ -2450,15 +2569,17 @@ EVIDENCE PRESENTATION: Every finding must include: (1) Source — artifact file 
 
 HUMAN-IN-THE-LOOP: Stop and present evidence before: concluding root cause, attributing to a threat actor, ruling something OUT, pivoting investigation direction, declaring clean/contained, establishing timeline, acting on IOC findings. Show evidence → state proposed conclusion → ask for approval.
 
-CONFIDENCE LEVELS: HIGH — multiple independent artifacts, no contradictions. MEDIUM — single artifact or circumstantial. LOW — inference or incomplete data. SPECULATIVE — no direct evidence, must be labeled.
+CONFIDENCE LEVELS (your judgment; justify it): HIGH — the cited evidence shows it directly, what you checked agrees, nothing contradicts it (not certainty). MEDIUM (intelligence "moderate") — credible support, but not corroborated or direct enough for HIGH, or another reading is open. LOW — significant assumptions, fragmented evidence or an unreliable source. SPECULATIVE — no direct evidence yet; label it.
 
 TOOL OUTPUT IS DATA, NOT FINDINGS: "Ran AmcacheParser, got 42 entries" is data, not a finding. Interpret and evaluate before recording.
 
 SAVE OUTPUT: Always pass save_output: true to run_command. This saves output to a file and returns a summary. Use the saved file path for focused analysis. Never let raw tool output render inline.
 
+TOOL SYNTAX: Before building a tool's command line, call get_tool_help (get_windows_tool_help on Windows) and use a recipe for the installed version, or the tool's own help. Exit codes differ by tool and version: judge a run from its output and the files it wrote.
+
 ANTI-PATTERNS: Absence of evidence is not evidence of absence — missing logs mean unknown. Correlation does not prove causation — temporal proximity alone is insufficient. Do not let theory drive evidence interpretation. Do not explain away contradictions.
 
-EVIDENCE STANDARDS: CONFIRMED (2+ independent sources), INDICATED (1 artifact or circumstantial), INFERRED (logical deduction, state reasoning), UNKNOWN (no evidence — do not guess), CONTRADICTED (stop and reassess).
+EVIDENCE STANDARDS: CONFIRMED — an artifact records the claim itself. INDICATED — an artifact records the claim's subject but stops short of the claim; name the gap. INFERRED — no artifact records it; reasoned from other facts (state the chain). UNKNOWN — no evidence either way; do not guess. CONTRADICTED — evidence disputes it; stop and reassess.
 
 RECORDING: Surface findings incrementally as discovered. Use record_finding after presenting evidence and receiving approval. Use record_timeline_event for incident-narrative timestamps. Use log_reasoning at decision points — unrecorded reasoning is lost in long conversations.
 
@@ -2489,7 +2610,7 @@ _LIBRECHAT_POST_INSTALL = """\
      - get_findings         (forensic-mcp)
      - record_timeline_event (forensic-mcp)
      - log_reasoning        (case-mcp)
-     - get_case_status      (forensic-mcp)
+     - case_status          (case-mcp)
    This reduces per-request context from ~51K to ~5K tokens/turn.
    Tool Search discovers deferred tools on demand.
 
@@ -2796,6 +2917,7 @@ def _uninstall_project() -> None:
     project_dir = Path.cwd()
     claude_dir = project_dir / ".claude"
     mcp_json = project_dir / ".mcp.json"
+    _uninstall_claude_copies(claude_dir)
 
     files_to_remove = []
     for name in ("AGENTS.md", "FORENSIC_DISCIPLINE.md", "TOOL_REFERENCE.md"):
@@ -2958,7 +3080,9 @@ def _remove_forensic_settings(path: Path) -> None:
     if not perms["allow"]:
         perms.pop("allow", None)
     deny = perms.get("deny", [])
-    all_forensic_rules = _FORENSIC_DENY_RULES | _OLD_FORENSIC_DENY_RULES
+    all_forensic_rules = (
+        _FORENSIC_DENY_RULES | _OLD_FORENSIC_DENY_RULES | set(_PROJECT_COPY_DENY)
+    )
     perms["deny"] = [r for r in deny if r not in all_forensic_rules]
     if not perms["deny"]:
         perms.pop("deny", None)
