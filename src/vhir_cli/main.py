@@ -87,7 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
         "couldn't be included; the files backup is kept and valid without it.",
     )
     p_backup.add_argument("destination", nargs="?", help="Backup destination directory")
-    p_backup.add_argument("--case", help="Case ID (default: active case)")
+    p_backup.add_argument(
+        "--case", default=argparse.SUPPRESS, help="Case ID (default: active case)"
+    )
     p_backup.add_argument("--include-evidence", action="store_true")
     p_backup.add_argument("--include-extractions", action="store_true")
     p_backup.add_argument(
