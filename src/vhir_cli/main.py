@@ -905,8 +905,10 @@ def _case_status_data(case_dir) -> dict:
 
     draft_f = sum(1 for f in findings if f.get("status") == "DRAFT")
     approved_f = sum(1 for f in findings if f.get("status") == "APPROVED")
+    rejected_f = sum(1 for f in findings if f.get("status") == "REJECTED")
     draft_t = sum(1 for t in timeline if t.get("status") == "DRAFT")
     approved_t = sum(1 for t in timeline if t.get("status") == "APPROVED")
+    rejected_t = sum(1 for t in timeline if t.get("status") == "REJECTED")
     open_todos = sum(1 for t in todos if t.get("status") == "open")
 
     return {
@@ -918,9 +920,11 @@ def _case_status_data(case_dir) -> dict:
         "finding_count": len(findings),
         "finding_draft": draft_f,
         "finding_approved": approved_f,
+        "finding_rejected": rejected_f,
         "timeline_count": len(timeline),
         "timeline_draft": draft_t,
         "timeline_approved": approved_t,
+        "timeline_rejected": rejected_t,
         "todo_open": open_todos,
         "todo_total": len(todos),
     }
@@ -949,10 +953,10 @@ def _case_status(args, identity: dict) -> None:
     print(f"  Examiner: {one_line(data['examiner'])}")
     print(f"  Path:     {data['path']}")
     print(
-        f"  Findings: {data['finding_count']} ({data['finding_draft']} draft, {data['finding_approved']} approved)"
+        f"  Findings: {data['finding_count']} ({data['finding_draft']} draft, {data['finding_approved']} approved, {data['finding_rejected']} rejected)"
     )
     print(
-        f"  Timeline: {data['timeline_count']} ({data['timeline_draft']} draft, {data['timeline_approved']} approved)"
+        f"  Timeline: {data['timeline_count']} ({data['timeline_draft']} draft, {data['timeline_approved']} approved, {data['timeline_rejected']} rejected)"
     )
     print(f"  TODOs:    {data['todo_open']} open / {data['todo_total']} total")
 

@@ -1519,6 +1519,8 @@ def render(result: Result) -> str:
             out.append(f"      Recovery: {RECOVERY[v.status]}")
             if v.status in _RESTORE_ROWS:
                 out.append(f"      {REPLACE_NOTE}")
+    if not result.items:
+        out.append("  none")
     for code, msg in result.failures:
         out.append(f"{code}: {s(msg)}")
         if code in RECOVERY:
