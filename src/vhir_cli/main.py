@@ -753,21 +753,15 @@ def _warn_if_update_incomplete() -> None:
         stale = (
             state.get("version") != __version__ or state.get("vhir_commit") != commit
         )
+        line = f"Your update to {__version__} didn't finish. Run: vhir update"
     else:
         # No record that counts: an updater before 0.6.4.1 wrote updated_at
         # and no record. (Every updater 0.6.0-0.6.4 writes updated_at.)
         stale = "updated_at" in manifest
+        line = f"Your update to {__version__} has one step left. Run: vhir update"
     if stale:
         bar = "=" * 72
-        print(
-            f"{bar}\n"
-            "  UPDATE INCOMPLETE: run `vhir update` again\n"
-            f"  vhir {__version__} is installed, but the last update did not finish\n"
-            "  with it: the forensic controls, the manifest and the gateway may be\n"
-            "  from the older release.\n"
-            f"{bar}",
-            file=sys.stderr,
-        )
+        print(f"{bar}\n  {line}\n{bar}", file=sys.stderr)
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from vhir_cli.setup.config_gen import _write_600
+from vhir_cli.update_handover import hand_over_older_update
 
 # ---------------------------------------------------------------------------
 # External reference MCPs (optional, public, no auth)
@@ -1094,6 +1095,7 @@ def ensure_signing_dirs() -> None:
     this user, 0700 (/var/lib/vhir is root's: sudo). A folder another account
     owns is left alone, with the installer's refusal. Never raises: a failure
     prints the command to run instead."""
+    hand_over_older_update()
     import getpass
     import subprocess
 
@@ -1180,6 +1182,7 @@ def _isolate_gateway_launchers() -> list[Path]:
     import re
     import subprocess
 
+    hand_over_older_update()
     if _under_an_older_update():
         _ensure_signing_dirs_fresh()
 
@@ -1730,6 +1733,7 @@ def _deploy_claude_code_assets(
     """
     # Here, not only in update: an older vhir update reaches the new code
     # only through this call, between its pull and its gateway restart.
+    hand_over_older_update()
     _isolate_gateway_launchers()
     assets_dir = _find_claude_code_assets()
     if not assets_dir:
@@ -2212,6 +2216,7 @@ def deploy_codex_assets(
     extra: more server entries ({name: {"url": ..., "headers": {...}}} or
     {"command": ..., "args": [...]}), added to the profile or replacing the
     same-named entry, e.g. a remnux-mcp added later."""
+    hand_over_older_update()
     path = codex_profile_path()
     if remote:
         instructions = _fetch_codex_assets()

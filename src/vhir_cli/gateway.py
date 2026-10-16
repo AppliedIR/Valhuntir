@@ -13,6 +13,8 @@ from __future__ import annotations
 import ssl
 from pathlib import Path
 
+from vhir_cli.update_handover import hand_over_older_update
+
 # Said after vhir restarts the gateway: a running Claude Code session's tool
 # connections don't come back by themselves
 RECONNECT_HINT = (
@@ -40,7 +42,11 @@ def get_local_gateway_url() -> str:
 
     Always returns http(s)://127.0.0.1:{port}. Checks gateway.tls.certfile
     to determine scheme. Falls back to http://127.0.0.1:4508.
+
+    On 0.6.0-0.6.2 an older vhir update may reach the new code first here
+    (its connectivity test, after the gateway restart).
     """
+    hand_over_older_update()
     config = _read_gateway_config()
     gw = config.get("gateway", {})
     if isinstance(gw, dict):

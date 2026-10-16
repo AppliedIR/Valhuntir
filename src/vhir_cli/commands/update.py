@@ -406,7 +406,9 @@ def _torch_installed(venv_python: str) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
-def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
+def _torch_variant(
+    args, manifest: dict, installed: str, ask: bool = True
+) -> tuple[str, str]:
     """(the build to install, the record to keep). The flag, else the build
     already in the venv, else CPU. Asked only on a terminal, with no flag,
     when the venv has torch but was never asked (no record), or forensic-rag
@@ -423,7 +425,8 @@ def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
         return flag, flag
     variant = "cpu" if installed.endswith("+cpu") or not installed else "gpu"
     rag = "rag-mcp" in manifest.get("packages", {})
-    if sys.stdin.isatty() and ((installed and not record) or (rag and not installed)):
+    asked = (installed and not record) or (rag and not installed)
+    if ask and sys.stdin.isatty() and asked:
         import shutil
 
         found = "no NVIDIA GPU was found"
@@ -846,7 +849,20 @@ def cmd_update(args, identity: dict) -> None:
         )
 
     if after_pull is not None:  # Steps 1-4 ran in the process that started this one
-        pre_update_git, torch_record = _read_handoff(after_pull, repos)
+        pre_update_git, torch_record, older = _read_handoff(after_pull, repos, manifest)
+        # An older vhir's update pulled this code: Step 4 again, from the lock
+        if older:
+            _write_update_state("", pre_update_git.get("vhir", ""))
+            torch_record = _install_packages(
+                args,
+                manifest,
+                source,
+                vhir_dir,
+                venv_python,
+                repos,
+                pre_update_git,
+                ask=False,
+            )
         _finish_update(
             args,
             identity,
@@ -986,10 +1002,42 @@ def cmd_update(args, identity: dict) -> None:
             print(f"  Pulling {name}... already up to date")
 
     # Step 4: Reinstall packages (batched for unified dependency resolution).
-    # Every third-party package comes from the lock in the freshly pulled
-    # sift-mcp.
+    torch_record = _install_packages(
+        args, manifest, source, vhir_dir, venv_python, repos, pre_update_git
+    )
+
+    # This process loaded vhir-cli before the pull: when the pull changed it,
+    # Steps 4.5-9 run in a new process, from the new code.
+    if "vhir" in pre_update_git and pre_update_git["vhir"] != _git_head(vhir_dir):
+        _reexec_after_pull(args, venv, venv_python, pre_update_git, torch_record)
+    _finish_update(
+        args,
+        identity,
+        manifest,
+        manifest_path,
+        venv,
+        source,
+        repos,
+        pre_update_git,
+        torch_record,
+    )
+
+
+def _install_packages(
+    args,
+    manifest: dict,
+    source: Path,
+    vhir_dir: Path,
+    venv_python: str,
+    repos: list[tuple[str, Path]],
+    pre_update_git: dict,
+    ask: bool = True,
+) -> str:
+    """Step 4: every package, each third-party one from the lock in the freshly
+    pulled sift-mcp. Returns the torch record to keep. ask=False asks nothing
+    (an older vhir's update already asked its questions)."""
     torch_installed = _torch_installed(venv_python)
-    variant, torch_record = _torch_variant(args, manifest, torch_installed)
+    variant, torch_record = _torch_variant(args, manifest, torch_installed, ask)
     lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
     checker = source / "deps" / "check-lock.py"
     if not lock.is_file() or not checker.is_file():
@@ -1088,26 +1136,11 @@ def cmd_update(args, identity: dict) -> None:
     _check_lock(args, venv_python, checker, lock, "--strict")
 
     _check_lock(args, venv_python, checker, lock, "--final")
-    if variant == "cpu" and sys.stdin.isatty():
+    if variant == "cpu" and ask and sys.stdin.isatty():
         _offer_cuda_cleanup(venv_python, checker, lock)
-    if sys.stdin.isatty():  # with no terminal, --final's note names them
+    if ask and sys.stdin.isatty():  # with no terminal, --final's note names them
         _offer_opencti_cleanup(venv_python, checker, lock)
-
-    # This process loaded vhir-cli before the pull: when the pull changed it,
-    # Steps 4.5-9 run in a new process, from the new code.
-    if "vhir" in pre_update_git and pre_update_git["vhir"] != _git_head(vhir_dir):
-        _reexec_after_pull(args, venv, venv_python, pre_update_git, torch_record)
-    _finish_update(
-        args,
-        identity,
-        manifest,
-        manifest_path,
-        venv,
-        source,
-        repos,
-        pre_update_git,
-        torch_record,
-    )
+    return torch_record
 
 
 def _reexec_after_pull(
@@ -1146,16 +1179,46 @@ def _update_incomplete(reason: str) -> NoReturn:
     sys.exit(1)
 
 
-def _read_handoff(text: str, repos: list[tuple[str, Path]]) -> tuple[dict, str]:
-    """The pre-pull heads and torch choice the first process passed on."""
+def _read_handoff(
+    text: str, repos: list[tuple[str, Path]], manifest: dict
+) -> tuple[dict, str, bool]:
+    """The pre-pull heads and torch choice the first process passed on, and
+    whether it was an older vhir's update (update_handover), which passes
+    neither: then the heads come from the manifest."""
     try:
         data = json.loads(text)
     except ValueError:
         data = None
+    if isinstance(data, dict) and data.get("older_update") is True:
+        return _heads_before_older_update(manifest, repos), "", True
     if isinstance(data, dict) and isinstance(data.get("pre_update_git"), dict):
         record = data.get("torch_record")
-        return data["pre_update_git"], record if isinstance(record, str) else ""
-    return {name: _git_head(path) for name, path in repos if path.is_dir()}, ""
+        return data["pre_update_git"], record if isinstance(record, str) else "", False
+    return _current_heads(repos), "", False
+
+
+def _current_heads(repos: list[tuple[str, Path]]) -> dict:
+    return {name: _git_head(path) for name, path in repos if path.is_dir()}
+
+
+def _heads_before_older_update(manifest: dict, repos: list[tuple[str, Path]]) -> dict:
+    """The heads before an older vhir's update pulled this code. Its Step 6
+    writes the manifest's git (the heads after the pull) and pre_update_git.
+    Until then, or when that write failed, git still holds the heads from
+    before the pull, and pre_update_git is the update before's."""
+    current = _current_heads(repos)
+
+    def heads(value) -> dict:
+        if not isinstance(value, dict):
+            return {}
+        return {
+            k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)
+        }
+
+    git, before = heads(manifest.get("git")), heads(manifest.get("pre_update_git"))
+    if git and git.get("vhir") == current.get("vhir"):
+        return before or current
+    return git or current
 
 
 def _write_update_state(version: str, vhir_commit: str) -> None:

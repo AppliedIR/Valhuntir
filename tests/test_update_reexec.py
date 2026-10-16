@@ -17,6 +17,10 @@ from vhir_cli.commands.update import cmd_update
 
 manifest_dir = test_update.manifest_dir
 INCOMPLETE = "UPDATE INCOMPLETE: run `vhir update` again"
+# The banner every other command prints (main._warn_if_update_incomplete).
+ONE_STEP_LEFT = f"Your update to {__version__} has one step left. Run: vhir update"
+DIDNT_FINISH = f"Your update to {__version__} didn't finish. Run: vhir update"
+BANNER = "Run: vhir update"
 
 
 class Execd(Exception):
@@ -239,40 +243,42 @@ def _vhir(home, *argv):
 def test_an_old_updater_run_is_warned_about(tmp_path, capsys):
     _manifest(tmp_path, updated_at="2026-10-03T00:00:00+00:00")
     _vhir(tmp_path, "portal")
-    assert INCOMPLETE in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert ONE_STEP_LEFT in err and DIDNT_FINISH not in err
 
 
 def test_a_record_of_another_commit_is_warned_about(tmp_path, capsys):
     _manifest(tmp_path, updated_at="2026-10-03T00:00:00+00:00", git={"vhir": "v2"})
     _state(tmp_path)
     _vhir(tmp_path, "portal")
-    assert INCOMPLETE in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert DIDNT_FINISH in err and ONE_STEP_LEFT not in err
 
 
 def test_a_fresh_install_is_not_warned_about(tmp_path, capsys):
     _manifest(tmp_path)
     _vhir(tmp_path, "portal")
-    assert INCOMPLETE not in capsys.readouterr().err
+    assert BANNER not in capsys.readouterr().err
 
 
 def test_a_matching_record_is_not_warned_about(tmp_path, capsys):
     _manifest(tmp_path, updated_at="2026-10-02T00:00:00+00:00")
     _state(tmp_path)
     _vhir(tmp_path, "portal")
-    assert INCOMPLETE not in capsys.readouterr().err
+    assert BANNER not in capsys.readouterr().err
 
 
 def test_a_reinstall_after_the_record_is_not_warned_about(tmp_path, capsys):
     _manifest(tmp_path)
     _state(tmp_path, version="0.6.1", completed_at="2026-09-01T00:00:00+00:00")
     _vhir(tmp_path, "portal")
-    assert INCOMPLETE not in capsys.readouterr().err
+    assert BANNER not in capsys.readouterr().err
 
 
 def test_update_itself_is_not_warned_about(tmp_path, capsys):
     _manifest(tmp_path, updated_at="2026-10-03T00:00:00+00:00")
     _vhir(tmp_path, "update")
-    assert INCOMPLETE not in capsys.readouterr().err
+    assert BANNER not in capsys.readouterr().err
 
 
 def test_config_is_not_warned_about(tmp_path, capsys):
@@ -288,4 +294,4 @@ def test_config_is_not_warned_about(tmp_path, capsys):
     ):
         main_mod.main()
     assert config.called
-    assert INCOMPLETE not in capsys.readouterr().err
+    assert BANNER not in capsys.readouterr().err
