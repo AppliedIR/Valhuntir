@@ -151,6 +151,13 @@ fetch_skills() {
 }
 
 
+# Under `curl ... | bash` the script itself is stdin: ask on the terminal, or take the default when there is none.
+ASK_FD=0
+if [[ -z "${BASH_SOURCE[0]-}" ]]; then
+    if { : </dev/tty; } 2>/dev/null; then exec 9</dev/tty; ASK_FD=9; else ASK_FD=""; fi
+fi
+no_tty() { [[ -z "$ASK_FD" ]] && warn "No terminal to ask \"$1\": answering ${2:-nothing}." >&2; }
+
 prompt_yn() {
     local msg="$1" default="${2:-y}"
     local suffix
@@ -162,8 +169,9 @@ prompt_yn() {
 
 prompt_yn_strict() {
     local msg="$1"
+    if no_tty "$msg" n; then return 1; fi
     while true; do
-        if ! read -rp "$(echo -e "${BOLD}$msg${NC} [y/n]: ")" answer; then
+        if ! read -u "$ASK_FD" -rp "$(echo -e "${BOLD}$msg${NC} [y/n]: ")" answer; then
             echo ""
             return 1
         fi
@@ -177,8 +185,9 @@ prompt_yn_strict() {
 
 prompt() {
     local msg="$1" default="$2" reply
+    if no_tty "$msg" "$default"; then echo "$default"; return; fi
     printf "  %s [%s]: " "$msg" "$default" >&2
-    read -r reply
+    read -u "$ASK_FD" -r reply
     echo "${reply:-$default}"
 }
 
