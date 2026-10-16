@@ -63,6 +63,15 @@ def ioc_text(iocs, _depth: int = 0) -> str:
     return str(iocs)
 
 
+def list_text(value) -> str:
+    """A list field (a finding's MITRE ids) as the examiner reads it: its items
+    joined with ", ", never the list's Python form; any other value as text.
+    The print site still makes the text safe for its line."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(x) for x in value)
+    return str(value)
+
+
 def cited(value) -> list:
     """The audit ids a record cites, as a list: a list as it is, None as none,
     any other value as one id. Whatever the shape, it is shown, never a crash."""

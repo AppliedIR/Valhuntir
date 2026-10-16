@@ -36,7 +36,7 @@ from vhir_cli.case_io import (
     no_terminal_line,
 )
 from vhir_cli.display import cited as _cited
-from vhir_cli.display import display_safe, ioc_text, one_line
+from vhir_cli.display import display_safe, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ioc_groups import ioc_groups
 from vhir_cli.provenance_view import finding_lines, grade_label
@@ -282,8 +282,8 @@ def _show_findings_detail(case_dir: Path) -> None:
         if f.get("iocs"):
             print(f"  IOCs:         {one_line(ioc_text(raw['iocs']))}")
         # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
-        if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
-            print(f"  MITRE:        {mitre}")
+        if mitre := raw.get("mitre_ids") or raw.get("mitre_techniques"):
+            print(f"  MITRE:        {one_line(list_text(mitre))}")
         if f.get("approved_at"):
             print(f"  Approved:     {f['approved_at']}")
         if f.get("rejected_at"):

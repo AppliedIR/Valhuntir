@@ -36,7 +36,7 @@ from vhir_cli.defang import (
     network_ioc,
     structured_iocs,
 )
-from vhir_cli.display import cited_text, ioc_text, one_line
+from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ioc_groups import ioc_groups
 from vhir_cli.ledger_verify import (
@@ -416,7 +416,7 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
             lines.append(f"  IOCs:         {_d(ioc_text(f['iocs']), safe)}")
         # a finding's ids are mitre_ids (mitre_techniques is an IOC's field)
         if mitre := f.get("mitre_ids") or f.get("mitre_techniques"):
-            lines.append(f"  MITRE:        {_d(mitre, safe)}")
+            lines.append(f"  MITRE:        {_d(list_text(mitre), safe)}")
         if f.get("approved_at"):
             lines.append(f"  Approved:     {_d(f['approved_at'], safe)}")
         if f.get("rejected_at"):
