@@ -1662,7 +1662,15 @@ def _case_close(args, identity: dict) -> None:
         print(f"Case not found: {case_id}", file=sys.stderr)
         sys.exit(1)
 
-    confirm = input(f"Close case {case_id}? [y/N] ")
+    try:
+        confirm = input(f"Close case {case_id}? [y/N] ")
+    except EOFError:  # no terminal to answer (a pipe with nothing in it, an AI's shell)
+        print()
+        print(
+            "Not closed: `vhir case close` asks for confirmation; run it in a terminal.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if confirm.lower() != "y":
         print("Cancelled.")
         return
