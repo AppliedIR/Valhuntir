@@ -40,6 +40,7 @@ from vhir_cli.defang import (
 )
 from vhir_cli.display import cited_text, one_line
 from vhir_cli.display import lines as indent_lines
+from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
 from vhir_cli.ledger_verify import (
     approved_view,
     shown_label,
@@ -397,16 +398,33 @@ def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
         print("No IOCs found in approved findings.")
         return None
 
+    scoped = scope_iocs(iocs)
+
     lines = []
     lines.append("IOC REPORT (Approved Findings Only)")
     lines.append("=" * 50)
-    for ioc_type, values in iocs.items():
+    for ioc_type, values in scoped.routable.items():
         lines.append(f"\n  {_d(ioc_type, safe)} ({len(values)}):")
         for v in values:
             lines.append(f"    {_d(v, safe)}")
 
-    total = sum(len(v) for v in iocs.values())
-    lines.append(f"\nTotal: {total} IOCs across {len(iocs)} types")
+    total = sum(len(v) for v in scoped.routable.values())
+    lines.append(f"\nTotal: {total} IOCs across {len(scoped.routable)} types")
+
+    if scoped.non_routable:
+        # Listed, never dropped: an internal address in a finding usually means
+        # something (lateral movement, the compromised host), it just is not a
+        # blocklist candidate. Which it is needs context this cannot supply.
+        lines.append("")
+        lines.append("-" * 50)
+        lines.append(
+            f"Non-routable addresses ({scoped.non_routable_count}) "
+            "— listed separately, not blocklist candidates:"
+        )
+        for ioc_type, entries in scoped.non_routable.items():
+            lines.append(f"\n  {_d(ioc_type, safe)}:")
+            for value, scope in entries:
+                lines.append(f"    {_d(value, safe):<20} {SCOPE_NOTES[scope]}")
 
     output = "\n".join(lines)
     return output

@@ -39,6 +39,7 @@ from vhir_cli.defang import refang
 from vhir_cli.display import cited as _cited
 from vhir_cli.display import display_safe, one_line
 from vhir_cli.display import lines as indent_lines
+from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
 from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
@@ -401,10 +402,14 @@ def _show_iocs(case_dir: Path) -> None:
         if not iocs:
             continue
         any_iocs = True
+        scoped = scope_iocs(iocs)
         print(f"\n=== {labels[status]} ===")
-        for ioc_type, values in sorted(iocs.items()):
+        for ioc_type, values in sorted(scoped.routable.items()):
             shown = ", ".join(one_line(v) for v in sorted(values))
             print(f"  {one_line(ioc_type) + ':':<10} {shown}")
+        for ioc_type, entries in sorted(scoped.non_routable.items()):
+            listed = ", ".join(f"{one_line(v)} ({SCOPE_NOTES[s]})" for v, s in entries)
+            print(f"  {one_line(ioc_type) + ' (non-routable):':<10} {listed}")
 
     if not any_iocs:
         print("No IOCs found in findings.")
