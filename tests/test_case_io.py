@@ -150,6 +150,50 @@ class TestPathTraversal:
         with pytest.raises(CaseError):
             get_case_dir("foo\\bar")
 
+    @pytest.mark.parametrize(
+        "given", ["/home/x/cases/INC-1", "cases/INC-1", "C:\\x\\INC-1"]
+    )
+    def test_a_path_is_refused_with_how_to_name_a_case(
+        self, tmp_path, monkeypatch, given
+    ):
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
+        (tmp_path / "INC-1").mkdir()
+        with pytest.raises(CaseError) as err:
+            get_case_dir(given)
+        assert str(err.value) == (
+            f"--case takes a case ID (the folder name under {tmp_path}), not a path. "
+            "For a case folder elsewhere, set VHIR_CASE_DIR."
+        )
+
+    def test_dotdot_without_a_separator_keeps_its_message(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
+        with pytest.raises(CaseError, match="path traversal characters"):
+            get_case_dir("..")
+
+    def test_a_plain_case_id_still_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
+        (tmp_path / "INC-1").mkdir()
+        assert get_case_dir("INC-1") == tmp_path / "INC-1"
+
+    def test_the_cli_prints_the_message_on_one_line(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from vhir_cli.main import main
+
+        monkeypatch.setenv("VHIR_CASES_DIR", str(tmp_path))
+        monkeypatch.setenv("VHIR_EXAMINER", "tester")
+        monkeypatch.setattr(
+            "sys.argv", ["vhir", "--case", str(tmp_path / "INC-1"), "audit", "summary"]
+        )
+        with pytest.raises(SystemExit) as code:
+            main()
+        assert code.value.code == 1
+        err = capsys.readouterr().err
+        assert (
+            err.startswith("Error: --case takes a case ID") and "Traceback" not in err
+        )
+        assert err.count("\n") == 1
+
     def test_import_bundle_merges(self, case_dir, monkeypatch):
         """import_bundle merges incoming items using last-write-wins."""
         import yaml

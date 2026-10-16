@@ -292,8 +292,13 @@ def _protected_write(path: Path, content: str) -> None:
 def get_case_dir(case_id: str | None = None) -> Path:
     """Resolve the active case directory."""
     if case_id:
-        _validate_case_id(case_id)
         cases_dir = Path(os.environ.get("VHIR_CASES_DIR", DEFAULT_CASES_DIR))
+        if "/" in case_id or "\\" in case_id:
+            raise CaseError(
+                f"--case takes a case ID (the folder name under {cases_dir}), "
+                "not a path. For a case folder elsewhere, set VHIR_CASE_DIR."
+            )
+        _validate_case_id(case_id)
         case_dir = cases_dir / case_id
         if not case_dir.exists():
             raise CaseError(f"Case not found: {case_id}")
