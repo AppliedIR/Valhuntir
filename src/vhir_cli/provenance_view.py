@@ -8,6 +8,8 @@ the same rules in its own script."""
 
 from __future__ import annotations
 
+import json
+
 from vhir_cli.display import one_line
 
 LEGACY = "recorded before 0.6.4"
@@ -99,7 +101,16 @@ def _hash(sha) -> str:
 
 def _file(d) -> str:
     d = d if isinstance(d, dict) else {}
+    if not d.get("path") and not d.get("sha256"):
+        return "(no file)"
     return f"{_s(d.get('path', '?'))} {_hash(d.get('sha256'))}"
+
+
+def _is_record(link: dict) -> bool:
+    """A query link that names a returned record, not a file: it has a
+    ``document`` and no ``to`` path."""
+    doc, to = link.get("document"), link.get("to")
+    return isinstance(doc, dict) and not (isinstance(to, dict) and to.get("path"))
 
 
 def candidate_line(c: dict) -> str:
@@ -140,9 +151,53 @@ def link_line(link: dict) -> str:
             f"({_s(ref.get('source_version') or 'version not recorded')})"
         )
         return f"{head}: {start} -> {_file(link.get('to'))}"
+    if _is_record(link):
+        doc = link.get("document")
+        # a returned record: the query's link names it, not a file; a record
+        # with no content hash (recorded before 0.6.4) reads "(no hash)"
+        chash = doc.get("content_hash")
+        return (
+            f"{head}: record {_s(doc.get('_id') or '?')} in "
+            f"{_s(doc.get('_index') or '?')} {_hash(chash) if chash else '(no hash)'}"
+        )
     if "from" in link:
         return f"{head}: {_file(link.get('from'))} -> {_file(link.get('to'))}"
     return f"{head}: -> {_file(link.get('to'))}" if "to" in link else head
+
+
+def _grouped_links(links: list[dict]) -> list[dict]:
+    """The stored chain regrouped so each distinct ingest chain shows once,
+    followed by the records that resolved through it. ``_follow`` stores, per
+    returned record, that record's ingest chain and then the record's own
+    link, so N records from one ingest repeat the chain N times. Grouping by
+    the chain keeps each record under its own ingest even when a query returns
+    records from two ingests interleaved; order follows each chain's first
+    appearance."""
+    groups: list[dict] = []
+    by_chain: dict[str, dict] = {}
+    pending: list[dict] = []
+    for link in links:
+        if _is_record(link):
+            key = json.dumps(pending, sort_keys=True, default=str)
+            grp = by_chain.get(key)
+            if grp is None:
+                grp = {"chain": list(pending), "records": [], "seen": set()}
+                by_chain[key] = grp
+                groups.append(grp)
+            rkey = json.dumps(link, sort_keys=True, default=str)
+            if rkey not in grp["seen"]:  # an identical record link shows once
+                grp["seen"].add(rkey)
+                grp["records"].append(link)
+            pending = []
+        else:
+            pending.append(link)
+    if pending:  # a chain with no record links renders in stored order
+        groups.append({"chain": pending, "records": []})
+    out: list[dict] = []
+    for grp in groups:
+        out.extend(grp["chain"])
+        out.extend(grp["records"])
+    return out
 
 
 def finding_lines(finding: dict, indent: str = "  ") -> list[str]:
@@ -158,7 +213,7 @@ def finding_lines(finding: dict, indent: str = "  ") -> list[str]:
         for root in roots_of(art):
             lines.append(f"{indent}      root: {root_line(root)}")
         links = [x for x in art.get("provenance_chain") or [] if isinstance(x, dict)]
-        for k, link in enumerate(links, 1):
+        for k, link in enumerate(_grouped_links(links), 1):
             lines.append(f"{indent}      {k}. {link_line(link)}")
         for c in art.get("provenance_candidates") or []:  # what made it AMBIGUOUS
             if isinstance(c, dict):
