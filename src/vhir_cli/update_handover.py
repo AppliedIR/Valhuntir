@@ -83,8 +83,11 @@ def _hand_over() -> None:
     python, script = venv / "bin" / "python", venv / "bin" / "vhir"
     if not script.is_file():
         return
-    argv = [str(python), str(script), "update", "--after-pull"]
-    argv.append(json.dumps({"older_update": True}))
+    payload = {"older_update": True}
+    torch_record = _older_torch_record()
+    if torch_record:
+        payload["torch_record"] = torch_record
+    argv = [str(python), str(script), "update", "--after-pull", json.dumps(payload)]
     for flag in ("no_restart", "cpu", "gpu"):
         if getattr(args, flag):
             argv.append("--" + flag.replace("_", "-"))
@@ -94,3 +97,21 @@ def _hand_over() -> None:
         os.execv(str(python), argv)
     except OSError as e:
         print(f"  Cannot start the new code: {e}", file=sys.stderr)
+
+
+def _older_torch_record() -> str:
+    """The PyTorch build the older update was told in its Step 4 (0.6.2-0.6.4
+    ask it there, or take --cpu/--gpu). Its Step 6, which this hand-over
+    replaces, would have recorded it from cmd_update's torch_record."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        if (
+            frame.f_code.co_name == "cmd_update"
+            and frame.f_globals.get("__name__") == "vhir_cli.commands.update"
+        ):
+            record = frame.f_locals.get("torch_record")
+            return (
+                record if isinstance(record, str) and record in ("cpu", "gpu") else ""
+            )
+        frame = frame.f_back
+    return ""

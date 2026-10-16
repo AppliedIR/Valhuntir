@@ -356,6 +356,22 @@ def _uv_version() -> tuple[int, int, int] | None:
     return (int(m[1]), int(m[2]), int(m[3])) if m else None
 
 
+def _check_uv_floor() -> None:
+    # Older uv installs from the lock without checking its hashes, and says
+    # nothing. (cmd_update ignores a failed `uv self update`.)
+    uv_version = _uv_version()
+    if uv_version is None or uv_version < _UV_FLOOR:
+        shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
+        print(
+            f"uv {shown} is older than 0.6.9, which vhir update needs for"
+            " --torch-backend and hash checks.\n"
+            "Update it: uv self update   (or reinstall: "
+            "curl -LsSf https://astral.sh/uv/install.sh | sh)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _stop_part_way(args) -> NoReturn:
     """Exit after the pull: say what state that leaves and how to finish."""
     flag = " --cpu" if args.cpu else " --gpu" if args.gpu else ""
@@ -853,7 +869,8 @@ def cmd_update(args, identity: dict) -> None:
         # An older vhir's update pulled this code: Step 4 again, from the lock
         if older:
             _write_update_state("", pre_update_git.get("vhir", ""))
-            torch_record = _install_packages(
+            _check_uv_floor()  # 0.6.0 and 0.6.1 have none
+            record = _install_packages(
                 args,
                 manifest,
                 source,
@@ -863,6 +880,8 @@ def cmd_update(args, identity: dict) -> None:
                 pre_update_git,
                 ask=False,
             )
+            # The older update's answer (it asked in its Step 4), else ours
+            torch_record = torch_record or record
         _finish_update(
             args,
             identity,
@@ -917,19 +936,7 @@ def cmd_update(args, identity: dict) -> None:
         print("\n  Run 'vhir update' to apply.")
         return
 
-    # Older uv installs from the lock without checking its hashes, and says
-    # nothing. (A failed `uv self update` above is otherwise ignored.)
-    uv_version = _uv_version()
-    if uv_version is None or uv_version < _UV_FLOOR:
-        shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
-        print(
-            f"uv {shown} is older than 0.6.9, which vhir update needs for"
-            " --torch-backend and hash checks.\n"
-            "Update it: uv self update   (or reinstall: "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh)",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    _check_uv_floor()
 
     # Step 3: Record pre-update state + pull
     pre_update_git = {}
@@ -1183,14 +1190,16 @@ def _read_handoff(
     text: str, repos: list[tuple[str, Path]], manifest: dict
 ) -> tuple[dict, str, bool]:
     """The pre-pull heads and torch choice the first process passed on, and
-    whether it was an older vhir's update (update_handover), which passes
-    neither: then the heads come from the manifest."""
+    whether it was an older vhir's update (update_handover), which passes no
+    heads: then they come from the manifest."""
     try:
         data = json.loads(text)
     except ValueError:
         data = None
     if isinstance(data, dict) and data.get("older_update") is True:
-        return _heads_before_older_update(manifest, repos), "", True
+        record = data.get("torch_record")
+        record = record if record in ("cpu", "gpu") else ""
+        return _heads_before_older_update(manifest, repos), record, True
     if isinstance(data, dict) and isinstance(data.get("pre_update_git"), dict):
         record = data.get("torch_record")
         return data["pre_update_git"], record if isinstance(record, str) else "", False
