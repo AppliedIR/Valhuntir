@@ -57,7 +57,7 @@ A wintools-mcp updated before SIFT re-joins writes nothing to the case ("the evi
 1. On SIFT: `vhir setup join-code --name <examiner>`. The code joins under that examiner's name and ends that name's earlier gateway tokens.
 2. On the examiner machine: download the setup script again and run it with `--sift=https://<sift-ip>:4508 --code=<code>` (on Windows, `-Sift https://<sift-ip>:4508 -Code <code>`), as in [Deployment](deployment.md). With `--sift` the script fetches the current forensic controls from GitHub.
 
-An examiner machine that has vhir installed can run `vhir setup client --remote --sift=https://<sift-ip>:4508 --token=<token>` instead. That command copies the controls from the machine's local sift-mcp source (such as `~/.vhir/src/sift-mcp`), so update that source first or it redeploys the old controls. Do this after any update whose release notes change the client controls.
+An examiner machine that has vhir installed can run `vhir setup client --remote --sift=https://<sift-ip>:4508 --token=<token>` instead. For Claude Code, that command copies the controls from the machine's local sift-mcp source (such as `~/.vhir/src/sift-mcp`), so update that source first or it redeploys the old controls. For Codex (`--client=codex`), it fetches the instructions, skills and finding-skeptic agent from sift-mcp's main branch on GitHub, so the machine needs network access. If the instructions can't be fetched, the Codex profile isn't written. Do this after any update whose release notes change the client controls.
 
 ## 5. After the update
 
