@@ -204,3 +204,55 @@ def test_a_join_that_keeps_the_setup_still_marks_the_active_case(box):
     box.answers.append("n")
     assert join._setup_samba_share("CODE-TWO") == "10.0.0.20"
     assert (case_dir / ".vhir-share-case").read_text() == "INC-1"
+
+
+def _ordered(box, monkeypatch):
+    """The prompts asked and the pushes made, in the order they happened."""
+    order = []
+    monkeypatch.setattr(join, "_push_smb_credentials", lambda pw: order.append("push"))
+
+    def ask(prompt, no_terminal):
+        order.append(prompt.splitlines()[-1])
+        return box.answers.pop(0)
+
+    monkeypatch.setattr(join, "_ask", ask)
+    return order
+
+
+IP_PROMPT = "Enter the Windows machine's IP address: "
+
+
+@pytest.mark.parametrize("address", ["10.0.0.30", ""])
+def test_reconfiguring_asks_for_the_windows_address_before_the_push(
+    box, monkeypatch, address
+):
+    _configured(box)
+    order = _ordered(box, monkeypatch)
+    box.answers += ["y", address]  # "Reconfigure? [y/N]" of the Samba share
+    assert join._setup_samba_share("CODE-TWO") == (address or "10.0.0.20")
+    assert order == ["Reconfigure? [y/N] ", IP_PROMPT, "push"]
+    assert _smbpasswd_inputs(box) == [
+        f"{join.derive_smb_password('CODE-TWO')}\n".encode() * 2
+    ]
+
+
+def test_a_first_join_asks_for_the_windows_address_before_the_push(box, monkeypatch):
+    order = _ordered(box, monkeypatch)
+    box.answers.append("10.0.0.20")
+    join._setup_samba_share("CODE-ONE")
+    assert order == [IP_PROMPT, "push"]
+
+
+def test_a_first_join_with_no_windows_address_still_pushes_as_before(box, monkeypatch):
+    order = _ordered(box, monkeypatch)
+    box.answers.append("")
+    assert join._setup_samba_share("CODE-ONE") is None
+    assert order == [IP_PROMPT, "push"]
+
+
+def test_keeping_the_share_pushes_with_no_address_prompt(box, monkeypatch):
+    _configured(box)
+    order = _ordered(box, monkeypatch)
+    box.answers.append("n")  # "Reconfigure? [y/N]" of the Samba share
+    assert join._setup_samba_share("CODE-TWO") == "10.0.0.20"
+    assert order == ["Reconfigure? [y/N] ", "push"]
