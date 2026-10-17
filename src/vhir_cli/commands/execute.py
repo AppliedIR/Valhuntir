@@ -107,7 +107,7 @@ def cmd_exec(args, identity: dict) -> None:
         stderr = f"Failed to execute command: {e}"
         if e.errno == 2:
             stderr = f"Command not found: {cmd_parts[0]}"
-    except BaseException as e:  # interrupted or failed while it ran: _run_capture killed it
+    except BaseException as e:  # interrupted or failed mid-run: _run_capture killed it
         how = "interrupted" if isinstance(e, KeyboardInterrupt) else "failed"
         failed = _log_exec(audit_fh, command_str, purpose, -1, 0, f"{how} ({type(e).__name__})",
                            examiner, audit_id, (time.monotonic() - start) * 1000)  # fmt: skip
