@@ -131,8 +131,12 @@ def _run(tmp_path, home, script, form, answers="", args=ARGS):
 
 
 def _examiner(home):
+    """The examiner value as a YAML reader sees it: one pair of quotes around it is dropped."""
     cfg = (home / ".vhir" / "config.yaml").read_text()
-    return re.search(r"^examiner: (.*)$", cfg, re.M).group(1)
+    value = re.search(r"^examiner: (.*)$", cfg, re.M).group(1)
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
 
 
 def _desktop(home, script):
