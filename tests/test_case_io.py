@@ -480,6 +480,33 @@ class TestImportBundle:
         loaded = load_findings(case_dir)
         assert loaded[0]["title"] == "Newer"
 
+    def test_merge_updates_each_item_in_place(self, case_dir):
+        old, new = "2026-01-01T00:00:00Z", "2026-06-01T00:00:00Z"
+        save_findings(
+            case_dir,
+            [
+                {"id": f"F-alice-00{n}", "title": f"Local {n}", "staged": old}
+                for n in (1, 2, 3)
+            ],
+        )
+        bundle = {
+            "findings": [
+                {"id": "F-alice-003", "title": "Updated 3", "staged": new},
+                {"id": "F-alice-004", "title": "Added 4", "staged": new},
+                {"id": "F-alice-002", "title": "Updated 2", "staged": new},
+            ],
+        }
+        result = import_bundle(case_dir, bundle)
+        assert result["findings"]["added"] == 1
+        assert result["findings"]["updated"] == 2
+        loaded = load_findings(case_dir)
+        assert [(f["id"], f["title"]) for f in loaded] == [
+            ("F-alice-001", "Local 1"),
+            ("F-alice-002", "Updated 2"),
+            ("F-alice-003", "Updated 3"),
+            ("F-alice-004", "Added 4"),
+        ]
+
     def test_non_dict_returns_error(self, case_dir):
         result = import_bundle(case_dir, "not a dict")
         assert result["status"] == "error"

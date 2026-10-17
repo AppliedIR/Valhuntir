@@ -1736,6 +1736,9 @@ def _merge_items(
             pass
 
     local_by_id = {item[id_field]: item for item in local if id_field in item}
+    index_by_id = {
+        item[id_field]: i for i, item in enumerate(local) if id_field in item
+    }
     added = 0
     updated = 0
     skipped = 0
@@ -1784,6 +1787,7 @@ def _merge_items(
             cleaned = _stamp_import(item, cleaned, origin)
 
         if item_id not in local_by_id:
+            index_by_id[item_id] = len(local)
             local.append(cleaned)
             local_by_id[item_id] = cleaned
             added += 1
@@ -1797,8 +1801,7 @@ def _merge_items(
                 continue
             inc_ts, loc_ts = _revised_at(item), _revised_at(existing)
             if _rev_key(inc_ts) > _rev_key(loc_ts):
-                idx = next(i for i, x in enumerate(local) if x.get(id_field) == item_id)
-                local[idx] = cleaned
+                local[index_by_id[item_id]] = cleaned
                 local_by_id[item_id] = cleaned
                 updated += 1
             else:
