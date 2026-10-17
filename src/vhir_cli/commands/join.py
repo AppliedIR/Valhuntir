@@ -181,8 +181,12 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         _revoke_join_codes(_get_local_gateway_url(), token)
         return
 
-    # Configure static IP before remote binding
-    static_ip = _ensure_static_ip()
+    # Configure static IP before remote binding. setup-sift.sh asked already
+    # in this run: it sets VHIR_STATIC_IP_SETTLED, and network.yaml holds the IP.
+    if os.environ.get("VHIR_STATIC_IP_SETTLED"):
+        static_ip = None
+    else:
+        static_ip = _ensure_static_ip()
 
     # Check if gateway needs rebinding for remote access
     _ensure_remote_binding()
@@ -410,14 +414,20 @@ def _get_wintools_credentials() -> tuple[str | None, str | None]:
 TTY = "/dev/tty"
 
 
-def _ask(question: str, no_terminal: str | None) -> str | None:
+def _ask(question: str, no_terminal: str | None, *, assume: bool = False) -> str | None:
     """Ask a question on the terminal, even when stdout is captured.
 
     setup-sift.sh captures join-code's output, so a question printed to
     stdout is never seen: when stdout isn't a terminal, ask on /dev/tty.
     With no terminal to ask on, return ``no_terminal``, the safe answer
-    (None for a question that has none).
+    (None for a question that has none). Under setup-sift.sh -y
+    (VHIR_ASSUME_DEFAULTS=true) a question marked ``assume`` takes that
+    answer without asking, and says so on stderr.
     """
+    if assume and os.environ.get("VHIR_ASSUME_DEFAULTS") == "true":
+        asked = question.strip().splitlines()[-1]
+        print(f"{asked}: answered {no_terminal!r} (-y)", file=sys.stderr)
+        return no_terminal
     if sys.stdout.isatty():
         return input(question)
     line = ""
@@ -847,7 +857,9 @@ def _setup_samba_share(join_code: str) -> str | None:
                     )
                     moved_ip = str(doc["wintools_ip"])
                 else:
-                    answer = _ask(f"{configured}\nReconfigure? [y/N] ", "n")
+                    answer = _ask(
+                        f"{configured}\nReconfigure? [y/N] ", "n", assume=True
+                    )
                     if answer.strip().lower() not in ("y", "yes"):
                         keep_ip = doc["wintools_ip"]
                     else:
@@ -1500,6 +1512,7 @@ def _ensure_static_ip() -> str | None:
                         f"Static IP configured and active: {existing_ip}\n"
                         "Reconfigure? [y/N] ",
                         "n",
+                        assume=True,
                     )
                     answer = answer.strip().lower()
                     if answer not in ("y", "yes"):

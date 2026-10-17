@@ -263,7 +263,9 @@ def test_no_windows_ip_gives_the_code_with_no_share_and_no_windows_line(
     """No Windows machine is not a failed share: the code still prints, for
     the examiner machines only (setup-sift --remote's LLM-client code)."""
     if terminal:
-        monkeypatch.setattr(join, "_ask", lambda question, no_terminal: "  ")
+        monkeypatch.setattr(
+            join, "_ask", lambda question, no_terminal, assume=False: "  "
+        )
     out, err = _join_code(capsys)
     assert _setup_sift_reads(out) == "ABCD-EFGH"
     assert "vhir setup client" in out
@@ -283,7 +285,9 @@ def test_reconfigure_then_a_blank_ip_keeps_the_configured_share(
         yaml.dump({"share_name": join.SHARE_NAME, "wintools_ip": "10.0.0.20"})
     )
     answers = ["y", ""]
-    monkeypatch.setattr(join, "_ask", lambda question, no_terminal: answers.pop(0))
+    monkeypatch.setattr(
+        join, "_ask", lambda question, no_terminal, assume=False: answers.pop(0)
+    )
     out, _ = _join_code(capsys)
     assert answers == []
     assert _setup_sift_reads(out) == "ABCD-EFGH"
@@ -301,7 +305,9 @@ def test_a_share_under_the_old_name_moves_with_its_ip_on_a_blank_answer(
         yaml.dump({"share_name": "cases", "wintools_ip": "10.0.0.21"})
     )
     answers = [""]
-    monkeypatch.setattr(join, "_ask", lambda question, no_terminal: answers.pop(0))
+    monkeypatch.setattr(
+        join, "_ask", lambda question, no_terminal, assume=False: answers.pop(0)
+    )
     out, _ = _join_code(capsys)
     assert answers == []
     assert _setup_sift_reads(out) == "ABCD-EFGH"
@@ -315,7 +321,9 @@ def test_a_share_under_the_old_name_moves_with_its_ip_on_a_blank_answer(
 def test_an_invalid_windows_ip_still_stops_join_code_with_no_code(
     home, share, capsys, monkeypatch
 ):
-    monkeypatch.setattr(join, "_ask", lambda question, no_terminal: "10.0.0")
+    monkeypatch.setattr(
+        join, "_ask", lambda question, no_terminal, assume=False: "10.0.0"
+    )
     with pytest.raises(SystemExit) as stop:
         _join_code(capsys)
     assert stop.value.code not in (0, None)

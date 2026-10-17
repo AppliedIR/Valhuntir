@@ -192,6 +192,71 @@ class TestJoinCodeCommand:
         assert "expires in 2 hours" in captured.out
 
 
+class TestJoinCodeStaticIpSettled:
+    """setup-sift.sh asks about the static IP in Network Configuration, then
+    runs join-code with VHIR_STATIC_IP_SETTLED=1: join-code doesn't ask again."""
+
+    def _run(self, tmp_path, monkeypatch, network_yaml):
+        import vhir_cli.commands.join as join_mod
+        import vhir_cli.gateway as gateway_mod
+
+        if network_yaml:
+            (tmp_path / ".vhir").mkdir()
+            (tmp_path / ".vhir" / "network.yaml").write_text(network_yaml)
+        monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
+        asked = []
+
+        def ask(question, no_terminal, assume=False):
+            asked.append(question)
+            return ""
+
+        monkeypatch.setattr(join_mod, "_ask", ask)
+        monkeypatch.setattr(join_mod, "_detect_current_ip", lambda: "10.0.2.15")
+        # not the stored IP: a -GatewayHost of 10.0.2.15 comes from network.yaml
+        monkeypatch.setattr(join_mod, "_detect_ip", lambda: "192.0.2.99")
+        monkeypatch.setattr(join_mod, "_apply_static_ip", lambda ip, path: ip)
+        monkeypatch.setattr(join_mod, "_setup_samba_share", lambda code: "10.0.2.50")
+        monkeypatch.setattr(join_mod, "_setup_firewall", lambda ip: None)
+        monkeypatch.setattr(join_mod, "_ensure_remote_binding", lambda: None)
+        monkeypatch.setattr(join_mod, "_find_ca_cert", lambda: None)
+        monkeypatch.setattr(
+            join_mod, "_get_local_gateway_url", lambda: "http://127.0.0.1:4508"
+        )
+        monkeypatch.setattr(join_mod, "_get_local_gateway_token", lambda: "vhir_gw_t")
+        monkeypatch.setattr(gateway_mod, "get_local_gateway_cert_sha256", lambda: None)
+        mock_requests = _make_mock_requests(
+            200, {"code": "ABCD-EFGH", "expires_hours": 2}
+        )
+        args = MagicMock()
+        args.revoke = False
+        args.name = None
+        with patch.dict(sys.modules, {"requests": mock_requests}):
+            join_mod.cmd_setup_join_code(args, {"examiner": "steve"})
+        return asked
+
+    def test_settled_with_a_live_static_ip_asks_nothing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_STATIC_IP_SETTLED", "1")
+        asked = self._run(tmp_path, monkeypatch, "static_ip: 10.0.2.15\n")
+        assert asked == []
+        assert "-GatewayHost 10.0.2.15 -GatewayPort 4508" in capsys.readouterr().out
+
+    def test_settled_with_no_network_yaml_asks_nothing_and_goes_on(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_STATIC_IP_SETTLED", "1")
+        asked = self._run(tmp_path, monkeypatch, None)
+        assert asked == []
+        assert "Join code: ABCD-EFGH (expires in 2 hours)" in capsys.readouterr().out
+
+    def test_unset_still_asks_once(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("VHIR_STATIC_IP_SETTLED", raising=False)
+        asked = self._run(tmp_path, monkeypatch, "static_ip: 10.0.2.15\n")
+        assert len(asked) == 1 and "configured and active: 10.0.2.15" in asked[0]
+        assert "-GatewayHost 10.0.2.15 -GatewayPort 4508" in capsys.readouterr().out
+
+
 class TestDeriveSMBPassword:
     def test_known_vector(self):
         """PBKDF2 test vector: ABCD-EFGH → e68ff7da0ef66a254df0516bb5c8a8aa."""
