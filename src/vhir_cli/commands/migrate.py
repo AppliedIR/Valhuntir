@@ -202,7 +202,13 @@ def cmd_migrate(args, identity: dict) -> None:
         ]
     for t in all_timeline:
         if "related_findings" in t:
-            t["related_findings"] = [id_map.get(r, r) for r in t["related_findings"]]
+            # A bare ref names the event's own examiner's item. The bare key
+            # holds the last examiner's, so try the scoped key first.
+            exam = t["examiner"]
+            t["related_findings"] = [
+                id_map.get(f"{exam}/{r}", id_map.get(r, r))
+                for r in t["related_findings"]
+            ]
     for entry in all_actions:
         _re_id_refs(entry, id_map)
 

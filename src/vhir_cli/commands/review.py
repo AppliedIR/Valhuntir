@@ -168,10 +168,10 @@ def _show_findings_table(case_dir: Path) -> None:
     print("-" * 76)
     for f in findings:
         f = display_safe(f)  # for printing inline
-        title = f.get("title", "Untitled")
+        title = one_line(f.get("title", "Untitled"))  # any type, as text
         if len(title) > 37:
             title = title[:37] + "..."
-        confidence = f.get("confidence", "?")
+        confidence = one_line(f.get("confidence", "?"))
         provenance = grade_label(f, reason=False)
         status = f.get("status", "?")
         print(f"{title:<40} {confidence:<12} {provenance:<12} {status:<10}")

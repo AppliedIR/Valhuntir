@@ -126,6 +126,27 @@ def sample_timeline(case_dir):
     return events
 
 
+_PRE_064 = [
+    "recorded",
+    "before",
+    "0.6.4",
+]  # the provenance of a finding without a grade
+
+
+def _table_args():
+    return Namespace(
+        case=None,
+        findings=True,
+        detail=False,
+        verify=False,
+        iocs=False,
+        timeline=False,
+        audit=False,
+        evidence=False,
+        limit=50,
+    )
+
+
 class TestFindingsTable:
     def test_findings_table(self, case_dir, sample_findings, capsys):
         args = Namespace(
@@ -145,6 +166,67 @@ class TestFindingsTable:
         assert "APPROVED" in output
         assert "HIGH" in output
         assert "Lateral movement" in output
+
+    @pytest.mark.parametrize(
+        "title, confidence, shown",
+        [
+            (123, ["HIGH"], ("123", "['HIGH']")),
+            (["list", "title"], 5, ("['list', 'title']", "5")),
+        ],
+        ids=["int-title-list-confidence", "list-title-int-confidence"],
+    )
+    def test_findings_table_shows_a_title_or_confidence_that_is_not_text(
+        self, case_dir, capsys, title, confidence, shown
+    ):
+        save_findings(
+            case_dir,
+            [
+                {
+                    "id": "F-tester-001",
+                    "title": title,
+                    "confidence": confidence,
+                    "status": "DRAFT",
+                }
+            ],
+        )
+        cmd_review(_table_args(), {})
+        row = capsys.readouterr().out.splitlines()[2]
+        assert row.split() == [*shown[0].split(), shown[1], *_PRE_064, "DRAFT"]
+
+    def test_findings_table_of_text_is_unchanged(self, case_dir, capsys):
+        save_findings(
+            case_dir,
+            [
+                {
+                    "id": "F-tester-001",
+                    "title": "Lateral movement via PsExec",
+                    "confidence": "HIGH",
+                    "status": "APPROVED",
+                },
+                {
+                    "id": "F-tester-002",
+                    "title": "A" * 60,
+                    "confidence": "MEDIUM",
+                    "status": "DRAFT",
+                },
+                {
+                    "id": "F-tester-003",
+                    "title": "tab\there\x1b[2Jesc",
+                    "confidence": "lo\tw",
+                    "status": "RE\u202eJECTED",
+                },
+                {"id": "F-tester-004"},
+            ],
+        )
+        cmd_review(_table_args(), {})
+        assert capsys.readouterr().out == (
+            "Title                                    Confidence   Provenance   Status    \n"
+            "----------------------------------------------------------------------------\n"
+            "Lateral movement via PsExec              HIGH         recorded before 0.6.4 APPROVED  \n"
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA... MEDIUM       recorded before 0.6.4 DRAFT     \n"
+            "tab     here?[2Jesc                      lo      w    recorded before 0.6.4 RE?JECTED \n"
+            "Untitled                                 ?            recorded before 0.6.4 ?         \n"
+        )
 
     def test_findings_empty(self, case_dir, capsys):
         save_findings(case_dir, [])

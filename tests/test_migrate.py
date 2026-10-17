@@ -409,6 +409,48 @@ class TestImportAll:
         assert findings[0]["id"] == "F-alice-001"
         assert findings[1]["id"] == "F-bob-001"
 
+    def test_import_all_event_keeps_its_own_examiners_finding(
+        self, tmp_path, monkeypatch, identity
+    ):
+        """Both examiners have F-001 and a T-001 that references it. Each event
+        points at its own examiner's finding, not at the last one processed."""
+        case_dir = tmp_path / "case1"
+        for exam in ("alice", "bob"):
+            _make_old_case(
+                case_dir,
+                examiner=exam,
+                findings=[
+                    {
+                        "id": "F-001",
+                        "status": "DRAFT",
+                        "title": f"{exam} finding",
+                        "staged": "2026-01-10T12:00:00Z",
+                    },
+                ],
+                timeline=[
+                    {
+                        "id": "T-001",
+                        "timestamp": "2026-01-10T09:00:00Z",
+                        "description": f"{exam} event",
+                        "staged": "2026-01-10T12:00:00Z",
+                        "related_findings": ["F-001"],
+                    },
+                ],
+            )
+
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setenv("VHIR_EXAMINER", "alice")
+        args = Namespace(case=None, examiner="alice", import_all=True)
+        cmd_migrate(args, identity)
+
+        timeline = json.loads((case_dir / "timeline.json").read_text())
+        refs = {t["id"]: t["related_findings"] for t in timeline}
+        # alice goes first, so bob's F-001 later holds the bare key
+        assert refs == {
+            "T-alice-001": ["F-alice-001"],
+            "T-bob-001": ["F-bob-001"],
+        }
+
     def test_import_all_merges_approvals(self, tmp_path, monkeypatch, identity):
         case_dir = tmp_path / "case1"
         _make_old_case(
