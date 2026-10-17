@@ -152,6 +152,13 @@ def _service_status(args) -> None:
         print(f"{s['name']:<25s} {status:<12s} {stype:<10s} {health}")
 
 
+_RESTART_NOTE = (
+    "Note: a backend that was already loaded keeps the settings the gateway "
+    "loaded at its start. To apply a gateway.yaml change to it, restart the "
+    "gateway: systemctl --user restart vhir-gateway"
+)
+
+
 def _service_action(args, action: str) -> None:
     """POST /api/v1/services/{name}/{action}."""
     url, token, ssl_ctx = _resolve_gateway(args)
@@ -171,6 +178,8 @@ def _service_action(args, action: str) -> None:
             print(f"ERROR: {data['error']}", file=sys.stderr)
             sys.exit(1)
         print(f"{name}: {data.get('status', 'unknown')}")
+        if action == "restart":
+            print(_RESTART_NOTE)
     else:
         # All backends: fetch list, then operate on each
         svc_data = _api_request(f"{url}/api/v1/services", token, ssl_context=ssl_ctx)
@@ -195,5 +204,7 @@ def _service_action(args, action: str) -> None:
                 err = data.get("error", "unknown error") if data else "no response"
                 print(f"{sname}: FAILED ({err})", file=sys.stderr)
                 errors += 1
+        if action == "restart" and errors < len(services):
+            print(_RESTART_NOTE)
         if errors:
             sys.exit(1)

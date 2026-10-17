@@ -257,3 +257,79 @@ class TestBulkServiceAction:
         _service_action(args, "restart")
         out = capsys.readouterr().out
         assert "forensic-mcp: restarted" in out
+
+
+NOTE = (
+    "Note: a backend that was already loaded keeps the settings the gateway loaded"
+    " at its start. To apply a gateway.yaml change to it, restart the gateway:"
+    " systemctl --user restart vhir-gateway"
+)
+
+
+@patch(
+    "vhir_cli.commands.service._resolve_gateway", lambda args: ("http://h", "t", None)
+)
+class TestRestartNote:
+    """A restart says a loaded backend keeps the settings the gateway loaded."""
+
+    def test_a_restart_ends_with_the_note(self, capsys):
+        args = argparse.Namespace(gateway=None, token=None, backend_name="sift-mcp")
+        with patch("vhir_cli.commands.service._api_request") as api:
+            api.return_value = {"status": "restarted", "name": "sift-mcp"}
+            _service_action(args, "restart")
+        assert capsys.readouterr().out == f"sift-mcp: restarted\n{NOTE}\n"
+
+    def test_a_restart_of_all_with_one_failure_notes_and_exits_1(self, capsys):
+        args = argparse.Namespace(gateway=None, token=None, backend_name=None)
+        with patch("vhir_cli.commands.service._api_request") as api:
+            api.side_effect = [
+                {"services": [{"name": "sift-mcp"}, {"name": "case-mcp"}]},
+                {"error": "Restart timed out for sift-mcp"},
+                {"status": "restarted"},
+            ]
+            with pytest.raises(SystemExit) as exc:
+                _service_action(args, "restart")
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == f"case-mcp: restarted\n{NOTE}\n"
+        assert "sift-mcp: FAILED (Restart timed out for sift-mcp)" in out.err
+
+    def test_a_restart_of_all_with_every_one_failed_has_no_note(self, capsys):
+        args = argparse.Namespace(gateway=None, token=None, backend_name=None)
+        with patch("vhir_cli.commands.service._api_request") as api:
+            api.side_effect = [
+                {"services": [{"name": "sift-mcp"}, {"name": "case-mcp"}]},
+                {"error": "Restart timed out for sift-mcp"},
+                None,
+            ]
+            with pytest.raises(SystemExit) as exc:
+                _service_action(args, "restart")
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert NOTE not in out.err
+
+    @pytest.mark.parametrize(
+        "action,name,reply",
+        [
+            ("restart", "sift-mcp", {"error": "Unknown backend: sift-mcp"}),
+            ("stop", "sift-mcp", {"status": "stopped"}),
+            ("start", "sift-mcp", {"status": "started"}),
+            ("stop", None, {"status": "stopped"}),
+            ("start", None, {"status": "started"}),
+        ],
+    )
+    def test_no_note_after_a_failed_restart_or_a_stop_or_start(
+        self, capsys, action, name, reply
+    ):
+        args = argparse.Namespace(gateway=None, token=None, backend_name=name)
+        with patch("vhir_cli.commands.service._api_request") as api:
+            api.side_effect = (
+                [reply] if name else [{"services": [{"name": "sift-mcp"}]}, reply]
+            )
+            try:
+                _service_action(args, action)
+            except SystemExit:
+                pass
+        out = capsys.readouterr()
+        assert NOTE not in out.out and NOTE not in out.err
