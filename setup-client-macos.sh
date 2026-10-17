@@ -361,6 +361,10 @@ BACKENDS=$(echo "$BACKENDS_RAW" | tr ',' '\n' | sed 's/[[:space:]]*"//g')
 if [[ -z "$GATEWAY_URL" ]] || [[ "$GATEWAY_URL" == "$JOIN_RESPONSE" ]]; then
     GATEWAY_URL="$SIFT_URL"
 fi
+if [[ "$GATEWAY_URL" != "$SIFT_URL" ]] && ! curl "${CURL_OPTS[@]}" --max-time 5 -o /dev/null "$GATEWAY_URL/health" 2>/dev/null; then
+    warn "The gateway reports its address as $GATEWAY_URL, which doesn't answer from here. Using $SIFT_URL, the address you joined through."
+    GATEWAY_URL="$SIFT_URL"
+fi
 
 ok "Joined gateway"
 

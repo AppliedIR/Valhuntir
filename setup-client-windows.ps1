@@ -312,6 +312,11 @@ if (-not $json.gateway_token) {
 
 $gatewayToken = $json.gateway_token
 $gatewayUrl = if ($json.gateway_url) { $json.gateway_url } else { $Sift }
+if ($gatewayUrl -ne $Sift) {
+    $answers = $false
+    try { $u = [Uri]$gatewayUrl; $t = New-Object Net.Sockets.TcpClient; $answers = $t.ConnectAsync($u.Host, $u.Port).Wait(5000); $t.Close() } catch {}
+    if (-not $answers) { Write-Warn "The gateway reports its address as $gatewayUrl, which doesn't answer from here. Using $Sift, the address you joined through."; $gatewayUrl = $Sift }
+}
 $backends = $json.backends
 
 Write-Ok "Joined gateway"
