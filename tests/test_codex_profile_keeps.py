@@ -556,6 +556,39 @@ def test_a_crlf_profile_is_compared_whole_and_asked_about(box, capsys, monkeypat
     assert "vhir would change" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("quote", ['"""', "'''"])
+def test_a_table_holding_a_multi_line_string_is_asked_about(
+    box, capsys, monkeypatch, quote
+):
+    """A [-line inside the string is text, not a header; the value is left as is."""
+    _setup()
+    edited = (
+        box.profile.read_text() + f"\n[notice]\nmsg = {quote}\n[x]\nmore\n{quote}\n"
+    )
+    box.profile.write_text(edited)
+    box.fd.write_text(FD + "Name the gap.\n")
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+    assert cs.deploy_codex_assets() == "kept"
+    assert box.profile.read_text() == edited
+    assert "vhir would change" in capsys.readouterr().out
+
+
+def test_an_indented_header_after_a_table_is_asked_about(box, capsys, monkeypatch):
+    """The indented section is a server table of its own, never part of [tui];
+    carrying it beside the section vhir adds would declare that server twice."""
+    _setup()
+    edited = (
+        box.profile.read_text()
+        + '\n[tui]\nfoo = 1\n  [mcp_servers.remnux-mcp]\n  url = "http://hand/mcp"\n'
+    )
+    box.profile.write_text(edited)
+    box.started["remnux-mcp"] = True
+    monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
+    assert cs.deploy_codex_assets() == "kept"
+    assert box.profile.read_text() == edited
+    assert "vhir would change" in capsys.readouterr().out
+
+
 # --- consent: what is recorded ---------------------------------------------------
 
 

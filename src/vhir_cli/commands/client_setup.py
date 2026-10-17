@@ -2239,10 +2239,13 @@ def _client_tables(text: str) -> tuple[str, list[str]]:
     """The part of a profile vhir owns, and the tables a client added after
     the instructions (Codex's [tui], ...): every table that isn't an
     mcp_servers one, from its header to the next header. The owned part is the
-    text with those cut out."""
+    text with those cut out. A tail lines can't split (a string spanning lines,
+    an indented header) carries none, so the whole file is compared."""
     import re
 
     head, tail = _after_instructions(text)
+    if re.search(r"\"\"\"|'''|^[ \t]+\[", tail, re.M):
+        return text, []
     owned, tables, table = [head], [], None
     for line in tail.splitlines(keepends=True):
         if re.match(_TABLE_HEADER, line) or re.match(_SERVER_HEADER, line):
