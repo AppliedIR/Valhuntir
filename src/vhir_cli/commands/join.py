@@ -1212,11 +1212,13 @@ def _wintools_ssl_context():
 
 
 def _no_answer(error: Exception) -> bool:
-    """True for a try that found nothing answering: a timeout, a refused
-    connection, or no route to the host."""
+    """True for a try that found nothing answering: a timeout before the
+    request went out, a refused connection, or no route to the host."""
     import errno
     import urllib.error
 
+    if isinstance(error, TimeoutError):  # accepted, then no reply in time
+        return False
     if isinstance(error, urllib.error.URLError) and not isinstance(
         error, urllib.error.HTTPError
     ):

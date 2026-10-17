@@ -560,6 +560,7 @@ QUIET = (
     "  wintools-mcp at 192.0.2.9:4624 isn't answering. When you run "
     "setup-windows.ps1 with this join code, it takes the new SMB password.\n"
 )
+UNCONFIRMED = "Warning: wintools-mcp didn't confirm the new SMB credentials"
 
 
 def _wintools_at(home: Path, url: str = "http://192.0.2.9:4624/mcp") -> None:
@@ -593,7 +594,6 @@ def _no_answer():
     return [
         urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
         urllib.error.URLError(TimeoutError("timed out")),
-        TimeoutError("timed out"),
         urllib.error.URLError(OSError(errno.EHOSTUNREACH, "No route to host")),
         urllib.error.URLError(OSError(errno.ENETUNREACH, "Network is unreachable")),
     ]
@@ -609,6 +609,21 @@ def test_a_wintools_that_does_not_answer_gets_one_plain_line(
     assert capsys.readouterr() == (QUIET, "")
     assert tries == [3, 3] and waits == [3]
     assert sum(tries) + sum(waits) < 10
+
+
+def test_a_wintools_that_took_the_push_and_did_not_reply_gets_the_warning(
+    home, monkeypatch, capsys
+):
+    # A bare timeout comes after the connection was accepted: wintools may
+    # still be applying the new credentials, so it isn't "not answering".
+    _wintools_at(home)
+    tries, waits = _pushes(monkeypatch, TimeoutError("timed out"))
+    join._push_smb_credentials("pw")
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert UNCONFIRMED + " (timed out)" in err
+    assert "isn't answering" not in err
+    assert tries == [3, 3] and waits == [3]
 
 
 def test_a_closed_port_gets_the_plain_line_in_under_ten_seconds(home, capsys):
@@ -627,7 +642,9 @@ def test_a_closed_port_gets_the_plain_line_in_under_ten_seconds(home, capsys):
     )
 
 
-def test_a_wintools_that_never_replies_gets_the_plain_line(home, monkeypatch, capsys):
+def test_a_wintools_that_takes_the_push_and_never_replies_gets_the_warning(
+    home, monkeypatch, capsys
+):
     import socket
 
     monkeypatch.setattr(time, "sleep", lambda s: None)
@@ -640,8 +657,9 @@ def test_a_wintools_that_never_replies_gets_the_plain_line(home, monkeypatch, ca
         join._push_smb_credentials("pw")
         assert time.monotonic() - start < 8
     out, err = capsys.readouterr()
-    assert out == QUIET.replace("192.0.2.9:4624", f"127.0.0.1:{port}")
-    assert err == ""
+    assert out == ""
+    assert UNCONFIRMED + " (timed out)" in err
+    assert "isn't answering" not in err
 
 
 def _http(code, body=b'{"error": "bad token"}'):
@@ -686,6 +704,24 @@ def test_a_failure_that_is_not_silence_still_gets_the_warning(
     join._push_smb_credentials("pw")
     out, err = capsys.readouterr()
     assert out == "" and "Warning: wintools-mcp didn't confirm" in err
+
+
+def test_a_wintools_name_that_does_not_resolve_gets_the_warning(
+    home, monkeypatch, capsys
+):
+    import socket
+    import urllib.error
+
+    _wintools_at(home, "http://wintools.invalid:4624/mcp")
+    tries, waits = _pushes(
+        monkeypatch,
+        urllib.error.URLError(socket.gaierror(-2, "Name or service not known")),
+    )
+    join._push_smb_credentials("pw")
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert UNCONFIRMED + " (<urlopen error [Errno -2] Name or service" in err
+    assert tries == [3, 3] and waits == [3]
 
 
 def test_a_push_that_lands_on_the_retry_says_so_and_nothing_else(
