@@ -222,12 +222,12 @@ def _run_capture(cmd_parts: list[str], case_dir: Path) -> tuple[int, str, int, s
         errors="backslashreplace",  # output that isn't UTF-8 is kept as escapes
         cwd=str(case_dir),
     )
-    out = _StreamCapture(proc.stdout, _STDOUT_HEAD_CHARS)
-    err = _StreamCapture(proc.stderr, _STDERR_HEAD_CHARS)
-    out.start()
-    err.start()
     deadline = time.monotonic() + _TIMEOUT_SECONDS
     try:
+        out = _StreamCapture(proc.stdout, _STDOUT_HEAD_CHARS)
+        err = _StreamCapture(proc.stderr, _STDERR_HEAD_CHARS)
+        out.start()
+        err.start()
         proc.wait(timeout=_TIMEOUT_SECONDS)
         for cap in (out, err):
             cap.join(max(0.0, deadline - time.monotonic()))

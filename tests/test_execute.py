@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tracemalloc
 from unittest.mock import MagicMock, patch
@@ -239,6 +240,68 @@ class TestExecLargeOutput:
         assert "Command timed out (0.5s)" in capsys.readouterr().err
         entry = self._entry(case_dir)
         assert entry["result_summary"]["exit_code"] == -1
+
+    @pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
+    @pytest.mark.parametrize("which", [1, 2], ids=["stdout-reader", "stderr-reader"])
+    def test_a_reader_that_fails_to_start_leaves_no_child_running(
+        self, case_dir, monkeypatch, which, raised
+    ):
+        procs = []
+
+        class Popen(subprocess.Popen):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                procs.append(self)
+
+        real_start = threading.Thread.start
+        starts = []
+
+        def start(self):
+            starts.append(self)
+            if len(starts) == which:
+                raise raised()
+            return real_start(self)
+
+        monkeypatch.setattr(execute.subprocess, "Popen", Popen)
+        monkeypatch.setattr(threading.Thread, "start", start)
+        try:
+            with pytest.raises(raised):
+                execute._run_capture(["sleep", "30"], case_dir)
+            monkeypatch.setattr(threading.Thread, "start", real_start)
+            (proc,) = procs
+            assert not os.path.exists(f"/proc/{proc.pid}"), "the child still runs"
+        finally:
+            for proc in procs:
+                proc.kill()
+                proc.wait()
+
+    def test_a_read_error_mid_stream_is_raised_at_once(self, case_dir, monkeypatch):
+        real_run = execute._StreamCapture.run
+
+        def run(self):
+            if self._head_chars == execute._STDOUT_HEAD_CHARS:  # the stdout reader
+                stream, reads = self._stream, []
+
+                class Failing:
+                    def __getattr__(self, name):
+                        return getattr(stream, name)
+
+                    def read(self, n):
+                        reads.append(n)
+                        if len(reads) == 2:
+                            raise OSError(5, "Input/output error")
+                        return stream.read(n)
+
+                self._stream = Failing()
+            return real_run(self)
+
+        monkeypatch.setattr(execute._StreamCapture, "run", run)
+        monkeypatch.setattr(execute, "_TIMEOUT_SECONDS", 10)
+        producer = "import sys\nsys.stdout.buffer.write(b'x' * 5000000 + b'\\n')\n"
+        start = time.monotonic()
+        with pytest.raises(OSError, match="Input/output error"):
+            execute._run_capture([sys.executable, "-c", producer], case_dir)
+        assert time.monotonic() - start < 5
 
 
 def _entries(case_dir):
