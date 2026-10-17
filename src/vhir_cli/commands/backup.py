@@ -315,8 +315,12 @@ def _create_backup_data(
     # case-date name, so a failed or interrupted one can't pass for a backup.
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     backup_name = f"{case_id}-{date_str}"
-    # Scan case directory
-    scan = scan_case_dir(case_dir)
+    # Scan case directory (an excluded evidence/ or extractions/ isn't walked)
+    scan = scan_case_dir(
+        case_dir,
+        include_evidence=include_evidence,
+        include_extractions=include_extractions,
+    )
 
     # What the scan couldn't read or follow stops the backup before anything
     # is copied, unless it is in a part of the case this backup leaves out;
@@ -883,9 +887,21 @@ def _is_backup(path: Path) -> bool:
     )
 
 
-def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
+def scan_case_dir(
+    case_dir: Path,
+    within: set | None = None,
+    *,
+    include_evidence: bool = True,
+    include_extractions: bool = True,
+) -> dict:
     """Scan case directory and categorize files (only the root names in
     `within`, and what lies under them, when it's given).
+
+    An excluded evidence/ or extractions/ subtree is pruned from the walk
+    rather than collected and discarded — a backup that skips evidence/ must
+    not pay to stat every file in it. Registered evidence sitting elsewhere in
+    the case is still found and listed as evidence, since that is how it gets
+    excluded.
 
     Returns dict with keys: case_data, evidence, extractions, symlinks,
     unreadable (the OSError for each entry the walk could not list, stat,
@@ -909,6 +925,15 @@ def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
     # own path; one in extracted evidence (etc/hostname -> /etc/hostname) would
     # otherwise copy this machine's file as evidence.
     roots = {os.path.realpath(case_dir), *registered}
+    # An excluded extractions/ can still hold registered evidence; when that
+    # evidence is being backed up, the subtree has to be walked to find it.
+    walk_extractions = include_extractions
+    if include_evidence and not include_extractions and registered:
+        try:
+            ext_root = str((case_dir / "extractions").resolve()) + os.sep
+            walk_extractions = any(r.startswith(ext_root) for r in registered)
+        except (OSError, RuntimeError):
+            walk_extractions = True  # can't tell: walk rather than miss evidence
 
     # (st_dev, st_ino) of every directory from case_dir down to the current
     # root, keyed by the path os.walk yields. A directory symlink pointing back
@@ -950,6 +975,13 @@ def scan_case_dir(case_dir: Path, within: set | None = None) -> dict:
         if within is not None and root_path == case_dir:  # never visit the rest
             dirs[:] = [d for d in dirs if d in within]
             files = [f for f in files if f in within]
+        if root_path == case_dir:
+            # Files are categorized by their top-level component, so prune only
+            # here — a nested reports/evidence/ is case data and must be kept.
+            if not include_evidence:
+                dirs[:] = [d for d in dirs if d != "evidence"]
+            if not walk_extractions:
+                dirs[:] = [d for d in dirs if d != "extractions"]
         # Filter out skip names, links that lead out of the case, loops, and
         # backups (finished or in progress) made into a folder inside the case
         dirs[:] = [
