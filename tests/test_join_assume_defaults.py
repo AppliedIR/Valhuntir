@@ -174,6 +174,7 @@ def test_the_samba_reconfigure_takes_n_and_reads_nothing(home):
     assert "RESULT 10.0.0.20" in out.splitlines(), (shown, out, err)
     assert unread == "y\n\n", (shown, out, err)
     assert len(_took(err, "Reconfigure? [y/N]", "n")) == 1, err
+    assert "Reconfigure? [y/N]: answered 'n' (-y)" in err.splitlines(), err
     assert "Reconfigure?" not in shown and "(-y)" not in out
     assert "Enter the Windows machine's IP address" not in shown
     assert join.SMB_CONF_PATH not in err  # the share is not rewritten
