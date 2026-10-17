@@ -190,8 +190,8 @@ def audit_summary_data(case_dir) -> dict:
 
     for e in entries:
         mcp = e.get("mcp", "unknown")
-        if e.get("source") == "claude-code-hook":  # a Bash command the hook logged
-            tool = "Bash (hook)"
+        if e.get("source") == "claude-code-hook":  # a command a client hook logged
+            tool = "Codex (hook)" if e.get("client") == "codex" else "Bash (hook)"
         else:
             tool = e.get("tool", "unknown")
         eid = e.get("audit_id", "")

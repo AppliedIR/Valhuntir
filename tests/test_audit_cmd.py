@@ -246,6 +246,29 @@ class TestAuditSummary:
         output = capsys.readouterr().out
         assert "Bash (hook)" in output and "unknown" not in output
 
+    def test_summary_counts_codex_hook_entries_apart_from_bash(self, case_dir):
+        def hook(n, **extra):
+            return {
+                "ts": "2026-02-19T10:00:00Z",
+                "source": "claude-code-hook",
+                "command": "ls",
+                "audit_id": f"hook-tester-20260219-00{n}",
+                **extra,
+            }
+
+        entries = [
+            hook(1),
+            hook(2, client="codex", event="shell"),
+            hook(3, client="codex", event="apply_patch"),
+            hook(4, client="codex", event="write_stdin"),
+        ]
+        (case_dir / "audit" / "claude-code.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in entries)
+        )
+        assert audit_summary_data(case_dir)["by_tool"] == {
+            "claude-code": {"Bash (hook)": 1, "Codex (hook)": 3}
+        }
+
     def test_summary_counts_an_mcp_entry_by_its_tool(self, case_dir, identity, capsys):
         entry = {
             "ts": "2026-02-19T10:00:00Z",

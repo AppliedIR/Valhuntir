@@ -385,7 +385,7 @@ EXAMINER_NAME=$(echo "$EXAMINER_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-
 [[ -z "$EXAMINER_NAME" ]] && EXAMINER_NAME="examiner"
 ok "Examiner: $EXAMINER_NAME"
 
-echo "examiner: $EXAMINER_NAME" >> "$HOME/.vhir/config.yaml"
+echo "examiner: \"$EXAMINER_NAME\"" >> "$HOME/.vhir/config.yaml"
 
 # Write VHIR_EXAMINER to shell profile
 SHELL_RC=""

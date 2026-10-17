@@ -356,3 +356,14 @@ class TestPruneIngestManifests:
         assert all(r["action"] == "unregister" for r in records)
         assert all(r["examiner"] == "alice" for r in records)
         assert all(r["detail"].endswith(".manifest.json") for r in records)
+
+
+@pytest.mark.parametrize("given", ["/x/INC-1", "x/INC-1", "x\\INC-1"])
+def test_a_path_as_the_case_argument_is_refused_without_naming_an_option(
+    given, identity, capsys
+):
+    with pytest.raises(SystemExit) as e:
+        cmd_prune_ingest_manifests(Namespace(case_id=given), identity)
+    err = capsys.readouterr().err
+    assert e.value.code == 1
+    assert "not a path" in err and "--case" not in err and given not in err

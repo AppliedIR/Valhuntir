@@ -739,6 +739,56 @@ def test_mine_filters_what_s_shown_and_asks_nothing(ledger_case, capsys):
     assert "the whole case; --mine only filters what's shown" in out
 
 
+@pytest.mark.parametrize(
+    ("viewer", "approved", "counts"),
+    [
+        ("bob", {"F-steve-001", "T-steve-001"}, "0 of 2 items"),
+        ("steve", {"F-steve-001", "T-steve-001"}, "2 of 2 items"),
+        ("bob", {"F-steve-001"}, "0 of 1 item"),
+    ],
+)
+def test_mine_says_how_many_of_the_case_s_items_it_showed(
+    ledger_case, capsys, viewer, approved, counts
+):
+    from vhir_cli.commands.review import _show_findings_verify
+
+    case, prompts = ledger_case
+    approve_under_0_6(case, approved, "steve")
+    capsys.readouterr()
+    ident = {"examiner": viewer, "os_user": viewer, "analyst": viewer}
+    with pytest.raises(SystemExit) as e:
+        _show_findings_verify(case, identity=ident, mine_only=True)
+    out = capsys.readouterr().out
+    footer = f"Exit 0 (the whole case; --mine only filters what's shown: {counts})"
+    assert e.value.code == 0 and out.splitlines()[-1] == footer, out
+
+
+def _detail_header(tmp_path, capsys, stamp):
+    from vhir_cli.commands.review import _show_timeline
+
+    case = tmp_path / "c"
+    case.mkdir()
+    (case / "CASE.yaml").write_text("case_id: c\nstatus: open\nexaminer: t\n")
+    event = {"id": "T-t-001", "timestamp": stamp, "status": "DRAFT"}
+    (case / "timeline.json").write_text(json.dumps([event]))
+    _show_timeline(case, detail=True)
+    return [x for x in capsys.readouterr().out.splitlines() if "[T-t-001]" in x]
+
+
+@pytest.mark.parametrize("stamp", [None, False, "", 0])
+def test_a_detail_header_shows_a_missing_timestamp_as_a_question_mark(
+    tmp_path, capsys, stamp
+):
+    assert _detail_header(tmp_path, capsys, stamp) == ["  [T-t-001] ?"]
+
+
+@pytest.mark.parametrize(
+    "stamp", ["2026-10-16T10:00:00.123456Z", "2026-10-16T12:00:00+02:00"]
+)
+def test_a_detail_header_shows_a_timestamp_as_stored(tmp_path, capsys, stamp):
+    assert _detail_header(tmp_path, capsys, stamp) == [f"  [T-t-001] {stamp}"]
+
+
 class TestAuditView:
     """--audit serves a page from each file's tail, not the whole trail."""
 
