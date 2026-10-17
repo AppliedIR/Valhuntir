@@ -927,12 +927,19 @@ def scan_case_dir(
     roots = {os.path.realpath(case_dir), *registered}
     # An excluded extractions/ can still hold registered evidence; when that
     # evidence is being backed up, the subtree has to be walked to find it.
+    # Paths are resolved, so a registered link in it points elsewhere: evidence
+    # registered outside the case may be reached only through extractions/.
     walk_extractions = include_extractions
     if include_evidence and not include_extractions and registered:
         try:
-            ext_root = str((case_dir / "extractions").resolve()) + os.sep
-            walk_extractions = any(r.startswith(ext_root) for r in registered)
-        except (OSError, RuntimeError):
+            ext_root = str((case_dir / "extractions").resolve())
+            case_root = str(case_dir.resolve())
+            walk_extractions = any(
+                os.path.commonpath([r, ext_root]) in (r, ext_root)  # it, in, above
+                or os.path.commonpath([r, case_root]) != case_root  # outside
+                for r in registered
+            )
+        except (OSError, RuntimeError, ValueError):
             walk_extractions = True  # can't tell: walk rather than miss evidence
 
     # (st_dev, st_ino) of every directory from case_dir down to the current
