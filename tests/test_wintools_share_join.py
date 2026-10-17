@@ -34,7 +34,9 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(
         join, "private_primary_group", lambda user: "examiner", raising=False
     )
-    monkeypatch.setattr(join, "_ask", lambda prompt, no_terminal: answers.pop(0))
+    monkeypatch.setattr(
+        join, "_ask", lambda prompt, no_terminal, assume=False: answers.pop(0)
+    )
     return types.SimpleNamespace(home=tmp_path, ran=ran, pushed=pushed, answers=answers)
 
 
@@ -211,7 +213,7 @@ def _ordered(box, monkeypatch):
     order = []
     monkeypatch.setattr(join, "_push_smb_credentials", lambda pw: order.append("push"))
 
-    def ask(prompt, no_terminal):
+    def ask(prompt, no_terminal, assume=False):
         order.append(prompt.splitlines()[-1])
         return box.answers.pop(0)
 

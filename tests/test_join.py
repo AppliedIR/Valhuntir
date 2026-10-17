@@ -206,7 +206,7 @@ class TestJoinCodeStaticIpSettled:
         monkeypatch.setattr("vhir_cli.commands.join.Path.home", lambda: tmp_path)
         asked = []
 
-        def ask(question, no_terminal):
+        def ask(question, no_terminal, assume=False):
             asked.append(question)
             return ""
 
