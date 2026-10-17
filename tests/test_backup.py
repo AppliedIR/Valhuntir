@@ -115,7 +115,9 @@ class TestCreateBackupData:
             os.walk = real_walk
 
         walked = [r for r in recorded if r.startswith(str(case_dir))]
-        assert walked == [str(case_dir), str(case_dir / "audit")]
+        # The writer-set rescan under the writers' lock walks the case root a
+        # second time; no walk may enter anything but the root and audit/.
+        assert set(walked) == {str(case_dir), str(case_dir / "audit")}
         assert result["file_count"] > 0
 
     def test_included_evidence_is_copied(self, tmp_path):
