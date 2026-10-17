@@ -1,11 +1,40 @@
 """Tests for vhir exec command."""
 
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import tracemalloc
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from vhir_cli.commands import execute
 from vhir_cli.commands.execute import cmd_exec
+
+# Emits every str.splitlines() boundary, a line that straddles the 64 KiB read
+# size, a line that ends exactly on it, blank lines and an unterminated tail.
+MIXED_OUTPUT_PRODUCER = (
+    "import sys\n"
+    "w = sys.stdout.buffer.write\n"
+    "w('a\\r\\nb\\rc\\x85d\\u2028e\\n'.encode())\n"
+    "w(b'y' * 65535 + b'\\n')\n"
+    "w(b'z' * 200000 + b'\\n')\n"
+    "w(b'\\n\\n\\n')\n"
+    "w(b'tail-with-no-newline')\n"
+)
+
+# 4096-char lines keep the number of traced allocations low so tracemalloc
+# overhead stays small; only the peak matters.
+BULK_OUTPUT_PRODUCER = (
+    "import sys\n"
+    "block = (b'q' * 4095 + b'\\n') * 256\n"
+    "for _ in range(int(sys.argv[1])):\n"
+    "    sys.stdout.buffer.write(block)\n"
+)
 
 
 def _mock_tty(response="y\n"):
@@ -115,6 +144,166 @@ class TestExec:
         assert "lines" in entry["result_summary"]["output"]
 
 
+class TestExecLargeOutput:
+    def _entry(self, case_dir):
+        log_file = case_dir / "audit" / "cli-exec.jsonl"
+        return json.loads(log_file.read_text().strip())
+
+    def test_line_count_matches_splitlines_across_chunks(
+        self, case_dir, identity, monkeypatch
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        cmd = [sys.executable, "-c", MIXED_OUTPUT_PRODUCER]
+        reference = subprocess.run(cmd, capture_output=True, text=True).stdout
+        args = FakeArgs(cmd=list(cmd), purpose="mixed line boundaries")
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            cmd_exec(args, identity)
+        expected = len(reference.splitlines())
+        assert expected > 5
+        assert self._entry(case_dir)["result_summary"]["output"] == f"{expected} lines"
+
+    def test_head_is_first_10000_chars(self, case_dir, identity, monkeypatch, capsys):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        cmd = [sys.executable, "-c", BULK_OUTPUT_PRODUCER, "1"]
+        reference = subprocess.run(cmd, capture_output=True, text=True).stdout
+        args = FakeArgs(cmd=list(cmd), purpose="head")
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            cmd_exec(args, identity)
+        captured = capsys.readouterr()
+        assert f"--- stdout ---\n{reference[:10000]}\n" in captured.out
+        assert reference[:10001] not in captured.out
+
+    def test_output_is_not_buffered_in_memory(self, case_dir, identity, monkeypatch):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        # 24 MiB of child output must not become 24 MiB of resident Python
+        # objects; only a bounded head and a line counter are retained.
+        args = FakeArgs(
+            cmd=[sys.executable, "-c", BULK_OUTPUT_PRODUCER, "24"],
+            purpose="bulk output",
+        )
+        tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+                cmd_exec(args, identity)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert self._entry(case_dir)["result_summary"]["output"] == "6144 lines"
+        assert peak < 8 * 1024 * 1024, f"peak traced memory was {peak} bytes"
+
+    def test_timeout_still_writes_audit_entry(
+        self, case_dir, identity, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        assert execute._TIMEOUT_SECONDS == 300
+        monkeypatch.setattr(execute, "_TIMEOUT_SECONDS", 0.5)
+        args = FakeArgs(
+            cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
+            purpose="timeout",
+        )
+        with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+            cmd_exec(args, identity)
+        captured = capsys.readouterr()
+        assert "timed out" in captured.err
+        entry = self._entry(case_dir)
+        assert entry["result_summary"]["exit_code"] == -1
+        assert entry["result_summary"]["output"].startswith("0 lines")
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            'sleep 6 & echo $! > "$1"; exec sleep 30',  # the child times out
+            'echo early; sleep 6 & echo $! > "$1"',  # the child exits at once
+        ],
+        ids=["killed-child", "exited-child"],
+    )
+    def test_a_grandchild_holding_the_pipes_does_not_hold_the_run(
+        self, case_dir, identity, monkeypatch, capsys, tmp_path, script
+    ):
+        """The grandchild keeps stdout and stderr open after its parent is gone:
+        the run still ends at the timeout, and is audited as timed out."""
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setattr(execute, "_TIMEOUT_SECONDS", 0.5)
+        pidfile = tmp_path / "grandchild.pid"
+        args = FakeArgs(cmd=["sh", "-c", script, "sh", str(pidfile)], purpose="held")
+        start = time.monotonic()
+        try:
+            with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+                cmd_exec(args, identity)
+            elapsed = time.monotonic() - start
+            os.kill(int(pidfile.read_text()), 0)  # still holding the pipes
+        finally:
+            if pidfile.exists():
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        assert elapsed < 4, elapsed
+        assert "Command timed out (0.5s)" in capsys.readouterr().err
+        entry = self._entry(case_dir)
+        assert entry["result_summary"]["exit_code"] == -1
+
+    @pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
+    @pytest.mark.parametrize("which", [1, 2], ids=["stdout-reader", "stderr-reader"])
+    def test_a_reader_that_fails_to_start_leaves_no_child_running(
+        self, case_dir, monkeypatch, which, raised
+    ):
+        procs = []
+
+        class Popen(subprocess.Popen):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                procs.append(self)
+
+        real_start = threading.Thread.start
+        starts = []
+
+        def start(self):
+            starts.append(self)
+            if len(starts) == which:
+                raise raised()
+            return real_start(self)
+
+        monkeypatch.setattr(execute.subprocess, "Popen", Popen)
+        monkeypatch.setattr(threading.Thread, "start", start)
+        try:
+            with pytest.raises(raised):
+                execute._run_capture(["sleep", "30"], case_dir)
+            monkeypatch.setattr(threading.Thread, "start", real_start)
+            (proc,) = procs
+            assert not os.path.exists(f"/proc/{proc.pid}"), "the child still runs"
+        finally:
+            for proc in procs:
+                proc.kill()
+                proc.wait()
+
+    def test_a_read_error_mid_stream_is_raised_at_once(self, case_dir, monkeypatch):
+        real_run = execute._StreamCapture.run
+
+        def run(self):
+            if self._head_chars == execute._STDOUT_HEAD_CHARS:  # the stdout reader
+                stream, reads = self._stream, []
+
+                class Failing:
+                    def __getattr__(self, name):
+                        return getattr(stream, name)
+
+                    def read(self, n):
+                        reads.append(n)
+                        if len(reads) == 2:
+                            raise OSError(5, "Input/output error")
+                        return stream.read(n)
+
+                self._stream = Failing()
+            return real_run(self)
+
+        monkeypatch.setattr(execute._StreamCapture, "run", run)
+        monkeypatch.setattr(execute, "_TIMEOUT_SECONDS", 10)
+        producer = "import sys\nsys.stdout.buffer.write(b'x' * 5000000 + b'\\n')\n"
+        start = time.monotonic()
+        with pytest.raises(OSError, match="Input/output error"):
+            execute._run_capture([sys.executable, "-c", producer], case_dir)
+        assert time.monotonic() - start < 5
+
+
 def _entries(case_dir):
     log_file = case_dir / "audit" / "cli-exec.jsonl"
     if not log_file.exists():
@@ -140,11 +329,11 @@ class TestExecNeverRunsUnaudited:
     def test_a_run_stopped_by_an_interrupt_or_error_is_audited_once(
         self, case_dir, identity, monkeypatch, raised
     ):
-        def run(*a, **kw):  # subprocess.run kills the child, then re-raises
+        def run(*a, **kw):  # _run_capture kills the child, then re-raises
             raise raised()
 
         monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
-        monkeypatch.setattr("vhir_cli.commands.execute.subprocess.run", run)
+        monkeypatch.setattr("vhir_cli.commands.execute._run_capture", run)
         args = FakeArgs(cmd=["echo", "hello"], purpose="stopped")
         with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
             with pytest.raises(raised):
@@ -184,7 +373,7 @@ class TestExecNeverRunsUnaudited:
         monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
         with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
             cmd_exec(FakeArgs(cmd=["no-such-tool-x"], purpose="missing"), identity)
-            monkeypatch.setattr("vhir_cli.commands.execute.subprocess.run", run)
+            monkeypatch.setattr("vhir_cli.commands.execute._run_capture", run)
             cmd_exec(FakeArgs(cmd=["sleep", "999"], purpose="slow"), identity)
         missing, slow = (e["result_summary"] for e in _entries(case_dir))
         assert missing == {
