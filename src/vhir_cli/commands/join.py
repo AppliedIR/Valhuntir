@@ -174,8 +174,12 @@ def cmd_setup_join_code(args, identity: dict) -> None:
         _revoke_join_codes(_get_local_gateway_url(), token)
         return
 
-    # Configure static IP before remote binding
-    static_ip = _ensure_static_ip()
+    # Configure static IP before remote binding. setup-sift.sh asked already
+    # in this run: it sets VHIR_STATIC_IP_SETTLED, and network.yaml holds the IP.
+    if os.environ.get("VHIR_STATIC_IP_SETTLED"):
+        static_ip = None
+    else:
+        static_ip = _ensure_static_ip()
 
     # Check if gateway needs rebinding for remote access
     _ensure_remote_binding()
