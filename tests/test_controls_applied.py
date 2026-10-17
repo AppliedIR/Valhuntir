@@ -225,7 +225,7 @@ def test_a_declined_change_is_said_once_by_setup_and_once_by_update(
     full["permissions"]["deny"].pop()  # a change the examiner then declines
     box.settings.write_text(json.dumps(full))
     monkeypatch.setattr(cs, "_claude_mcp_add_available", lambda: False)
-    monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: None)
+    monkeypatch.setattr(cs, "_merge_and_write", lambda path, config: True)
     capsys.readouterr()
     cs._generate_config("claude-code", {}, "steve")  # no terminal: kept
     assert capsys.readouterr().out.count("Forensic controls NOT applied") == 1
