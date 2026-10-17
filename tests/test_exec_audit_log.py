@@ -11,24 +11,24 @@ import pytest
 
 from vhir_cli.case_io import KEPT, REPORT
 
-# cmd_exec in a child: confirmed at a fake terminal, subprocess.run faked (it
+# cmd_exec in a child: confirmed at a fake terminal, _run_capture faked (it
 # only leaves a marker), so no command runs and rlimits stay in the child
 CHILD = r"""
-import os, subprocess, sys
+import os, sys
 from pathlib import Path
 if os.environ.get("STDOUT_CLOSED"):  # a reader that stopped early (| head)
     r, w = os.pipe(); os.close(r); os.dup2(w, 1)
 from unittest.mock import MagicMock, patch
 from vhir_cli.commands import execute
 tty = MagicMock(); tty.readline.return_value = "y\n"
-def run(cmd, **kw):
+def run(cmd, case_dir):
     Path(sys.argv[2]).write_text("ran")
     size = os.environ.get("STDOUT_SIZE")  # with a closed stdout: past the buffer, short or none
     out = {"big": "r/r 5-128-1:\tfile-one.txt\n" * 1000, "short": "x" * 30, "empty": ""}.get(
         size, "r/r 5-128-1:\tfile-one.txt\n")
-    return subprocess.CompletedProcess(cmd, 0, out, "")
+    return 0, out[:execute._STDOUT_HEAD_CHARS], len(out.splitlines()), ""
 class A: cmd = ["fakefls", "-r", "image.dd"]; purpose = "triage"; case = None
-with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execute.subprocess, "run", run):
+with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execute, "_run_capture", run):
     execute.cmd_exec(A(), {"examiner": "tester"})
 """
 PRIOR = '{"audit_id": "cliexec-tester-20000101-001", "tool": "exec"}\n'
