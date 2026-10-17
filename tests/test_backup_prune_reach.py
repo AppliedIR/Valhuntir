@@ -1,10 +1,11 @@
 """A backup that leaves out evidence/ or extractions/ doesn't walk it, but
 registered evidence it copies is still reached wherever it was registered.
 
-A registered link inside extractions/ resolves to storage outside it, and a
-folder can be registered as extractions/ itself: neither may be pruned from a
-backup that includes evidence. With evidence left out, registered evidence is
-left out with it, and that is no reason to stop.
+A registered link inside extractions/ resolves to storage outside it, or to a
+folder the walk skips (__pycache__/), and a folder can be registered as
+extractions/ itself: so when evidence is included and anything is registered,
+extractions/ is walked as it was before the prune. With evidence left out,
+registered evidence is left out with it, and that is no reason to stop.
 """
 
 from __future__ import annotations
@@ -184,27 +185,101 @@ def test_registered_evidence_in_evidence_is_copied_with_extractions_left_out(
     assert any(r == rel for r, _a, _s in scan["evidence"])
 
 
-def test_extractions_with_nothing_registered_through_it_is_not_walked(case, tmp_path):
-    (case / "work").mkdir()
-    (case / "work" / "w.bin").write_bytes(b"w" * 8)
-    register_evidence_data(case, str(case / "evidence/h/e.bin"), "tester")
-    register_evidence_data(case, str(case / "work/w.bin"), "tester")
+def _walked(case, tmp_path, **kw) -> tuple[Path, list[str]]:
     walked: list[str] = []
     real_walk = os.walk
 
-    def walk(top, *a, **kw):
-        for root, dirs, files in real_walk(top, *a, **kw):
+    def walk(top, *a, **kwa):
+        for root, dirs, files in real_walk(top, *a, **kwa):
             walked.append(root)
             yield root, dirs, files
 
     os.walk = walk
     try:
-        backup = _backup(
-            case, tmp_path, include_evidence=True, include_extractions=False
-        )
+        backup = _backup(case, tmp_path, **kw)
     finally:
         os.walk = real_walk
-    assert (backup / "evidence/h/e.bin").is_file()
-    assert (backup / "work/w.bin").is_file()
-    ext = str(case / "extractions")
-    assert not any(r == ext or r.startswith(ext + os.sep) for r in walked)
+    return backup, walked
+
+
+def _under(walked: list[str], d: Path) -> bool:
+    return any(r == str(d) or r.startswith(str(d) + os.sep) for r in walked)
+
+
+def _register_in_evidence_and_work(case):
+    (case / "work").mkdir()
+    (case / "work" / "w.bin").write_bytes(b"w" * 8)
+    register_evidence_data(case, str(case / "evidence/h/e.bin"), "tester")
+    register_evidence_data(case, str(case / "work/w.bin"), "tester")
+
+
+@pytest.mark.parametrize(
+    "include_evidence, registers, walks",
+    [(True, True, True), (True, False, False), (False, True, False)],
+    ids=["evidence-in-registered", "evidence-in-none-registered", "evidence-out"],
+)
+def test_a_left_out_extractions_is_walked_only_for_registered_evidence(
+    case, tmp_path, include_evidence, registers, walks
+):
+    if registers:
+        _register_in_evidence_and_work(case)
+    backup, walked = _walked(
+        case, tmp_path, include_evidence=include_evidence, include_extractions=False
+    )
+    assert _under(walked, case / "extractions") is walks
+    assert not (backup / "extractions").exists()
+    if registers and include_evidence:
+        assert (backup / "evidence/h/e.bin").is_file()
+        assert (backup / "work/w.bin").is_file()
+
+
+def _file_link_to_root_pycache(case):
+    (case / "__pycache__").mkdir()
+    (case / "__pycache__/image.E01").write_bytes(b"i" * 8)
+    (case / "extractions/image.E01").symlink_to(case / "__pycache__/image.E01")
+    _hand_register(case, case / "__pycache__/image.E01")
+    return "extractions/image.E01"
+
+
+def _dir_link_to_work_pycache(case):
+    (case / "work/__pycache__").mkdir(parents=True)
+    (case / "work/__pycache__/f.bin").write_bytes(b"f" * 8)
+    (case / "extractions/d").symlink_to(case / "work/__pycache__")
+    _hand_register(case, case / "work/__pycache__/f.bin")
+    return "extractions/d/f.bin"
+
+
+@pytest.mark.parametrize("skip", [False, True], ids=["stop", "skip-unreadable"])
+@pytest.mark.parametrize(
+    "shape", [_file_link_to_root_pycache, _dir_link_to_work_pycache], ids=["s29", "s23"]
+)
+def test_registered_evidence_the_walk_skips_is_copied_through_an_extractions_link(
+    case, tmp_path, shape, skip
+):
+    rel = shape(case)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    result = create_backup_data(
+        case,
+        str(dest),
+        "tester",
+        include_evidence=True,
+        include_extractions=False,
+        skip_unreadable=skip,
+    )
+    assert (Path(result["backup_path"]) / rel).is_file()
+    assert result["skipped"] == []
+
+
+@pytest.mark.parametrize(
+    "include_evidence, registers",
+    [(False, True), (True, False)],
+    ids=["evidence-out-registered", "evidence-in-none-registered"],
+)
+def test_included_extractions_is_copied(case, tmp_path, include_evidence, registers):
+    if registers:
+        _register_in_evidence_and_work(case)
+    backup = _backup(
+        case, tmp_path, include_evidence=include_evidence, include_extractions=True
+    )
+    assert (backup / "extractions/h/x.bin").is_file()

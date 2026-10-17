@@ -184,9 +184,8 @@ class TestPruneWithRegisteredEvidence:
         # The rest of extractions/ stays out.
         assert not (backup_dir / "extractions" / "host-01" / "artifact-0.bin").exists()
 
-    def test_extractions_still_pruned_when_nothing_registered_there(self, tmp_path):
+    def test_extractions_still_pruned_when_nothing_registered(self, tmp_path):
         case_dir = _seed_case(tmp_path)
-        self._register(case_dir, "evidence/host-01/artifact-0.bin")
 
         recorded: list[str] = []
         real_walk = os.walk
