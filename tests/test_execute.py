@@ -1,8 +1,11 @@
 """Tests for vhir exec command."""
 
 import json
+import os
+import signal
 import subprocess
 import sys
+import time
 import tracemalloc
 from unittest.mock import MagicMock, patch
 
@@ -205,6 +208,37 @@ class TestExecLargeOutput:
         entry = self._entry(case_dir)
         assert entry["result_summary"]["exit_code"] == -1
         assert entry["result_summary"]["output"].startswith("0 lines")
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            'sleep 6 & echo $! > "$1"; exec sleep 30',  # the child times out
+            'echo early; sleep 6 & echo $! > "$1"',  # the child exits at once
+        ],
+        ids=["killed-child", "exited-child"],
+    )
+    def test_a_grandchild_holding_the_pipes_does_not_hold_the_run(
+        self, case_dir, identity, monkeypatch, capsys, tmp_path, script
+    ):
+        """The grandchild keeps stdout and stderr open after its parent is gone:
+        the run still ends at the timeout, and is audited as timed out."""
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setattr(execute, "_TIMEOUT_SECONDS", 0.5)
+        pidfile = tmp_path / "grandchild.pid"
+        args = FakeArgs(cmd=["sh", "-c", script, "sh", str(pidfile)], purpose="held")
+        start = time.monotonic()
+        try:
+            with patch("vhir_cli.approval_auth.open", return_value=_mock_tty()):
+                cmd_exec(args, identity)
+            elapsed = time.monotonic() - start
+            os.kill(int(pidfile.read_text()), 0)  # still holding the pipes
+        finally:
+            if pidfile.exists():
+                os.kill(int(pidfile.read_text()), signal.SIGKILL)
+        assert elapsed < 4, elapsed
+        assert "Command timed out (0.5s)" in capsys.readouterr().err
+        entry = self._entry(case_dir)
+        assert entry["result_summary"]["exit_code"] == -1
 
 
 def _entries(case_dir):
