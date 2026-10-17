@@ -46,15 +46,15 @@ DRY_RUN = json.loads((FIXTURE / "ioc_lists_dry_run_case.json").read_text())
 DRY_RUN_LIST = {
     "Domain": ["evil.com", "evil2.com"],
     "File": [UNC],
-    "IPv4": ["172.16.30.23", "172.16.5.21", "172.16.6.12", "172.16.6.14",
-             "172.16.6.18", "172.16.7.15", "203.0.113.7"],
+    "IPv4": ["192.0.2.30", "192.0.2.51", "192.0.2.62", "192.0.2.64",
+             "192.0.2.68", "192.0.2.75", "203.0.113.7"],
     "Unknown": [SID],
-    "user-account": ["tdungan"],
-    TEXT_ONLY: ["172.16.6.11", "C:\\Windows\\system32\\cmd.exe"],
+    "user-account": ["jdoe"],
+    TEXT_ONLY: ["192.0.2.61", "C:\\Windows\\system32\\cmd.exe"],
 }  # fmt: skip
 
-F1 = _f(1, ["172.16.6.12", UNC, {"value": "tdungan", "type": "user-account"}, SID],
-        observation="Logon from 172.16.6.12 mapped \\\\172.16.6.12\\c$\\Users as tdungan.",
+F1 = _f(1, ["192.0.2.62", UNC, {"value": "jdoe", "type": "user-account"}, SID],
+        observation="Logon from 192.0.2.62 mapped \\\\192.0.2.62\\c$\\Users as jdoe.",
         interpretation="Admin share access.")  # fmt: skip
 F3 = _f(3, [{"value": "203.0.113.7", "type": "ipv4-addr"}],
         observation="Beacon to 203.0.113.7 every 60 s.", interpretation="C2.")  # fmt: skip
@@ -65,11 +65,11 @@ SHAPES = {
     "dry-run-case": (DRY_RUN["findings"], DRY_RUN["records"], DRY_RUN_LIST),
     "no-records": (
         [F1, F3], [],
-        {TEXT_ONLY: ["172.16.6.12", "203.0.113.7", SID, UNC, "tdungan"]},
+        {TEXT_ONLY: ["192.0.2.62", "203.0.113.7", SID, UNC, "jdoe"]},
     ),
     "some-records": (
         [F1, F3], [_r(1, UNC, "file:path"), _r(2, "203.0.113.7", "ipv4-addr")],
-        {"File": [UNC], "IPv4": ["203.0.113.7"], TEXT_ONLY: ["172.16.6.12", SID, "tdungan"]},
+        {"File": [UNC], "IPv4": ["203.0.113.7"], TEXT_ONLY: ["192.0.2.62", SID, "jdoe"]},
     ),
     # a record's type
     "type-null": ([], [_r(1, "10.1.2.3", None)], {"IPv4": ["10.1.2.3"]}),
@@ -154,20 +154,20 @@ SHAPES = {
     ),
     # a finding's IOC typed null, as a list or as a number, and its record
     "finding-ioc-type-null": (
-        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "tdungan", "type": None}])],
-        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "tdungan", None)],
-        {"IPv4": ["203.0.113.7"], "Unknown": ["tdungan"]},
+        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "jdoe", "type": None}])],
+        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "jdoe", None)],
+        {"IPv4": ["203.0.113.7"], "Unknown": ["jdoe"]},
     ),
     "finding-ioc-type-list": (
         [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"},
-                {"value": "tdungan", "type": ["user-account"]}])],
-        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "tdungan", ["user-account"])],
-        {"IPv4": ["203.0.113.7"], "['user-account']": ["tdungan"]},
+                {"value": "jdoe", "type": ["user-account"]}])],
+        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "jdoe", ["user-account"])],
+        {"IPv4": ["203.0.113.7"], "['user-account']": ["jdoe"]},
     ),
     "finding-ioc-type-int": (
-        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "tdungan", "type": 7}])],
-        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "tdungan", 7)],
-        {"7": ["tdungan"], "IPv4": ["203.0.113.7"]},
+        [_f(1, [{"value": "203.0.113.7", "type": "ipv4-addr"}, {"value": "jdoe", "type": 7}])],
+        [_r(1, "203.0.113.7", "ipv4-addr"), _r(2, "jdoe", 7)],
+        {"7": ["jdoe"], "IPv4": ["203.0.113.7"]},
     ),
     "finding-ioc-odd-types-not-recorded": (
         [_f(1, [{"value": "10.0.0.1", "type": None}, {"value": "10.0.0.2", "type": ["ip"]},
@@ -187,13 +187,13 @@ SHAPES = {
         [], {TEXT_ONLY: ["10.9.8.7"]},
     ),
     "text-path-sentence-punctuation": (
-        [_f(1, ["C:\\Windows\\System32\\SRLUpdate.exe", "C:\\Windows\\System32\\STUN.exe"],
-            observation="Removed C:\\Windows\\System32\\SRLUpdate.exe. The task ran "
-                        '"C:\\Windows\\System32\\STUN.exe", then (C:\\Temp\\a.exe) and '
+        [_f(1, ["C:\\Windows\\System32\\AppUpdate.exe", "C:\\Windows\\System32\\Helper.exe"],
+            observation="Removed C:\\Windows\\System32\\AppUpdate.exe. The task ran "
+                        '"C:\\Windows\\System32\\Helper.exe", then (C:\\Temp\\a.exe) and '
                         "'C:\\Temp\\b.exe'; C:\\Temp\\c.exe: done")],
-        [_r(1, "C:\\Windows\\System32\\SRLUpdate.exe", "file:path"),
-         _r(2, "C:\\Windows\\System32\\STUN.exe", "file:path")],
-        {"File": ["C:\\Windows\\System32\\SRLUpdate.exe", "C:\\Windows\\System32\\STUN.exe"],
+        [_r(1, "C:\\Windows\\System32\\AppUpdate.exe", "file:path"),
+         _r(2, "C:\\Windows\\System32\\Helper.exe", "file:path")],
+        {"File": ["C:\\Windows\\System32\\AppUpdate.exe", "C:\\Windows\\System32\\Helper.exe"],
          TEXT_ONLY: ["C:\\Temp\\a.exe", "C:\\Temp\\b.exe", "C:\\Temp\\c.exe"]},
     ),
     "path-really-ending-in-a-dot": (
@@ -259,7 +259,7 @@ def test_a_record_s_status_reads_as_the_portal_reads_it(record, status):
 @pytest.mark.parametrize(
     "value, key",
     [(SHA, SHA.lower()), (" " + "C" * 40 + " ", "c" * 40), ("Evil.COM.", "evil.com"),
-     ("10.1.2.3", "10.1.2.3"), (UNC.upper(), UNC.lower()), ("Tdungan", "Tdungan"),
+     ("10.1.2.3", "10.1.2.3"), (UNC.upper(), UNC.lower()), ("Jdoe", "Jdoe"),
      ("evil[.]com", "evil.com"), ("hxxp://Evil[.]com/a", "http://evil.com/a"),
      ("user[@]evil.com", "user@evil.com"), (" 203.0.113.7:8443 ", "203.0.113.7"),
      ("203[.]0[.]113[.]7:8443", "203.0.113.7"), ("10.0.0.1/24", "10.0.0.1/24"),
@@ -382,12 +382,12 @@ def test_review_iocs_lists_a_draft_record_with_an_odd_type(
     monkeypatch,
     capsys,
 ):
-    finding = _f(1, [{"value": "tdungan", "type": type_}], status="DRAFT")
-    _case_with(case, [finding], [_r(1, "tdungan", type_, "DRAFT")])
+    finding = _f(1, [{"value": "jdoe", "type": type_}], status="DRAFT")
+    _case_with(case, [finding], [_r(1, "jdoe", type_, "DRAFT")])
     out = _cli(monkeypatch, capsys, ["review", "--iocs"])
     label = "Unknown" if type_ is None else str(type_)
     assert out.endswith(
-        f"=== Draft IOCs (unverified) ===\n  {label + ':':<10} tdungan\n"
+        f"=== Draft IOCs (unverified) ===\n  {label + ':':<10} jdoe\n"
     ), out
 
 
@@ -486,9 +486,9 @@ def test_a_saved_ioc_report_lists_the_records(case, monkeypatch, capsys):  # noq
     _cli(monkeypatch, capsys, ["report", "--ioc", "--save", "iocs.txt"])
     saved = (case / "reports" / "iocs.txt").read_text()
     assert f"  {TEXT_ONLY} (2):" in saved
-    unc = UNC.replace("172.16.6.12", "172[.]16[.]6[.]12")  # its IP defanged too
+    unc = UNC.replace("192.0.2.62", "192[.]0[.]2[.]62")  # its IP defanged too
     assert f"  File (1):\n    {unc}" in saved and f"  Unknown (1):\n    {SID}" in saved
-    assert "172[.]16[.]6[.]12" in saved and "172.16.6.12" not in saved
+    assert "192[.]0[.]2[.]62" in saved and "192.0.2.62" not in saved
     assert "  Domain (2):\n    evil[.]com\n    evil2[.]com\n" in saved
     assert "    203[.]0[.]113[.]7\n" in saved
     assert "Total: 12 IOC records across 5 types" in saved
