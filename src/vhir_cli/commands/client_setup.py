@@ -688,7 +688,9 @@ def _claude_mcp_add(name: str, entry: dict) -> None:
 def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
     """Per-backend entries in `path` (~/.claude.json) that duplicate gateway
     routing, and an `opencti-mcp` entry for the same gateway once its current
-    name `threatintel-mcp` is written: one threat-intel entry."""
+    name `threatintel-mcp` is written: one threat-intel entry. When the new
+    set is per-backend, the aggregate `vhir` entry for the same gateway is the
+    duplicate instead."""
     _BACKEND_NAMES = {
         "forensic-mcp",
         "case-mcp",
@@ -706,9 +708,16 @@ def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
     gw_url = (servers.get("vhir") or servers.get("threatintel-mcp") or {}).get(
         "url", ""
     )
+    if not gw_url:  # a per-backend set: the gateway its routed entries name
+        routed = [
+            str(e.get("url", ""))
+            for e in servers.values()
+            if isinstance(e, dict) and _gateway_of(str(e.get("url", "")), routed=True)
+        ]
+        gw_url = routed[0] if routed else ""
     if not gw_url:
         return []
-    names = _BACKEND_NAMES if "vhir" in servers else set()
+    names = _BACKEND_NAMES if "vhir" in servers else {"vhir"}
     if "threatintel-mcp" in servers:
         names = names | {"opencti-mcp"}
     gw = _gateway_of(gw_url)
@@ -727,7 +736,8 @@ def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
         and name not in servers
         and isinstance(entry, dict)
         and gw is not None
-        and _gateway_of(str(entry.get("url", "")), routed=True) == gw
+        # "vhir" is the aggregate at /mcp, never a route under /mcp/
+        and _gateway_of(str(entry.get("url", "")), routed=name != "vhir") == gw
     ]
 
 
