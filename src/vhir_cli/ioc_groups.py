@@ -20,6 +20,7 @@ import re
 
 from vhir_cli.case_io import _is_ipv4, _refang_ioc, normalize_ioc
 from vhir_cli.defang import refang
+from vhir_cli.tlds import DOMAIN_CANDIDATE_RE, is_domain
 
 # How a stored IOC type is labelled; any other type is shown as stored
 LABELS = {
@@ -55,10 +56,8 @@ PATTERNS = (
     ("SHA1", r"(?<![a-fA-F0-9])[a-fA-F0-9]{40}(?![a-fA-F0-9])"),
     ("MD5", r"(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])"),
     ("File", r"[A-Z]:\\(?:[^\s,;]+)"),
-    (
-        "Domain",
-        r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|info|biz|xyz|top|cc|tk)\b",
-    ),
+    # A domain's shape only: its TLD must also be one IANA lists (is_domain)
+    ("Domain", DOMAIN_CANDIDATE_RE.pattern),
 )
 
 
@@ -89,21 +88,36 @@ def text_iocs(text: str) -> list[tuple[str, str]]:
     """(label, value) for each IOC the text names, by the patterns in order.
     Defanged indicators are read live; a hash or domain is lowercased, a path
     loses the punctuation that ends its sentence, and a 0., 127. or 255.
-    address is left out."""
+    address is left out. A domain is a name whose TLD IANA lists, and not a
+    file name the text gives in one of its paths."""
     # Analysts habitually defang indicators in notes; every pattern matches
     # the live form only, so normalise before matching.
     text = refang(text)
     found = []
+    paths = []
     for label, pattern in PATTERNS:
         for v in re.findall(pattern, text):
             if label == "IPv4":
                 if not v.startswith(("0.", "127.", "255.")):
                     found.append((label, v))
             elif label == "File":
+                paths.append(v)
                 found.append((label, _sentence_end(v)))
+            elif label == "Domain":
+                if is_domain(v) and not any(v in p for p in paths):
+                    found.append((label, v.lower()))
             else:
                 found.append((label, v.lower()))
     return found
+
+
+def _pattern_label(value: str) -> str:
+    """The label of the first pattern that matches all of the value, a domain
+    only when IANA lists its TLD; "Unknown" when none does."""
+    for label, pattern in PATTERNS:
+        if re.fullmatch(pattern, value) and (label != "Domain" or is_domain(value)):
+            return label
+    return "Unknown"
 
 
 def _no_type(t) -> bool:
@@ -156,8 +170,7 @@ def record_groups(records: list) -> dict[str, list[str]]:
             continue
         t = r.get("type")
         if _no_type(t):
-            v = value.strip()
-            t = next((lb for lb, p in PATTERNS if re.fullmatch(p, v)), "Unknown")
+            t = _pattern_label(value.strip())
         groups.setdefault(_label(t), []).append(value)
     return {label: sorted(groups[label]) for label in sorted(groups)}
 
