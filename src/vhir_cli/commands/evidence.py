@@ -31,6 +31,19 @@ from vhir_cli.case_io import CaseError, case_lines, get_case_dir, read_regular
 from vhir_cli.display import display_safe
 from vhir_cli.display import lines as indent_lines
 
+_MODE_FILE_LOCKED = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH  # 444
+_MODE_DIR_LOCKED = (
+    stat.S_IRUSR
+    | stat.S_IXUSR
+    | stat.S_IRGRP
+    | stat.S_IXGRP
+    | stat.S_IROTH
+    | stat.S_IXOTH
+)  # 555
+_MODE_DIR_UNLOCKED = (
+    stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+)  # 755
+
 
 def cmd_evidence(args, identity: dict) -> None:
     """Handle evidence subcommands."""
@@ -56,7 +69,7 @@ def cmd_evidence(args, identity: dict) -> None:
 
 
 def cmd_lock_evidence(args, identity: dict) -> None:
-    """Lock evidence directory by making all files read-only (chmod 444)."""
+    """Lock evidence directory: files chmod 444, directories chmod 555."""
     case_dir = get_case_dir(getattr(args, "case", None))
     evidence_dir = case_dir / "evidence"
 
@@ -65,35 +78,39 @@ def cmd_lock_evidence(args, identity: dict) -> None:
         sys.exit(1)
 
     count = 0
+    dir_count = 0
     errors = 0
-    for path in evidence_dir.rglob("*"):
-        if path.is_file():
-            try:
-                path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 444
+    # Subdirectories must be locked too — POSIX permission to delete or
+    # replace a file comes from its parent directory, not the file mode.
+    # The walk is materialized before any chmod so the traversal is not
+    # affected by the mode changes.
+    for path in sorted(evidence_dir.rglob("*"), reverse=True):
+        try:
+            if path.is_file():
+                path.chmod(_MODE_FILE_LOCKED)
                 count += 1
-            except OSError as e:
-                print(f"  Warning: could not chmod {path}: {e}", file=sys.stderr)
-                errors += 1
+            elif path.is_dir() and not path.is_symlink():
+                path.chmod(_MODE_DIR_LOCKED)
+                dir_count += 1
+        except OSError as e:
+            print(f"  Warning: could not chmod {path}: {e}", file=sys.stderr)
+            errors += 1
 
     # Also make the directory itself read-only
     try:
-        evidence_dir.chmod(
-            stat.S_IRUSR
-            | stat.S_IXUSR
-            | stat.S_IRGRP
-            | stat.S_IXGRP
-            | stat.S_IROTH
-            | stat.S_IXOTH
-        )  # 555
+        evidence_dir.chmod(_MODE_DIR_LOCKED)
+        dir_count += 1
     except OSError as e:
         print(f"  Warning: could not chmod evidence directory: {e}", file=sys.stderr)
         errors += 1
 
-    _log_evidence_action(case_dir, "lock", f"Locked {count} files", identity)
+    _log_evidence_action(
+        case_dir, "lock", f"Locked {count} files, {dir_count} directories", identity
+    )
     print(f"Locked evidence directory: {count} file(s) set to read-only (444)")
     if errors:
-        print(f"  {errors} file(s) could not be locked (see warnings above)")
-    print("Directory set to 555 (no writes)")
+        print(f"  {errors} path(s) could not be locked (see warnings above)")
+    print(f"{dir_count} directory(ies) set to 555 (no writes)")
 
 
 def cmd_unlock_evidence(args, identity: dict) -> None:
@@ -114,12 +131,19 @@ def cmd_unlock_evidence(args, identity: dict) -> None:
 
     # Restore write permissions on directory
     try:
-        evidence_dir.chmod(
-            stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
-        )  # 755
+        evidence_dir.chmod(_MODE_DIR_UNLOCKED)
     except OSError as e:
         print(f"Failed to unlock evidence directory: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Subdirectories were locked to 555 as well — restore them too, or new
+    # files could only be added at the top level.
+    for path in evidence_dir.rglob("*"):
+        if path.is_dir() and not path.is_symlink():
+            try:
+                path.chmod(_MODE_DIR_UNLOCKED)
+            except OSError as e:
+                print(f"  Warning: could not chmod {path}: {e}", file=sys.stderr)
 
     _log_evidence_action(case_dir, "unlock", "Unlocked evidence directory", identity)
     print("Evidence directory unlocked (755). Files remain read-only.")
