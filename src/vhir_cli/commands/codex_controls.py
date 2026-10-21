@@ -44,12 +44,10 @@ OPTIONAL = (
     ("mcp-routes.tsv", "shared/hooks/mcp-routes.tsv"),
 )
 USERNS = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-USERNS_NOTICE = (
-    "  NOTE: this kernel restricts unprivileged user namespaces "
-    "(kernel.apparmor_restrict_unprivileged_userns=1), so Codex's sandbox "
-    "can't start and its shell commands will fail. An administrator can allow "
-    "it; see sift-mcp/docs/codex.md#sandbox."
-)
+# With USERNS at 1, Codex's sandbox runs through /usr/bin/bwrap when it's there,
+# and starts only with an AppArmor profile for it.
+BWRAP = Path("/usr/bin/bwrap")
+BWRAP_PROFILE = Path("/etc/apparmor.d/bwrap")
 OFF = "CODEX CONTROLS OFF"
 
 
@@ -90,8 +88,9 @@ def state_lines(clients=None) -> list[str]:
             "re-run vhir setup client --client=codex for the block to merge into it",
         ],
     }.get(state, [])
-    if lines and not in_codex_sandbox() and userns_restricted():
-        lines.append(USERNS_NOTICE[2:].replace("NOTE: ", "    "))
+    notice = userns_notice() if lines else None
+    if notice:
+        lines.append("    " + notice)
     return lines
 
 
@@ -119,6 +118,25 @@ def userns_restricted() -> bool:
         return USERNS.read_text().strip() == "1"
     except OSError:
         return False
+
+
+def userns_notice() -> str | None:
+    """Why Codex's sandbox can't start on this box, or None when it can: the
+    kernel restricts unprivileged user namespaces and /usr/bin/bwrap or its
+    AppArmor profile is missing. Never inside Codex's sandbox, which runs."""
+    if in_codex_sandbox() or not userns_restricted():
+        return None
+    missing = [str(p) for p in (BWRAP, BWRAP_PROFILE) if not p.exists()]
+    if not missing:
+        return None
+    return (
+        "this kernel restricts unprivileged user namespaces "
+        "(kernel.apparmor_restrict_unprivileged_userns=1), so Codex's sandbox "
+        f"needs {BWRAP} with an AppArmor profile for it ({BWRAP_PROFILE}). "
+        f"Missing here: {' and '.join(missing)}. Until then Codex's sandbox "
+        "can't start and its shell commands will fail; see "
+        "sift-mcp/docs/codex.md#sandbox."
+    )
 
 
 def codex_controls_state(clients=()) -> str:
@@ -225,8 +243,9 @@ def deploy_codex_controls(consent: bool | None = None) -> str:
     (and prints the commands without one); True installs (sudo may ask for a
     password); False prints the commands. Returns "installed", "updated",
     "unchanged", "admin-file", "printed" or "missing" (no sift-mcp assets)."""
-    if userns_restricted():
-        print(USERNS_NOTICE)
+    notice = userns_notice()
+    if notice:
+        print("  NOTE: " + notice)
     found = _sources()
     if found is None:
         print(

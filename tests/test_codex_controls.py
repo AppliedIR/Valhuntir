@@ -41,6 +41,8 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "REQUIREMENTS", etc / "requirements.toml")
     monkeypatch.setattr(cc, "HOOKS_DIR", etc / "vhir-hooks")
     monkeypatch.setattr(cc, "USERNS", tmp_path / "userns")
+    monkeypatch.setattr(cc, "BWRAP", tmp_path / "no-bwrap")
+    monkeypatch.setattr(cc, "BWRAP_PROFILE", tmp_path / "no-bwrap-profile")
     home = tmp_path / "home"
     monkeypatch.setattr(cc.Path, "home", staticmethod(lambda: home))
     ran = []

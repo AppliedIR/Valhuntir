@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import errno
 import json
+import socket
 import time
 import types
 import urllib.error
@@ -58,6 +59,8 @@ def box(request, tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "REQUIREMENTS", req)
     monkeypatch.setattr(cc, "USERNS", tmp_path / "userns")
     cc.USERNS.write_text(sysctl + "\n")
+    monkeypatch.setattr(cc, "BWRAP", tmp_path / "no-bwrap")
+    monkeypatch.setattr(cc, "BWRAP_PROFILE", tmp_path / "no-bwrap-profile")
     seen = types.SimpleNamespace(run=[], urlopen=0, sleep=0, snapshots=0)
 
     def run(cmd, **k):
@@ -121,6 +124,10 @@ def test_the_predicate_needs_the_variable_and_a_socket_refused_with_eperm(
 def test_the_variable_with_a_real_socket_outside_a_sandbox_is_not_codex(
     box, monkeypatch
 ):
+    try:
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()
+    except OSError as e:
+        pytest.skip(f"this host refuses an AF_INET socket ({e}): no real socket here")
     monkeypatch.setenv(VAR, "1")
     assert cc.in_codex_sandbox() is False
 

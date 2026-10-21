@@ -143,3 +143,11 @@ def _no_terminal_for_join_questions(monkeypatch):
     from vhir_cli.commands import join
 
     monkeypatch.setattr(join, "TTY", "/nonexistent/tty", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _outside_codex_s_sandbox(monkeypatch):
+    """Codex sets CODEX_SANDBOX_NETWORK_DISABLED=1 in its sandboxed shell, and
+    setup test reads it. A suite run from there would take the sandbox path in
+    every test that reaches setup test; the rows about that path set it."""
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
