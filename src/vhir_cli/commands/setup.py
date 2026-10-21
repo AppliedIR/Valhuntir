@@ -89,6 +89,14 @@ def _run_connectivity_test(sift_tools: bool = True) -> None:
     print("  Valhuntir Connectivity Test")
     print("=" * 60)
 
+    from vhir_cli.main import _wintools_configured
+
+    if _wintools_configured():  # before every early return below
+        from vhir_cli.commands.join import samba_include_check
+
+        kind, text = samba_include_check()
+        print(f"\n  Samba: {'WARNING: ' if kind == 'warn' else ''}{text}")
+
     # --- Sandbox health check ---
     print("\n  Sandbox:")
     from vhir_cli.commands.codex_controls import in_codex_sandbox

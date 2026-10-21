@@ -1376,8 +1376,12 @@ def _share_active_case(case_dir: Path, case_id: str) -> None:
         from vhir_cli.commands.join import (
             _repoint_samba_share,
             notify_wintools_case_activated,
+            samba_include_check,
         )
 
+        kind, text = samba_include_check()
+        if kind == "warn":
+            print(f"WARNING: {text}", file=sys.stderr)
         warning = _set_case_wintools_permissions(case_dir)
         _repoint_samba_share(case_dir)
         notify_wintools_case_activated(case_id)

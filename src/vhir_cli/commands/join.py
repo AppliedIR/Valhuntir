@@ -710,6 +710,34 @@ SHARE_NAME = (
     "vhir-cases"  # vhir's own section; SIFT's stock [cases] and [mnt] stay as shipped
 )
 SMB_CONF_PATH = "/etc/samba/smb.conf.d/vhir-cases.conf"
+SMB_CONF = "/etc/samba/smb.conf"
+SMB_INCLUDE = f"include = {SMB_CONF_PATH}"
+
+
+def has_vhir_include(text: str) -> bool:
+    """smb.conf includes vhir's share only on a line of its own: `# include`,
+    `;include` or an include glued onto the line before don't count."""
+    return any(line.strip() == SMB_INCLUDE for line in text.splitlines())
+
+
+def samba_include_check() -> tuple[str, str]:
+    """("ok" | "warn" | "unknown", text) for smb.conf's include of the share.
+    A SIFT update rewrites smb.conf without it, and Samba stops serving it."""
+    try:
+        text = Path(SMB_CONF).read_text(errors="replace")
+    except FileNotFoundError:
+        text = ""
+    except OSError as e:
+        return "unknown", f"couldn't check {SMB_CONF}: {e.strerror or e}"
+    if has_vhir_include(text):
+        return "ok", f"OK ({SMB_CONF} includes the wintools share)"
+    return "warn", (
+        f"Samba isn't serving the wintools share: {SMB_CONF} has no "
+        f"'{SMB_INCLUDE}' line. A SIFT update rewrites {SMB_CONF}; until the "
+        "line is back, Windows tools fall back to Plaso. Fix:\n"
+        f"      printf '\\n{SMB_INCLUDE}\\n' | sudo tee -a {SMB_CONF}\n"
+        "      sudo smbcontrol smbd reload-config"
+    )
 
 
 def private_primary_group(username: str) -> str:
@@ -1014,7 +1042,7 @@ def _setup_samba_share(join_code: str) -> str | None:
             timeout=10,
         )
         include_line = f"include = {smb_conf_path}"
-        if include_line not in result.stdout:
+        if not has_vhir_include(result.stdout):
             if result.returncode != 0 or not result.stdout.strip():
                 # Fresh install — create minimal smb.conf
                 minimal = f"[global]\n   workgroup = WORKGROUP\n{include_line}\n"
