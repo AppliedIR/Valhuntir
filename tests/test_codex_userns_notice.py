@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 
 import pytest
 
@@ -102,3 +103,31 @@ def test_inside_codex_s_sandbox_nothing_prints(box, capsys, monkeypatch, site):
     monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
     monkeypatch.setattr("socket.socket", refused)
     assert NOTICE not in SITES[site](capsys)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root searches any directory")
+@pytest.mark.parametrize("site", SITES)
+@pytest.mark.parametrize("bwrap", [True, False], ids=["bwrap", "no-bwrap"])
+def test_a_profile_that_can_t_be_checked_counts_as_there(
+    box, capsys, monkeypatch, site, bwrap
+):
+    """/etc/apparmor.d not searchable by this user: the profile's state is
+    unknown, so it counts as there. setup carries on, and the notice names
+    only a missing /usr/bin/bwrap."""
+    _set(box, "1", bwrap, False)
+    locked = box / "apparmor.d"
+    locked.mkdir()
+    (locked / "bwrap").write_text("")
+    monkeypatch.setattr(cc, "BWRAP_PROFILE", locked / "bwrap", raising=False)
+    locked.chmod(0)
+    try:
+        out = SITES[site](capsys)
+    finally:
+        locked.chmod(0o755)
+    notices = [ln for ln in out.splitlines() if NOTICE in ln]
+    if bwrap:
+        assert notices == []
+    else:
+        assert len(notices) == 1
+        missing = notices[0].split("Missing here: ")[1].split(". Until")[0]
+        assert missing == str(cc.BWRAP)

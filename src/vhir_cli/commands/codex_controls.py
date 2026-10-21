@@ -120,13 +120,22 @@ def userns_restricted() -> bool:
         return False
 
 
+def _missing(path: Path) -> bool:
+    """Whether a file surely isn't there. One that can't be checked (in a
+    directory this user can't search) is unknown, and counts as there."""
+    try:
+        return not path.exists()
+    except OSError:
+        return False
+
+
 def userns_notice() -> str | None:
     """Why Codex's sandbox can't start on this box, or None when it can: the
     kernel restricts unprivileged user namespaces and /usr/bin/bwrap or its
     AppArmor profile is missing. Never inside Codex's sandbox, which runs."""
     if in_codex_sandbox() or not userns_restricted():
         return None
-    missing = [str(p) for p in (BWRAP, BWRAP_PROFILE) if not p.exists()]
+    missing = [str(p) for p in (BWRAP, BWRAP_PROFILE) if _missing(p)]
     if not missing:
         return None
     return (
