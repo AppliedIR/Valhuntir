@@ -1369,6 +1369,24 @@ def _set_case_wintools_permissions(case_dir: Path) -> str | None:
     return "; ".join(w for w in (opened, group_step()) if w) or None
 
 
+def _share_active_case(case_dir: Path, case_id: str) -> None:
+    """Move the wintools share to the case just made active, and tell
+    wintools: what init, activate and reopen each do, with no question."""
+    try:
+        from vhir_cli.commands.join import (
+            _repoint_samba_share,
+            notify_wintools_case_activated,
+        )
+
+        warning = _set_case_wintools_permissions(case_dir)
+        _repoint_samba_share(case_dir)
+        notify_wintools_case_activated(case_id)
+        if warning:
+            print(f"  WARNING: {warning}")
+    except Exception as e:
+        print(f"Warning: wintools share update failed: {e}", file=sys.stderr)
+
+
 def _wintools_configured() -> bool:
     """Check if Samba sharing is set up (samba.yaml exists with share_name)."""
     from pathlib import Path
@@ -1490,31 +1508,9 @@ def _case_init(args, identity: dict) -> None:
         print(f"  WARNING: {data['fs_warning']}")
     print(HOST_LIST_HINT)  # a case just made has no host list
 
-    # Wintools sharing (after case creation succeeds)
-    if _wintools_configured():
-        if sys.stdin.isatty():
-            share = input("Share this case with wintools? [y/N] ").strip().lower()
-        else:
-            share = "n"
-        if share in ("y", "yes"):
-            try:
-                from vhir_cli.commands.join import (
-                    _repoint_samba_share,
-                    notify_wintools_case_activated,
-                )
-
-                warning = _set_case_wintools_permissions(Path(data["case_dir"]))
-                _repoint_samba_share(Path(data["case_dir"]))
-                notify_wintools_case_activated(data["case_id"])
-                if warning:
-                    print(f"  WARNING: {warning}")
-                else:
-                    print("Case permissions set for wintools")
-            except Exception as e:
-                print(
-                    f"Warning: Failed to set up wintools sharing: {e}",
-                    file=sys.stderr,
-                )
+    if _wintools_configured():  # the new case is active: the share moves to it
+        if activation:
+            _share_active_case(Path(data["case_dir"]), data["case_id"])
     elif _gateway_has_wintools():
         print("Tip: Run 'vhir setup join-code' to set up file sharing with wintools")
 
@@ -1628,25 +1624,8 @@ def _case_activate(args, identity: dict) -> None:
 
     print(f"Active case: {data['case_id']}")
 
-    # Repoint share and notify wintools
-    case_path = Path(data["case_dir"])
     if _wintools_configured():
-        try:
-            from vhir_cli.commands.join import (
-                _repoint_samba_share,
-                notify_wintools_case_activated,
-            )
-
-            warning = _set_case_wintools_permissions(case_path)
-            _repoint_samba_share(case_path)
-            notify_wintools_case_activated(args.case_id)
-            if warning:
-                print(f"  WARNING: {warning}")
-        except Exception as e:
-            print(
-                f"Warning: wintools share update failed: {e}",
-                file=sys.stderr,
-            )
+        _share_active_case(Path(data["case_dir"]), args.case_id)
 
 
 def _case_close(args, identity: dict) -> None:
@@ -1797,21 +1776,8 @@ def _case_reopen(args, identity: dict) -> None:
 
     print(f"Case {case_id} reopened and set as active.")
 
-    # Repoint share if this case is shared
     if _wintools_configured():
-        try:
-            from vhir_cli.commands.join import (
-                _repoint_samba_share,
-                notify_wintools_case_activated,
-            )
-
-            warning = _set_case_wintools_permissions(case_dir)
-            _repoint_samba_share(case_dir)
-            notify_wintools_case_activated(case_id)
-            if warning:
-                print(f"  WARNING: {warning}")
-        except Exception as e:
-            print(f"Warning: wintools share update failed: {e}", file=sys.stderr)
+        _share_active_case(case_dir, case_id)
 
 
 if __name__ == "__main__":
