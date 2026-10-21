@@ -35,9 +35,10 @@ def box(tmp_path, monkeypatch):
         (cases / case_id / "CASE.yaml").write_text(
             yaml.dump({"case_id": case_id, "status": "open"})
         )
-    written, notices = {}, []
+    written, notices, ran = {}, [], []
 
     def run(cmd, **kw):
+        ran.append(list(cmd))
         if cmd[:2] == ["sudo", "tee"]:
             written[cmd[-1]] = kw["input"].decode()
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -57,6 +58,7 @@ def box(tmp_path, monkeypatch):
         placeholder=str(tmp_path / ".vhir" / "share-inactive"),
         written=written,
         notices=notices,
+        ran=ran,
     )
 
 
@@ -109,6 +111,10 @@ def _active(box):
     return box.pointer.read_text() if box.pointer.exists() else None
 
 
+def _sudo_runs(box):
+    return [cmd for cmd in box.ran if cmd[:1] == ["sudo"]]
+
+
 @pytest.mark.parametrize("form", ["absolute", "bare id", "VHIR_CASE_DIR on B"])
 def test_closing_another_case_leaves_the_active_cases_share(box, monkeypatch, form):
     """R1: A active and shared; closing B moves nothing and tells wintools
@@ -123,6 +129,7 @@ def test_closing_another_case_leaves_the_active_cases_share(box, monkeypatch, fo
     _close(box, "CASE-B")
     after = (_active(box), _target(box), _conf_path(box), box.notices)
     assert after == (pointer, a, a, [])
+    assert _sudo_runs(box) == []
 
 
 @pytest.mark.parametrize("form", sorted(POINTERS))
@@ -133,6 +140,67 @@ def test_closing_the_active_case_moves_the_share_to_the_placeholder(box, form):
     _close(box, "CASE-A")
     after = (_active(box), _target(box), _conf_path(box), box.notices)
     assert after == (None, box.placeholder, box.placeholder, ["off"])
+
+
+@pytest.mark.parametrize("form", sorted(POINTERS))
+def test_a_case_activated_during_close_stays_active(box, monkeypatch, form):
+    """R8: A active and shared; B is activated while close A moves the share
+    (here, during the notice). Close A takes the share off A but leaves
+    active_case on B."""
+
+    def activate_b():
+        _activate(box, "CASE-B", form)
+        box.notices.append("off")
+
+    monkeypatch.setattr(join, "notify_wintools_case_deactivated", activate_b)
+    _share_at(box, box.cases / "CASE-A")
+    _activate(box, "CASE-A")
+    _close(box, "CASE-A")
+    after = (_active(box), _target(box), box.notices)
+    assert after == (POINTERS[form](box, "CASE-B"), box.placeholder, ["off"])
+
+
+def _undecodable_now(box):
+    box.pointer.write_bytes(b"\xff\xfe/cases/CASE-A")
+
+
+def _mode_000_now(box):
+    box.pointer.chmod(0)
+
+
+def _a_directory_now(box):
+    box.pointer.unlink()
+    box.pointer.mkdir()
+
+
+UNREADABLE_AT_REMOVAL = {
+    "undecodable": _undecodable_now,
+    "mode 000": _mode_000_now,
+    "a directory": _a_directory_now,
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNREADABLE_AT_REMOVAL))
+def test_a_pointer_unreadable_at_removal_is_left(box, monkeypatch, shape):
+    """R9: A active and shared; by the time close A comes to remove the
+    pointer, it can't be read. Close A leaves it."""
+    if shape == "mode 000" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+
+    def spoil_pointer():
+        UNREADABLE_AT_REMOVAL[shape](box)
+        box.notices.append("off")
+
+    monkeypatch.setattr(join, "notify_wintools_case_deactivated", spoil_pointer)
+    _share_at(box, box.cases / "CASE-A")
+    _activate(box, "CASE-A")
+    try:
+        _close(box, "CASE-A")
+    finally:
+        if shape == "mode 000":
+            box.pointer.chmod(0o644)
+    after = (box.pointer.exists(), _target(box), box.notices)
+    assert after == (True, box.placeholder, ["off"])
 
 
 def test_closing_the_case_the_share_points_at_with_none_active(box):
@@ -208,3 +276,4 @@ def test_an_unreadable_pointer_is_no_active_case(box, shape):
             box.pointer.chmod(0o644)
     assert (_target(box), _conf_path(box), box.notices) == (a, a, [])
     assert box.pointer.exists() == (shape != "missing")
+    assert _sudo_runs(box) == []

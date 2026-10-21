@@ -1728,11 +1728,14 @@ def _case_close(args, identity: dict) -> None:
         except Exception as e:
             print(f"Warning: failed to clear wintools share: {e}", file=sys.stderr)
 
-    # Clear active case pointer if this was the active case
+    # Clear the active case pointer only if it still names this case; a case
+    # activated during the share step keeps it, and unreadable means leave it
     if was_active:
         try:
-            active_file.unlink()
-        except OSError:
+            now = active_file.read_text().strip()
+            if (Path(now).name if os.path.isabs(now) else now) == case_id:
+                active_file.unlink()
+        except (OSError, UnicodeDecodeError):
             pass
 
     print(f"Case {case_id} closed.")
