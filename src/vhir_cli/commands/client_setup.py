@@ -2205,6 +2205,9 @@ def _codex_profile_text(servers: dict, instructions: str, kept: list[str]) -> st
         'approval_policy = "on-request"\n'
         'web_search = "disabled"\n'
         "project_doc_max_bytes = 0\n"
+        # Codex's checklist tool; Codex doesn't offer it without this key. A
+        # root key here: tables after the instructions are the client's own.
+        "tools.update_plan.enabled = true\n"
         f"developer_instructions = {body}\n"
     )
     sections = [_codex_server(n, e) for n, e in servers.items()] + kept
