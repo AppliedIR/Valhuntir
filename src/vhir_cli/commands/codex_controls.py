@@ -17,7 +17,10 @@ file away, and `codex_controls_state` then reports CODEX CONTROLS OFF.
 from __future__ import annotations
 
 import difflib
+import errno
+import os
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -87,7 +90,7 @@ def state_lines(clients=None) -> list[str]:
             "re-run vhir setup client --client=codex for the block to merge into it",
         ],
     }.get(state, [])
-    if lines and userns_restricted():
+    if lines and not in_codex_sandbox() and userns_restricted():
         lines.append(USERNS_NOTICE[2:].replace("NOTE: ", "    "))
     return lines
 
@@ -95,6 +98,20 @@ def state_lines(clients=None) -> list[str]:
 def ours(text: str) -> bool:
     """Whether a requirements file is Valhuntir's (its marker line leads)."""
     return MARKER in text.splitlines()[:3]
+
+
+def in_codex_sandbox() -> bool:
+    """Whether this shell runs in Codex's no-network sandbox: Codex sets
+    CODEX_SANDBOX_NETWORK_DISABLED=1 there, and the sandbox refuses an AF_INET
+    socket with EPERM. Both must hold, so the variable alone outside a sandbox
+    changes nothing. The one place Valhuntir reads the variable."""
+    if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") != "1":
+        return False
+    try:
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()
+    except OSError as e:
+        return e.errno == errno.EPERM
+    return False
 
 
 def userns_restricted() -> bool:

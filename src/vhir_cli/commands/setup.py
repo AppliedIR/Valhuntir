@@ -61,6 +61,17 @@ def _print_sift_tools_warning() -> None:
         print("\n  WARNING: " + text)
 
 
+def _print_codex_controls() -> None:
+    """Print Codex's managed-layer state, on a box set up for Codex."""
+    from vhir_cli.commands.codex_controls import state_lines
+
+    codex = state_lines()
+    if codex:
+        print("\n  Codex controls:")
+        for line in codex:
+            print(line)
+
+
 def _run_connectivity_test(sift_tools: bool = True) -> None:
     """Test connectivity to the gateway and all MCP backends.
 
@@ -80,6 +91,18 @@ def _run_connectivity_test(sift_tools: bool = True) -> None:
 
     # --- Sandbox health check ---
     print("\n  Sandbox:")
+    from vhir_cli.commands.codex_controls import in_codex_sandbox
+
+    if in_codex_sandbox():
+        print(
+            "    Codex's sandbox: this shell has no network, so bwrap, socat, "
+            "OpenSearch snapshots and the gateway aren't checked from here. "
+            "The MCP tools in this session are the gateway check."
+        )
+        _print_codex_controls()
+        if sift_tools:
+            _print_sift_tools_warning()
+        return
     bwrap = shutil.which("bwrap")
     if not bwrap:
         print("    bwrap: NOT INSTALLED — kernel sandbox (L9) unavailable")
@@ -213,13 +236,7 @@ def _run_connectivity_test(sift_tools: bool = True) -> None:
         print("    socat: OK")
 
     # --- Codex's managed layer (a box set up for Codex) ---
-    from vhir_cli.commands.codex_controls import state_lines
-
-    codex = state_lines()
-    if codex:
-        print("\n  Codex controls:")
-        for line in codex:
-            print(line)
+    _print_codex_controls()
 
     # --- OpenSearch snapshots: what vhir backup needs to save the indices ---
     from vhir_cli.commands.update import (
