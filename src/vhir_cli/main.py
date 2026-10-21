@@ -1699,7 +1699,17 @@ def _case_close(args, identity: dict) -> None:
 
     _aw(meta_file, yaml.dump(meta, default_flow_style=False))
 
-    # Clear wintools share
+    # The active case, read once: missing, empty or unreadable is none
+    active_file = Path.home() / ".vhir" / "active_case"
+    try:
+        current = active_file.read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        current = ""
+    # Handle both absolute path and legacy bare case ID formats
+    current_id = Path(current).name if os.path.isabs(current) else current
+    was_active = current_id == case_id
+
+    # Clear wintools share, only if this case has it
     if _wintools_configured():
         try:
             from vhir_cli.commands.join import (
@@ -1707,20 +1717,21 @@ def _case_close(args, identity: dict) -> None:
                 notify_wintools_case_deactivated,
             )
 
-            _repoint_samba_share(None)
-            notify_wintools_case_deactivated()
+            samba = yaml.safe_load((Path.home() / ".vhir" / "samba.yaml").read_text())
+            target = samba.get("active_share_target") or ""
+            if was_active or (
+                target and os.path.realpath(target) == os.path.realpath(case_dir)
+            ):
+                _repoint_samba_share(None)
+                if was_active or not current:  # no other case is active
+                    notify_wintools_case_deactivated()
         except Exception as e:
             print(f"Warning: failed to clear wintools share: {e}", file=sys.stderr)
 
     # Clear active case pointer if this was the active case
-    active_file = Path.home() / ".vhir" / "active_case"
-    if active_file.exists():
+    if was_active:
         try:
-            current = active_file.read_text().strip()
-            # Handle both absolute path and legacy bare case ID formats
-            current_id = Path(current).name if os.path.isabs(current) else current
-            if current_id == case_id:
-                active_file.unlink()
+            active_file.unlink()
         except OSError:
             pass
 
