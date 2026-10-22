@@ -400,7 +400,7 @@ Requires terminal confirmation. Logged to `audit/cli-exec.jsonl`. Use this for m
 #### evidence unlock
 
 ```
-vhir unlock-evidence                       # Directory chmod 755, files remain 444
+vhir unlock-evidence                       # Directories chmod 755, files remain 444
 vhir evidence unlock
 ```
 
@@ -510,7 +510,7 @@ vhir evidence register /path/to/image.E01 --description "Disk image"   # Asks yo
 vhir evidence list
 vhir evidence verify
 vhir evidence log [--path <filter>]
-vhir evidence lock                         # All files chmod 444, directory chmod 555
+vhir evidence lock                         # All files chmod 444, all directories chmod 555
 vhir evidence unlock
 ```
 
