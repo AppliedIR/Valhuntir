@@ -393,7 +393,7 @@ The **Evidence Provenance Chain** — visible in the Examiner Portal on each fin
 
 ### IOC Auto-Extraction
 
-When findings include IOCs (IPs, hashes, domains, URLs), they are automatically extracted to `iocs.json` with category and status tracking. IOC approval cascades from the parent finding — when all source findings reach the same status, the IOC follows.
+When findings include IOCs (IPs, hashes, domains, URLs), they are automatically extracted to `iocs.json` with category and status tracking. IOC approval cascades from the findings that cite it: an IOC is approved when any finding citing it is approved, and rejected when none is. A direct decision on an IOC, in the CLI or the Portal, takes it out of later cascades; either `vhir approve IOC-…` or `vhir reject IOC-…` can decide it again.
 
 ## Timeline
 

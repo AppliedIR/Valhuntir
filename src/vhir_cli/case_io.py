@@ -735,9 +735,9 @@ def plan_cascades(
     A timeline event cascades when it is the finding's `timeline_event_id`,
     its `auto_created_from` is that finding, it has no examiner
     modifications, and it is DRAFT (approve) or not REJECTED (reject).
-    An IOC cascades when it is DRAFT and not manually reviewed, its value is
-    among a decided finding's IOCs, and every finding citing it has that
-    status after this commit. Unsigned data can only narrow a cascade.
+    An IOC not manually reviewed whose value is among a decided finding's
+    IOCs follows the rule in `_ioc_outcomes`, when a finding decided here has
+    the status it moves to. Unsigned data can only narrow a cascade.
 
     Returns `{item, type, status_after, coupled_from}` per cascade."""
     out: list[dict] = []
@@ -762,7 +762,7 @@ def plan_cascades(
         out.append(
             {"item": t, "type": "timeline", "status_after": after, "coupled_from": fid}
         )
-    out.extend(c for _, c, _, _ in _ioc_outcomes(decided, findings, iocs, exclude) if c)
+    out.extend(o[1] for o in _ioc_outcomes(decided, findings, iocs, exclude) if o[1])
     return out
 
 
@@ -772,28 +772,37 @@ def undecided_iocs(
     iocs: list[dict],
     exclude: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict]:
-    """The IOCs a finding approved or rejected here cites that don't cascade,
-    because the findings citing them end this commit at different statuses.
-    They stay DRAFT until the examiner decides each on its own.
+    """The IOCs a finding approved or rejected here cites that the rule in
+    `_ioc_outcomes` doesn't move: DRAFT ones it leaves DRAFT, and ones it
+    would move with no finding decided here at the new status to sign it with
+    (a state from before the rule, or a concurrent decision). Each keeps its
+    status until the examiner decides it on its own.
 
-    Same arguments as `plan_cascades`. Returns `{item, coupled_from, citing}`
-    per IOC: `coupled_from` the first finding decided here that cites it, and
-    `citing` each finding citing it, as `(id, status after this commit)`."""
+    Same arguments as `plan_cascades`. Returns `{item, coupled_from, citing,
+    status, target}` per IOC: `coupled_from` the first finding decided here
+    that cites it, `citing` each finding citing it, as `(id, status after this
+    commit)`, `status` its status now and `target` the rule's."""
     findings = [f for f in findings if isinstance(f, dict)]
     return [
-        {"item": ioc, "coupled_from": source, "citing": citing}
-        for ioc, cascade, citing, source in _ioc_outcomes(
+        {"item": ioc, "coupled_from": source, "citing": citing,
+         "status": ioc["status"], "target": target}
+        for ioc, cascade, citing, source, target in _ioc_outcomes(
             decided, findings, iocs, exclude
         )
         if cascade is None
-    ]
+    ]  # fmt: skip
 
 
 def _ioc_outcomes(decided, findings, iocs, exclude):
-    """Each DRAFT IOC that a finding approved or rejected here cites, not
-    manually reviewed and not excluded, as `(ioc, cascade or None, citing,
-    the first such finding)`. It cascades when every finding citing it has
-    that status after this commit."""
+    """Each IOC that a finding approved or rejected here cites, not manually
+    reviewed and not excluded, that the rule moves or leaves DRAFT, as `(ioc,
+    cascade or None, citing, the first such finding, target)`.
+
+    The rule: an IOC is APPROVED when at least one finding citing it is
+    APPROVED after this commit; otherwise REJECTED when every one is, or when
+    it is APPROVED now; otherwise it keeps its status. A move cascades from a
+    finding decided here with that status after, the one the ledger couples
+    it to; with none, the IOC is held."""
     status_after = {
         f.get("id"): decided.get(f.get("id"), f.get("status", "DRAFT"))
         for f in findings
@@ -802,7 +811,8 @@ def _ioc_outcomes(decided, findings, iocs, exclude):
     for ioc in iocs:
         if not isinstance(ioc, dict) or ioc.get("id") in exclude:
             continue
-        if ioc.get("manually_reviewed") or ioc.get("status") != "DRAFT":
+        now = ioc.get("status")
+        if ioc.get("manually_reviewed") or now not in ("DRAFT", "APPROVED", "REJECTED"):
             continue
         value = normalize_ioc(str(ioc.get("value", "")))
         citing = [fid for fid, values in cited.items() if value in values]
@@ -811,19 +821,22 @@ def _ioc_outcomes(decided, findings, iocs, exclude):
         )
         if not sources:
             continue
+        afters = {status_after[fid] for fid in citing}
+        if "APPROVED" in afters:
+            target = "APPROVED"
+        elif afters == {"REJECTED"} or now == "APPROVED":
+            target = "REJECTED"
+        else:
+            target = now
+        if target == now != "DRAFT":
+            continue
+        mine = [fid for fid in sources if decided[fid] == target]
         cascade = None
-        for after in ("APPROVED", "REJECTED"):
-            mine = [fid for fid in sources if decided[fid] == after]
-            if mine and all(status_after[fid] == after for fid in citing):
-                cascade = {
-                    "item": ioc,
-                    "type": "ioc",
-                    "status_after": after,
-                    "coupled_from": mine[0],
-                }
-                break
+        if target != now and mine:
+            cascade = {"item": ioc, "type": "ioc", "status_after": target,
+                       "coupled_from": mine[0]}  # fmt: skip
         named = [(fid, status_after[fid]) for fid in sorted(citing, key=str)]
-        yield ioc, cascade, named, sources[0]
+        yield ioc, cascade, named, sources[0], target
 
 
 def set_status(

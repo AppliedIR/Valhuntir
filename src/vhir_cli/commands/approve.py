@@ -240,16 +240,27 @@ def _approve_specific(
     reason: str = "",
     show_signed: bool = False,
 ) -> None:
-    """Approve (DRAFT findings and timeline events) or reject (findings,
-    timeline events and IOCs not already rejected) specific ids."""
+    """Approve (DRAFT findings and timeline events, and IOCs not already
+    approved) or reject (findings, timeline events and IOCs not already
+    rejected) specific ids."""
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
     timeline = load_timeline(case_dir)
     iocs = load_iocs(case_dir)
-    picked = []
+    picked, refused_iocs = [], 0
     for item_id in dict.fromkeys(ids):  # an id named twice is decided once
-        if decision == "approve":
+        if decision == "approve" and decide.item_type(item_id) == "ioc":
+            item = next(
+                (x for x in iocs if isinstance(x, dict) and x.get("id") == item_id),
+                None,
+            )
+            if item is None or item.get("status") == "APPROVED":
+                why = "no such IOC" if item is None else "already APPROVED"
+                print(f"  {_one_line(item_id)}: {why}", file=sys.stderr)
+                refused_iocs += 1
+                continue
+        elif decision == "approve":
             item = find_draft_item(item_id, findings, timeline)
             if item is None:
                 print(
@@ -273,7 +284,9 @@ def _approve_specific(
                 continue
         picked.append(item)
     if not picked:
-        _no_items(decision)
+        # an IOC's reason is the whole answer; a finding's gets the hint too
+        if refused_iocs < len(set(ids)):
+            _no_items(decision)
         return
 
     new_passphrase = _preflight(identity, config_path, case_dir)

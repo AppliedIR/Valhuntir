@@ -83,18 +83,22 @@ class Decision:
 
 class Held(tuple):
     """An item linked to a finding decided here that isn't signed with it: a
-    timeline event made from a finding edited since, or an IOC the findings
-    citing it leave at different statuses (`citing`: each one's id and status
-    after this commit, empty for an event). It unpacks as `(id, finding id)`,
-    as the held pairs did before IOCs were held."""
+    timeline event made from a finding edited since, or an IOC the rule
+    (approved when any finding citing it is approved, rejected when none is)
+    leaves DRAFT or can't move with a finding decided here. For an IOC,
+    `citing` is each citing finding's id and status after this commit,
+    `status` its status now and `target` the rule's; all empty for an event.
+    It unpacks as `(id, finding id)`, as the held pairs did before IOCs were
+    held."""
 
-    def __new__(cls, item_id: str, coupled_from: str, citing=()):
+    def __new__(cls, item_id: str, coupled_from: str, citing=(), status="", target=""):
         self = super().__new__(cls, (item_id, coupled_from))
         self.citing = tuple(citing)
+        self.status, self.target = status, target
         return self
 
     def __getnewargs__(self):  # copy and pickle rebuild it whole
-        return (self[0], self[1], self.citing)
+        return (self[0], self[1], self.citing, self.status, self.target)
 
     @property
     def id(self) -> str:
@@ -121,8 +125,7 @@ def split_cascades(
 ) -> tuple[list[Decision], list[Held]]:
     """The cascades of `direct`, and the linked items held back from them:
     each timeline event linked to a finding edited here or in an earlier
-    review, then each IOC that doesn't cascade because the findings citing
-    it end this commit at different statuses.
+    review, then each IOC the rule leaves DRAFT or can't sign a move for.
 
     An event was made from its finding's text, so it would be signed with the
     text the edit replaced. It needs its own decision, and stays as it is until
@@ -152,25 +155,38 @@ def split_cascades(
                      c["status_after"], loaded=copy.deepcopy(c["item"]), coupled_from=c["coupled_from"])
         )  # fmt: skip
     for u in undecided_iocs(decided, findings, iocs, exclude):
-        held.append(Held(u["item"].get("id"), u["coupled_from"], tuple(u["citing"])))
+        held.append(Held(u["item"].get("id"), u["coupled_from"], tuple(u["citing"]),
+                         u["status"], u["target"]))  # fmt: skip
     return planned, held
 
 
-def held_line(item_id: str, finding_id: str, citing=()) -> str:
+def held_line(
+    item_id: str, finding_id: str, citing=(), status="DRAFT", target="DRAFT"
+) -> str:
     """Why a linked item isn't signed, and what to do about it."""
     if citing:
+        status, target = status or "DRAFT", target or status or "DRAFT"
         named = [f"{one_line(f)} ({one_line(s)})" for f, s in citing]
         names = " and ".join([", ".join(named[:-1]), named[-1]] if named[1:] else named)
+        why = "" if target == status else (
+            f" (the rule gives {one_line(target)}; no finding decided here has that "
+            "status to sign it with)"
+        )  # fmt: skip
         return (
-            f"{one_line(item_id)} stays DRAFT: cited by {names}. It is approved only "
-            f"when every finding that cites it is approved. To reject it now: "
-            f"vhir reject {one_line(item_id)}"
+            f"{one_line(item_id)} stays {one_line(status)}{why}: cited by {names}. An IOC "
+            "is approved when any finding citing it is approved, rejected when none "
+            f"is. {ioc_route(item_id)}"
         )
     return (
         f"{one_line(item_id)} is linked to {one_line(finding_id)}, which was edited "
         f"after the event was made from it. It won't be signed. Decide it on its own: "
         f"vhir approve {one_line(item_id)}"
     )
+
+
+def ioc_route(item_id: str) -> str:
+    """The two commands that decide an IOC directly."""
+    return f"Decide it now: vhir approve {one_line(item_id)} or vhir reject {one_line(item_id)}"
 
 
 def confirm_plan(
@@ -190,7 +206,7 @@ def confirm_plan(
     if held:
         print(f"\n{len(held)} linked item(s) not signed:")
     for h in held:
-        print(f"  {held_line(h.id, h.coupled_from, h.citing)}")
+        print(f"  {held_line(h.id, h.coupled_from, h.citing, h.status, h.target)}")
     ids = ", ".join(one_line(d.id) for d in direct + planned)
     if lead:
         print(lead)
@@ -774,9 +790,10 @@ def _still_as_shown(lists, direct, planned, skipped, case_dir=None):
                 "changed, or its source's decision was discarded; not signed or saved."
             )
     for key in sorted(now - set(shown)):
+        route = f" {ioc_route(key[0])}" if item_type(key[0]) == "ioc" else ""
         discarded.append(
             f"  NOT SIGNED: {one_line(key[0])} would now be decided with "
-            f"{one_line(key[2])}, but it wasn't shown to you; it is left as it is."
+            f"{one_line(key[2])}, but it wasn't shown to you; it is left as it is.{route}"
         )
     return kept + signed, discarded
 
