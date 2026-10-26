@@ -127,20 +127,28 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     longest first (a URL before the host it holds): the values in the approved
     findings' `iocs` fields, and the case's IOC records approved or cited by
     an approved finding, as report-mcp gathers them. A name a finding's text
-    merely mentions isn't one. Hashes, paths and the rest aren't."""
+    merely mentions isn't one. Hashes, paths and the rest aren't, nor is a
+    value the examiner rejected (an IOC record REJECTED and manually
+    reviewed), whatever cites it."""
     findings = view.get("findings") or []
     approved = {f.get("id") for f in findings}
     kept: set[str] = set()
+    records = [i for i in load_iocs(case_dir) if isinstance(i, dict)]
+    rejected = {  # compared as gathered: normalised, then case-folded
+        v.casefold() for i in records
+        if i.get("status") == "REJECTED" and i.get("manually_reviewed") is True
+        and (v := network_ioc(i.get("value", ""), True)) is not None
+    }  # fmt: skip
 
     def take(value, typed: bool) -> None:
-        if (v := network_ioc(value, typed)) is not None:
+        v = network_ioc(value, typed)
+        if v is not None and v.casefold() not in rejected:
             kept.add(v)
 
     for value, typed in structured_iocs(findings):
         take(value, typed)
     case_iocs = [  # the case's IOCs that one of the approved findings cites
-        i for i in load_iocs(case_dir)
-        if isinstance(i, dict) and isinstance(i.get("source_findings"), list)
+        i for i in records if isinstance(i.get("source_findings"), list)
         and approved.intersection(map(str, i["source_findings"]))
     ]  # fmt: skip
     for ioc in [*(view.get("iocs") or []), *case_iocs]:  # approved, or so cited
