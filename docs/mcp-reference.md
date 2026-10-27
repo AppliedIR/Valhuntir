@@ -311,7 +311,7 @@ Evidence indexing, structured querying, and programmatic enrichment. Connects to
 
 | Tool | Parameters | Description | When the LLM uses it |
 |------|-----------|-------------|---------------------|
-| `idx_search` | `query`, `index`, `case_id`, `limit` (50), `offset`, `sort` ("@timestamp:desc"), `time_from`, `time_to`, `compact` (true) | Full-text + structured query (OpenSearch query_string) | Core search tool — every evidence query |
+| `idx_search` | `query`, `index`, `case_id`, `limit` (50), `offset`, `sort` ("@timestamp:desc"), `time_from`, `time_to`, `compact` (true) | Full-text + structured query (OpenSearch query_string). With `compact`, long text values (over 500 characters) are cut, and lists keep their first 100 elements; `_truncated` lists each cut by its path | Core search tool — every evidence query |
 | `idx_count` | `query` ("*"), `index`, `case_id` | Fast document count with filters | To assess scale before querying |
 | `idx_aggregate` | `field`, `query` ("*"), `index`, `case_id`, `limit` (50) | Group-by analysis (top N values) | For pattern analysis: top processes, IP distribution |
 | `idx_timeline` | `query` ("*"), `index`, `case_id`, `interval` ("1h"), `time_field` ("@timestamp"), `time_from`, `time_to` | Date histogram for temporal analysis | To visualize activity over time |
