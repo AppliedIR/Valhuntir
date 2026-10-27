@@ -16,12 +16,14 @@ import pytest
 from vhir_cli import decide
 from vhir_cli.case_io import plan_cascades, undecided_iocs
 from vhir_cli.commands import approve as A
-from vhir_cli.ledger_verify import verify_case
+from vhir_cli.ledger_verify import RECOVERY, verify_case
 
 from .test_signed_decisions import IDENT, _signed, _status, case  # noqa: F401
 
 RULE = (
-    "An IOC is approved when any finding citing it is approved, rejected when none is."
+    "An IOC is approved when any finding citing it is approved. An approved IOC is "
+    "rejected as soon as no finding citing it is approved; any other IOC is rejected "
+    "when every finding citing it is rejected."
 )
 ROUTE = "Decide it now: vhir approve IOC-steve-001 or vhir reject IOC-steve-001"
 
@@ -97,6 +99,61 @@ def test_the_rule(before, ioc, decisions, manual, outcome):
         assert h.id == "IOC-steve-001" and h.citing == tuple(
             (fid, dict(decisions).get(fid, s)) for fid, s in sorted(before.items())
         )
+
+
+# each citing shape the rule sentence covers, at each status the IOC can have:
+# the citers before, this commit's decisions, the IOC's status, the outcome
+FIRST_REJECTED = (D2, [R1])
+EVERY_REJECTED = (_two("REJECTED", "DRAFT"), [R2])
+ONE_APPROVED = (_two("REJECTED", "DRAFT", "DRAFT"), [A2])
+CELLS = {
+    "rejected-and-draft-ioc-draft": (*FIRST_REJECTED, "DRAFT", ("held", "DRAFT", "DRAFT")),
+    "rejected-and-draft-ioc-approved": (*FIRST_REJECTED, "APPROVED", ("cascade", "REJECTED", "F-steve-001")),
+    "rejected-and-draft-ioc-rejected": (*FIRST_REJECTED, "REJECTED", None),
+    "every-rejected-ioc-draft": (*EVERY_REJECTED, "DRAFT", ("cascade", "REJECTED", "F-steve-002")),
+    "every-rejected-ioc-approved": (*EVERY_REJECTED, "APPROVED", ("cascade", "REJECTED", "F-steve-002")),
+    "every-rejected-ioc-rejected": (*EVERY_REJECTED, "REJECTED", None),
+    "one-approved-ioc-draft": (*ONE_APPROVED, "DRAFT", ("cascade", "APPROVED", "F-steve-002")),
+    "one-approved-ioc-approved": (*ONE_APPROVED, "APPROVED", None),
+    "one-approved-ioc-rejected": (*ONE_APPROVED, "REJECTED", ("cascade", "APPROVED", "F-steve-002")),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "before, decisions, ioc, outcome", CELLS.values(), ids=CELLS.keys()
+)
+def test_the_sentence_printed_states_the_rule_each_shape_follows(
+    before, decisions, ioc, outcome
+):
+    planned, held = _plan(before, ioc, decisions)
+    got = [("cascade", c.status_after, c.coupled_from) for c in planned]
+    got += [("held", h.status, h.target) for h in held]
+    assert got == ([outcome] if outcome else [])
+    citing = tuple(
+        (fid, dict(decisions).get(fid, s)) for fid, s in sorted(before.items())
+    )
+    target = outcome[1] if outcome else ioc
+    line = decide.held_line("IOC-steve-001", "F-steve-001", citing, ioc, target)
+    assert line.endswith(f". {RULE} {ROUTE}")
+
+
+def _not_signed():
+    """The line for an IOC cascade that only appeared under the lock."""
+    f = _f("F-steve-001", "APPROVED")
+    lists = {"finding": [f], "timeline": [], "ioc": [_ioc()]}
+    d = decide.Decision(f, "finding", "approve", "APPROVED", loaded=copy.deepcopy(f))
+    _, discarded = decide._still_as_shown(lists, [d], [], ())
+    (line,) = [x for x in discarded if "NOT SIGNED" in x]
+    return line
+
+
+@pytest.mark.parametrize(
+    "text", [_not_signed, lambda: RECOVERY["CASCADE_UNSUPPORTED"]],
+    ids=["not-signed-line", "verify-recovery"],
+)  # fmt: skip
+def test_each_ioc_recovery_names_both_commands(text):
+    said = text()
+    assert "vhir approve IOC-" in said and "vhir reject IOC-" in said
 
 
 def test_three_citing_findings_are_named_in_id_order():

@@ -84,8 +84,7 @@ class Decision:
 class Held(tuple):
     """An item linked to a finding decided here that isn't signed with it: a
     timeline event made from a finding edited since, or an IOC the rule
-    (approved when any finding citing it is approved, rejected when none is)
-    leaves DRAFT or can't move with a finding decided here. For an IOC,
+    (`IOC_RULE`) leaves DRAFT or can't move with a finding decided here. For an IOC,
     `citing` is each citing finding's id and status after this commit,
     `status` its status now and `target` the rule's; all empty for an event.
     It unpacks as `(id, finding id)`, as the held pairs did before IOCs were
@@ -160,6 +159,13 @@ def split_cascades(
     return planned, held
 
 
+IOC_RULE = (
+    "An IOC is approved when any finding citing it is approved. An approved IOC is "
+    "rejected as soon as no finding citing it is approved; any other IOC is rejected "
+    "when every finding citing it is rejected."
+)
+
+
 def held_line(
     item_id: str, finding_id: str, citing=(), status="DRAFT", target="DRAFT"
 ) -> str:
@@ -173,9 +179,8 @@ def held_line(
             "status to sign it with)"
         )  # fmt: skip
         return (
-            f"{one_line(item_id)} stays {one_line(status)}{why}: cited by {names}. An IOC "
-            "is approved when any finding citing it is approved, rejected when none "
-            f"is. {ioc_route(item_id)}"
+            f"{one_line(item_id)} stays {one_line(status)}{why}: cited by {names}. "
+            f"{IOC_RULE} {ioc_route(item_id)}"
         )
     return (
         f"{one_line(item_id)} is linked to {one_line(finding_id)}, which was edited "

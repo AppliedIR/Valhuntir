@@ -117,8 +117,9 @@ WHY = ("--reason", "duplicate")
 HELD_LEGACY = (
     f"  {IOC} stays REJECTED (the rule gives APPROVED; no finding decided here has "
     f"that status to sign it with): cited by {F1} (REJECTED), {F2} (APPROVED) and "
-    f"{F3} (REJECTED). An IOC is approved when any finding citing it is approved, "
-    f"rejected when none is. Decide it now: {ROUTE}"
+    f"{F3} (REJECTED). An IOC is approved when any finding citing it is approved. "
+    "An approved IOC is rejected as soon as no finding citing it is approved; any "
+    f"other IOC is rejected when every finding citing it is rejected. Decide it now: {ROUTE}"
 )
 
 # who cites at the start, each step with the IOC's status after it, the IOC's
@@ -177,6 +178,27 @@ def test_approve_refuses_an_approved_or_unknown_ioc_with_its_reason_only(
     assert code == 0
     assert (out + err).strip() == f"{item_id}: {why}"
     assert _ioc_lines() == signed
+
+
+def _files(root):
+    return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+@pytest.mark.parametrize(
+    "flag", [("--interpretation", "x"), ("--note", "x"), ("--edit",)],
+    ids=["interpretation", "note", "edit"],
+)  # fmt: skip
+def test_approve_refuses_a_finding_only_flag_on_an_ioc_and_writes_nothing(
+    two, monkeypatch, capsys, flag
+):
+    before, chain = _files(two), _files(ledger.LEDGER_DIR)
+    code, out, err = _vhir(monkeypatch, capsys, "approve", IOC, *flag)
+    assert code != 0 and f"{IOC}: {flag[0]} cannot be used on an IOC" in err, out + err
+    assert _files(two) == before and _files(ledger.LEDGER_DIR) == chain
+    # twin: without the flag, the same command decides the DRAFT IOC
+    _ok(monkeypatch, capsys, "approve", IOC)
+    assert _status(two, "iocs.json", IOC) == "APPROVED"
+    assert _ioc_lines() == [("approve", "APPROVED", None)]
 
 
 def test_a_lost_race_names_both_commands_and_approve_then_signs_it(

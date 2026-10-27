@@ -243,6 +243,15 @@ def _approve_specific(
     """Approve (DRAFT findings and timeline events, and IOCs not already
     approved) or reject (findings, timeline events and IOCs not already
     rejected) specific ids."""
+    flags = [f for f, on in (("--edit", edit), ("--interpretation", interpretation), ("--note", note)) if on]  # fmt: skip
+    named = [i for i in ids if decide.item_type(i) == "ioc"]
+    if decision == "approve" and flags and named:
+        # an IOC has no interpretation or note to sign; nothing is written
+        print(
+            f"  {_one_line(named[0])}: {' and '.join(flags)} cannot be used on an IOC",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     check_case_file_integrity(case_dir, "findings.json")
     check_case_file_integrity(case_dir, "timeline.json")
     findings = load_findings(case_dir)
