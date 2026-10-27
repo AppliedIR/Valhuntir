@@ -41,6 +41,7 @@ from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
 from vhir_cli.ledger_verify import (
+    _record_sha,
     approved_view,
     shown_label,
     verification_block,
@@ -122,6 +123,20 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
         _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
+def _rejection_signed(ioc: dict, result) -> bool:
+    """Whether verify reads the examiner's own rejection of this IOC record in
+    the approval ledger: its verdict VALID, on a direct decision (not a
+    cascade), for this record's content, in a case that doesn't fail. A status
+    set by hand has no ledger line, so it stays defanged."""
+    if result is None or result.failures:
+        return False  # nothing counts while the case fails
+    v = result.verdict(str(ioc.get("id")))
+    return (
+        v is not None and v.status == "VALID" and v.item_type == "ioc" and not v.source
+        and v.content_sha256 == _record_sha(ioc, "ioc", v.view)
+    )  # fmt: skip
+
+
 def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     """The IOCs of the case that are domains, URLs or IPv4 addresses, live,
     longest first (a URL before the host it holds): the values in the approved
@@ -129,7 +144,7 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     an approved finding, as report-mcp gathers them. A name a finding's text
     merely mentions isn't one. Hashes, paths and the rest aren't, nor is a
     value the examiner rejected (an IOC record REJECTED and manually
-    reviewed), whatever cites it."""
+    reviewed, its rejection signed in the ledger), whatever cites it."""
     findings = view.get("findings") or []
     approved = {f.get("id") for f in findings}
     kept: set[str] = set()
@@ -137,6 +152,7 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     rejected = {  # compared as gathered: normalised, then case-folded
         v.casefold() for i in records
         if i.get("status") == "REJECTED" and i.get("manually_reviewed") is True
+        and _rejection_signed(i, view.get("result"))
         and (v := network_ioc(i.get("value", ""), True)) is not None
     }  # fmt: skip
 
