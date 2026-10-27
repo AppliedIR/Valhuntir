@@ -686,6 +686,7 @@ def ioc_values(iocs_field) -> set[str]:
         raw_iocs = [
             v
             for vals in raw_iocs.values()
+            if vals is not None
             for v in (vals if isinstance(vals, list) else [vals])
         ]
     if not isinstance(raw_iocs, list):

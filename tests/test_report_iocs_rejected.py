@@ -4,8 +4,8 @@ as VALID) is no IOC of the report, so a saved report leaves it live, whichever
 approved finding names it and however. A held, approved or cascade-rejected
 record is still one when an approved finding names it or the record is
 approved, and so is one set REJECTED by hand (no ledger line), one whose
-latest line is a cascade's, or one changed after its rejection was signed: the
-safe side. Values match as the report gathers them (refanged, then
+latest line is a cascade's, one changed after its rejection was signed, or any
+in a case that verify fails: the safe side. Values match as the report gathers them (refanged, then
 case-folded). report-mcp's tests state the same rows against its copy,
 and run them through both."""
 
@@ -43,6 +43,11 @@ def _record(value, kind, status, reviewed, cited=True) -> dict:
     return {"id": "IOC-tester-001", "value": value, "type": kind, "status": status,
             "manually_reviewed": reviewed,
             "source_findings": [FINDING if cited else "F-tester-009"]}  # fmt: skip
+
+
+def _approved(value) -> dict:  # as `vhir approve` leaves it
+    return {**_record(value, "domain-name", "APPROVED", True), "approved_by": "tester",
+            "approved_at": "2026-10-08T10:00:00+00:00"}  # fmt: skip
 
 
 def _expected(name, cited, source, value) -> list[str]:
@@ -93,50 +98,88 @@ ROWS = [  # (id, the finding's iocs field, the case's IOC record, its ledger lin
      [{"value": "c2e.example.net", "type": "domain-name"}],
      _record("c2e.example.net", "domain-name", "REJECTED", True), "reject, then edit",
      ["c2e.example.net"]),
+    ("a second reviewed REJECTED record with a signed rejection's id",
+     [{"value": "c2d.example.net", "type": "domain-name"}],
+     [_record("ok-d.example.net", "domain-name", "REJECTED", True),
+      _record("c2d.example.net", "domain-name", "REJECTED", True)], "reject",
+     ["ok-d.example.net", "c2d.example.net"]),
+    ("a signed rejection in a case whose ledger fails elsewhere",
+     [{"value": "c2f.example.net", "type": "domain-name"}],
+     _record("c2f.example.net", "domain-name", "REJECTED", True),
+     "reject, beside a line for a record the case lacks", ["c2f.example.net"]),
+    ("a signed approval, its status alone set REJECTED after the verify",
+     [{"value": "c2r.example.net", "type": "domain-name"}],
+     _approved("c2r.example.net"),
+     "approve, then REJECTED after the verify", ["c2r.example.net"]),
+    ("a signed rejection, the status verify judged",
+     [{"value": "c2s.example.net", "type": "domain-name"}],
+     _record("c2s.example.net", "domain-name", "REJECTED", True), "reject", []),
+    ("a signed approval, its status left APPROVED",
+     [{"value": "c2p.example.net", "type": "domain-name"}],
+     _approved("c2p.example.net"), "approve",
+     ["c2p.example.net"]),
 ]  # fmt: skip
+FAILS = {  # the rows whose case verify fails, and its code
+    "a second reviewed REJECTED record with a signed rejection's id": "DUPLICATE_ID",
+    "a signed rejection in a case whose ledger fails elsewhere": "ITEM_MISSING",
+}
 
 
 def _sign(case: Path, record: dict, line: str) -> None:
     """The record's ledger line, as `vhir reject` (or approve) signs it: a
-    direct decision, or one coupled from the finding (a cascade)."""
-    decision = "approve" if line == "approve" else "reject"
+    direct decision, or one coupled from the finding (a cascade), beside an
+    approval of a record the case doesn't hold if `line` says so."""
+    decision = "approve" if line.startswith("approve") else "reject"
     key = Ed25519PrivateKey.generate()
     pub = keys.b64(keys.public_raw(key))
     ledger.LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     signed = {**record, "status": "APPROVED" if decision == "approve" else "REJECTED"}
+    decisions = [{"item_id": record["id"], "type": "ioc", "decision": decision,
+                  "status_after": signed["status"],
+                  "coupled_from": FINDING if line == "cascade" else None,
+                  "content_snapshot": signed_text(signed, "ioc")}]  # fmt: skip
+    if line.endswith("a record the case lacks"):
+        gone = {**signed, "id": "IOC-tester-002", "status": "APPROVED"}
+        decisions.append({"item_id": gone["id"], "type": "ioc", "decision": "approve",
+                          "status_after": "APPROVED", "coupled_from": None,
+                          "content_snapshot": signed_text(gone, "ioc")})  # fmt: skip
     bodies = ledger.prepare(
-        case.name,
-        [{"item_id": record["id"], "type": "ioc", "decision": decision,
-          "status_after": signed["status"],
-          "coupled_from": FINDING if line == "cascade" else None,
-          "content_snapshot": signed_text(signed, "ioc")}],
-        "tester", pub, "cli", "2026-10-08T10:00:00+00:00",
-    )  # fmt: skip
+        case.name, decisions, "tester", pub, "cli", "2026-10-08T10:00:00+00:00"
+    )
     with ledger.case_lock(case.name) as lock:
         ledger.commit(lock, bodies, [ledger.sign_body(b, key) for b in bodies], pub)
 
 
 def gathered(report_iocs, case: Path, field, record, line=None) -> list[str]:
-    """What `report_iocs` gathers from a case holding `record` (with `line`
-    signed for it in the ledger, if any), for a report of one approved
-    finding whose iocs field is `field`. Verify's verdicts are the real ones."""
+    """What `report_iocs` gathers from a case holding `record` (or the list of
+    records, the first one's), with `line` signed for it in the ledger, if
+    any, for a report of one approved finding whose iocs field is `field`.
+    Verify's verdicts are the real ones."""
     case.mkdir(exist_ok=True)
+    records = list(record) if isinstance(record, list) else [record]
     if line:
-        _sign(case, record, line)
+        _sign(case, records[0], line)
     if line == "reject, then edit":
-        record = {**record, "description": "changed after the rejection"}
-    (case / "iocs.json").write_text(json.dumps([record]))
+        records[0] = {**records[0], "description": "changed after the rejection"}
+    (case / "iocs.json").write_text(json.dumps(records))
     view = {"findings": [{"id": FINDING, "status": "APPROVED", "iocs": field}],
-            "iocs": [record] if record["status"] == "APPROVED" else [],
+            "iocs": [r for r in records if r["status"] == "APPROVED"],
             "result": approved_view(case)["result"]}  # fmt: skip
+    if line == "approve, then REJECTED after the verify":  # before the report reads it
+        records[0] = {**records[0], "status": "REJECTED"}
+        (case / "iocs.json").write_text(json.dumps(records))
     return report_iocs(case, view)
 
 
-@pytest.mark.parametrize(("field", "record", "line", "expected"), [r[1:] for r in ROWS],
+@pytest.mark.parametrize(("field", "record", "line", "expected", "fails"),
+                         [(*r[1:], FAILS.get(r[0])) for r in ROWS],
                          ids=[r[0] for r in ROWS])  # fmt: skip
 def test_a_value_the_examiner_rejected_is_no_ioc_of_the_report(
-    tmp_path, field, record, line, expected
+    tmp_path, field, record, line, expected, fails
 ):
     from vhir_cli.commands.report import _report_iocs
 
     assert gathered(_report_iocs, tmp_path / "case", field, record, line) == expected
+    if fails:  # the case fails, so no rejection counts
+        failures = approved_view(tmp_path / "case")["result"].failures
+        assert [f[0] for f in failures] == [fails]
