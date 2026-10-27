@@ -116,6 +116,18 @@ ROWS = [  # (id, the finding's iocs field, the case's IOC record, its ledger lin
      [_record("c2g.example.net", "domain-name", "REJECTED", True),
       {**_approved("ok-g.example.net"), "id": "IOC-tester-002"}],
      "reject, beside an approval changed after", ["ok-g.example.net", "c2g.example.net"]),
+    ("a signed rejection in a case with an approved finding that has no line",
+     [{"value": "c2h.example.net", "type": "domain-name"}],
+     _record("c2h.example.net", "domain-name", "REJECTED", True),
+     "reject, beside an approved finding with no line", ["c2h.example.net"]),
+    ("a signed rejection in a case with an approved timeline event that has no line",
+     [{"value": "c2i.example.net", "type": "domain-name"}],
+     _record("c2i.example.net", "domain-name", "REJECTED", True),
+     "reject, beside an approved timeline event with no line", ["c2i.example.net"]),
+    ("a signed rejection in a case with a held finding that has no line",
+     [{"value": "c2j.example.net", "type": "domain-name"}],
+     _record("c2j.example.net", "domain-name", "REJECTED", True),
+     "reject, beside a held finding with no line", []),
     ("a signed approval, its status alone set REJECTED after the verify",
      [{"value": "c2r.example.net", "type": "domain-name"}],
      _approved("c2r.example.net"),
@@ -132,6 +144,22 @@ FAILS = {  # the rows whose case fails verify, and its failures (none: a verdict
     "a second reviewed REJECTED record with a signed rejection's id": ["DUPLICATE_ID"],
     "a signed rejection in a case whose ledger fails elsewhere": ["ITEM_MISSING"],
     "a signed rejection in a case where another IOC changed after its approval": [],
+    "a signed rejection in a case with an approved finding that has no line": [],
+    "a signed rejection in a case with an approved timeline event that has no line": [],
+}
+OTHERS = {  # another item of the case, in its own file, with no ledger line
+    "reject, beside an approved finding with no line": (
+        "findings.json",
+        {"id": "F-tester-002", "status": "APPROVED", "title": "t"},
+    ),
+    "reject, beside an approved timeline event with no line": (
+        "timeline.json",
+        {"id": "T-tester-002", "status": "APPROVED", "description": "t"},
+    ),
+    "reject, beside a held finding with no line": (
+        "findings.json",
+        {"id": "F-tester-002", "status": "DRAFT", "title": "t"},
+    ),
 }
 
 
@@ -181,6 +209,9 @@ def gathered(report_iocs, case: Path, field, record, line=None) -> list[str]:
     if beside:
         records[1] = {**records[1], "description": "changed after the approval"}
     (case / "iocs.json").write_text(json.dumps(records))
+    if line in OTHERS:
+        name, other = OTHERS[line]
+        (case / name).write_text(json.dumps([other]))
     view = {"findings": [{"id": FINDING, "status": "APPROVED", "iocs": field}],
             "iocs": [r for r in records if r["status"] == "APPROVED"],
             "result": approved_view(case)["result"]}  # fmt: skip
