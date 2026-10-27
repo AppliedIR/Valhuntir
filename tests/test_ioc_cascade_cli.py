@@ -184,17 +184,27 @@ def _files(root):
     return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-@pytest.mark.parametrize(
-    "flag", [("--interpretation", "x"), ("--note", "x"), ("--edit",)],
-    ids=["interpretation", "note", "edit"],
-)  # fmt: skip
+REFUSED = {
+    "interpretation": ([IOC], ("--interpretation", "x")),
+    "note": ([IOC], ("--note", "x")),
+    "edit": ([IOC], ("--edit",)),
+    # a finding named with the IOC, before or after it, is not decided either
+    "finding-first-note": ([F1, IOC], ("--note", "x")),
+    "ioc-first-note": ([IOC, F1], ("--note", "x")),
+    "finding-first-interpretation": ([F1, IOC], ("--interpretation", "x")),
+    "ioc-first-interpretation": ([IOC, F1], ("--interpretation", "x")),
+}
+
+
+@pytest.mark.parametrize("ids, flag", REFUSED.values(), ids=REFUSED.keys())
 def test_approve_refuses_a_finding_only_flag_on_an_ioc_and_writes_nothing(
-    two, monkeypatch, capsys, flag
+    two, monkeypatch, capsys, ids, flag
 ):
     before, chain = _files(two), _files(ledger.LEDGER_DIR)
-    code, out, err = _vhir(monkeypatch, capsys, "approve", IOC, *flag)
-    assert code != 0 and f"{IOC}: {flag[0]} cannot be used on an IOC" in err, out + err
+    code, out, err = _vhir(monkeypatch, capsys, "approve", *ids, *flag)
+    assert code == 1 and f"{IOC}: {flag[0]} cannot be used on an IOC" in err, out + err
     assert _files(two) == before and _files(ledger.LEDGER_DIR) == chain
+    assert _status(two, "findings.json", F1) == "DRAFT"
     # twin: without the flag, the same command decides the DRAFT IOC
     _ok(monkeypatch, capsys, "approve", IOC)
     assert _status(two, "iocs.json", IOC) == "APPROVED"

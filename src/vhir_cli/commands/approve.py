@@ -246,7 +246,7 @@ def _approve_specific(
     flags = [f for f, on in (("--edit", edit), ("--interpretation", interpretation), ("--note", note)) if on]  # fmt: skip
     named = [i for i in ids if decide.item_type(i) == "ioc"]
     if decision == "approve" and flags and named:
-        # an IOC has no interpretation or note to sign; nothing is written
+        # the CLI refuses an interpretation or note on an IOC; nothing is written
         print(
             f"  {_one_line(named[0])}: {' and '.join(flags)} cannot be used on an IOC",
             file=sys.stderr,
