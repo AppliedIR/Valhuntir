@@ -41,7 +41,6 @@ from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
 from vhir_cli.ledger_verify import (
-    _record_sha,
     approved_view,
     shown_label,
     verification_block,
@@ -126,17 +125,16 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
 def _rejection_signed(ioc: dict, result) -> bool:
     """Whether verify reads the examiner's own rejection of this IOC record in
     the approval ledger: its verdict VALID, on a direct decision (not a
-    cascade), for this record's content, in a case that passes verify (any
-    verdict that fails it, on any item, cancels every rejection). `ioc` is the
-    record verify read, so VALID on its REJECTED status means its latest line
-    records that rejection (verify fails a status its line doesn't). A status
+    cascade), in a case that passes verify (any verdict that fails it, on any
+    item, cancels every rejection). `ioc` is the record verify read, so VALID
+    on its REJECTED status means its latest line records that rejection for
+    this content (verify fails a status or content its line doesn't). A status
     set by hand has no ledger line, so it stays defanged."""
     if result is None or result.exit_code:
         return False  # nothing counts while the case fails verify
     v = result.verdict(str(ioc.get("id")))
     return (
         v is not None and v.status == "VALID" and v.item_type == "ioc" and not v.source
-        and v.content_sha256 == _record_sha(ioc, "ioc", v.view)
     )  # fmt: skip
 
 
