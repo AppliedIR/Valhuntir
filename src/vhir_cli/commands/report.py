@@ -126,12 +126,13 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
 def _rejection_signed(ioc: dict, result) -> bool:
     """Whether verify reads the examiner's own rejection of this IOC record in
     the approval ledger: its verdict VALID, on a direct decision (not a
-    cascade), for this record's content, in a case that doesn't fail. `ioc` is
-    the record verify read, so VALID on its REJECTED status means its latest
-    line records that rejection (verify fails a status its line doesn't). A
-    status set by hand has no ledger line, so it stays defanged."""
-    if result is None or result.failures:
-        return False  # nothing counts while the case fails
+    cascade), for this record's content, in a case that passes verify (any
+    verdict that fails it, on any item, cancels every rejection). `ioc` is the
+    record verify read, so VALID on its REJECTED status means its latest line
+    records that rejection (verify fails a status its line doesn't). A status
+    set by hand has no ledger line, so it stays defanged."""
+    if result is None or result.exit_code:
+        return False  # nothing counts while the case fails verify
     v = result.verdict(str(ioc.get("id")))
     return (
         v is not None and v.status == "VALID" and v.item_type == "ioc" and not v.source
