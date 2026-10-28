@@ -14,6 +14,7 @@ from vhir_cli.case_io import (
     export_bundle,
     get_case_dir,
     import_bundle,
+    ioc_values,
     load_findings,
     load_timeline,
     save_findings,
@@ -684,3 +685,16 @@ class TestTailJsonlEntries:
             path, 10, lambda e: e.get("tool") == "carve_files"
         )
         assert [e["tool"] for e in entries] == ["carve_files"]
+
+
+DOMAINS = [f"d{n}.example.net" for n in range(100)]
+
+
+@pytest.mark.parametrize(
+    "iocs",
+    [{"unused": None, "domains": DOMAINS}, {"domains": DOMAINS, "unused": None}],
+)
+def test_a_key_with_no_value_names_no_ioc(iocs):
+    """A null under any key is skipped, as forensic-mcp skips it, so it takes
+    none of the first 100 places from the values the finding names."""
+    assert ioc_values(iocs) == set(DOMAINS)

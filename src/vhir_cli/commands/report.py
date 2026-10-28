@@ -122,25 +122,53 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
         _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
+def _rejection_signed(ioc: dict, result) -> bool:
+    """Whether verify reads the examiner's own rejection of this IOC record in
+    the approval ledger: its verdict VALID, on a direct decision (not a
+    cascade), in a case that passes verify (any verdict that fails it, on any
+    item, cancels every rejection). `ioc` is the record verify read, so VALID
+    on its REJECTED status means its latest line records that rejection for
+    this content (verify fails a status or content its line doesn't). A status
+    set by hand has no ledger line, so it stays defanged."""
+    if result is None or result.exit_code:
+        return False  # nothing counts while the case fails verify
+    v = result.verdict(str(ioc.get("id")))
+    return (
+        v is not None and v.status == "VALID" and v.item_type == "ioc" and not v.source
+    )  # fmt: skip
+
+
 def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     """The IOCs of the case that are domains, URLs or IPv4 addresses, live,
     longest first (a URL before the host it holds): the values in the approved
     findings' `iocs` fields, and the case's IOC records approved or cited by
     an approved finding, as report-mcp gathers them. A name a finding's text
-    merely mentions isn't one. Hashes, paths and the rest aren't."""
+    merely mentions isn't one. Hashes, paths and the rest aren't, nor is a
+    value the examiner rejected (an IOC record REJECTED and manually
+    reviewed, its rejection signed in the ledger), whatever cites it."""
     findings = view.get("findings") or []
     approved = {f.get("id") for f in findings}
     kept: set[str] = set()
+    records = [i for i in load_iocs(case_dir) if isinstance(i, dict)]
+    result = view.get("result")
+    judged = result.records if result is not None else []  # verify's own read
+    rejected = {  # compared as gathered: normalised, then case-folded
+        v.casefold() for key, i in judged
+        if key == "iocs" and isinstance(i, dict)
+        and i.get("status") == "REJECTED" and i.get("manually_reviewed") is True
+        and _rejection_signed(i, result)
+        and (v := network_ioc(i.get("value", ""), True)) is not None
+    }  # fmt: skip
 
     def take(value, typed: bool) -> None:
-        if (v := network_ioc(value, typed)) is not None:
+        v = network_ioc(value, typed)
+        if v is not None and v.casefold() not in rejected:
             kept.add(v)
 
     for value, typed in structured_iocs(findings):
         take(value, typed)
     case_iocs = [  # the case's IOCs that one of the approved findings cites
-        i for i in load_iocs(case_dir)
-        if isinstance(i, dict) and isinstance(i.get("source_findings"), list)
+        i for i in records if isinstance(i.get("source_findings"), list)
         and approved.intersection(map(str, i["source_findings"]))
     ]  # fmt: skip
     for ioc in [*(view.get("iocs") or []), *case_iocs]:  # approved, or so cited
