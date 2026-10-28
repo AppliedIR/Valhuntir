@@ -136,7 +136,10 @@ RECOVERY = {
         "case's chain from a copy; if none has it, as CHAIN_BROKEN. A type mismatch on "
         "the latest line only: decide again"
     ),
-    "CASCADE_UNSUPPORTED": "Decide the item directly (for an IOC, `vhir reject IOC-...`)",
+    "CASCADE_UNSUPPORTED": (
+        "Decide the item directly (for an IOC, `vhir approve IOC-...` or "
+        "`vhir reject IOC-...`)"
+    ),
     "CHAIN_UNREADABLE": (
         "The chain file can't be read, or isn't UTF-8: it was changed or damaged "
         "outside Valhuntir. Restore it from a copy, as CHAIN_BROKEN"
