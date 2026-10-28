@@ -11,6 +11,8 @@ Each row asserts the whole text.
 - A record whose path is relative names nothing, whatever the cwd.
 - A wintools record's case-relative sift_path names its file whether the
   case folder is given absolute or relative, under extractions/ or not.
+- With the case folder given relatively, a relative evidence path and a
+  folder are refused or registered as with the absolute folder.
 - A path outside the case: `ln -s` first, then `cp`, both from the
   resolved source; the printed `ln -s` registers.
 """
@@ -211,6 +213,62 @@ def test_a_wintools_sift_path_names_its_file_however_the_case_is_given(
         register_evidence_data(given, str(out), "tester", registered_via="mcp")
     assert str(e.value) == _recorded(out.resolve(), "wt-2")
     assert json.loads((case / "evidence.json").read_text())["files"] == []
+
+
+def _given_relatively(case, monkeypatch, form) -> Path:
+    monkeypatch.chdir(case if form == "dot" else case.parent)
+    return {"relative": Path("case"), "dot": Path(".")}[form]
+
+
+@pytest.mark.parametrize("where", ["extractions/wt", "work/evtx"])
+@pytest.mark.parametrize("form", ["relative", "dot"])
+def test_a_relative_evidence_path_in_a_case_given_relatively(
+    case, monkeypatch, form, where
+):
+    (case / where).mkdir(parents=True)
+    out = case / where / "out.csv"
+    out.write_bytes(b"x,y\n")
+    _record(case, "wintools-mcp", audit_id="wt-2", tool="EvtxECmd",
+            outputs=[{"sift_path": f"{where}/out.csv", "sha256": _sha(b"x,y\n")}])  # fmt: skip
+    given = _given_relatively(case, monkeypatch, form)
+    with pytest.raises(ValueError) as e:
+        register_evidence_data(
+            given, f"{where}/out.csv", "tester", registered_via="mcp"
+        )
+    assert str(e.value) == _recorded(out.resolve(), "wt-2")
+    entry = register_evidence_data(given, "evidence/orig.bin", "tester")
+    orig = (case / "evidence" / "orig.bin").resolve()
+    assert (entry["path"], entry["sha256"]) == (str(orig), _sha(orig.read_bytes()))
+    files = json.loads((case / "evidence.json").read_text())["files"]
+    assert [f["path"] for f in files] == [str(orig)]
+
+
+@pytest.mark.parametrize("where", ["extractions/wt", "work/evtx"])
+@pytest.mark.parametrize("form", ["relative", "dot"])
+def test_a_folder_registration_in_a_case_given_relatively(
+    case, monkeypatch, form, where
+):
+    (case / where).mkdir(parents=True)
+    out = case / where / "out.csv"
+    out.write_bytes(b"x,y\n")
+    _record(case, "wintools-mcp", audit_id="wt-2", tool="EvtxECmd",
+            outputs=[{"sift_path": f"{where}/out.csv", "sha256": _sha(b"x,y\n")}])  # fmt: skip
+    (case / "evidence" / "dir").mkdir()
+    (case / "evidence" / "dir" / "a.bin").write_bytes(b"an original\n")
+    given = _given_relatively(case, monkeypatch, form)
+    with pytest.raises(ValueError) as e:
+        register_evidence_data(given, where, "tester", registered_via="mcp")
+    assert str(e.value) == (
+        f"{(case / where).resolve()} holds a file that isn't an original: "
+        + _recorded(out.resolve(), "wt-2")
+    )
+    entry = register_evidence_data(given, "evidence/dir", "tester")
+    assert (entry["path"], entry["file_count"]) == (
+        str((case / "evidence" / "dir").resolve()),
+        1,
+    )
+    files = json.loads((case / "evidence.json").read_text())["files"]
+    assert [f["path"] for f in files] == [entry["path"]]
 
 
 def test_a_path_outside_the_case_offers_a_link_first(case, tmp_path):
