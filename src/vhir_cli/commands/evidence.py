@@ -165,7 +165,9 @@ def register_evidence_data(
     """
     from vhir_cli.case_io import _atomic_write
 
-    case_dir = Path(case_dir)
+    # Absolute once, so every record path joined to it compares like the
+    # absolute case folder's
+    case_dir = Path(case_dir).absolute()
     evidence_path = Path(path)
 
     # Resolve relative paths against case directory

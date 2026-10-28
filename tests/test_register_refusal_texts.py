@@ -9,6 +9,8 @@ Each row asserts the whole text.
 - An empty file under extractions/: nothing can link it, and no way out.
 - A file a record names: the record ids, and no claim that it links.
 - A record whose path is relative names nothing, whatever the cwd.
+- A wintools record's case-relative sift_path names its file whether the
+  case folder is given absolute or relative, under extractions/ or not.
 - A path outside the case: `ln -s` first, then `cp`, both from the
   resolved source; the printed `ln -s` registers.
 """
@@ -22,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -187,6 +190,27 @@ def test_a_recorded_output_names_its_records_and_claims_no_link(case, inputs):
         register_evidence_data(case, str(out), "tester", registered_via="mcp")
     assert str(e.value) == _recorded(out.resolve(), "sift-tester-3")
     assert json.loads((case / "evidence.json").read_text())["files"] == files
+
+
+@pytest.mark.parametrize("windows_path", [True, False])
+@pytest.mark.parametrize("where", ["extractions/wt", "work/evtx"])
+@pytest.mark.parametrize("form", ["absolute", "relative", "dot"])
+def test_a_wintools_sift_path_names_its_file_however_the_case_is_given(
+    case, monkeypatch, form, where, windows_path
+):
+    (case / where).mkdir(parents=True)
+    out = case / where / "out.csv"
+    out.write_bytes(b"x,y\n")
+    rec = {"sift_path": f"{where}/out.csv", "sha256": _sha(b"x,y\n")}
+    if windows_path:
+        rec["path"] = where.replace("/", "\\") + "\\out.csv"
+    _record(case, "wintools-mcp", audit_id="wt-2", tool="EvtxECmd", outputs=[rec])
+    monkeypatch.chdir(case if form == "dot" else case.parent)
+    given = {"absolute": case, "relative": Path("case"), "dot": Path(".")}[form]
+    with pytest.raises(ValueError) as e:
+        register_evidence_data(given, str(out), "tester", registered_via="mcp")
+    assert str(e.value) == _recorded(out.resolve(), "wt-2")
+    assert json.loads((case / "evidence.json").read_text())["files"] == []
 
 
 def test_a_path_outside_the_case_offers_a_link_first(case, tmp_path):
