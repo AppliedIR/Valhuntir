@@ -165,7 +165,9 @@ def register_evidence_data(
     """
     from vhir_cli.case_io import _atomic_write
 
-    case_dir = Path(case_dir)
+    # Absolute once, so every record path joined to it compares like the
+    # absolute case folder's
+    case_dir = Path(case_dir).absolute()
     evidence_path = Path(path)
 
     # Resolve relative paths against case directory
@@ -198,10 +200,10 @@ def register_evidence_data(
                 f"  Path:     {evidence_path}\n"
                 f"  Resolved: {resolved}\n"
                 f"  Case dir: {case_resolved}\n"
-                f"Copy evidence into the case evidence directory first:\n"
-                f"  cp {evidence_path} {case_dir / 'evidence' / evidence_path.name}\n"
-                f"Or create a symlink:\n"
-                f"  ln -s {resolved} {case_dir / 'evidence' / evidence_path.name}"
+                f"Link it into the case evidence directory (recommended):\n"
+                f"  ln -s {resolved} {case_dir / 'evidence' / evidence_path.name}\n"
+                f"Or copy it there (this duplicates the bytes):\n"
+                f"  cp {resolved} {case_dir / 'evidence'}/"
             )
 
     if evidence_path.is_dir():
@@ -337,7 +339,8 @@ def _hash_stable(path, tries: int = 3) -> tuple[str, dict]:
 def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
     """(real path, SHA-256) of each output an audit entry records: its output
     records (a wintools one by its SIFT path, relative to the case), and its
-    output files and saved stdout."""
+    output files and saved stdout. Any other relative path names nothing: it
+    would resolve against this process's folder, not the one that wrote it."""
     out = [(str(case_dir / o["sift_path"]) if o.get("sift_path") else o.get("path"),
             o.get("sha256")) for o in entry.get("outputs") or [] if isinstance(o, dict)]  # fmt: skip
     rs = (
@@ -349,8 +352,8 @@ def _outputs_of(case_dir: Path, entry: dict) -> list[tuple[str, str]]:
         rs.get("output_files") or [], rs.get("output_sha256s") or [], strict=False
     )
     out.append((rs.get("output_file"), rs.get("output_sha256")))
-    return [(os.path.realpath(p), h) for p, h in out if isinstance(p, str) and p
-            and isinstance(h, str)]  # fmt: skip
+    return [(os.path.realpath(p), h) for p, h in out if isinstance(p, str)
+            and os.path.isabs(p) and isinstance(h, str)]  # fmt: skip
 
 
 def _absolute(path):
@@ -449,12 +452,26 @@ def _made_here(index: dict, real: str, sha256: str) -> list[dict]:
     ]
 
 
+# What a file under extractions/ that no record names can still become: the
+# way an ingest accepts, then the one only a finding accepts
+_WAYS_OUT = (
+    "Ways out, in this order: (1) re-make it with run_command from registered "
+    "evidence or a recorded output, the only route an ingest accepts; (2) for a "
+    "finding only, declare how it was made with log_external_action, naming the "
+    "inputs (registered evidence or recorded outputs) in input_files and this "
+    "file in output_files. Declare first: reads made before the declaration don't "
+    "link, so re-run them after it or cite the declaration's audit_id. For a "
+    "folder, name each file."
+)
+
+
 def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> tuple:
     """(Why a file can't be registered as an original, or None; and fields for
     its entry: an acquisition's `acquired_by` and `acquisition_tool`, or a
-    `derivation_note`). A file this case's tools made is linked to what it was
-    made from, never registered: one this case recorded as an operation's
-    output, or one under its extractions/. A file every recording operation
+    `derivation_note`). A file this case's tools made is never registered: one
+    this case recorded as an operation's output, or one under its
+    extractions/. The refusal says only what was checked here, never whether
+    the file links to its evidence. A file every recording operation
     acquired (a live memory or disk collection) is evidence itself: it
     registers, labelled. When part of the audit can't be read, a file that
     isn't refused registers, saying its derivation is unchecked."""
@@ -488,19 +505,30 @@ def _not_an_original(case_dir: Path, real: str, sha256: str, recorded=None) -> t
         return None, {"acquired_by": first.get("audit_id", ""),
                       "acquisition_tool": first.get("acquisition_tool") or first.get("tool", ""),
                       **note}  # fmt: skip
-    if ops:
+    if ops:  # whether it links to that evidence is the grader's to say
         ids = ", ".join(str(e.get("audit_id", "?")) for e in ops)
         return (
             f"{real} is an output this case recorded ({ids}): register the original "
-            "evidence it was made from; this file is linked to it."
+            "evidence it was made from."
         ), None
     extractions = os.path.realpath(case_dir / "extractions") + os.sep
-    if real.startswith(extractions):
+    if not real.startswith(extractions):
+        return None, note or None
+    where = f"{real} is under this case's extractions/"
+    if sha256 == _EMPTY_SHA256:
         return (
-            f"{real} is under this case's extractions/, made by its tools: register "
-            "the original evidence it was made from; this file is linked to it."
+            f"{where} and is empty: no record or declaration can link an empty "
+            "file, so it can't be registered or ingested."
         ), None
-    return None, note or None
+    read = (
+        f"in the audit it could read names it as an output with these bytes ({note['derivation_note']})"
+        if unread
+        else "in this case names it as an output with these bytes"
+    )
+    return (
+        f"{where}, where files are never registered as originals, and no record "
+        f"{read}. {_WAYS_OUT}"
+    ), None
 
 
 def _read_registry(reg_file: Path) -> dict:
