@@ -674,7 +674,7 @@ def test_the_cli_still_prints_a_multi_line_refusal_as_its_own_lines(
     err = _cli_refused(case, outside, capsys, monkeypatch)
     first = _drives_nothing(err)
     assert first == "Error: Evidence path must be within the case directory."
-    for line in ("    Resolved: ", "    Case dir: ", "  Or create a symlink:"):
+    for line in ("    Resolved: ", "    Case dir: ", "  Or copy it there"):
         assert any(got.startswith(line) for got in err.split("\n"))
 
     p = case / "evidence" / "samples.7z"
