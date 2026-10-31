@@ -1,0 +1,61 @@
+{
+  "module_sha256": "99754a4af80d1cf148dca164307777ac41a4f2eddd91bf56ebb759f4a783bd65",
+  "canonical": [
+    ["ipv4-addr", "ipv4-addr"],
+    ["IPv4", "ipv4-addr"],
+    [" IP_SRC ", "ipv4-addr"],
+    ["ip4", "ipv4-addr"],
+    ["SHA-256", "file:hash:sha256"],
+    ["File", "file:path"],
+    ["file_name", "file:name"],
+    ["user", "user-account"],
+    ["other", "unknown"],
+    ["hash", null],
+    ["network-traffic", null],
+    ["", null],
+    [7, null]
+  ],
+  "label": [
+    ["IPV4-ADDR", "IPv4"],
+    ["domain", "Domain"],
+    ["file:hash:md5", "MD5"],
+    ["account", "Account"],
+    ["other", "Unknown"],
+    ["hash", "hash"]
+  ],
+  "ck": [
+    ["10.20.30.41:443", null, "10.20.30.41"],
+    ["10.20.30.41:443", "  ", "10.20.30.41"],
+    ["10.20.30.41:443", "ipv4-addr", "10.20.30.41"],
+    ["10.20.30.41:443", "IPv4", "10.20.30.41"],
+    ["10[.]20[.]30[.]41:8080", "ip4", "10.20.30.41"],
+    ["10.20.30.41:443", "unknown", "10.20.30.41:443"],
+    ["1.2.3.4/24", null, "1.2.3.4/24"],
+    ["999.1.1.1:22", null, "999.1.1.1:22"],
+    ["Evil[.]COM.", "domain", "evil.com"],
+    ["hxxp://Evil.com/x", null, "http://evil.com/x"],
+    ["D41D8CD98F00B204E9800998ECF8427E", "md5", "d41d8cd98f00b204e9800998ecf8427e"],
+    ["C:\\Temp\\A.exe", "file", "c:\\temp\\a.exe"],
+    ["  jdoe  ", "user", "jdoe"]
+  ],
+  "vk": [
+    ["10[.]20[.]30[.]41:443", "10.20.30.41:443"],
+    ["hxxp://Evil.com", "http://evil.com"],
+    ["evil{.}org", "evil{.}org"],
+    ["ABC", "ABC"]
+  ],
+  "rk": [
+    ["10[.]20[.]30[.]41", "10[.]20[.]30[.]41"],
+    ["Evil.COM", "evil.com"],
+    [" x ", "x"]
+  ],
+  "same": [
+    [["10.20.30.41", null], ["10.20.30.41:443", null], true],
+    [["10.20.30.41:443", null], ["10.20.30.41:443", "unknown"], true],
+    [["10.20.30.41", null], ["10.20.30.41:443", "unknown"], false],
+    [["evil[.]com", null], ["evil.com", "domain"], true],
+    [["10.20.30.41:443", "ipv4-addr"], ["10.20.30.42:443", "ipv4-addr"], false],
+    [["D41D8CD98F00B204E9800998ECF8427E", "md5"], ["d41d8cd98f00b204e9800998ecf8427e", null], true],
+    [["jdoe", "user"], ["JDOE", "user"], false]
+  ]
+}

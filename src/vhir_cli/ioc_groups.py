@@ -7,43 +7,18 @@ labelled by the text pattern that matches all of its value, else "Unknown".
 
 Then one group of its own, last: the values the findings name, in their
 `iocs` or their text, that no IOC record of the case holds, whatever that
-record's status. Each is listed once, as first written. Two values are the
-same IOC when they key to the same text, as forensic-mcp keys an IOC when it
-records it: refanged, an IPv4 address without its :port, then a hash
-case-insensitively, a dotted name case-insensitively and without a trailing
-dot, a path with a backslash case-insensitively.
+record's status. Two values are the same IOC when ioc_types.same says so, as
+forensic-mcp joins a citation to a record. Values that are the same IOC,
+directly or through others, are listed once, as the one that sorts first.
 """
 
 from __future__ import annotations
 
 import re
 
-from vhir_cli.case_io import _is_ipv4, _refang_ioc, normalize_ioc
+from vhir_cli import ioc_types
 from vhir_cli.defang import refang
 
-# How a stored IOC type is labelled; any other type is shown as stored
-LABELS = {
-    "ipv4-addr": "IPv4",
-    "ipv4": "IPv4",
-    "ip": "IPv4",
-    "ipv6-addr": "IPv6",
-    "ipv6": "IPv6",
-    "domain-name": "Domain",
-    "domain": "Domain",
-    "url": "URL",
-    "email-addr": "Email",
-    "email": "Email",
-    "file:path": "File",
-    "file-path": "File",
-    "file": "File",
-    "file:hash:sha256": "SHA256",
-    "sha256": "SHA256",
-    "file:hash:sha1": "SHA1",
-    "sha1": "SHA1",
-    "file:hash:md5": "MD5",
-    "md5": "MD5",
-    "unknown": "Unknown",
-}
 # The values the findings name that no IOC record of the case holds
 TEXT_ONLY = "Found in text, not recorded"
 
@@ -60,18 +35,6 @@ PATTERNS = (
         r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|info|biz|xyz|top|cc|tk)\b",
     ),
 )
-
-
-def ioc_key(value: str, type_=None) -> str:
-    """The text two values are compared by: the key forensic-mcp records an
-    IOC under (forensic_mcp/case/manager.py `_process_iocs`, as
-    case_io.ioc_values copies it). The value is refanged, an IPv4 address
-    loses its :port (typed "ipv4-addr", or untyped and read as IPv4), then
-    normalised."""
-    v = _refang_ioc(value.strip())
-    if type_ == "ipv4-addr" if type_ else _is_ipv4(v):
-        v = re.sub(r":\d{1,5}$", "", v)
-    return normalize_ioc(v)
 
 
 def _sentence_end(value: str) -> str:
@@ -104,16 +67,6 @@ def text_iocs(text: str) -> list[tuple[str, str]]:
             else:
                 found.append((label, v.lower()))
     return found
-
-
-def _no_type(t) -> bool:
-    return t is None or (isinstance(t, str) and not t.strip())
-
-
-def _label(t) -> str:
-    if isinstance(t, str):
-        return LABELS.get(t.strip().lower(), t)
-    return str(t)
 
 
 def _items(iocs):
@@ -155,37 +108,34 @@ def record_groups(records: list) -> dict[str, list[str]]:
         if not isinstance(r, dict) or (value := _value(r.get("value"))) is None:
             continue
         t = r.get("type")
-        if _no_type(t):
+        if ioc_types.untyped(t):
             v = value.strip()
             t = next((lb for lb, p in PATTERNS if re.fullmatch(p, v)), "Unknown")
-        groups.setdefault(_label(t), []).append(value)
+        groups.setdefault(ioc_types.label(t), []).append(value)
     return {label: sorted(groups[label]) for label in sorted(groups)}
 
 
 def not_recorded(findings: list, all_records: list) -> list[str]:
-    """The values the findings name, in their `iocs` or their text, that match
-    none of the case's IOC records (`all_records`, whatever their status),
-    sorted; each once, as first written."""
+    """The values the findings name, in their `iocs` or their text, that are
+    the same IOC as none of the case's IOC records (`all_records`, whatever
+    their status), sorted. Values that are the same IOC, directly or through
+    others, are listed once, as the one that sorts first."""
     recorded = set()
     for r in all_records or []:
         if isinstance(r, dict) and (value := _value(r.get("value"))) is not None:
-            t = r.get("type")
-            recorded.add(ioc_key(value, None if _no_type(t) else t))
-    found: dict[str, str] = {}
-    findings = [f for f in findings or [] if isinstance(f, dict)]
-    for f in findings:
-        for t, value in _items(f.get("iocs")):
-            if (value := _value(value)) is not None:
-                key = ioc_key(value, None if _no_type(t) else t)
-                if key and key not in recorded:
-                    found.setdefault(key, value)
-    for f in findings:
+            recorded |= ioc_types.keys(value, r.get("type"))
+    cited = []
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
         text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
-        for _, value in text_iocs(text):
-            key = ioc_key(value)
-            if key and key not in recorded:
-                found.setdefault(key, value)
-    return sorted(found.values())
+        named = [*_items(f.get("iocs")), *((None, v) for _, v in text_iocs(text))]
+        for t, value in named:
+            if (value := _value(value)) is None or not ioc_types.ck(value, t):
+                continue
+            if not ioc_types.keys(value, t) & recorded:
+                cited.append((value, t))
+    return sorted(min(v for v, _ in g) for g in ioc_types.components(cited))
 
 
 def ioc_groups(findings: list, records: list, all_records=None) -> dict[str, list[str]]:

@@ -19,6 +19,8 @@ from pathlib import Path
 
 import yaml
 
+from vhir_cli import ioc_types
+
 _EXAMINER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
 DEFAULT_CASES_DIR = str(Path.home() / "cases")
@@ -648,39 +650,18 @@ def signed_text(item: dict, item_type: str, view: int = 2) -> str:
 
 
 # --- IOC values, as forensic-mcp's _process_iocs extracts them ---
-# A copy of forensic-mcp (case/manager.py: _refang_ioc, _normalize_ioc, the
-# IPv4 test in _detect_ioc_type, and _process_iocs' flatten, refang and port
-# strip); forensic-mcp doesn't depend on vhir-cli, so a change there needs the
-# same change here.
+# The IOC rules are ioc_types.py, a copy of sift_common's (forensic-mcp
+# doesn't depend on vhir-cli, so a change there needs the same change here).
+# The three names below stay importable as before.
 
-
-def _refang_ioc(value: str) -> str:
-    v = value.replace("[.]", ".").replace("hxxp", "http")
-    return re.sub(r"\[(\W)\]", r"\1", v)
-
-
-def normalize_ioc(value: str) -> str:
-    """An IOC value as forensic-mcp compares them."""
-    v = value.strip()
-    if re.match(r"^[a-fA-F0-9]{32,64}$", v):
-        return v.lower()
-    if "." in v and not v.replace(".", "").isdigit():
-        return v.lower().rstrip(".")
-    if "\\" in v:
-        return v.lower()
-    return v
-
-
-def _is_ipv4(value: str) -> bool:
-    stripped = re.sub(r"[:/]\d{1,5}$", "", value.strip())
-    if not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", stripped):
-        return False
-    return all(0 <= int(o) <= 255 for o in stripped.split("."))
+_refang_ioc = ioc_types.refang
+normalize_ioc = ioc_types.normalize
+_is_ipv4 = ioc_types.is_ipv4
 
 
 def ioc_values(iocs_field) -> set[str]:
-    """The normalised IOC values a finding's `iocs` field names, as
-    forensic-mcp extracts them (its first 100 entries)."""
+    """The keys (ioc_types.keys) of the IOCs a finding's `iocs` field names,
+    as forensic-mcp extracts them (its first 100 entries)."""
     raw_iocs = iocs_field or []
     if isinstance(raw_iocs, dict):
         raw_iocs = [
@@ -694,20 +675,11 @@ def ioc_values(iocs_field) -> set[str]:
     values = set()
     for raw in raw_iocs[:100]:
         if isinstance(raw, dict) and "value" in raw:
-            value = _refang_ioc(str(raw["value"]).strip())
-            ipv4 = (
-                raw.get("type", "") == "ipv4-addr"
-                if raw.get("type")
-                else _is_ipv4(value)
-            )
+            value, type_ = raw["value"], raw.get("type", "")
         else:
-            value = _refang_ioc(str(raw).strip())
-            ipv4 = _is_ipv4(value)
-        if not value:
-            continue
-        if ipv4 and re.search(r":\d{1,5}$", value):
-            value = re.sub(r":\d{1,5}$", "", value)
-        values.add(normalize_ioc(value))
+            value, type_ = raw, ""
+        if _refang_ioc(str(value).strip()):
+            values |= ioc_types.keys(value, type_)
     return values
 
 
@@ -814,8 +786,8 @@ def _ioc_outcomes(decided, findings, iocs, exclude):
         now = ioc.get("status")
         if ioc.get("manually_reviewed") or now not in ("DRAFT", "APPROVED", "REJECTED"):
             continue
-        value = normalize_ioc(str(ioc.get("value", "")))
-        citing = [fid for fid, values in cited.items() if value in values]
+        keys = ioc_types.keys(ioc.get("value", ""), ioc.get("type"))
+        citing = [fid for fid, values in cited.items() if keys & values]
         sources = sorted(
             fid for fid in citing if decided.get(fid) in ("APPROVED", "REJECTED")
         )

@@ -24,13 +24,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from vhir_cli import ledger
-from vhir_cli.case_io import (
-    IOC_DERIVED_KEYS,
-    ioc_values,
-    normalize_ioc,
-    signed_text,
-)
+from vhir_cli import ioc_types, ledger
+from vhir_cli.case_io import IOC_DERIVED_KEYS, ioc_values, signed_text
 from vhir_cli.identity import valid_name
 from vhir_cli.keys import fingerprint
 
@@ -1348,9 +1343,8 @@ def _cascade_unsupported(
         ):
             return "the timeline link isn't in the signed source and event"
     elif kind == "ioc":
-        if normalize_ioc(str(signed_item.get("value", ""))) not in ioc_values(
-            signed_source.get("iocs")
-        ):
+        item = ioc_types.keys(signed_item.get("value", ""), signed_item.get("type"))
+        if not item & ioc_values(signed_source.get("iocs")):
             return "the IOC's value isn't among the source finding's signed IOCs"
     else:
         return "a finding is never a cascade"

@@ -14,10 +14,11 @@ from pathlib import Path
 import pytest
 
 from vhir_cli import ioc_groups as grouping
+from vhir_cli import ioc_types
 from vhir_cli.case_io import save_findings, save_timeline
 from vhir_cli.commands.report import _extract_all_iocs
 from vhir_cli.display import one_line
-from vhir_cli.ioc_groups import LABELS, TEXT_ONLY, ioc_groups, ioc_key
+from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
 
 from .signing import sign_approved
 from .test_finding_iocs_and_tabs_shown import SID, UNC, _cli, case  # noqa: F401
@@ -44,12 +45,12 @@ def _r(n, value, type_, status="APPROVED"):
 # then a finding that names defanged and host:port values, and their records
 DRY_RUN = json.loads((FIXTURE / "ioc_lists_dry_run_case.json").read_text())
 DRY_RUN_LIST = {
+    "Account": ["jdoe"],
     "Domain": ["evil.com", "evil2.com"],
     "File": [UNC],
     "IPv4": ["192.0.2.30", "192.0.2.51", "192.0.2.62", "192.0.2.64",
              "192.0.2.68", "192.0.2.75", "203.0.113.7"],
     "Unknown": [SID],
-    "user-account": ["jdoe"],
     TEXT_ONLY: ["192.0.2.61", "C:\\Windows\\system32\\cmd.exe"],
 }  # fmt: skip
 
@@ -82,7 +83,7 @@ SHAPES = {
     "type-int": ([], [_r(1, "10.1.2.3", 4)], {"4": ["10.1.2.3"]}),
     "type-dict": ([], [_r(1, "x", {"a": 1})], {"{'a': 1}": ["x"]}),
     "type-mapped-any-case": ([], [_r(1, "10.1.2.3", " IPv4-ADDR ")], {"IPv4": ["10.1.2.3"]}),
-    "type-shown-as-stored": ([], [_r(1, "svc", "User-Account")], {"User-Account": ["svc"]}),
+    "type-in-another-case": ([], [_r(1, "svc", "User-Account")], {"Account": ["svc"]}),
     "type-control-char": ([], [_r(1, "x", "evil\x1b[2J")], {"evil\x1b[2J": ["x"]}),
     "type-unknown": ([], [_r(1, SID, "unknown")], {"Unknown": [SID]}),
     "patterns": (
@@ -121,10 +122,9 @@ SHAPES = {
         [_r(1, SHA, "sha256"), _r(2, UNC, "file:path"), _r(3, "evil.com", "domain-name")],
         {"Domain": ["evil.com"], "File": [UNC], "SHA256": [SHA]},
     ),
-    "ip-port-typed-other-than-ipv4-addr-keeps-it": (
+    "ip-port-typed-an-ipv4-spelling-loses-it": (
         [_f(1, [{"value": "203.0.113.7:8443", "type": "ipv4"}], observation="Beacon to 203.0.113.7.")],
-        [_r(1, "203.0.113.7", "ipv4-addr")],
-        {"IPv4": ["203.0.113.7"], TEXT_ONLY: ["203.0.113.7:8443"]},
+        [_r(1, "203.0.113.7", "ipv4-addr")], {"IPv4": ["203.0.113.7"]},
     ),
     "domain-keeps-its-port": (
         [_f(1, ["evil.com:443"], observation="Beacon to evil.com:443.")],
@@ -142,9 +142,9 @@ SHAPES = {
     "record-value-not-a-string-matches": (
         [_f(1, ["445"])], [_r(1, 445, "port")], {"port": ["445"]},
     ),
-    "not-recorded-once-as-first-written": (
+    "not-recorded-once-as-the-first-sorted": (
         [_f(1, ["Evil.com."]), _f(2, ["evil.com", {"value": "EVIL.COM", "type": "url"}])], [],
-        {TEXT_ONLY: ["Evil.com."]},
+        {TEXT_ONLY: ["EVIL.COM"]},
     ),
     "not-recorded-value-not-a-string": (
         [_f(1, [{"value": 445, "type": "port"}])], [], {TEXT_ONLY: ["445"]},
@@ -223,9 +223,20 @@ def test_each_extractor_lists_the_shape(shape):
         assert list(got) == list(want)  # labels sorted, the text-only group last
 
 
-@pytest.mark.parametrize("stored", list(LABELS))
+# The types the readers labelled before the IOC table, each with its label
+STORED = {
+    "ipv4-addr": "IPv4", "ipv4": "IPv4", "ip": "IPv4", "ipv6-addr": "IPv6",
+    "ipv6": "IPv6", "domain-name": "Domain", "domain": "Domain", "url": "URL",
+    "email-addr": "Email", "email": "Email", "file:path": "File",
+    "file-path": "File", "file": "File", "file:hash:sha256": "SHA256",
+    "sha256": "SHA256", "file:hash:sha1": "SHA1", "sha1": "SHA1",
+    "file:hash:md5": "MD5", "md5": "MD5", "unknown": "Unknown",
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("stored", list(STORED))
 def test_each_stored_type_reads_as_its_label(stored):
-    assert grouping.record_groups([_r(1, "v", stored)]) == {LABELS[stored]: ["v"]}
+    assert grouping.record_groups([_r(1, "v", stored)]) == {STORED[stored]: ["v"]}
 
 
 @pytest.mark.parametrize(
@@ -266,17 +277,17 @@ def test_a_record_s_status_reads_as_the_portal_reads_it(record, status):
      ("300.1.1.1:80", "300.1.1.1:80"), ("evil.com:443", "evil.com:443")],
 )  # fmt: skip
 def test_values_compare_as_forensic_mcp_records_them(value, key):
-    assert ioc_key(value) == key
+    assert ioc_types.ck(value) == key
 
 
 @pytest.mark.parametrize(
     "type_, key",
     [("ipv4-addr", "203.0.113.7"), (None, "203.0.113.7"), ("", "203.0.113.7"),
-     ("ipv4", "203.0.113.7:8443"), ("domain-name", "203.0.113.7:8443"),
+     ("ipv4", "203.0.113.7"), ("domain-name", "203.0.113.7:8443"),
      (["ipv4-addr"], "203.0.113.7:8443")],
 )  # fmt: skip
 def test_an_ipv4_loses_its_port_as_forensic_mcp_types_it(type_, key):
-    assert ioc_key("203.0.113.7:8443", type_) == key
+    assert ioc_types.ck("203.0.113.7:8443", type_) == key
 
 
 def test_the_findings_and_records_are_left_as_they_were():
