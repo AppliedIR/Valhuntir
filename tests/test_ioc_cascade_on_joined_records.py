@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from vhir_cli import case_io
+from vhir_cli import case_io, ledger
 
 from .test_ioc_cascade_cli import _vhir
 from .test_signed_decisions import _status, case  # noqa: F401
@@ -192,3 +192,25 @@ def test_rejecting_one_citer_reads_the_other_only_within_its_first_100(
     _decide(monkeypatch, capsys, "reject", F2, *WHY)
     assert _status(steve, "iocs.json", IOC) == after
     assert (IOC in _verify(monkeypatch, capsys)) is (after == "REJECTED")
+
+
+def test_reading_joined_and_oddly_typed_records_leaves_every_file_as_it_was(
+    steve, monkeypatch, capsys
+):
+    findings = [_finding(F1, [PORT]), _finding(F2, [BARE])]
+    records = [_record(IOC, "10.20.30.41:443", "IPv4", [F1, F2])]
+    for n, (cited, made) in enumerate(OLD_TYPES, 3):
+        findings.append(_finding(f"F-steve-{n:03d}", [cited]))
+        if made:
+            rid = f"IOC-steve-{len(records) + 1:03d}"
+            records.append(_record(rid, *made[:2], [f"F-steve-{n:03d}"], made[2]))
+    _write(steve, findings, records)
+    _decide(monkeypatch, capsys, "approve", F2, "F-steve-003", "F-steve-005")
+    chain = ledger.chain_path("C-9")
+    files = [steve / "iocs.json", steve / "findings.json", chain]
+    before = [p.read_bytes() for p in files]
+    for argv in (["review", "--iocs"], ["report", "--ioc"], ["review", "--findings"],
+                 ["review", "--findings", "--verify"]):  # fmt: skip
+        code, out, err = _vhir(monkeypatch, capsys, *argv)
+        assert code == 0, out + err
+        assert [p.read_bytes() for p in files] == before, argv
