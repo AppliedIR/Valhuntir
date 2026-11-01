@@ -45,6 +45,7 @@ _FORENSIC_ALLOW_RULES = {
     "mcp__windows-triage-mcp__*",
     "mcp__opencti-mcp__*",
     "mcp__threatintel-mcp__*",
+    "mcp__opensearch-mcp__*",
     "mcp__wintools-mcp__*",
     "mcp__remnux-mcp__*",
     "mcp__vhir__*",
