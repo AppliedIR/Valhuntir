@@ -25,9 +25,8 @@ from vhir_cli.case_io import (
     display_instant,
     get_case_dir,
     load_case_meta,
-    load_findings,
-    load_iocs,
     load_todos,
+    read_regular,
     text_of,
 )
 from vhir_cli.defang import (
@@ -72,7 +71,7 @@ def cmd_report(args, identity: dict) -> None:
     if getattr(args, "full", False):
         _report_full(case_dir, args)
     elif getattr(args, "executive_summary", False):
-        _shown_and_saved(case_dir, args, _report_executive_summary)
+        _shown_and_saved(case_dir, args, _report_executive_summary, todos=True)
     elif getattr(args, "report_timeline", False):
         _shown_and_saved(case_dir, args, _report_timeline)
     elif getattr(args, "ioc", False):
@@ -80,7 +79,7 @@ def cmd_report(args, identity: dict) -> None:
     elif getattr(args, "report_findings", None):
         _shown_and_saved(case_dir, args, _report_findings)
     elif getattr(args, "status_brief", False):
-        _shown_and_saved(case_dir, args, _report_status_brief)
+        _shown_and_saved(case_dir, args, _report_status_brief, todos=True)
     else:
         print(
             "Usage: vhir report --full | --executive-summary | --timeline | --ioc | --findings <ids> | --status-brief",
@@ -101,24 +100,27 @@ def _ml(value, safe: bool, indent: str):
     return indent_lines(value, indent) if safe else value
 
 
-def _snapshot(case_dir: Path) -> dict:
+def _snapshot(case_dir: Path, todos: bool = True) -> dict:
     """One read of the case, for every part of one report: the records verify
     read (findings, timeline and IOCs as verified) with its approved view, and
-    CASE.yaml and todos.json, which verify doesn't read. An approval that
-    lands while a report runs can't put one part out of step with another."""
+    CASE.yaml and, for a report that prints them (`todos`), todos.json, which
+    verify doesn't read. An approval that lands while a report runs can't put
+    one part out of step with another."""
     view = approved_view(case_dir)
     snap: dict = {"view": view, "findings": [], "timeline": [], "iocs": []}
     for key, item in view["result"].records:
         snap[key].append(item)
-    snap.update(meta=load_case_meta(case_dir), todos=load_todos(case_dir))
+    snap.update(meta=load_case_meta(case_dir), todos=[])
+    if todos:
+        snap["todos"] = load_todos(case_dir)
     return snap
 
 
-def _shown_and_saved(case_dir: Path, args, report) -> None:
+def _shown_and_saved(case_dir: Path, args, report, todos: bool = False) -> None:
     """Print a text report built from display-safe records; with --save, write
     the same report built from the records as stored, so the file is exact.
     Both, the block and the IOCs the file defangs come from one snapshot."""
-    snap = _snapshot(case_dir)
+    snap = _snapshot(case_dir, todos)
     output = report(case_dir, args, safe=True, snap=snap)
     if output is None:
         return
@@ -136,6 +138,38 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
         _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
+_RECORD_FILES = (("findings", "findings.json"), ("iocs", "iocs.json"))
+_KINDS = {dict: "an object", str: "a string", bool: "a boolean", int: "a number",
+          float: "a number", type(None): "null"}  # fmt: skip
+
+
+class _Unsafe(Exception):
+    """A file a saved report reads its IOCs from is present but isn't a list
+    of records: (the file, what is wrong with it)."""
+
+
+def _fresh_records(case_dir: Path) -> list[tuple[str, dict]]:
+    """The records of findings.json and iocs.json as they are now, read whole.
+    A file that is absent, or that won't parse (as load_* reads it), holds
+    none; one that parses must be a list of records, or `_Unsafe` names it."""
+    records: list[tuple[str, dict]] = []
+    for key, name in _RECORD_FILES:
+        path = case_dir / name
+        if not os.path.lexists(path):
+            continue
+        try:
+            text = read_regular(path).decode("utf-8")
+            data = json.loads(text) if text.strip() else []
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, list):
+            raise _Unsafe(path, f"holds {_KINDS[type(data)]}, not a list of records")
+        if not all(isinstance(i, dict) for i in data):
+            raise _Unsafe(path, "holds a list with an entry that isn't a record")
+        records += [(key, i) for i in data]
+    return records
+
+
 def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     """The IOCs a saved text report defangs: every domain, URL and IPv4
     address recorded in the case, whatever its status, since a status can
@@ -144,11 +178,11 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     verify read for it, and in the files read again just before the write, so
     a value recorded since is defanged too. Live, longest first (a URL before
     the host it holds), as report-mcp gathers them. A name a finding's text
-    merely mentions isn't one. Hashes, paths and the rest aren't."""
+    merely mentions isn't one. Hashes, paths and the rest aren't. Raises
+    `_Unsafe` when a file it reads isn't a list of records."""
     result = view.get("result")
     records = [*(result.records if result is not None else [])]
-    records += [("findings", f) for f in load_findings(case_dir)]
-    records += [("iocs", i) for i in load_iocs(case_dir)]
+    records += _fresh_records(case_dir)
     findings = [
         *(view.get("findings") or []),
         *(i for k, i in records if k == "findings"),
@@ -176,11 +210,24 @@ def _save_output(
     """Write report content to file if --save is specified. A text report
     (`view` given) has every IOC of the case defanged, its block too: nothing
     reads its text back. JSON (`view` None) keeps them live: it is input for
-    tools."""
+    tools. A text report whose IOCs can't all be read isn't written."""
     if not save_path:
         return
     if view is not None:
-        content = defang_iocs(content, _report_iocs(case_dir, view))
+        try:
+            iocs = _report_iocs(case_dir, view)
+        except _Unsafe as e:
+            path, why = e.args
+            print(
+                f"Error: report not saved. {path} {why}, so not every IOC the"
+                " case records can be written defanged. Run `vhir review"
+                " --findings --verify` to see the file's state, repair the file"
+                " or restore it from a backup (`vhir restore`), then save the"
+                " report again.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        content = defang_iocs(content, iocs)
     out = Path(save_path)
     if not out.is_absolute():
         reports_dir = case_dir / "reports"
@@ -328,7 +375,7 @@ def _report_timeline(
 ) -> str | None:
     """Timeline report with optional date filtering."""
     timeline = sorted(
-        (snap or _snapshot(case_dir))["timeline"],
+        (snap or _snapshot(case_dir, todos=False))["timeline"],
         key=lambda t: (
             display_instant(t.get("timestamp")),
             text_of(t.get("timestamp")),
@@ -377,7 +424,7 @@ def _report_ioc(
 ) -> str | None:
     """IOC report: the case's approved IOC records by type, then the values the
     approved findings name that no IOC record of the case holds."""
-    snap = snap or _snapshot(case_dir)
+    snap = snap or _snapshot(case_dir, todos=False)
     view = snap["view"]
     groups = _extract_all_iocs(view["findings"], view["iocs"], snap["iocs"])
     records = {k: v for k, v in groups.items() if k != TEXT_ONLY}
@@ -407,7 +454,7 @@ def _report_findings(
         sys.exit(1)
 
     requested_ids = [fid.strip() for fid in ids_str.split(",") if fid.strip()]
-    snap = snap or _snapshot(case_dir)
+    snap = snap or _snapshot(case_dir, todos=False)
     findings = snap["findings"]
 
     by_id = {f["id"]: f for f in findings if "id" in f}
