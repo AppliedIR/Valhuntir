@@ -193,6 +193,7 @@ def test_a_file_that_is_an_empty_list_saves(tmp_path, monkeypatch, row, route):
     if (route, name) == ("findings", "findings.json"):
         # a case with no findings has no finding to report
         assert f"Not found: {FINDING['id']}" in err, err
+        assert ended == "SystemExit(1)" and saved is None, (ended, saved)
         return
     assert ended == "returned" and saved is not None, (ended, err)
 
