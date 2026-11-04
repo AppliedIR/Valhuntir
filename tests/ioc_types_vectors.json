@@ -1,5 +1,5 @@
 {
-  "module_sha256": "0709d306ba20b9dbf2b535c96f7ce855b187b76484ccb60f24c4b7d640c646da",
+  "module_sha256": "4a2651e785243c1d9f24aa941303dd5c7326317b65da0b69217e992f05f3add5",
   "canonical": [
     ["ipv4-addr", "ipv4-addr"],
     ["IPv4", "ipv4-addr"],

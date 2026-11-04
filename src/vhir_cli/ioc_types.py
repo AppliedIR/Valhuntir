@@ -121,15 +121,31 @@ def listing() -> str:
     return "; ".join(f"{c}: {', '.join(ids)}" for c, ids in groups.items())
 
 
+_MARK = re.compile(r"\W")
+
+
+def unbracket(value: str) -> str:
+    """`value` with each bracketed mark ([@], [.], [:], ...) out of its
+    brackets however deep: [[.]] and [[[.]]] become . as [.] does. One pass:
+    a ] that closes [mark] leaves the mark alone, which may close the pair
+    around it, so the time is linear in the length."""
+    if "[" not in value:
+        return value
+    out: list[str] = []
+    for ch in value:
+        out.append(ch)
+        while (
+            len(out) >= 3 and out[-1] == "]" and out[-3] == "["
+            and _MARK.fullmatch(out[-2])
+        ):  # fmt: skip
+            out[-3:] = [out[-2]]
+    return "".join(out)
+
+
 def refang(value: str) -> str:
-    """Refang a defanged value as record_finding does before storing it: hxxp
-    becomes http, and each bracketed mark loses its brackets however deep,
-    one layer a pass until a pass changes nothing. A pass that changes the
-    value shortens it, so the loop ends."""
-    v = value.replace("hxxp", "http")
-    while len(n := re.sub(r"\[(\W)\]", r"\1", v)) < len(v):
-        v = n
-    return v
+    """Refang a defanged value as record_finding does before storing it and
+    joining it: hxxp becomes http wherever it is, then unbracket."""
+    return unbracket(value.replace("hxxp", "http"))
 
 
 def is_ipv4(value: str) -> bool:

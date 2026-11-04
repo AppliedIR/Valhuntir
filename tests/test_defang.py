@@ -219,6 +219,18 @@ def test_a_bracket_defang_of_any_depth_counts_as_its_live_indicator(value, live)
     assert network_ioc(value, True) == live
 
 
+# hxxp is a scheme only before its ://: in a path or a host name it is read as
+# written, so the report defangs the value as it stands in the text
+AS_WRITTEN = ["https://safe.example.com/hxxp/payload", "hxxp.example.com"]
+
+
+@pytest.mark.parametrize("value", AS_WRITTEN)
+def test_hxxp_outside_a_scheme_is_read_as_written(value):
+    from vhir_cli.defang import network_ioc
+
+    assert network_ioc(value, True) == value
+
+
 def test_a_typed_domain_with_its_root_dot_counts_without_it():
     from vhir_cli.defang import defang_iocs, network_ioc
 

@@ -101,3 +101,74 @@ def test_a_name_an_approved_finding_only_mentions_stays_live(case_dir, identity)
     assert (
         "tool from download.vendor.com;" in saved and "download[.]vendor" not in saved
     )
+
+
+NESTED = {
+    "id": "F-tester-003", "status": "APPROVED", "title": "C2 at evil13.example.com",
+    "observation": "Beacon to evil13.example.com.", "interpretation": "i",
+    "confidence": "HIGH",
+    "iocs": [{"type": "domain", "value": "evil13[[.]]example.com"},
+             {"type": "url", "value": "hxxp://user[[@]]evil14[[[.]]]example.com/a"},
+             {"type": "email-addr", "value": "user[[@]]evil15.example.com"}],
+}  # fmt: skip
+NESTED_STORED = [  # the records record_finding stores for them, refanged
+    {"id": "I-tester-003", "type": "domain-name", "value": "evil13.example.com",
+     "status": "APPROVED", "source_findings": ["F-tester-003"]},
+    {"id": "I-tester-004", "type": "url", "value": "http://user@evil14.example.com/a",
+     "status": "APPROVED", "source_findings": ["F-tester-003"]},
+]  # fmt: skip
+
+
+def test_the_ioc_report_writes_an_ioc_given_in_nested_brackets_defanged(  # noqa: F811
+    case_dir, identity  # noqa: F811
+):  # fmt: skip
+    saved = _saved(case_dir, identity, [NESTED], NESTED_STORED, ioc=True)
+    assert "evil13[.]example[.]com" in saved
+    assert "hxxp://user@evil14[.]example[.]com/a" in saved
+    assert "evil13.example.com" not in saved and "evil14.example.com" not in saved
+
+
+def test_the_findings_report_writes_an_ioc_given_in_nested_brackets_defanged(  # noqa: F811
+    case_dir, identity  # noqa: F811
+):  # fmt: skip
+    """Its IOC field is shown as given: the nested forms stay as they are."""
+    saved = _saved(case_dir, identity, [NESTED], NESTED_STORED,
+                   report_findings="F-tester-003")  # fmt: skip
+    assert "Beacon to evil13[.]example[.]com." in saved
+    assert "C2 at evil13[.]example[.]com" in saved
+    assert "evil13[[.]]example.com" in saved and "user[[@]]evil15.example.com" in saved
+    assert "hxxp://user[[@]]evil14[[[.]]]example.com/a" in saved
+    assert "evil13.example.com" not in saved and "evil14.example.com" not in saved
+
+
+HXXP_IN_A_NAME = {
+    "id": "F-tester-004", "status": "APPROVED", "title": "t",
+    "observation": ("Payload at https://safe.example.com/hxxp/payload from "
+                    "hxxp.example.com."),
+    "interpretation": "i", "confidence": "HIGH",
+    "iocs": [{"type": "url", "value": "https://safe.example.com/hxxp/payload"},
+             {"type": "domain", "value": "hxxp.example.com"}],
+}  # fmt: skip
+HXXP_STORED = [  # the records record_finding stores for them (hxxp made http anywhere)
+    {"id": "I-tester-005", "type": "url", "value": "https://safe.example.com/http/payload",
+     "status": "APPROVED", "source_findings": ["F-tester-004"]},
+    {"id": "I-tester-006", "type": "domain-name", "value": "http.example.com",
+     "status": "APPROVED", "source_findings": ["F-tester-004"]},
+]  # fmt: skip
+
+
+def test_an_ioc_with_hxxp_outside_its_scheme_is_written_defanged(case_dir, identity):  # noqa: F811
+    saved = _saved(case_dir, identity, [HXXP_IN_A_NAME], HXXP_STORED,
+                   report_findings="F-tester-004")  # fmt: skip
+    assert (
+        "Payload at hxxps://safe[.]example[.]com/hxxp/payload from "
+        "hxxp[.]example[.]com." in saved
+    )
+    assert "https://safe.example.com" not in saved and "hxxp.example.com" not in saved
+
+
+def test_the_ioc_report_writes_them_and_their_records_defanged(case_dir, identity):  # noqa: F811
+    saved = _saved(case_dir, identity, [HXXP_IN_A_NAME], HXXP_STORED, ioc=True)
+    assert "hxxps://safe[.]example[.]com/http/payload" in saved
+    assert "http[.]example[.]com" in saved
+    assert "https://safe.example.com" not in saved and "http.example.com" not in saved
