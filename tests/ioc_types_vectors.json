@@ -1,5 +1,5 @@
 {
-  "module_sha256": "4a2651e785243c1d9f24aa941303dd5c7326317b65da0b69217e992f05f3add5",
+  "module_sha256": "2596d67932062458052fa6e7a8664c35e56c84113f0c3b5e4cd1fa876718755d",
   "canonical": [
     ["ipv4-addr", "ipv4-addr"],
     ["IPv4", "ipv4-addr"],
@@ -34,6 +34,7 @@
     ["999.1.1.1:22", null, "999.1.1.1:22"],
     ["Evil[.]COM.", "domain", "evil.com"],
     ["hxxp://Evil.com/x", null, "http://evil.com/x"],
+    ["HXXP://EVIL.COM/x", null, "http://evil.com/x"],
     ["D41D8CD98F00B204E9800998ECF8427E", "md5", "d41d8cd98f00b204e9800998ecf8427e"],
     ["C:\\Temp\\A.exe", "file", "c:\\temp\\a.exe"],
     ["  jdoe  ", "user", "jdoe"],
@@ -43,11 +44,13 @@
   "vk": [
     ["10[.]20[.]30[.]41:443", "10.20.30.41:443"],
     ["hxxp://Evil.com", "http://evil.com"],
+    ["HXXP://Evil.com", "http://evil.com"],
     ["evil{.}org", "evil{.}org"],
     ["ABC", "ABC"],
     ["user[[@]]Evil.example.com", "user@evil.example.com"],
     ["user[[[[@]]]]evil[[[.]]]com", "user@evil.com"],
     ["hxxp[[:]]//evil[[.]]com/a", "http://evil.com/a"],
+    ["hXXp[[:]]//EVIL[[.]]com/a", "http://evil.com/a"],
     ["a[[]]b", "a[]b"]
   ],
   "rk": [

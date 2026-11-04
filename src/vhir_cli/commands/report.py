@@ -19,6 +19,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vhir_cli import ioc_types
 from vhir_cli.case_io import (
     _at_or_after,
     _at_or_before,
@@ -145,28 +146,30 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     an approved finding, as report-mcp gathers them. A name a finding's text
     merely mentions isn't one. Hashes, paths and the rest aren't, nor is a
     value the examiner rejected (an IOC record REJECTED and manually
-    reviewed, its rejection signed in the ledger), whatever cites it."""
+    reviewed, its rejection signed in the ledger), whatever cites it, in any
+    form forensic-mcp joins to that record (ioc_types.keys)."""
     findings = view.get("findings") or []
     approved = {f.get("id") for f in findings}
     kept: set[str] = set()
     records = [i for i in load_iocs(case_dir) if isinstance(i, dict)]
     result = view.get("result")
     judged = result.records if result is not None else []  # verify's own read
-    rejected = {  # compared as gathered: normalised, then case-folded
-        v.casefold() for key, i in judged
+    rejected = set().union(*(  # each signed rejection's keys: the store's identity
+        ioc_types.keys(i.get("value", ""), i.get("type")) for key, i in judged
         if key == "iocs" and isinstance(i, dict)
         and i.get("status") == "REJECTED" and i.get("manually_reviewed") is True
         and _rejection_signed(i, result)
-        and (v := network_ioc(i.get("value", ""), True)) is not None
-    }  # fmt: skip
+    ))  # fmt: skip
 
-    def take(value, typed: bool) -> None:
+    def take(value, typed: bool, t=None) -> None:
+        """Keep the value as the reports show it, unless it is the same IOC,
+        as forensic-mcp joins a citation to a record, as a signed rejection."""
         v = network_ioc(value, typed)
-        if v is not None and v.casefold() not in rejected:
+        if v is not None and not ioc_types.keys(value, t) & rejected:
             kept.add(v)
 
-    for value, typed in structured_iocs(findings):
-        take(value, typed)
+    for value, typed, t in structured_iocs(findings):
+        take(value, typed, t)
     case_iocs = [  # the case's IOCs that one of the approved findings cites
         i for i in records if isinstance(i.get("source_findings"), list)
         and approved.intersection(map(str, i["source_findings"]))
@@ -175,7 +178,7 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
         if isinstance(ioc, dict) and any(
             t in str(ioc.get("type", "")).lower() for t in _NETWORK_TYPES
         ):
-            take(ioc.get("value", ""), True)
+            take(ioc.get("value", ""), True, ioc.get("type"))
     return sorted(kept, key=lambda v: (-len(v), v))
 
 

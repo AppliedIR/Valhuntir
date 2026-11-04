@@ -125,7 +125,9 @@ def network_ioc(value, typed: bool) -> str | None:
 
 def structured_iocs(findings: list) -> list[tuple]:
     """Each value in the findings' `iocs` fields, with whether its IOC type
-    names a domain, an IPv4 address or a URL (a plain value has no type)."""
+    names a domain, an IPv4 address or a URL (a plain value has no type), and
+    the type forensic-mcp keys it under: a {"value", "type"} dict's own type,
+    else none (it flattens a {type: values} form to plain values)."""
     out = []
     for f in findings:
         field = f.get("iocs") if isinstance(f, dict) else None
@@ -133,16 +135,15 @@ def structured_iocs(findings: list) -> list[tuple]:
             for kind, values in field.items():
                 typed = any(t in str(kind).lower() for t in _NETWORK_TYPES)
                 out += [
-                    (v, typed)
+                    (v, typed, None)
                     for v in (values if isinstance(values, list) else [values])
                 ]
         elif isinstance(field, list):
             for ioc in field:
                 if isinstance(ioc, dict):
                     kind = str(ioc.get("type", "")).lower()
-                    out.append(
-                        (ioc.get("value", ""), any(t in kind for t in _NETWORK_TYPES))
-                    )
+                    typed = any(t in kind for t in _NETWORK_TYPES)
+                    out.append((ioc.get("value", ""), typed, ioc.get("type")))
                 else:
-                    out.append((ioc, False))
+                    out.append((ioc, False, None))
     return out

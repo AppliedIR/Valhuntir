@@ -50,12 +50,23 @@ def test_unbracket_gives_what_the_loop_gives_on_every_value_of_the_corpus():
     assert [v for v in CORPUS if ioc_types.unbracket(v) != oracle(v)] == []
 
 
-def test_refang_is_hxxp_made_http_then_the_loop():
-    values = [*CORPUS, *(f"hxxp{v}//evil.example.com" for v in FORMS)]
-    wrong = [
-        v for v in values if ioc_types.refang(v) != oracle(v.replace("hxxp", "http"))
-    ]
-    assert wrong == []
+def _http(value: str) -> str:
+    """Each hxxp, in any letter case, as http in the same case."""
+    for i in range(len(value) - 3):
+        if value[i : i + 4].lower() == "hxxp":
+            tt = "TT" if value[i + 1 : i + 3] == "XX" else "tt"
+            value = value[: i + 1] + tt + value[i + 3 :]
+    return value
+
+
+def test_refang_is_hxxp_made_http_in_any_case_then_the_loop():
+    schemes = ["hxxp", "HXXP", "Hxxp", "hXXp", "hXxp"]
+    values = [*CORPUS, *(f"{s}{v}//evil.example.com" for s in schemes for v in FORMS)]
+    assert [v for v in values if ioc_types.refang(v) != oracle(_http(v))] == []
+    assert (
+        ioc_types.refang("HXXP://HXXP.EXAMPLE.COM/hXXp")
+        == "HTTP://HTTP.EXAMPLE.COM/hTTp"
+    )
 
 
 @pytest.mark.parametrize("depth", range(9))

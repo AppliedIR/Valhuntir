@@ -142,10 +142,19 @@ def unbracket(value: str) -> str:
     return "".join(out)
 
 
+_HXXP = re.compile(r"(h)(xx)(p)", re.IGNORECASE)
+
+
+def _http(match: re.Match[str]) -> str:
+    """A matched hxxp as http, in its case: HXXP becomes HTTP."""
+    return f"{match[1]}{'TT' if match[2].isupper() else 'tt'}{match[3]}"
+
+
 def refang(value: str) -> str:
     """Refang a defanged value as record_finding does before storing it and
-    joining it: hxxp becomes http wherever it is, then unbracket."""
-    return unbracket(value.replace("hxxp", "http"))
+    joining it: hxxp becomes http wherever it is, in any letter case, then
+    unbracket."""
+    return unbracket(_HXXP.sub(_http, value))
 
 
 def is_ipv4(value: str) -> bool:
