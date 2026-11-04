@@ -1,13 +1,11 @@
-"""A value the examiner rejected (its IOC record REJECTED and manually
-reviewed, and the rejection signed in the approval ledger, which verify reads
-as VALID) is no IOC of the report, so a saved report leaves it live, whichever
-approved finding names it and however. A held, approved or cascade-rejected
-record is still one when an approved finding names it or the record is
-approved, and so is one set REJECTED by hand (no ledger line), one whose
-latest line is a cascade's, one changed after its rejection was signed, or any
-in a case that fails verify, whatever verdict fails it: the safe side. Values match as the report gathers them (refanged, then
-case-folded). report-mcp's tests state the same rows against its copy,
-and run them through both."""
+"""Every value recorded in the case is an IOC of the report, whatever its
+status: held, approved, rejected by the examiner (its rejection signed in the
+approval ledger, which verify reads as VALID), by cascade or by hand, cited by
+an approved finding or not, in a case that passes verify or fails it. A status
+can change while a report is saved, so a saved report defangs them all: the
+safe side. Values are gathered as the report writes them (refanged).
+report-mcp's tests state the same rows against its copy, and run them
+through both."""
 
 from __future__ import annotations
 
@@ -51,11 +49,7 @@ def _approved(value) -> dict:  # as `vhir approve` leaves it
 
 
 def _expected(name, cited, source, value) -> list[str]:
-    if name == "rejected by the examiner":
-        return []  # live, whatever cites it
-    if source == "a plain string" and not cited and name != "approved":
-        return []  # an untyped name in a finding's field could be a file
-    return [value]
+    return [value]  # the record's own value, whatever its status or citation
 
 
 ROWS = [  # (id, the finding's iocs field, the case's IOC record, its ledger line,
@@ -68,39 +62,43 @@ ROWS = [  # (id, the finding's iocs field, the case's IOC record, its ledger lin
 ] + [
     ("rejected by the examiner, written in other letter case, defanged",
      [{"value": "Evil-C2[.]example.net", "type": "domain-name"}],
-     _record("evil-c2.example.net", "domain-name", "REJECTED", True), "reject", []),
+     _record("evil-c2.example.net", "domain-name", "REJECTED", True), "reject",
+     ["Evil-C2.example.net", "evil-c2.example.net"]),
     ("rejected by the examiner, written defanged",
      ["hxxp://rej2[.]example[.]org/q"],
-     _record("http://rej2.example.org/q", "url", "REJECTED", True), "reject", []),
+     _record("http://rej2.example.org/q", "url", "REJECTED", True), "reject",
+     ["http://rej2.example.org/q"]),
     ("rejected by the examiner, written with hxxp inside the host",
      [{"value": "hxxp.example.com", "type": "domain-name"}],
-     _record("http.example.com", "domain-name", "REJECTED", True), "reject", []),
+     _record("http.example.com", "domain-name", "REJECTED", True), "reject",
+     ["http.example.com", "hxxp.example.com"]),
     ("rejected by the examiner, written with hxxp inside the path",
      [{"value": "https://safe.example.com/hxxp/payload", "type": "url"}],
-     _record("https://safe.example.com/http/payload", "url", "REJECTED", True), "reject", []),
+     _record("https://safe.example.com/http/payload", "url", "REJECTED", True), "reject",
+     ["https://safe.example.com/http/payload", "https://safe.example.com/hxxp/payload"]),
     ("rejected by the examiner, its record written in upper case",
      [{"value": "evil-up.example.net", "type": "domain-name"}],
-     _record("EVIL-UP.Example.NET", "domain-name", "REJECTED", True), "reject", []),
-    # The type a citation gives decides its keys, as forensic-mcp's: a URL with a
-    # port typed ipv4-addr is keyed without its port too, so it is the rejected
-    # URL (record_finding refuses that type on a URL, but `vhir merge` and an
-    # imported bundle write findings.json without that check); guards: the same
-    # URL typed url is keyed only with its port, and an address with a port is
-    # no IOC of a report, whatever its type
+     _record("EVIL-UP.Example.NET", "domain-name", "REJECTED", True), "reject",
+     ["EVIL-UP.Example.NET", "evil-up.example.net"]),
+    # A URL with a port is an IOC of the report beside the record's URL, whatever
+    # type cites it (record_finding refuses ipv4-addr on a URL, but `vhir merge`
+    # and an imported bundle write findings.json without that check); an address
+    # with a port is none, whatever its type, and its record's address is one
     ("rejected by the examiner, cited with a port, typed ipv4-addr",
      [{"value": "http://10.0.0.5:8080", "type": "ipv4-addr"}],
-     _record("http://10.0.0.5", "url", "REJECTED", True), "reject", []),
+     _record("http://10.0.0.5", "url", "REJECTED", True), "reject",
+     ["http://10.0.0.5:8080", "http://10.0.0.5"]),
     ("rejected by the examiner, cited with a port, typed url",
      [{"value": "http://10.0.0.5:8080", "type": "url"}],
      _record("http://10.0.0.5", "url", "REJECTED", True), "reject",
-     ["http://10.0.0.5:8080"]),
+     ["http://10.0.0.5:8080", "http://10.0.0.5"]),
     ("rejected by the examiner as an address, cited with a port, typed url",
      [{"value": "10.0.0.5:8080", "type": "url"}],
-     _record("10.0.0.5", "ipv4-addr", "REJECTED", True), "reject", []),
-    ("a rejected value drops no other",
+     _record("10.0.0.5", "ipv4-addr", "REJECTED", True), "reject", ["10.0.0.5"]),
+    ("a rejected value is one beside the others",
      [{"value": "notrej.example.net", "type": "domain-name"}, "http://rej.example.net.au/"],
      _record("rej.example.net", "domain-name", "REJECTED", True), "reject",
-     ["http://rej.example.net.au/", "notrej.example.net"]),
+     ["http://rej.example.net.au/", "notrej.example.net", "rej.example.net"]),
     ("manually reviewed as a string is no review",
      [{"value": "strrej.example.net", "type": "domain-name"}],
      _record("strrej.example.net", "domain-name", "REJECTED", "true"), "reject",
@@ -149,14 +147,15 @@ ROWS = [  # (id, the finding's iocs field, the case's IOC record, its ledger lin
     ("a signed rejection in a case with a held finding that has no line",
      [{"value": "c2j.example.net", "type": "domain-name"}],
      _record("c2j.example.net", "domain-name", "REJECTED", True),
-     "reject, beside a held finding with no line", []),
+     "reject, beside a held finding with no line", ["c2j.example.net"]),
     ("a signed approval, its status alone set REJECTED after the verify",
      [{"value": "c2r.example.net", "type": "domain-name"}],
      _approved("c2r.example.net"),
      "approve, then REJECTED after the verify", ["c2r.example.net"]),
     ("a signed rejection, the status verify judged",
      [{"value": "c2s.example.net", "type": "domain-name"}],
-     _record("c2s.example.net", "domain-name", "REJECTED", True), "reject", []),
+     _record("c2s.example.net", "domain-name", "REJECTED", True), "reject",
+     ["c2s.example.net"]),
     ("a signed approval, its status left APPROVED",
      [{"value": "c2p.example.net", "type": "domain-name"}],
      _approved("c2p.example.net"), "approve",
@@ -246,12 +245,12 @@ def gathered(report_iocs, case: Path, field, record, line=None) -> list[str]:
 @pytest.mark.parametrize(("field", "record", "line", "expected", "fails"),
                          [(*r[1:], FAILS.get(r[0])) for r in ROWS],
                          ids=[r[0] for r in ROWS])  # fmt: skip
-def test_a_value_the_examiner_rejected_is_no_ioc_of_the_report(
+def test_every_recorded_value_is_an_ioc_of_the_report_whatever_its_status(
     tmp_path, field, record, line, expected, fails
 ):
     from vhir_cli.commands.report import _report_iocs
 
     assert gathered(_report_iocs, tmp_path / "case", field, record, line) == expected
-    if fails is not None:  # the case fails verify, so no rejection counts
+    if fails is not None:  # the case fails verify
         result = approved_view(tmp_path / "case")["result"]
         assert result.exit_code == 2 and [f[0] for f in result.failures] == fails

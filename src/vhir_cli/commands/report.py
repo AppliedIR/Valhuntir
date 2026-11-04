@@ -19,7 +19,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vhir_cli import ioc_types
 from vhir_cli.case_io import (
     _at_or_after,
     _at_or_before,
@@ -28,7 +27,6 @@ from vhir_cli.case_io import (
     load_case_meta,
     load_findings,
     load_iocs,
-    load_timeline,
     load_todos,
     text_of,
 )
@@ -103,13 +101,28 @@ def _ml(value, safe: bool, indent: str):
     return indent_lines(value, indent) if safe else value
 
 
+def _snapshot(case_dir: Path) -> dict:
+    """One read of the case, for every part of one report: the records verify
+    read (findings, timeline and IOCs as verified) with its approved view, and
+    CASE.yaml and todos.json, which verify doesn't read. An approval that
+    lands while a report runs can't put one part out of step with another."""
+    view = approved_view(case_dir)
+    snap: dict = {"view": view, "findings": [], "timeline": [], "iocs": []}
+    for key, item in view["result"].records:
+        snap[key].append(item)
+    snap.update(meta=load_case_meta(case_dir), todos=load_todos(case_dir))
+    return snap
+
+
 def _shown_and_saved(case_dir: Path, args, report) -> None:
     """Print a text report built from display-safe records; with --save, write
-    the same report built from the records as stored, so the file is exact."""
-    output = report(case_dir, args, safe=True)
+    the same report built from the records as stored, so the file is exact.
+    Both, the block and the IOCs the file defangs come from one snapshot."""
+    snap = _snapshot(case_dir)
+    output = report(case_dir, args, safe=True, snap=snap)
     if output is None:
         return
-    view = approved_view(case_dir)
+    view = snap["view"]
     block = verification_block(view) + [""] + provenance_block(view)
     print(output + "\n\n" + "\n".join(_d(x, True) for x in block))
     save = getattr(args, "save", None)
@@ -118,67 +131,42 @@ def _shown_and_saved(case_dir: Path, args, report) -> None:
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
         ):
-            stored = report(case_dir, args, safe=False)
+            stored = report(case_dir, args, safe=False, snap=snap)
         stored = stored if stored is not None else output
         _save_output(case_dir, save, stored + "\n\n" + "\n".join(block), view)
 
 
-def _rejection_signed(ioc: dict, result) -> bool:
-    """Whether verify reads the examiner's own rejection of this IOC record in
-    the approval ledger: its verdict VALID, on a direct decision (not a
-    cascade), in a case that passes verify (any verdict that fails it, on any
-    item, cancels every rejection). `ioc` is the record verify read, so VALID
-    on its REJECTED status means its latest line records that rejection for
-    this content (verify fails a status or content its line doesn't). A status
-    set by hand has no ledger line, so it stays defanged."""
-    if result is None or result.exit_code:
-        return False  # nothing counts while the case fails verify
-    v = result.verdict(str(ioc.get("id")))
-    return (
-        v is not None and v.status == "VALID" and v.item_type == "ioc" and not v.source
-    )  # fmt: skip
-
-
 def _report_iocs(case_dir: Path, view: dict) -> list[str]:
-    """The IOCs of the case that are domains, URLs or IPv4 addresses, live,
-    longest first (a URL before the host it holds): the values in the approved
-    findings' `iocs` fields, and the case's IOC records approved or cited by
-    an approved finding, as report-mcp gathers them. A name a finding's text
-    merely mentions isn't one. Hashes, paths and the rest aren't, nor is a
-    value the examiner rejected (an IOC record REJECTED and manually
-    reviewed, its rejection signed in the ledger), whatever cites it, in any
-    form forensic-mcp joins to that record (ioc_types.keys)."""
-    findings = view.get("findings") or []
-    approved = {f.get("id") for f in findings}
-    kept: set[str] = set()
-    records = [i for i in load_iocs(case_dir) if isinstance(i, dict)]
+    """The IOCs a saved text report defangs: every domain, URL and IPv4
+    address recorded in the case, whatever its status, since a status can
+    change while a report is saved. They are the values in each finding's
+    `iocs` field and each IOC record of such a type: in `view` and the records
+    verify read for it, and in the files read again just before the write, so
+    a value recorded since is defanged too. Live, longest first (a URL before
+    the host it holds), as report-mcp gathers them. A name a finding's text
+    merely mentions isn't one. Hashes, paths and the rest aren't."""
     result = view.get("result")
-    judged = result.records if result is not None else []  # verify's own read
-    rejected = set().union(*(  # each signed rejection's keys: the store's identity
-        ioc_types.keys(i.get("value", ""), i.get("type")) for key, i in judged
-        if key == "iocs" and isinstance(i, dict)
-        and i.get("status") == "REJECTED" and i.get("manually_reviewed") is True
-        and _rejection_signed(i, result)
-    ))  # fmt: skip
+    records = [*(result.records if result is not None else [])]
+    records += [("findings", f) for f in load_findings(case_dir)]
+    records += [("iocs", i) for i in load_iocs(case_dir)]
+    findings = [
+        *(view.get("findings") or []),
+        *(i for k, i in records if k == "findings"),
+    ]
+    iocs = [*(view.get("iocs") or []), *(i for k, i in records if k == "iocs")]
+    kept: set[str] = set()
 
-    def take(value, typed: bool, t=None) -> None:
-        """Keep the value as the reports show it, unless it is the same IOC,
-        as forensic-mcp joins a citation to a record, as a signed rejection."""
-        v = network_ioc(value, typed)
-        if v is not None and not ioc_types.keys(value, t) & rejected:
+    def take(value, typed: bool) -> None:
+        if (v := network_ioc(value, typed)) is not None:
             kept.add(v)
 
-    for value, typed, t in structured_iocs(findings):
-        take(value, typed, t)
-    case_iocs = [  # the case's IOCs that one of the approved findings cites
-        i for i in records if isinstance(i.get("source_findings"), list)
-        and approved.intersection(map(str, i["source_findings"]))
-    ]  # fmt: skip
-    for ioc in [*(view.get("iocs") or []), *case_iocs]:  # approved, or so cited
+    for value, typed, _ in structured_iocs(findings):
+        take(value, typed)
+    for ioc in iocs:
         if isinstance(ioc, dict) and any(
             t in str(ioc.get("type", "")).lower() for t in _NETWORK_TYPES
         ):
-            take(ioc.get("value", ""), True, ioc.get("type"))
+            take(ioc.get("value", ""), True)
     return sorted(kept, key=lambda v: (-len(v), v))
 
 
@@ -245,12 +233,11 @@ def _extract_all_iocs(
 
 def _report_full(case_dir: Path, args) -> None:
     """Full case report: metadata + approved findings + timeline as JSON."""
-    meta = load_case_meta(case_dir)
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    todos = load_todos(case_dir)
-
-    view = approved_view(case_dir)  # only verified approvals count as approved
+    snap = _snapshot(case_dir)
+    meta, findings, timeline, todos = (
+        snap[k] for k in ("meta", "findings", "timeline", "todos")
+    )
+    view = snap["view"]  # only verified approvals count as approved
     approved_findings = view["findings"]
     approved_timeline = view["timeline"]
 
@@ -276,7 +263,7 @@ def _report_full(case_dir: Path, args) -> None:
         "approved_findings": approved_findings,
         "approved_timeline": approved_timeline,
         "approved_iocs": view["iocs"],
-        "iocs": _extract_all_iocs(approved_findings, view["iocs"], load_iocs(case_dir)),
+        "iocs": _extract_all_iocs(approved_findings, view["iocs"], snap["iocs"]),
         "verification": verification_json(view),
     }
 
@@ -285,17 +272,19 @@ def _report_full(case_dir: Path, args) -> None:
     _save_output(case_dir, getattr(args, "save", None), output, None)  # JSON: live
 
 
-def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | None:
+def _report_executive_summary(
+    case_dir: Path, args, safe: bool = True, snap: dict | None = None
+) -> str | None:
     """Executive summary: counts and key statistics."""
-    meta = load_case_meta(case_dir)
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    todos = load_todos(case_dir)
+    snap = snap or _snapshot(case_dir)
+    meta, findings, timeline, todos = (
+        snap[k] for k in ("meta", "findings", "timeline", "todos")
+    )
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)
-    view = approved_view(case_dir)
-    iocs = _extract_all_iocs(view["findings"], view["iocs"], load_iocs(case_dir))
+    view = snap["view"]
+    iocs = _extract_all_iocs(view["findings"], view["iocs"], snap["iocs"])
     total_iocs = sum(len(v) for v in iocs.values())
 
     lines = []
@@ -334,11 +323,16 @@ def _report_executive_summary(case_dir: Path, args, safe: bool = True) -> str | 
     return output
 
 
-def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
+def _report_timeline(
+    case_dir: Path, args, safe: bool = True, snap: dict | None = None
+) -> str | None:
     """Timeline report with optional date filtering."""
-    timeline = load_timeline(case_dir)
-    timeline.sort(
-        key=lambda t: (display_instant(t.get("timestamp")), text_of(t.get("timestamp")))
+    timeline = sorted(
+        (snap or _snapshot(case_dir))["timeline"],
+        key=lambda t: (
+            display_instant(t.get("timestamp")),
+            text_of(t.get("timestamp")),
+        ),
     )
 
     from_date = getattr(args, "from_date", None)
@@ -378,11 +372,14 @@ def _report_timeline(case_dir: Path, args, safe: bool = True) -> str | None:
     return output
 
 
-def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
+def _report_ioc(
+    case_dir: Path, args, safe: bool = True, snap: dict | None = None
+) -> str | None:
     """IOC report: the case's approved IOC records by type, then the values the
     approved findings name that no IOC record of the case holds."""
-    view = approved_view(case_dir)
-    groups = _extract_all_iocs(view["findings"], view["iocs"], load_iocs(case_dir))
+    snap = snap or _snapshot(case_dir)
+    view = snap["view"]
+    groups = _extract_all_iocs(view["findings"], view["iocs"], snap["iocs"])
     records = {k: v for k, v in groups.items() if k != TEXT_ONLY}
 
     lines = []
@@ -400,7 +397,9 @@ def _report_ioc(case_dir: Path, args, safe: bool = True) -> str | None:
     return "\n".join(lines)
 
 
-def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
+def _report_findings(
+    case_dir: Path, args, safe: bool = True, snap: dict | None = None
+) -> str | None:
     """Report on specific findings by ID."""
     ids_str = getattr(args, "report_findings", "")
     if not ids_str:
@@ -408,10 +407,11 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
         sys.exit(1)
 
     requested_ids = [fid.strip() for fid in ids_str.split(",") if fid.strip()]
-    findings = load_findings(case_dir)
+    snap = snap or _snapshot(case_dir)
+    findings = snap["findings"]
 
     by_id = {f["id"]: f for f in findings if "id" in f}
-    view = approved_view(case_dir)
+    view = snap["view"]
     unverified = {n["id"]: n["status"] for n in view["not_verified"]}
     found = []
     missing = []
@@ -460,12 +460,14 @@ def _report_findings(case_dir: Path, args, safe: bool = True) -> str | None:
     return output
 
 
-def _report_status_brief(case_dir: Path, args, safe: bool = True) -> str | None:
+def _report_status_brief(
+    case_dir: Path, args, safe: bool = True, snap: dict | None = None
+) -> str | None:
     """Quick status counts."""
-    meta = load_case_meta(case_dir)
-    findings = load_findings(case_dir)
-    timeline = load_timeline(case_dir)
-    todos = load_todos(case_dir)
+    snap = snap or _snapshot(case_dir)
+    meta, findings, timeline, todos = (
+        snap[k] for k in ("meta", "findings", "timeline", "todos")
+    )
 
     f_counts = _status_counts(findings)
     t_counts = _status_counts(timeline)

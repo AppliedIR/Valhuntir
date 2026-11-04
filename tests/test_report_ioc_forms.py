@@ -2,9 +2,9 @@
 of the corpus (hxxp at the scheme, inside the host and inside the path; [.]
 and [@] bracketed to depth 3; upper case), through `vhir report --findings`
 and `--ioc`: a saved report writes none of it live; a signed rejection of its
-records keeps it out of the report's IOCs (the IOC report's listing and the
-IOCs a saved report defangs); and the listing holds it once, however many
-forms cite it. The records are those record_finding stores for the
+records keeps it out of the IOC report's listing, and a saved report still
+writes none of it live (every recorded value is defanged, whatever its
+status); and the listing holds it once, however many forms cite it. The records are those record_finding stores for the
 citations (sift-mcp's tests check that against the real one). report-mcp's
 tests state the same rows against its report."""
 
@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from tests.test_report import _make_args, case_dir, identity  # noqa: F401
 from vhir_cli import ioc_types, keys, ledger
 from vhir_cli.case_io import load_iocs, save_findings, signed_text
-from vhir_cli.commands.report import _extract_all_iocs, _report_iocs, cmd_report
+from vhir_cli.commands.report import _extract_all_iocs, cmd_report
 from vhir_cli.ledger_verify import approved_view
 
 FINDING = "F-tester-001"
@@ -159,14 +159,26 @@ def test_a_saved_report_writes_no_form_of_an_ioc_live(  # noqa: F811
 
 
 @pytest.mark.parametrize(("name", "forms"), [r[1:] for r in ROWS], ids=IDS)
-def test_a_signed_rejection_keeps_every_form_out_of_the_reports_iocs(  # noqa: F811
+def test_a_signed_rejection_keeps_every_form_out_of_the_listing(  # noqa: F811
     case_dir, identity, name, forms  # noqa: F811
 ):  # fmt: skip
     _case(case_dir, name, forms, "REJECTED")
     assert _listed(case_dir) == []
-    assert _report_iocs(case_dir, approved_view(case_dir)) == []
     saved = _saved(case_dir, identity, ioc=True)
     assert live(saved, name) == []
+
+
+@pytest.mark.parametrize(("name", "forms"), [
+    pytest.param(name, forms, id=row, marks=_known(name, forms, "the findings report"))
+    for row, name, forms in ROWS
+])  # fmt: skip
+def test_a_saved_report_writes_no_form_of_a_rejected_ioc_live(  # noqa: F811
+    case_dir, identity, name, forms  # noqa: F811
+):  # fmt: skip
+    """The finding names it in every form cited and as stored."""
+    named = [*forms, *(r["value"] for r in stored(forms, CORPUS[name][0]))]
+    _case(case_dir, name, forms, "REJECTED", text="Seen: " + "; ".join(named) + ".")
+    assert live(_saved(case_dir, identity, report_findings=FINDING), name) == []
 
 
 @pytest.mark.parametrize(("name", "forms"), [r[1:] for r in ROWS], ids=IDS)

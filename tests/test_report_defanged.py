@@ -65,9 +65,11 @@ def test_a_url_or_name_that_isnt_an_ioc_stays_live_and_none_twice(case_dir, iden
     assert "Already evil[.]com;" in saved and "[[" not in saved
 
 
-def test_only_an_approved_findings_typed_iocs_are_defanged(case_dir, identity):  # noqa: F811
+def test_a_case_ioc_record_typed_as_a_domain_is_defanged_whoever_cites_it(  # noqa: F811
+    case_dir, identity  # noqa: F811
+):  # fmt: skip
     """A .dev name isn't one the text extractor finds: a case IOC record typed
-    as a domain decides it, and only when an approved finding cites it."""
+    as a domain decides it, whatever its status and whichever finding cites it."""
     draft = {"id": "F-tester-002", "status": "DRAFT", "title": "t", "observation": "o",
              "interpretation": "i"}  # fmt: skip
     records = [
@@ -78,7 +80,7 @@ def test_only_an_approved_findings_typed_iocs_are_defanged(case_dir, identity): 
     ]  # fmt: skip
     saved = _saved(case_dir, identity, [APPROVED, draft], records,
                    report_findings="F-tester-001")  # fmt: skip
-    assert "relay.example.dev; stage[.]example[.]dev." in saved
+    assert "relay[.]example[.]dev; stage[.]example[.]dev." in saved
 
 
 def test_the_full_json_report_keeps_its_iocs_live_and_the_text_report_doesnt(  # noqa: F811
