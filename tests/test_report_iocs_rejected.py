@@ -81,6 +81,22 @@ ROWS = [  # (id, the finding's iocs field, the case's IOC record, its ledger lin
     ("rejected by the examiner, its record written in upper case",
      [{"value": "evil-up.example.net", "type": "domain-name"}],
      _record("EVIL-UP.Example.NET", "domain-name", "REJECTED", True), "reject", []),
+    # The type a citation gives decides its keys, as forensic-mcp's: a URL with a
+    # port typed ipv4-addr is keyed without its port too, so it is the rejected
+    # URL (record_finding refuses that type on a URL, but `vhir merge` and an
+    # imported bundle write findings.json without that check); guards: the same
+    # URL typed url is keyed only with its port, and an address with a port is
+    # no IOC of a report, whatever its type
+    ("rejected by the examiner, cited with a port, typed ipv4-addr",
+     [{"value": "http://10.0.0.5:8080", "type": "ipv4-addr"}],
+     _record("http://10.0.0.5", "url", "REJECTED", True), "reject", []),
+    ("rejected by the examiner, cited with a port, typed url",
+     [{"value": "http://10.0.0.5:8080", "type": "url"}],
+     _record("http://10.0.0.5", "url", "REJECTED", True), "reject",
+     ["http://10.0.0.5:8080"]),
+    ("rejected by the examiner as an address, cited with a port, typed url",
+     [{"value": "10.0.0.5:8080", "type": "url"}],
+     _record("10.0.0.5", "ipv4-addr", "REJECTED", True), "reject", []),
     ("a rejected value drops no other",
      [{"value": "notrej.example.net", "type": "domain-name"}, "http://rej.example.net.au/"],
      _record("rej.example.net", "domain-name", "REJECTED", True), "reject",
