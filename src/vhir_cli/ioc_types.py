@@ -122,9 +122,14 @@ def listing() -> str:
 
 
 def refang(value: str) -> str:
-    """Refang a defanged value as record_finding does before storing it."""
-    v = value.replace("[.]", ".").replace("hxxp", "http")
-    return re.sub(r"\[(\W)\]", r"\1", v)
+    """Refang a defanged value as record_finding does before storing it: hxxp
+    becomes http, and each bracketed mark loses its brackets however deep,
+    one layer a pass until a pass changes nothing. A pass that changes the
+    value shortens it, so the loop ends."""
+    v = value.replace("hxxp", "http")
+    while len(n := re.sub(r"\[(\W)\]", r"\1", v)) < len(v):
+        v = n
+    return v
 
 
 def is_ipv4(value: str) -> bool:

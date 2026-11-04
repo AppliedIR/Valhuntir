@@ -204,6 +204,21 @@ def test_a_range_counts_as_its_base_address():
     assert got == "185[.]220[.]101[.]0/24 via http://185[.]220[.]101[.]0/24"
 
 
+NESTED = [
+    ("evil7[[.]]example.com", "evil7.example.com"),
+    ("evil7[[[.]]]example[.]com", "evil7.example.com"),
+    ("hxxp[[:]]//evil7.example.com/a", "http://evil7.example.com/a"),
+    ("10[[.]]20[.]30[[[.]]]41", "10.20.30.41"),
+]
+
+
+@pytest.mark.parametrize(("value", "live"), NESTED)
+def test_a_bracket_defang_of_any_depth_counts_as_its_live_indicator(value, live):
+    from vhir_cli.defang import network_ioc
+
+    assert network_ioc(value, True) == live
+
+
 def test_a_typed_domain_with_its_root_dot_counts_without_it():
     from vhir_cli.defang import defang_iocs, network_ioc
 
