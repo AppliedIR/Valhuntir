@@ -3,8 +3,9 @@ findings.json and iocs.json, is absent or parses to a list of records. Any
 other file there (empty or blank, not UTF-8, one that won't parse, null, a
 number, a boolean, a list holding something other than records, a directory,
 a dangling symlink) means the report isn't saved: the refusal names the file
-and what to run, with no traceback, and a report already saved under that
-name is left byte-identical. An absent file is
+and what to run, with no traceback. A report already saved under that name
+is left byte-identical; with none there, none is created. A file that is an
+empty list saves. An absent file is
 a case with none of them. todos.json is read only by the reports that print
 it. The IOCs come from the files as they are just before the write, and each
 command reads the approved view once. report-mcp's tests state the same rows
@@ -123,6 +124,15 @@ BAD = {  # (file, what is written in it, what the refusal says about it)
                             "couldn't be read"),
     "iocs.json a directory": ("iocs.json", DIR, "couldn't be read"),
     "iocs.json a dangling symlink": ("iocs.json", LINK, "couldn't be read"),
+    "findings.json not UTF-8": ("findings.json",
+                                b'[{"id": "F-x", "observation": "\xff"}]',
+                                "couldn't be read"),
+    "findings.json a directory": ("findings.json", DIR, "couldn't be read"),
+    "findings.json a dangling symlink": ("findings.json", LINK, "couldn't be read"),
+}  # fmt: skip
+GOOD = {  # (file, what is written in it): a list of records, empty too, saves
+    "iocs.json []": ("iocs.json", "[]"),
+    "findings.json []": ("findings.json", "[]"),
 }  # fmt: skip
 
 
@@ -141,20 +151,23 @@ def _spoil(path, how):
 
 
 def _sha(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """None when there is no file."""
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
 
 
+@pytest.mark.parametrize("prior", (False, True), ids=("no-report", "a-report"))
 @pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("row", BAD)
 def test_a_file_that_is_not_a_list_of_records_refuses_the_save(
-    tmp_path, monkeypatch, row, route
+    tmp_path, monkeypatch, row, route, prior
 ):
     case = _case(tmp_path, monkeypatch)
     name, how, why = BAD[row]
     path = case / name
     _spoil(path, how)
     report = case / "reports" / f"{route}.txt"
-    report.write_bytes(PRIOR)
+    if prior:
+        report.write_bytes(PRIOR)
     before = _sha(report)
     ended, saved, err = _save(case, route)
     assert ended == "SystemExit(1)", (ended, saved)
@@ -167,6 +180,21 @@ def test_a_file_that_is_not_a_list_of_records_refuses_the_save(
         return
     assert f"Error: report not saved. {path} {why}" in err, err
     assert "vhir review --findings --verify" in err and "vhir restore" in err, err
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("row", GOOD)
+def test_a_file_that_is_an_empty_list_saves(tmp_path, monkeypatch, row, route):
+    case = _case(tmp_path, monkeypatch)
+    name, text = GOOD[row]
+    (case / name).write_text(text)
+    ended, saved, err = _save(case, route)
+    assert "Traceback" not in err and "report not saved" not in err, err
+    if (route, name) == ("findings", "findings.json"):
+        # a case with no findings has no finding to report
+        assert f"Not found: {FINDING['id']}" in err, err
+        return
+    assert ended == "returned" and saved is not None, (ended, err)
 
 
 @pytest.mark.parametrize("route", ROUTES)
