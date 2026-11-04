@@ -1,8 +1,10 @@
 """A saved text report is written only when every file it reads IOCs from,
 findings.json and iocs.json, is absent or parses to a list of records. Any
-other file there (one that won't parse, null, a number, a boolean, a list
-holding something other than records) means the report isn't saved: the
-refusal names the file and what to run, with no traceback. An absent file is
+other file there (empty or blank, not UTF-8, one that won't parse, null, a
+number, a boolean, a list holding something other than records, a directory,
+a dangling symlink) means the report isn't saved: the refusal names the file
+and what to run, with no traceback, and a report already saved under that
+name is left byte-identical. An absent file is
 a case with none of them. todos.json is read only by the reports that print
 it. The IOCs come from the files as they are just before the write, and each
 command reads the approved view once. report-mcp's tests state the same rows
@@ -11,6 +13,7 @@ for save_report."""
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 from argparse import Namespace
@@ -25,6 +28,8 @@ from vhir_cli.case_io import signed_text
 from vhir_cli.commands import report as rep
 
 CASE = "INC-2026-REFUSE"
+PRIOR = b"PRIOR REPORT, written before the save\n"
+DIR, LINK = object(), object()  # in place of the file: a directory, a dangling symlink
 VALUE = "c2.example.net"
 LATE = "late.example.net"
 FINDING = {"id": "F-tester-001", "status": "APPROVED", "title": "Beacon to a C2 host",
@@ -36,7 +41,7 @@ IOC = {"id": "IOC-tester-001", "value": VALUE, "type": "domain-name",
        "source_findings": [FINDING["id"]]}  # fmt: skip
 IDENTITY = {"os_user": "testuser", "examiner": "tester", "examiner_source": "env",
             "analyst": "tester", "analyst_source": "env"}  # fmt: skip
-ROUTES = ("ioc", "findings", "timeline")
+ROUTES = ("ioc", "findings", "timeline", "executive_summary", "status_brief")
 EVENT = {"id": "T-tester-001", "status": "APPROVED", "timestamp": "2026-10-08T09:00:00Z",
          "description": f"DNS query for {LATE} and {VALUE}"}  # fmt: skip
 
@@ -109,7 +114,34 @@ BAD = {  # (file, what is written in it, what the refusal says about it)
     "findings.json 7": ("findings.json", "7", "holds a number, not a list of records"),
     "findings.json true": ("findings.json", "true",
                            "holds a boolean, not a list of records"),
+    "iocs.json empty": ("iocs.json", "", "is empty, not a list of records"),
+    "iocs.json blank": ("iocs.json", " \n\t \n", "is empty, not a list of records"),
+    "findings.json empty": ("findings.json", "", "is empty, not a list of records"),
+    "findings.json blank": ("findings.json", " \n\t \n",
+                            "is empty, not a list of records"),
+    "iocs.json not UTF-8": ("iocs.json", b'[{"id": "IOC-x", "value": "\xff"}]',
+                            "couldn't be read"),
+    "iocs.json a directory": ("iocs.json", DIR, "couldn't be read"),
+    "iocs.json a dangling symlink": ("iocs.json", LINK, "couldn't be read"),
 }  # fmt: skip
+
+
+def _spoil(path, how):
+    """Leave `path` as BAD says: None cuts its closing bracket."""
+    if how is None:
+        path.write_text(path.read_text().rstrip().rstrip("]"))
+    elif how is DIR:
+        path.unlink()
+        path.mkdir()
+    elif how is LINK:
+        path.unlink()
+        path.symlink_to(path.with_name("no-such-file.json"))
+    else:
+        path.write_bytes(how if isinstance(how, bytes) else how.encode())
+
+
+def _sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -118,11 +150,15 @@ def test_a_file_that_is_not_a_list_of_records_refuses_the_save(
     tmp_path, monkeypatch, row, route
 ):
     case = _case(tmp_path, monkeypatch)
-    name, text, why = BAD[row]
+    name, how, why = BAD[row]
     path = case / name
-    path.write_text(path.read_text().rstrip().rstrip("]") if text is None else text)
+    _spoil(path, how)
+    report = case / "reports" / f"{route}.txt"
+    report.write_bytes(PRIOR)
+    before = _sha(report)
     ended, saved, err = _save(case, route)
-    assert (ended, saved) == ("SystemExit(1)", None), (ended, saved)
+    assert ended == "SystemExit(1)", (ended, saved)
+    assert _sha(report) == before, saved
     assert "Traceback" not in err, err
     if (route, name) == ("findings", "findings.json"):
         # the finding asked for can't be read, so the report stops before it
@@ -154,7 +190,7 @@ def test_an_iocs_json_past_the_verify_cap_saves_defanged(tmp_path, monkeypatch, 
         assert "c2[.]example[.]net" in saved, saved
 
 
-@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("route", ("ioc", "findings", "timeline"))
 def test_an_unreadable_todos_json_doesnt_stop_a_report_that_doesnt_print_it(
     tmp_path, monkeypatch, route
 ):
