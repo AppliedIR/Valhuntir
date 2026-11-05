@@ -17,6 +17,7 @@ with no external data, so it does not affect reproducibility.
 
 from __future__ import annotations
 
+import functools
 import re
 
 from vhir_cli import ioc_types
@@ -62,9 +63,9 @@ def refang(text: str) -> str:
     return _HXXP_RE.sub(_unmask_scheme, text)
 
 
-# Writing a report's IOCs defanged (the reverse of refang): report-mcp holds
-# the same regexes and functions (_defanged, _defang_iocs), and a parity test
-# runs both.
+# Writing a report's IOCs defanged (the reverse of refang). report-mcp defangs
+# its reports with defang_iocs from here and keeps its own copy of the three
+# regexes to pick which values are network IOCs.
 _IPV4 = re.compile(
     r"(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 )
@@ -86,6 +87,37 @@ def _defanged(text: str) -> str:
     return text.replace(".", "[.]")
 
 
+@functools.cache
+def _fold_table() -> dict[int, str]:
+    """str.translate table that, followed by lower(), sends every two
+    characters re.I treats as equal to one character, one for one. lower()
+    alone parts some (K and the Kelvin sign meet, but s and the long s do not)
+    and writes U+0130 as two characters. Each character goes to the least of
+    the lowercase forms sharing its uppercase; capital sigma is mapped too, so
+    lower() never reads its neighbours to choose a final sigma."""
+
+    def lower(c: str) -> str:
+        s = c.lower()
+        return s if len(s) == 1 else ("i" if c == "\u0130" else c)
+
+    chars = [chr(n) for n in range(0x10000) if not 0xD800 <= n <= 0xDFFF]
+    group: dict[str, set[str]] = {}
+    for c in chars:
+        group.setdefault(lower(c).upper(), set()).add(lower(c))
+    least = {low: min(g) for g in group.values() for low in g}
+    return {
+        ord(c): least[lower(c)]
+        for c in chars
+        if least[lower(c)] != c.lower() or c == "\u03a3"
+    }
+
+
+def _folded(text: str) -> str:
+    """`text` with each character folded alone, so a fold is as long as the
+    text and a slice of it is the fold of that slice of the text."""
+    return text.translate(_fold_table()).lower()
+
+
 def defang_iocs(text: str, iocs: list[str]) -> str:
     """`text` with every whole occurrence of each IOC defanged. A whole
     occurrence is never part of a longer name or address: no name character
@@ -93,7 +125,12 @@ def defang_iocs(text: str, iocs: list[str]) -> str:
     domain right after a single / or \\ is a path component, left as written
     (after two of them, mixed or not, or one right after a scheme's colon, it
     is a host). A defanged form no longer holds the live value, so it isn't
-    defanged twice."""
+    defanged twice.
+
+    IOCs are taken in order, each on the text the ones before it left. The
+    regex for an IOC only runs where its fold occurs in the text's fold, and
+    an IOC whose fold occurs nowhere is skipped: a match of it, case
+    ignored, would have the same fold."""
 
     def one(m: re.Match, name: bool) -> str:
         s, i = m.string, m.start()
@@ -101,10 +138,30 @@ def defang_iocs(text: str, iocs: list[str]) -> str:
             return m.group(0)  # a path component, not a host
         return _defanged(m.group(0))
 
+    folded = _folded(text)
     for v in iocs:
+        key = _folded(v)
+        at = folded.find(key) if v else -1
+        if at < 0:
+            continue
         name = not (_URL.fullmatch(v) or _IPV4.fullmatch(v))
         whole = re.compile(r"(?<![\w.-])" + re.escape(v) + r"(?![\w-]|\.[\w-])", re.I)
-        text = whole.sub(lambda m, name=name: one(m, name), text)
+        parts, fparts, done = [], [], 0
+        while at >= 0:
+            # the whole text, so the lookarounds see past the IOC
+            m = whole.match(text, at)
+            if not m:
+                at = folded.find(key, at + 1)
+                continue
+            new = one(m, name)
+            if new != m.group(0):
+                parts += (text[done:at], new)
+                fparts += (folded[done:at], _folded(new))
+                done = m.end()
+            at = folded.find(key, m.end())
+        if parts:
+            text = "".join(parts) + text[done:]
+            folded = "".join(fparts) + folded[done:]
     return text
 
 
