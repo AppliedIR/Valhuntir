@@ -149,8 +149,8 @@ SHAPES = {
     "not-recorded-value-not-a-string": (
         [_f(1, [{"value": 445, "type": "port"}])], [], {TEXT_ONLY: ["445"]},
     ),
-    "not-recorded-a-number-and-a-nested-value-left-out": (
-        [_f(1, [5, ["x"]])], [], {},
+    "not-recorded-a-number-and-a-nested-value-listed": (
+        [_f(1, [5, ["x"]])], [], {TEXT_ONLY: ["5", "x"]},
     ),
     "not-recorded-none-left-out": ([_f(1, [None])], [], {}),
     "not-recorded-empty-string-left-out": ([_f(1, [""])], [], {}),
@@ -391,6 +391,17 @@ def test_the_executive_summary_counts_the_shape(shape, case, monkeypatch, capsys
     _case_with(case, findings, records)
     out = _cli(monkeypatch, capsys, ["report", "--executive-summary"])
     assert _summary(want) in out, out
+
+
+def test_report_ioc_prints_a_number_and_a_nested_value(case, monkeypatch, capsys):  # noqa: F811
+    """A finding's iocs naming 5 and ["x"], as `report --ioc` prints them."""
+    _case_with(case, [_f(1, [5, ["x"]])], [])
+    out = _cli(monkeypatch, capsys, ["report", "--ioc"])
+    assert (
+        "\n  Approved IOC records: none\n"
+        f"\n  {TEXT_ONLY} (2):\n    5\n    x\n"
+        "\nTotal: 0 IOC records across 0 types"
+    ) in out, out
 
 
 @pytest.mark.parametrize("type_", [None, ["user-account"], 7])
