@@ -37,7 +37,7 @@ from vhir_cli.ledger_verify import (
     verification_block,
     verification_json,
 )
-from vhir_cli.provenance_view import UNREADABLE, provenance_block
+from vhir_cli.provenance_view import UNREADABLE, WITHHELD, provenance_block, withheld
 
 
 def cmd_report(args, identity: dict) -> None:
@@ -257,11 +257,14 @@ def _save_output(
         print(f"Failed to save report: {e}", file=sys.stderr)
 
 
-def _shown(bad: set, files: set, label: str, lines: list[str]) -> list[str]:
+def _shown(bad: set, files: set, label: str, lines: list[str], view=None) -> list[str]:
     """A report line or block drawn from `files`: `label: unreadable (see above)`
-    when one of them can't be read, else `lines`."""
+    when one of them can't be read, `label: withheld: ...` when `view` is
+    given and blanked, else `lines`."""
     if bad & files:
         return [f"{label}: {UNREADABLE}"]
+    if view is not None and withheld(view):
+        return [f"{label}: {WITHHELD}"]
     return lines
 
 
@@ -332,6 +335,8 @@ def _report_full(case_dir: Path, args) -> None:
         ),
         "verification": verification_json(view),
     }
+    if withheld(view):
+        report["approved_view_withheld"] = True
     if unreadable:
         report["unreadable"] = [{"file": p.name, "why": why} for p, why in unreadable]
 
@@ -380,11 +385,11 @@ def _report_executive_summary(
     lines += _shown(bad, {F, T}, "Approved (verified)", [
         f"Approved (verified): {len(view['findings'])} findings, "
         f"{len(view['timeline'])} timeline events; not verified: {len(view['not_verified'])}"
-    ])  # fmt: skip
+    ], view)  # fmt: skip
     lines.append("")
     label = "IOCs (from approved findings)"
     lines += _shown(bad, {F, IO}, label, [f"{label}: {total_iocs}"]
-                    + [f"  {_d(t, safe)}: {len(v)}" for t, v in iocs.items()])  # fmt: skip
+                    + [f"  {_d(t, safe)}: {len(v)}" for t, v in iocs.items()], view)  # fmt: skip
     lines.append("")
     open_todos = sum(1 for t in todos if t.get("status") == "open")
     lines += _shown(bad, {D}, "Open TODOs", [f"Open TODOs: {open_todos}"])
@@ -459,16 +464,20 @@ def _report_ioc(
         return "\n".join(lines)
     groups = _extract_all_iocs(view["findings"], view["iocs"], snap["iocs"])
     records = {k: v for k, v in groups.items() if k != TEXT_ONLY}
+    blanked = withheld(view)
 
     if not records:
-        lines.append("\n  Approved IOC records: none")
+        lines.append(f"\n  Approved IOC records: {WITHHELD if blanked else 'none'}")
     for ioc_type, values in groups.items():
         lines.append(f"\n  {_d(ioc_type, safe)} ({len(values)}):")
         for v in values:
             lines.append(f"    {_d(v, safe)}")
 
     total = sum(len(v) for v in records.values())
-    lines.append(f"\nTotal: {total} IOC records across {len(records)} types")
+    if blanked and not records:
+        lines.append(f"\nTotal: {WITHHELD}")
+    else:
+        lines.append(f"\nTotal: {total} IOC records across {len(records)} types")
     return "\n".join(lines)
 
 

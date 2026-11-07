@@ -42,15 +42,15 @@ ROWS = [
     ("executive_summary", {T}, f"Timeline Events: {U}", "Timeline Events:",
      [r"Timeline Events:"]),
     ("executive_summary", {F, IO}, f"IOCs (from approved findings): {U}",
-     "IOCs (from approved findings):", [r"IOCs \(from approved findings\): \d+"]),
+     "IOCs (from approved findings):", [r"IOCs \(from approved findings\): (\d+|withheld.*)"]),
     ("executive_summary", {D}, f"Open TODOs: {U}", "Open TODOs:", [r"Open TODOs: \d+"]),
     ("status_brief", {D}, f"Open TODOs: {U}", "Open TODOs:", [r"Open TODOs: \d+"]),
     ("status_brief", {F}, f"Findings: {U}", "Findings:", [r"Findings: \d+ \(.*\)"]),
     ("status_brief", {T}, f"Timeline: {U}", "Timeline:", [r"Timeline: \d+ \(.*\)"]),
     ("executive_summary", {F, T}, f"Approved (verified): {U}", "Approved (verified):",
-     [r"Approved \(verified\): \d+ findings.*"]),
+     [r"Approved \(verified\): (\d+ findings.*|withheld.*)"]),
     *[(m, {F}, f"Approved findings: {U}", "PROVENANCE",
-       [r"No approved, verified findings\."]) for m in TEXT],
+       [r"No approved, verified findings\.", r"Approved findings: withheld.*"]) for m in TEXT],
 ]  # fmt: skip
 # --full: (sources, key path)
 NULL_KEYS = [
