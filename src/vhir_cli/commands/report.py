@@ -19,6 +19,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vhir_cli import defang
 from vhir_cli.case_io import (
     _at_or_after,
     _at_or_before,
@@ -28,12 +29,6 @@ from vhir_cli.case_io import (
     load_todos,
     read_regular,
     text_of,
-)
-from vhir_cli.defang import (
-    _NETWORK_TYPES,
-    defang_iocs,
-    network_ioc,
-    structured_iocs,
 )
 from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
@@ -194,17 +189,20 @@ def _report_iocs(case_dir: Path, view: dict) -> list[str]:
     iocs = [*(view.get("iocs") or []), *(i for k, i in records if k == "iocs")]
     kept: set[str] = set()
 
-    def take(value, typed: bool) -> None:
-        if (v := network_ioc(value, typed)) is not None:
+    walked = [
+        *(
+            w
+            for f in findings
+            if isinstance(f, dict)
+            for w in defang.walk_iocs(f.get("iocs"))
+        ),
+        *defang.walk_records(iocs),
+    ]
+    for value, network, nearest in walked:
+        if (
+            v := defang.select_network_ioc(value, nearest, network=network)
+        ) is not None:
             kept.add(v)
-
-    for value, typed, _ in structured_iocs(findings):
-        take(value, typed)
-    for ioc in iocs:
-        if isinstance(ioc, dict) and any(
-            t in str(ioc.get("type", "")).lower() for t in _NETWORK_TYPES
-        ):
-            take(ioc.get("value", ""), True)
     return sorted(kept, key=lambda v: (-len(v), v))
 
 
@@ -232,7 +230,7 @@ def _save_output(
                 file=sys.stderr,
             )
             sys.exit(1)
-        content = defang_iocs(content, iocs)
+        content = defang.defang_iocs(content, iocs)
     out = Path(save_path)
     if not out.is_absolute():
         reports_dir = case_dir / "reports"
