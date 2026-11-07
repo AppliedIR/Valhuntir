@@ -122,7 +122,7 @@ def test_a_saved_report_is_written_from_the_stored_text(case, capsys):
     _report(report_timeline=True, save="timeline.txt")
     shown = capsys.readouterr().out
     saved = (case / "reports" / "timeline.txt").read_text()
-    assert CLEAR not in shown and "Saved to:" in shown
+    assert CLEAR not in shown  # "Saved to:" is on stderr (test_report_saved_on_stderr)
     assert CLEAR in saved  # the file holds the text as stored
 
 

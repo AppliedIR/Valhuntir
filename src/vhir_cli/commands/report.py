@@ -259,7 +259,7 @@ def _save_output(
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        print(f"\nSaved to: {out}")
+        print(f"\nSaved to: {out}", file=sys.stderr)
     except OSError as e:
         print(f"Failed to save report: {e}", file=sys.stderr)
 
