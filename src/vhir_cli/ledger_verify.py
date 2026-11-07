@@ -311,6 +311,8 @@ class Result:
     records: list[tuple[str, object]] = field(default_factory=list)
     duplicate_ids: set[str] = field(default_factory=set)
     missing: list[str] = field(default_factory=list)  # why it isn't anchored
+    # the item id of each ITEM_MISSING failure, in the same order
+    missing_items: list[str] = field(default_factory=list)
     after_head: list[str] = field(default_factory=list)
 
     @property
@@ -368,7 +370,7 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
             data = json.loads(text) if text.strip() else []  # as signing reads it
             if not isinstance(data, list):
                 raise ValueError("not a list")
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:  # too deep: unreadable
             result.failures.append(
                 ("CASE_FILE_UNREADABLE", f"{name} couldn't be read ({e})")
             )
@@ -921,6 +923,7 @@ def verify_case(
                     f"chain {ln.chain} seq {ln.seq} names {item_id}, which the case doesn't have",
                 )
             )
+            result.missing_items.append(str(item_id))
         if id(ln) in latest_ids:
             continue
         where = f"chain {ln.chain} seq {ln.seq} ({item_id}, {ln.obj.get('examiner')} {ln.fp})"

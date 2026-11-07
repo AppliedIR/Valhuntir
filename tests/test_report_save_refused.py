@@ -2,8 +2,10 @@
 findings.json and iocs.json, is absent or parses to a list of records. Any
 other file there (empty or blank, not UTF-8, one that won't parse, null, a
 number, a boolean, a list holding something other than records, a directory,
-a dangling symlink) means the report isn't saved: the refusal names the file
-and what to run, with no traceback. A report already saved under that name
+a dangling symlink, a symlink to a valid file, one past the 16 MiB case
+document limit) means the report isn't saved: the header names the file and
+why, the remediation line follows it, stderr says `Report not saved:`, and
+there's no traceback. A report already saved under that name
 is left byte-identical; with none there, none is created. A file that is an
 empty list saves. An absent file is
 a case with none of them. todos.json is read only by the reports that print
@@ -92,6 +94,11 @@ def _args(route, **kw):
 
 def _save(case, route):
     """(how it ended, the saved text or None, stderr)."""
+    return _save_out(case, route)[:3]
+
+
+def _save_out(case, route):
+    """(how it ended, the saved text or None, stderr, stdout)."""
     out, err, ended = io.StringIO(), io.StringIO(), "returned"
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
@@ -99,7 +106,8 @@ def _save(case, route):
         except SystemExit as e:
             ended = f"SystemExit({e.code})"
     path = case / "reports" / f"{route}.txt"
-    return ended, (path.read_text() if path.exists() else None), err.getvalue()
+    saved = path.read_text() if path.exists() else None
+    return ended, saved, err.getvalue(), out.getvalue()
 
 
 BAD = {  # (file, what is written in it, what the refusal says about it)
@@ -169,17 +177,18 @@ def test_a_file_that_is_not_a_list_of_records_refuses_the_save(
     if prior:
         report.write_bytes(PRIOR)
     before = _sha(report)
-    ended, saved, err = _save(case, route)
+    ended, saved, err, out = _save_out(case, route)
     assert ended == "SystemExit(1)", (ended, saved)
     assert _sha(report) == before, saved
-    assert "Traceback" not in err, err
-    if (route, name) == ("findings", "findings.json"):
-        # the finding asked for can't be read, so the report stops before it
-        # saves anything, as it always has
-        assert f"Not found: {FINDING['id']}" in err, err
-        return
-    assert f"Error: report not saved. {path} {why}" in err, err
-    assert "vhir review --findings --verify" in err and "vhir restore" in err, err
+    assert "Traceback" not in err + out, err
+    # the header names the file and why, first; the remediation follows it
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert len(lines) >= 2, (out, err)
+    head, fix = lines[:2]
+    assert head == f"{name} {why}" or head.startswith(f"{name} {why} ("), out
+    assert "vhir restore" in fix and "empty list" not in out + err, out
+    assert f"Report not saved: {name} can't be read." in err, err
+    assert f"Not found: {FINDING['id']}" not in out + err, out
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -189,7 +198,7 @@ def test_a_file_that_is_an_empty_list_saves(tmp_path, monkeypatch, row, route):
     name, text = GOOD[row]
     (case / name).write_text(text)
     ended, saved, err = _save(case, route)
-    assert "Traceback" not in err and "report not saved" not in err, err
+    assert "Traceback" not in err and "not saved" not in err.lower(), err
     if (route, name) == ("findings", "findings.json"):
         # a case with no findings has no finding to report
         assert f"Not found: {FINDING['id']}" in err, err
@@ -208,15 +217,18 @@ def test_an_absent_iocs_json_saves(tmp_path, monkeypatch, route):
 
 
 @pytest.mark.parametrize("route", ("ioc", "findings"))
-def test_an_iocs_json_past_the_verify_cap_saves_defanged(tmp_path, monkeypatch, route):
+def test_an_iocs_json_past_the_verify_cap_refuses_the_save(
+    tmp_path, monkeypatch, route
+):
+    """Refused, as verify refuses it: both read the file with the one reader."""
     case = _case(tmp_path, monkeypatch)  # VALUE only in the IOC record
     path = case / "iocs.json"
     path.write_text(path.read_text() + " " * (17 << 20))
-    ended, saved, err = _save(case, route)
-    assert ended == "returned" and saved is not None, (ended, err)
-    assert VALUE not in saved, saved
-    if route == "findings":
-        assert "c2[.]example[.]net" in saved, saved
+    ended, saved, err, out = _save_out(case, route)
+    assert ended == "SystemExit(1)" and saved is None, (ended, err)
+    why = "couldn't be read (larger than the 16 MiB case document limit)"
+    assert f"iocs.json {why}" in out.splitlines(), out
+    assert "Report not saved: iocs.json can't be read." in err, err
 
 
 @pytest.mark.parametrize("route", ("ioc", "findings", "timeline"))

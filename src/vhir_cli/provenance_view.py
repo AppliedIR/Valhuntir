@@ -239,14 +239,22 @@ def finding_lines(finding: dict, indent: str = "  ") -> list[str]:
     return lines
 
 
-def provenance_block(view: dict) -> list[str]:
+# a report line whose source file can't be read: `<label>: ...`
+UNREADABLE = "unreadable (see above)"
+
+
+def provenance_block(view: dict, findings_unreadable: bool = False) -> list[str]:
     """The block both reports end with, after VERIFICATION: each approved,
-    verified finding's provenance."""
+    verified finding's provenance. With none because findings.json can't be
+    read (`findings_unreadable`), it says so."""
     lines = ["PROVENANCE", "=" * 50]
     findings = view.get("findings") or []
     for f in findings:
         lines.append(f"[{_s(f.get('id', '?'))}] {_s(f.get('title', ''))}")
         lines += finding_lines(f)
     if not findings:
-        lines.append("No approved, verified findings.")
+        if findings_unreadable:
+            lines.append(f"Approved findings: {UNREADABLE}")
+        else:
+            lines.append("No approved, verified findings.")
     return lines
