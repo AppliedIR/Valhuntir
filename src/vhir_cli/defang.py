@@ -21,6 +21,7 @@ import functools
 import re
 
 from vhir_cli import ioc_types
+from vhir_cli.display import IOC_DEPTH
 
 # Dot substitutes. The lookarounds require a name character on both sides so
 # that ordinary bracketed prose ("see note [.] here", a Markdown footnote) is
@@ -215,7 +216,7 @@ def _key(d: dict, name: str):
 
 
 def _walk(node, depth: int, types: list, own, out: list) -> None:
-    if node is None or depth > 8:  # past 8 display.ioc_text shows "..."
+    if node is None or depth > IOC_DEPTH:  # past it ioc_text shows "..."
         return
     if isinstance(node, dict):
         vk, tk = _key(node, "value"), _key(node, "type")
@@ -245,7 +246,7 @@ def walk_iocs(field) -> list[tuple]:
     """Each value in an `iocs` field (or a list of IOC records), with whether
     it is a network IOC (True, False, or None when no type says) and its
     nearest type, for select_network_ioc. A value is walked exactly when
-    display.ioc_text shows it: one level per dict or list, none past 8. A
+    display.ioc_text shows it: one level per dict or list, none past IOC_DEPTH. A
     dict with a `value` key (any case) holds that value, typed by its `type`;
     a dict without one holds each item, typed by its key, then by the dict's
     own `type` (whose own value isn't walked), then by what encloses it."""
