@@ -255,12 +255,15 @@ def walk_iocs(field) -> list[tuple]:
 
 def walk_records(records: list) -> list[tuple]:
     """walk_iocs over IOC records: each record's `value` (any case) typed by
-    its `type`, a list-valued one walked as a finding's is, from the same
-    depth as an entry of a finding's iocs list. A record with no value holds
-    none."""
-    return walk_iocs(
-        [r for r in records if isinstance(r, dict) and _key(r, "value") is not None]
-    )
+    its `type`, a list-valued one walked as a finding's is. A record's `value`
+    takes the place of a finding's `iocs` field: the count starts there, so
+    the same nested shape reaches the same limit through both. A record with
+    no value holds none."""
+    out: list[tuple] = []
+    for r in records:
+        if isinstance(r, dict) and _key(r, "value") is not None:
+            _walk(r, -1, [], None, out)  # the record one above, its value at 0
+    return [(v, verdict, nearest) for v, verdict, nearest, _ in out]
 
 
 _PORT = re.compile(r"[^:]+:\d{1,5}")  # a value ending in one :port
