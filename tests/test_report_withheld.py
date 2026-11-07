@@ -15,7 +15,8 @@ and saved: no header, rc 0, and --save writes. The one exception is --findings
 on the signed case whose findings.json is []: the lookup miss exits 1 and
 saves nothing, as at head.
 
-A saved text report on a failing case has every IOC record's value defanged."""
+A saved text report on a failing case has every IOC record's value defanged,
+and so does one whose only holder of a value is verify's own read."""
 
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import traceback
 
 import pytest
@@ -44,7 +46,7 @@ from tests.test_report_save_refused import (
 )
 from tests.test_report_save_refused import _case as _signed_case
 from tests.test_report_stop_matrix import _draft_case
-from vhir_cli import keys, ledger
+from vhir_cli import case_io, keys, ledger
 from vhir_cli.case_io import signed_text
 from vhir_cli.commands import report as rep
 from vhir_cli.ledger_verify import approved_view, verify_case
@@ -55,6 +57,7 @@ TEXT = MODES[:-1]
 TODO = {"todo_id": "TODO-tester-001", "status": "open", "description": "Pull logs"}
 AT = "2026-10-08T10:00:00+00:00"
 DEFANGED = VALUE.replace(".", "[.]")
+B_ONLY = "b-only.example.org"
 WITHHELD_LINES = {  # mode: the lines the blanked view empties, label and spaces kept
     "ioc": [f"  Approved IOC records: {W}", f"Total: {W}", f"Approved findings: {W}"],
     "executive_summary": [f"Approved (verified): {W}",
@@ -481,3 +484,78 @@ def test_an_item_level_failure_prints_no_withheld(
         if mode == "ioc":
             none = "  Approved IOC records: none"
             assert (none in lines) == (not shown_i), (where, res[where][-1500:])
+
+
+# --- a value only verify's read holds ---------------------------------------
+# held only by verify's read, in a record the view leaves out
+C_ONLY = "c-only.example.net"
+STATES = {  # state: (the record verify reads, what's signed for it, its expected status)
+    "altered": (dict(IOC, id="IOC-tester-003", value=C_ONLY, approved_at=AT),
+                dict(IOC, id="IOC-tester-003", value="c-old.example.net", approved_at=AT),
+                "ALTERED_AFTER_APPROVAL"),
+    "draft": ({k: v for k, v in dict(IOC, id="IOC-tester-003", value=C_ONLY,
+                                     status="DRAFT").items()
+               if k not in ("manually_reviewed", "approved_by", "approved_at")},
+              None, "DRAFT"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("state", sorted(STATES))
+@pytest.mark.parametrize("mode", TEXT)
+def test_a_value_only_verify_read_holds_is_defanged(tmp_path, monkeypatch, mode, state):
+    """verify's read of iocs.json holds a signed IOC record of B_ONLY, and
+    IOC-tester-003 of C_ONLY, that the file on disk doesn't (the state an edit
+    between two reads leaves). IOC-tester-003 is in verify's records but not
+    in the approved view: APPROVED and edited after signing, or DRAFT. The
+    finding F-tester-002 names B_ONLY in its text and C_ONLY in its title,
+    which every saved report's PROVENANCE prints. The saved text holds each
+    defanged only, on every route."""
+    third, signed, status = STATES[state]
+    case = _signed_case(tmp_path, monkeypatch)
+    second = dict(FINDING, id="F-tester-002", title=f"Second beacon to {C_ONLY}",
+                  observation=f"beacons to {B_ONLY}", approved_by="tester",
+                  approved_at=AT)  # fmt: skip
+    _sign(case, _key(case), "finding", second)
+    _rewrite(case / "findings.json", lambda d: d + [second])
+    # approved_at as `_sign` signs it, or verify calls the record altered
+    rec = dict(IOC, id="IOC-tester-002", value=B_ONLY, source_findings=[second["id"]],
+               approved_at=AT)  # fmt: skip
+    _sign(case, _key(case), "ioc", rec)
+    if signed is not None:
+        _sign(case, _key(case), "ioc", signed)
+    verify_sees = json.dumps([IOC, rec, third]).encode()
+    on_disk = (case / "iocs.json").read_text()
+    assert B_ONLY not in on_disk and C_ONLY not in on_disk, on_disk
+    real, hits = case_io.read_case_document, []
+
+    def patched(path, *a, **kw):
+        if sys._getframe(1).f_code.co_name == "_items" and path.name == "iocs.json":
+            hits.append(path)
+            return verify_sees
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(case_io, "read_case_document", patched)
+    view = approved_view(case)
+    result = view["result"]
+    assert hits, "verify's read wasn't patched"
+    assert result.failures == [], result.failures
+    assert [i["id"] for i in view["iocs"]] == [IOC["id"], rec["id"]]
+    # precondition: in verify's records, out of the view, with its own status
+    read = [i for k, i in result.records if k == "iocs" and i.get("id") == third["id"]]
+    assert read == [third], result.records
+    assert C_ONLY not in [i.get("value") for i in view["iocs"]], view["iocs"]
+    nv = [x["status"] for x in view["not_verified"] if x.get("id") == third["id"]]
+    if status == "DRAFT":  # the view skips a record that isn't APPROVED
+        assert (third["status"], nv) == ("DRAFT", []), view["not_verified"]
+    else:
+        assert nv == [status], view["not_verified"]
+    kw = {"report_findings": second["id"]} if mode == "findings" else {}
+    res = _run(case, mode, True, **kw)
+    _ran(res, mode, True)
+    assert res["saved"].count(B_ONLY) == 0, res["saved"][-1500:]
+    assert res["saved"].count(C_ONLY) == 0, res["saved"][-1500:]
+    # control: PROVENANCE prints the title, so C_ONLY is in every saved text
+    title = f"[{second['id']}] Second beacon to {C_ONLY.replace('.', '[.]')}"
+    assert title in res["saved"].splitlines(), res["saved"][-1500:]
+    if mode in ("findings", "ioc"):  # control: the report prints B_ONLY
+        assert B_ONLY.replace(".", "[.]") in res["saved"], res["saved"][-1500:]
