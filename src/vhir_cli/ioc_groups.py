@@ -69,23 +69,6 @@ def text_iocs(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def _items(iocs):
-    """(type, value) for each value a finding's iocs field holds: a list of
-    strings and {"value", "type"} dicts, or a {type: values} dict. A value
-    under a {type: values} key has no type: forensic-mcp flattens that form
-    to plain values before it keys them."""
-    if isinstance(iocs, dict):
-        for values in iocs.values():
-            for v in values if isinstance(values, list) else [values]:
-                yield None, v
-    elif isinstance(iocs, list):
-        for i in iocs:
-            if isinstance(i, str):
-                yield None, i
-            elif isinstance(i, dict):
-                yield i.get("type"), i.get("value")
-
-
 def _value(v) -> str | None:
     """A stored value as text; None when there is none to list."""
     if v is None:
