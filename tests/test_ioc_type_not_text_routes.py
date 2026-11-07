@@ -21,8 +21,8 @@ from vhir_cli import approval_auth, ioc_types, ledger
 
 from .signing import PASSPHRASE, enrol
 
-F, IOC = "F-steve-001", "IOC-steve-001"
-EVENT = {"id": "T-steve-001", "status": "DRAFT", "timestamp": "2026-10-08T09:00:00Z",
+F, IOC = "F-tester-001", "IOC-tester-001"
+EVENT = {"id": "T-tester-001", "status": "DRAFT", "timestamp": "2026-10-08T09:00:00Z",
          "description": "Beacon seen"}  # fmt: skip
 TYPES = {"None": None, "5": 5, "list-domain-name": ["domain-name"]}
 REPORTS = {"ioc": "--ioc", "exec": "--executive-summary", "full": "--full"}
@@ -50,7 +50,7 @@ def _case(root, monkeypatch, case_id, finding_iocs, records, timeline=()):
     for name in ("reports", "audit"):
         (d / name).mkdir()
     (d / "CASE.yaml").write_text(
-        f"case_id: {case_id}\nname: Types\nstatus: open\nexaminer: steve\n"
+        f"case_id: {case_id}\nname: Types\nstatus: open\nexaminer: tester\n"
     )
     f = {"id": F, "title": "Beacon", "observation": "o", "interpretation": "i",
          "confidence": "LOW", "status": "DRAFT", "iocs": finding_iocs}  # fmt: skip
@@ -60,10 +60,10 @@ def _case(root, monkeypatch, case_id, finding_iocs, records, timeline=()):
     (d / "evidence.json").write_text(json.dumps({"files": []}))
     (d / "iocs.json").write_text(json.dumps(records))
     monkeypatch.setenv("VHIR_CASE_DIR", str(d))
-    monkeypatch.setenv("VHIR_EXAMINER", "steve")
+    monkeypatch.setenv("VHIR_EXAMINER", "tester")
     monkeypatch.setattr(approval_auth, "_LOCKOUT_FILE", root / "lockout")
     monkeypatch.setattr(approval_auth, "getpass_prompt", lambda p="": PASSPHRASE)
-    enrol("steve")
+    enrol("tester")
     return d
 
 
