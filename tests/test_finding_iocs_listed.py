@@ -19,6 +19,7 @@ from vhir_cli.case_io import save_findings, save_timeline
 from vhir_cli.commands.report import _extract_all_iocs
 from vhir_cli.display import one_line
 from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
+from vhir_cli.ledger_verify import approved_view, verify_case
 
 from .signing import sign_approved
 from .test_finding_iocs_and_tabs_shown import SID, UNC, _cli, case  # noqa: F401
@@ -535,20 +536,57 @@ def test_the_signed_approved_records_are_printed_and_counted(case, monkeypatch, 
     assert out.count("Total: 6 IOC records across 2 types") == 1
 
 
+def _never_signed(case):  # noqa: F811
+    """The case is signed with no IOC record; the records come after."""
+    _case_with(case, [_f(1)], [])
+    (case / "iocs.json").write_text(json.dumps(SIGNED))
+    return SIGNED
+
+
+def _changed_after_signing(case):  # noqa: F811
+    """Every record signed, then its value changed."""
+    _case_with(case, [_f(1)], SIGNED)
+    moved = [dict(r, value=r["value"].replace("10.0.0.", "10.0.1.").replace(".com", ".net"))
+             for r in json.loads((case / "iocs.json").read_text())]  # fmt: skip
+    (case / "iocs.json").chmod(0o644)
+    (case / "iocs.json").write_text(json.dumps(moved))
+    return moved
+
+
+# how the case's IOC records come to fail their own check: the status verify gives them
+OWN_CHECK_FAILS = {
+    "never-signed": (_never_signed, "APPROVED_NO_LINE"),
+    "changed-after-signing": (_changed_after_signing, "ALTERED_AFTER_APPROVAL"),
+}
+
+
+@pytest.mark.parametrize("how", OWN_CHECK_FAILS)
 def test_approved_records_no_signature_verifies_are_not_reported(
+    how,
     case,  # noqa: F811
     monkeypatch,
     capsys,
 ):
-    """Approved in iocs.json but never signed: the report lists only what
-    verifies, while `review --iocs` still lists them as the Portal does."""
-    save_timeline(case, [])
-    save_findings(case, [_f(1)])
-    (case / "iocs.json").write_text(json.dumps(SIGNED))
+    """Approved in iocs.json, on a case whose ledger verifies, but no record's
+    own signature does: the report lists none of them, while `review --iocs`
+    still lists them as the Portal does. The case doesn't fail verification,
+    so the line is `none`, not withheld."""
+    build, status = OWN_CHECK_FAILS[how]
+    records = build(case)
+    assert verify_case(case).failures == []
+    view = approved_view(case)
+    assert view["iocs"] == [], view["iocs"]
+    assert {x["id"]: x["status"] for x in view["not_verified"]} == {
+        r["id"]: status for r in records
+    }, view["not_verified"]
     out = _cli(monkeypatch, capsys, ["report", "--ioc"])
-    assert "\n  Approved IOC records: none\n" in out and "10.0.0.1" not in out, out
+    assert "\n  Approved IOC records: none\n" in out, out
+    assert "withheld" not in out, out
+    for r in records:
+        assert r["value"] not in out, (r["value"], out)
     out = _cli(monkeypatch, capsys, ["review", "--iocs"])
-    ips = ", ".join(f"10.0.0.{n}" for n in range(1, 6))
+    ips = ", ".join(r["value"] for r in records if r["type"] == "ipv4-addr")
+    domain = records[-1]["value"]
     assert out == (
-        f"\n=== Approved IOCs ===\n  {'Domain:':<10} evil.com\n  {'IPv4:':<10} {ips}\n"
+        f"\n=== Approved IOCs ===\n  {'Domain:':<10} {domain}\n  {'IPv4:':<10} {ips}\n"
     ), out
