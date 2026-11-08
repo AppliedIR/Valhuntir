@@ -24,6 +24,7 @@ import pytest
 
 import vhir_cli.gateway as gateway_mod
 from tests.stub_check import stubbed
+from tests.test_update import STEPS_CLOSE, STEPS_OPEN, steps_block
 from vhir_cli.commands.update import _PACKAGE_PATHS, cmd_update
 
 REAL_FIND_SPEC = importlib.util.find_spec
@@ -730,7 +731,10 @@ def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
     assert exited is not None and exited.code == 1
     err = capsys.readouterr().err
     assert PART_WAY in err and "the gateway wasn't restarted" in err
-    finish = err.rstrip().splitlines()[-1]
+    # U11 (spec :686): the finish command is the end block's last step
+    assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
+    block = steps_block(err)
+    finish = block[-1] if block else ""
     assert finish.endswith("finish with: vhir update" + (f" --{flag}" if flag else ""))
 
 
@@ -745,7 +749,10 @@ def test_a_timeout_after_the_pull_prints_the_part_way_block(box, capsys, hang):
     assert exited is not None and exited.code == 1  # not a traceback
     err = capsys.readouterr().err
     assert "timed out" in err and PART_WAY in err
-    assert err.rstrip().endswith("finish with: vhir update")
+    # U11 (spec :686): the finish command is the end block's last step
+    assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
+    block = steps_block(err)
+    assert block and block[-1].endswith("finish with: vhir update")
 
 
 def test_no_answer_to_the_pytorch_question_prints_the_part_way_block(box, capsys):
@@ -787,7 +794,11 @@ def test_no_restart_still_rewrites_and_says_when_it_applies(box, capsys):
     calls, exited = _update(box, no_restart=True)
     assert exited is None and "python -I -m" in unit.read_text()
     assert ["systemctl", "--user", "restart", "vhir-gateway"] not in calls
-    assert "takes effect at the next gateway restart" in capsys.readouterr().out
+    got = capsys.readouterr()
+    # U11 (spec :675): the --no-restart line moved from stdout into the end block
+    block = steps_block(got.err)
+    assert any("takes effect at the next gateway restart" in line for line in block)
+    assert "takes effect at the next gateway restart" not in got.out
 
 
 def test_check_writes_nothing(box):
@@ -807,9 +818,12 @@ def test_no_restart_says_when_it_applies_after_the_client_deploy_rewrote(
     script, unit = _launchers(box)
     monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
     _update(box, no_restart=True, manifest=lambda m: {**m, "client": "claude-code"})
-    out = capsys.readouterr().out
+    got = capsys.readouterr()
+    out, block = got.out, steps_block(got.err)
     assert "python -I -m" in unit.read_text() and f"Updated: {unit}" in out
-    assert "takes effect at the next gateway restart" in out
+    # U11 (spec :675): the --no-restart line moved from stdout into the end block
+    assert any("takes effect at the next gateway restart" in line for line in block)
+    assert "takes effect at the next gateway restart" not in out
 
 
 def test_no_note_when_nothing_was_rewritten(box, capsys):

@@ -76,6 +76,23 @@ def _make_args(**kwargs):
     return args
 
 
+# The end block of steps for the examiner, on stderr (U11). Literals, not
+# vhir_cli.human_steps, so a tree without the block fails on the assert.
+STEPS_OPEN = "==== vhir update: steps for you ===="
+STEPS_CLOSE = "==== end of steps ===="
+
+
+def steps_block(err):
+    """The step lines of the last block in `err`, unindented; [] with none."""
+    lines = err.splitlines()
+    if STEPS_OPEN not in lines:
+        return []
+    start = len(lines) - lines[::-1].index(STEPS_OPEN)
+    rest = lines[start:]
+    end = rest.index(STEPS_CLOSE) if STEPS_CLOSE in rest else len(rest)
+    return [line[2:] for line in rest[:end]]
+
+
 def test_no_manifest_fails(tmp_path):
     """Fail cleanly when no manifest exists."""
     with patch("pathlib.Path.home", return_value=tmp_path):
@@ -317,8 +334,10 @@ def test_old_manifest_no_client(manifest_dir, capsys):
     ):
         cmd_update(_make_args(no_restart=True), {})
 
-    out = capsys.readouterr().out
-    assert "vhir setup client" in out
+    got = capsys.readouterr()
+    # U11 (spec :685): "Run 'vhir setup client'" moved from stdout into the end block
+    assert any("vhir setup client" in line for line in steps_block(got.err))
+    assert "vhir setup client" not in got.out
 
 
 # ---------------------------------------------------------------------------

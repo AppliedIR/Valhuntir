@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.test_update import STEPS_CLOSE, STEPS_OPEN, steps_block
 from vhir_cli.commands import update
 from vhir_cli.commands.update import _PACKAGE_PATHS, cmd_update
 
@@ -141,7 +142,12 @@ def test_a_failed_pull_after_another_moved_is_part_way(world, capsys):
     # and brings them back — not a bare, misleading "Resolve conflicts".
     assert "Not possible to fast-forward" in err and "Resolve conflicts" not in err
     assert "stash push -u" in err and "stash pop" in err and "git -C" in err
-    assert PART_WAY in err and err.rstrip().endswith("finish with: vhir update")
+    # U11 (spec :686): the finish command is the end block's last step
+    assert PART_WAY in err and err.rstrip().splitlines()[-1] == STEPS_CLOSE
+    block = steps_block(err)
+    assert (
+        STEPS_OPEN in err and block and block[-1].endswith("finish with: vhir update")
+    )
 
 
 def test_the_failed_pull_advice_is_conditional_and_quotes_the_path(tmp_path, capsys):

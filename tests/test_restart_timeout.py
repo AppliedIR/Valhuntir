@@ -59,15 +59,18 @@ def test_a_slow_restart_that_came_up_is_done(manifest_dir, capsys):
 
 def test_a_slow_restart_still_starting_says_so(manifest_dir, capsys):
     smoke = _update(manifest_dir[0], "activating")
-    out = capsys.readouterr().out
+    got = capsys.readouterr()
+    out, block = got.out, test_update.steps_block(got.err)
     assert "failed (no answer in 60 s; the gateway is activating)" in out
+    # U11 (spec :687): the restart-failed lines moved from stdout into the end block.
     # A gateway started by hand has no systemd unit to restart; the hint also
     # names the manual launcher so that user isn't left at a dead end.
-    assert "~/.vhir/start-gateway.sh" in out
+    assert any("~/.vhir/start-gateway.sh" in line for line in block)
+    assert "~/.vhir/start-gateway.sh" not in out
     # A hand-started gateway must be stopped before relaunch —
     # start-gateway.sh is a bare exec that would collide on the port otherwise —
     # so "stop" comes before the launcher in the hint.
-    assert "stop it, then run ~/.vhir/start-gateway.sh" in out
+    assert any("stop it, then run ~/.vhir/start-gateway.sh" in line for line in block)
     assert "Skipping connectivity test" in out and not smoke.called
 
 

@@ -96,8 +96,10 @@ class TestUpdate:
 
     def test_a_restart_that_succeeded_says_to_reconnect(self, manifest_dir, capsys):
         self._update(manifest_dir[0], 0)
-        out = capsys.readouterr().out
-        assert "Restarting gateway... done" in out and HINT in out
+        got = capsys.readouterr()
+        # U11 (spec :672): RECONNECT_HINT moved from stdout into the end block
+        assert any(HINT in line for line in test_update.steps_block(got.err))
+        assert "Restarting gateway... done" in got.out and HINT not in got.out
 
     def test_a_failed_restart_says_nothing_more(self, manifest_dir, capsys):
         self._update(manifest_dir[0], 1)
