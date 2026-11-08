@@ -360,7 +360,8 @@ def test_a_nested_value_is_walked_to_the_display_limit(
 ):
     """Depths 2-8 are saved with no live value. Depth 9 is past the limit: the
     save and the display hold the value live in the finding's text only, and
-    neither shows "…"."""
+    both show the finding's IOCs line with "..." where the nesting is cut. An
+    N6 finding holds no iocs (its value is a record), so neither shows "..."."""
     iocs, recs, values = _nesting_case(tag, route, depth)
     obs = "Seen: " + ", ".join(values) + "."
     body = _saved(tmp_path, monkeypatch, capsys, obs, iocs, recs)
@@ -374,7 +375,8 @@ def test_a_nested_value_is_walked_to_the_display_limit(
             body.count(v),
             shown.count(v),
         )
-    assert "…" not in body and "…" not in shown
+    cut = tag != "N6"
+    assert ("..." in body, "..." in shown) == (cut, cut), (body, shown)
 
 
 @pytest.mark.parametrize("depth", [7, 8, 9])
