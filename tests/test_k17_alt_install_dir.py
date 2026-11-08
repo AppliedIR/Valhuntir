@@ -246,3 +246,24 @@ ROWS = [
 def test_k17_controls_deploy_from_manifest_source(bed, capsys, layout, entry, output):
     bed.run(layout, entry)
     _check(bed, output, capsys.readouterr().out)
+
+
+def test_k17_source_without_assets_skips_and_never_falls_back(bed, capsys):
+    """The checkout manifest["source"] names exists but has no claude-code/,
+    and a complete checkout sits at ~/.vhir/src/sift-mcp: the assets are
+    skipped, with the note, and nothing is deployed from the other checkout.
+    Taking the assets from it would split them from the AGENTS.md of the
+    recorded checkout."""
+    import shutil
+
+    shutil.rmtree(bed.pulled / "claude-code")
+    assert bed.pulled.is_dir() and (bed.pulled / "AGENTS.md").is_file()
+    bed.run("decoy_at_vhir_src", "setup")
+    out = capsys.readouterr().out
+    assert "Hook and settings deployment skipped" in out, out
+    hooks = bed.home / ".vhir" / "hooks"
+    assert not [h for h in HOOKS if (hooks / h).exists()], sorted(hooks.iterdir())
+    deployed = [p for p in (bed.home / ".claude").rglob("*") if p.is_file()]
+    assert not [p for p in deployed if DECOY in p.read_text(errors="replace")], [
+        str(p) for p in deployed
+    ]
