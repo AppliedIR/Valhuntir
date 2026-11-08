@@ -24,6 +24,7 @@ from tests.test_report_stop_matrix import (
     _run,
     _spoil,
 )
+from vhir_cli.ledger_verify import verify_case
 
 U = "unreadable (see above)"
 F, T, IO, D = "findings.json", "timeline.json", "iocs.json", "todos.json"
@@ -52,6 +53,14 @@ ROWS = [
     *[(m, {F}, f"Approved findings: {U}", "PROVENANCE",
        [r"No approved, verified findings\.", r"Approved findings: withheld.*"]) for m in TEXT],
 ]  # fmt: skip
+W = "withheld: the case fails verification (see below)"
+# the lines a blanked view empties (SPEC-011), by mode: (the line, its sources);
+# one whose source is damaged is that row's replacement instead
+WITHHELD = {
+    "ioc": [(f"  Approved IOC records: {W}", {F, IO}), (f"Total: {W}", {F, IO})],
+    "executive_summary": [(f"Approved (verified): {W}", {F, T}),
+                          (f"IOCs (from approved findings): {W}", {F, IO})],
+}  # fmt: skip
 # --full: (sources, key path)
 NULL_KEYS = [
     ({F}, ("summary", "total_findings")),
@@ -110,7 +119,12 @@ def _get(body, path):
     return body
 
 
-def _replaced(res, twin, mode, bad):
+def _blanked(case):
+    """Whether verify fails the damaged case, so the approved view is blanked."""
+    return bool(verify_case(case).failures)
+
+
+def _replaced(res, twin, mode, bad, blanked):
     assert twin["raised"] is None and twin["rc"] == 0, (
         twin["raised"],
         twin["err"][-400:],
@@ -157,6 +171,12 @@ def _replaced(res, twin, mode, bad):
     mine = Counter(x for x in every if x.strip())
     kept = [x for x in rowed if mine[x] > elsewhere[x]]
     assert kept == [], kept
+    # beside the replacements, each line the blanked view empties from a file
+    # that reads prints withheld, once
+    beside = [x for x, src in [*WITHHELD.get(mode, []), (f"Approved findings: {W}", {F})]
+              if not src & bad]  # fmt: skip
+    for line in beside if blanked else ():
+        assert out.count(line) == 1, (line, _report(res["out"], header))
 
 
 @pytest.mark.parametrize("kind,name,form,mode,save", CELLS)
@@ -166,7 +186,7 @@ def test_each_line_from_the_damaged_file_prints_its_replacement(
     case = _fixture(kind, tmp_path, monkeypatch)
     twin = _run(case, mode, False)
     _spoil(case / name, form)
-    _replaced(_run(case, mode, save), twin, mode, {name})
+    _replaced(_run(case, mode, save), twin, mode, {name}, _blanked(case))
 
 
 @pytest.mark.parametrize("save", (False, True), ids=("show", "save"))
@@ -180,7 +200,9 @@ def test_two_damaged_files_each_print_their_replacements(
     twin = _run(case, mode, False)
     for name, form in damaged:
         _spoil(case / name, form)
-    _replaced(_run(case, mode, save), twin, mode, {n for n, _ in damaged})
+    _replaced(
+        _run(case, mode, save), twin, mode, {n for n, _ in damaged}, _blanked(case)
+    )
 
 
 @pytest.mark.parametrize("save", (False, True), ids=("show", "save"))
@@ -193,7 +215,7 @@ def test_a_500_deep_list_prints_the_replacements(
     case = _fixture(kind, tmp_path, monkeypatch)
     twin = _run(case, mode, False)
     _spoil(case / name, DEEP)
-    _replaced(_run(case, mode, save), twin, mode, {name})
+    _replaced(_run(case, mode, save), twin, mode, {name}, _blanked(case))
 
 
 def test_the_table_is_the_specs():

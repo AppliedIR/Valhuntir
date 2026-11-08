@@ -33,6 +33,14 @@ from vhir_cli.ledger_verify import verify_case
 
 W = "withheld: the case fails verification (see below)"
 KINDS = ("draft", "signed")
+# the forms verify reads as no list of records (CASE_FILE_UNREADABLE); in the
+# other 6 it reads the file (a list: MALFORMED_RECORD, or empty: no records) or,
+# for a dangling link, skips it as absent, so those cells name nothing to agree on
+VERIFY_UNREADABLE = {
+    "null", "number", "boolean", "string", "dict", "not-utf8", "unparseable",
+    "nested", "directory", "fifo", "symlink-valid", "hard-link", "over-cap",
+    "permission-denied",
+}  # fmt: skip
 
 
 def _case(kind, tmp_path, monkeypatch):
@@ -64,7 +72,12 @@ def test_each_file_verify_cant_read_the_reader_names(
     result = verify_case(case)
     unread = {msg.split(" ", 1)[0] for msg in _codes(result, "CASE_FILE_UNREADABLE")}
     whys = _whys(case)
-    assert unread <= set(whys), (unread, whys, result.failures)
+    assert FORMS.keys() > VERIFY_UNREADABLE, VERIFY_UNREADABLE - FORMS.keys()
+    if form not in VERIFY_UNREADABLE:  # not a cell: verify names no file
+        assert unread == set(), (unread, result.failures)
+        return
+    assert unread == {name}, (unread, result.failures)
+    assert name in whys, (whys, result.failures)
 
 
 BLANK = [

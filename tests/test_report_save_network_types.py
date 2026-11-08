@@ -186,6 +186,8 @@ FLIPS = {
 
 def _flip_outcome(body, v, obs):
     if obs == OBS_PORT:  # the bare address the selector picks
+        held = bool(BARE.search(body)) or fanged(IP) in body
+        assert held, f"{IP} isn't in the saved report"
         return "live" if BARE.search(body) else "defanged"
     assert v in body or fanged(v) in body, f"{v} isn't in the saved report"
     return "live" if v in body else "defanged"
@@ -236,7 +238,8 @@ def test_a_value_typed_non_network_stays_live_under_a_network_key(
 ):
     """An approved finding names `v` with its own type (title, text, iocs); a
     second finding or record, DRAFT or APPROVED, types the same string with
-    that type under a network key. `v` stays live everywhere in the save."""
+    that type under a network key. `v` stays live everywhere in the save,
+    PROVENANCE included."""
     carrier = _finding(F2, f"ran {v} on the host", [{"value": v, "type": own}],
                        status="APPROVED", title=f"Saw {v}")  # fmt: skip
     inner = [{"value": v, "type": own}]
@@ -247,7 +250,10 @@ def test_a_value_typed_non_network_stays_live_under_a_network_key(
     route = ("report", "--findings", F2) if save == "findings" else SAVES[save]
     d = _case(tmp_path, monkeypatch, findings, recs)
     _vhir(monkeypatch, capsys, *route, "--save", "r.txt")
-    _live((d / "reports" / "r.txt").read_text(), v)
+    body = (d / "reports" / "r.txt").read_text()
+    provenance = body.split("PROVENANCE")[-1].splitlines()
+    assert f"[{F2}] Saw {v}" in provenance, "the carrier isn't in PROVENANCE"
+    _live(body, v)
 
 
 POSITIVES = [("c2-domain", DOM), ("malicious-url", URL), ("IPv4-of-C2", IP)]
@@ -347,8 +353,9 @@ def _nesting_case(tag, route, depth):
     inner = nested(
         field, set(values), depth - depth_of(field, values[0]) - (route != native)
     )
-    if route != native:  # the other finding route holds it one level deeper
-        inner = [inner] if route == "list" else {"domain-name": inner}
+    if route != native:  # the other finding route holds it one level deeper,
+        # under a non-network key: the shape's own type decides
+        inner = [inner] if route == "list" else {"file:name": inner}
     iocs = inner
     assert depth_of(iocs, values[0]) == depth
     return iocs, [], values

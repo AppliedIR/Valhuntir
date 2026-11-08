@@ -7,7 +7,10 @@ cascade case; and `vhir report --timeline`, `--findings` and `--status-brief`
 with --save on it. Each route exits 0 with no Traceback, as it does today.
 A list type holding a network type (["domain-name"]) is network: a saved text
 report holds its value defanged, never live (--full saves JSON, live by
-design). An empty type gives the same outcome as no type."""
+design). The finding's title and the case's name hold the value too, so every
+text save shows it but --ioc on the DRAFT record, which shows approved items
+only and has none: there the value is in no byte of the save. An empty type
+gives the same outcome as no type."""
 
 from __future__ import annotations
 
@@ -34,8 +37,9 @@ CASCADE = {
     "findings": ("report", "--findings", F, "--save", "r7.txt"),
     "status-brief": ("report", "--status-brief", "--save", "r7.txt"),
 }
-# routes whose saved text report shows the value: the 5a rows assert it there first
-SHOWN = {("ioc", "rec-approved"), ("ioc", "list-approved"), ("findings", "cascade")}
+# the one text save that holds no byte of the value: --ioc shows approved items
+# only, and nothing is approved; every other one asserts the value is present first
+UNSHOWN = {("ioc", "rec-draft")}
 
 
 def _guarded(t):
@@ -44,15 +48,16 @@ def _guarded(t):
     return ioc_types._BY_FOLD.get(ioc_types._fold(t)) if isinstance(t, str) else None
 
 
-def _case(root, monkeypatch, case_id, finding_iocs, records, timeline=()):
+def _case(root, monkeypatch, case_id, finding_iocs, records, timeline=(), named=""):
+    """The case; its name and its finding's title end with `named`."""
     d = root / case_id
     d.mkdir()
     for name in ("reports", "audit"):
         (d / name).mkdir()
     (d / "CASE.yaml").write_text(
-        f"case_id: {case_id}\nname: Types\nstatus: open\nexaminer: tester\n"
+        f"case_id: {case_id}\nname: Types {named}\nstatus: open\nexaminer: tester\n"
     )
-    f = {"id": F, "title": "Beacon", "observation": "o", "interpretation": "i",
+    f = {"id": F, "title": f"Beacon {named}", "observation": "o", "interpretation": "i",
          "confidence": "LOW", "status": "DRAFT", "iocs": finding_iocs}  # fmt: skip
     (d / "findings.json").write_text(json.dumps([f]))
     (d / "timeline.json").write_text(json.dumps(list(timeline)))
@@ -115,12 +120,11 @@ def _approve_built(monkeypatch, capsys, *ids):
 def _run(root, monkeypatch, capsys, case_id, route, fixture, t, v) -> dict:
     """Build the fixture, run the route; its outcome."""
     if fixture == "list-approved":
-        d = _case(root, monkeypatch, case_id, [{"value": v, "type": t}], [])
+        d = _case(root, monkeypatch, case_id, [{"value": v, "type": t}], [], named=v)
         _approve_built(monkeypatch, capsys, F)
     elif fixture in ("rec-draft", "rec-approved"):
-        d = _case(
-            root, monkeypatch, case_id, [], [dict(_record(t, v), source_findings=[])]
-        )
+        rec = dict(_record(t, v), source_findings=[])
+        d = _case(root, monkeypatch, case_id, [], [rec], named=v)
         if fixture == "rec-approved":
             _approve_built(monkeypatch, capsys, IOC)
     else:  # the cascade: the finding cites the value, a DRAFT record holds it
@@ -129,7 +133,7 @@ def _run(root, monkeypatch, capsys, case_id, route, fixture, t, v) -> dict:
         events = [EVENT] if route == "timeline" else []
         d = _case(
             root, monkeypatch, case_id, [{"value": v, "type": t}], [_record(t, v)],
-            events,
+            events, named=v,
         )  # fmt: skip
         if route != "approve":
             _approve_built(monkeypatch, capsys, F, *(e["id"] for e in events))
@@ -185,11 +189,11 @@ def test_route_raises_nothing(tmp_path, monkeypatch, capsys, tname, route, fixtu
     if route == "verify":
         assert not res["cascade_unsupported"], res["text"][-800:]
     if tname == "list-domain-name" and res["saves"] and route != "full":
-        body = res["saved"]
-        if (route, fixture) in SHOWN:
-            assert v in body or v.replace(".", "[.]") in body, (
-                "the value isn't in the saved report"
-            )
+        body, defanged = res["saved"], v.replace(".", "[.]")
+        if (route, fixture) in UNSHOWN:  # not a cell: no byte holds the value
+            assert (v in body, defanged in body) == (False, False), body[-800:]
+            return
+        assert v in body or defanged in body, "the value isn't in the saved report"
         assert v not in body, f"{v} is live in the saved report"
 
 

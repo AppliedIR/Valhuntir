@@ -15,7 +15,7 @@ import traceback
 
 import pytest
 
-from vhir_cli import ledger_verify
+from vhir_cli import case_io, ledger_verify
 
 from .signing import sign_approved
 
@@ -34,6 +34,9 @@ FINDINGS_LINE = (
     "findings.json holds no records. If the case never held any, write [] to it;"
     " otherwise restore the case from a backup (`vhir restore`)."
 )
+# the same two lines, with the files swapped
+FINDINGS_RESTORE = IOCS_LINE.replace("iocs.json", "findings.json")
+IOCS_NONE = FINDINGS_LINE.replace("findings.json", "iocs.json")
 MODES = (
     "--full",
     "--executive-summary",
@@ -43,9 +46,9 @@ MODES = (
 )
 
 
-def _case(tmp_path, monkeypatch, findings=()):
+def _case(tmp_path, monkeypatch, findings=(), ioc=IOC):
     """Both files blank; with `findings`, findings.json keeps them (signed) and
-    only iocs.json is blank."""
+    only iocs.json is blank. `ioc` is the IOC record signed before the blank."""
     case = tmp_path / CASE
     case.mkdir()
     for sub in ("reports", "audit"):
@@ -59,8 +62,8 @@ def _case(tmp_path, monkeypatch, findings=()):
     for name in ("timeline.json", "todos.json"):
         (case / name).write_text("[]")
     (case / "findings.json").write_text(json.dumps(list(findings)))
-    (case / "iocs.json").write_text(json.dumps([IOC]))
-    sign_approved(case)  # the ledger now names IOC-tester-009, approved
+    (case / "iocs.json").write_text(json.dumps([ioc]))
+    sign_approved(case)  # the ledger now names the IOC, approved
     (case / "iocs.json").write_text(BLANK)
     if not findings:
         (case / "findings.json").write_text(BLANK)
@@ -119,3 +122,81 @@ def test_findings_mode_attributes_the_missing_ioc(tmp_path, monkeypatch, capsys)
     # the fixture's own guard: the finding is there to report
     assert f"Not found: {FINDING['id']}" not in text, tail
     assert IOCS_LINE in text, tail
+
+
+def _missing_named(case):
+    """verify's ITEM_MISSING messages, through ledger_verify as it stands."""
+    failures = ledger_verify.verify_case(case).failures
+    return [m for c, m in failures if c == "ITEM_MISSING"]
+
+
+def _lines(text, code, raised):
+    """Which of the four remediation lines the output holds."""
+    held = {n: line in text for n, line in (("iocs restore", IOCS_LINE),
+            ("findings none", FINDINGS_LINE), ("findings restore", FINDINGS_RESTORE),
+            ("iocs none", IOCS_NONE))}  # fmt: skip
+    return held, f"rc {code}, raised {raised}; output tail: {text[-600:]!r}"
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_attribution_follows_missing_items_not_the_message(
+    tmp_path, monkeypatch, capsys, mode
+):
+    """verify's message names the finding, its missing_items the IOC: the IOC
+    is what iocs.json is attributed."""
+    case = _case(tmp_path, monkeypatch)
+    real = ledger_verify.verify_case
+
+    def verify(case_dir, *args, **kwargs):
+        result = real(case_dir, *args, **kwargs)
+        result.failures = [(c, m.replace(IOC["id"], FINDING["id"]))
+                           for c, m in result.failures]  # fmt: skip
+        return result
+
+    monkeypatch.setattr(ledger_verify, "verify_case", verify)
+    named = _missing_named(case)
+    # the fixture's own guard: the message names the finding only
+    assert named, named
+    assert all(FINDING["id"] in m and IOC["id"] not in m for m in named), named
+    code, text, raised = _vhir(monkeypatch, capsys, "report", *mode.split())
+    held, tail = _lines(text, code, raised)
+    assert held == {"iocs restore": True, "findings none": True,
+                    "findings restore": False, "iocs none": False}, (held, tail)  # fmt: skip
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_attribution_follows_id_kind(tmp_path, monkeypatch, capsys, mode):
+    """With case_io.id_kind patched to read the IOC's id as a finding's, the
+    restore line goes to findings.json and iocs.json holds no records."""
+    case = _case(tmp_path, monkeypatch)
+    real = case_io.id_kind
+    monkeypatch.setattr(
+        case_io, "id_kind", lambda i: "finding" if i == IOC["id"] else real(i)
+    )
+    # the fixture's own guard: verify still reports the IOC missing
+    named = _missing_named(case)
+    assert named and all(IOC["id"] in m for m in named), named
+    code, text, raised = _vhir(monkeypatch, capsys, "report", *mode.split())
+    held, tail = _lines(text, code, raised)
+    assert held == {"iocs restore": False, "findings none": False,
+                    "findings restore": True, "iocs none": True}, (held, tail)  # fmt: skip
+
+
+NO_PREFIX = dict(IOC, id="N-tester-001")
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_an_id_outside_the_prefixes_goes_where_id_kind_says(
+    tmp_path, monkeypatch, capsys, mode
+):
+    """An IOC record signed under an id with none of the prefixes: id_kind
+    reads it as a finding's, so findings.json gets the restore line and
+    iocs.json holds no records (a stated limit)."""
+    assert case_io.id_kind(NO_PREFIX["id"]) == "finding"
+    case = _case(tmp_path, monkeypatch, ioc=NO_PREFIX)
+    result = ledger_verify.verify_case(case)
+    assert getattr(result, "missing_items", None) == [NO_PREFIX["id"]], result.failures
+    code, text, raised = _vhir(monkeypatch, capsys, "report", *mode.split())
+    held, tail = _lines(text, code, raised)
+    assert held == {"iocs restore": False, "findings none": False,
+                    "findings restore": True, "iocs none": True}, (held, tail)  # fmt: skip

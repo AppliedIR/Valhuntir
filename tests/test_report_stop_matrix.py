@@ -18,6 +18,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import traceback
 
 import pytest
@@ -269,13 +270,19 @@ def test_two_damaged_files_are_named_in_order(tmp_path, monkeypatch, cell, kind,
     _stopped(res, mode, save, named)
 
 
+# the interpreter the 500-deep cells ran on, named in each cell's id
+PY = "python{}.{}.{}".format(*sys.version_info[:3])
+
+
 @pytest.mark.parametrize("save", (False, True), ids=("show", "save"))
 @pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("kind", ("draft", "signed"))
 @pytest.mark.parametrize("name", ("findings.json", "timeline.json"))
+@pytest.mark.parametrize("py", (PY,))
 def test_a_500_deep_list_is_a_list_with_an_entry_that_isnt_a_record(
-    tmp_path, monkeypatch, name, kind, mode, save
+    tmp_path, monkeypatch, py, name, kind, mode, save
 ):
+    assert py == "python{}.{}.{}".format(*sys.version_info[:3]), py
     case = _fixture(kind, tmp_path, monkeypatch)
     _spoil(case / name, DEEP)
     res = _run(case, mode, save)

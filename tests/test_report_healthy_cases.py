@@ -183,6 +183,8 @@ def test_a_healthy_case_reports_as_before(tmp_path, monkeypatch, shape, mode, sa
         return
     assert res["rc"] == 0, (res["rc"], res["err"][-400:])
     saved = (case / "reports" / name).read_text() if save else None
+    if not save:  # a display writes nothing, its own report file included
+        assert res["after"] == res["before"], "a display wrote reports/"
     if mode == "full":
         _full(res, shape)
         if save:
@@ -201,7 +203,6 @@ def test_a_healthy_case_reports_as_before(tmp_path, monkeypatch, shape, mode, sa
         _in_order(_expected(shape, mode, True), saved_lines)
         _blocks(shape, saved_lines)
     else:
-        assert res["after"] == res["before"], "a display wrote reports/"
         assert "Saved to:" not in res["out"] + res["err"]
 
 

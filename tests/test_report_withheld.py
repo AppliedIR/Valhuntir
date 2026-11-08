@@ -272,6 +272,10 @@ def sig_middle(case):
     _edit_line(1, _flip)
 
 
+# an APPROVED finding with no line, whatever the case's other records hold
+UNSIGNED = dict(FINDING, id="F-tester-009", title="Unsigned", status="APPROVED")
+
+
 def no_line(case):
     _rewrite(case / "findings.json",
              lambda d: d + [dict(d[0], id="F-tester-009", title="Unsigned")])  # fmt: skip
@@ -398,7 +402,39 @@ def test_a_blanked_view_prints_withheld(tmp_path, monkeypatch, cell, mode, save)
     build, change, codes = CASE_LEVEL[cell]
     case = _fixture(build, change, tmp_path, monkeypatch)
     _measured_case_level(case, codes)
-    res = _run(case, mode, save)
+    _withheld_as_its_code(_run(case, mode, save), cell, mode, save)
+
+
+@pytest.mark.parametrize("save", [False, True], ids=["display", "save"])
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("cell", sorted(CASE_LEVEL))
+def test_an_unsigned_approved_item_beside_a_case_level_code_is_that_codes_cell(
+    tmp_path, monkeypatch, cell, mode, save
+):
+    """An APPROVED finding with no line, added to each case-level cell: verify
+    emits the cell's codes and APPROVED_NO_LINE for it, and the report is
+    checked exactly as that code's own cell is. A DRAFT case has no chain, so
+    an APPROVED item there also adds LEDGER_MISSING."""
+    build, change, codes = CASE_LEVEL[cell]
+    if build == "draft":
+        codes = sorted({*codes, "LEDGER_MISSING"})
+
+    def beside(case):
+        change(case)
+        _rewrite(case / "findings.json", lambda d: d + [UNSIGNED])
+
+    case = _fixture(build, beside, tmp_path, monkeypatch)
+    _measured_case_level(case, codes)
+    result = verify_case(case)
+    assert [(v.item_id, v.status) for v in result.items
+            if v.item_id == UNSIGNED["id"]] == [(UNSIGNED["id"], "APPROVED_NO_LINE")]  # fmt: skip
+    dropped = approved_view(case)["not_verified"]
+    assert {"id": UNSIGNED["id"], "status": "APPROVED_NO_LINE"} in dropped, dropped
+    _withheld_as_its_code(_run(case, mode, save), cell, mode, save)
+
+
+def _withheld_as_its_code(res, cell, mode, save):
+    """A case-level cell's report: each emptied line withheld, once."""
     if cell == "ITEM_MISSING_findings" and mode == "findings":
         # the lookup miss on an empty findings.json, as at head
         assert res["raised"] is None, res["raised"]
