@@ -170,7 +170,7 @@ def test_v1a_the_deployed_rule_has_the_nudge_from_sift_mcps_agents_md(bed):
 
 
 def test_v1b_codex_developer_instructions_have_the_nudge(bed):
-    # path pending arch (spec :1021/:727 vs client_setup.py:2113)
+    # The profile vhir writes: ~/.codex/valhuntir.config.toml (codex_profile_path)
     p = _default(bed)
     text = _instructions(bed)
     assert UPDATE_NUDGE in text.splitlines(), text
@@ -178,7 +178,7 @@ def test_v1b_codex_developer_instructions_have_the_nudge(bed):
 
 
 def test_v2_the_users_codex_config_is_never_written(bed):
-    # path pending arch (spec :1021/:727 vs client_setup.py:2113)
+    # vhir writes valhuntir.config.toml; the user's config.toml is only read, to warn
     bed.config.parent.mkdir(parents=True)
     bed.config.write_text(USER_CODEX)
     _default(bed)
