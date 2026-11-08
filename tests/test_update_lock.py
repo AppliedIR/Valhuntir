@@ -445,63 +445,19 @@ def test_a_flag_sets_the_build_and_the_record(box, cpu, gpu):
 @pytest.mark.parametrize(
     "installed,variant", [("2.10.0", "gpu"), ("2.14.0+cpu", "cpu"), ("", "cpu")]
 )
-def test_without_a_terminal_the_installed_build_is_kept(
-    box, capsys, installed, variant
+@pytest.mark.parametrize("tty", [False, True])
+def test_with_or_without_a_terminal_the_installed_build_is_kept_and_recorded(
+    box, capsys, installed, variant, tty
 ):
-    calls, exited = _update(box, torch=installed)
+    calls, exited = _update(box, torch=installed, tty=tty)
     assert exited is None and not _asked(calls)
     assert _lock_of(calls) == str(box.cpu_lock if variant == "cpu" else box.lock)
     out = capsys.readouterr().out
     assert f"PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)" in out
-    assert "torch_variant" not in _manifest(box)
-
-
-@pytest.mark.parametrize(
-    "answer,variant", [("", "cpu"), ("gpu", "gpu"), ("CPU", "cpu")]
-)
-def test_an_old_install_on_a_terminal_is_asked_default_cpu(
-    box, capsys, answer, variant
-):
-    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[answer])
-    assert exited is None and len(_asked(calls)) == 1
-    out = capsys.readouterr().out
-    assert "Installed now: the GPU build (torch 2.10.0)" in out
-    assert "0.2 GB download" in out and "3 GB download" in out
-    assert _lock_of(calls) == str(box.cpu_lock if variant == "cpu" else box.lock)
     assert _manifest(box)["torch_variant"] == variant
 
 
-@pytest.mark.parametrize(
-    "installed,variant,default",
-    [
-        ("2.10.0", "gpu", "gpu"),  # GPU build + GPU found: Enter keeps gpu
-        ("2.14.0+cpu", "cpu", "cpu"),  # CPU build + GPU found: Enter stays cpu
-        ("", "cpu", "cpu"),  # no torch, rag installed, GPU found: Enter stays cpu
-    ],
-)
-def test_a_found_gpu_defaults_enter_to_the_installed_build(
-    box, capsys, installed, variant, default
-):
-    # With a GPU present the Enter default is the installed build, so a GPU
-    # build isn't thrown away; a CPU or absent build still defaults to cpu.
-    calls, exited = _update(
-        box, torch=installed, tty=True, answers=[""], gpu_found=True
-    )
-    assert exited is None and len(_asked(calls)) == 1
-    assert "an NVIDIA GPU was found" in capsys.readouterr().out
-    assert f"[{default}]" in _asked(calls)[0]
-    assert _lock_of(calls) == str(box.lock if default == "gpu" else box.cpu_lock)
-    if installed:
-        assert _manifest(box)["torch_variant"] == variant
-
-
-def test_a_wrong_answer_is_asked_again(box):
-    calls, _ = _update(box, torch="2.10.0", tty=True, answers=["gpus", "gpu"])
-    assert len(_asked(calls)) == 2 and _manifest(box)["torch_variant"] == "gpu"
-
-
-def test_an_install_already_asked_is_not_asked_again(box):
-    """Its twin above asks: the record is what stops it."""
+def test_a_recorded_install_is_not_asked(box):
     calls, exited = _update(
         box, manifest=lambda m: {**m, "torch_variant": "gpu"}, torch="2.14.0", tty=True
     )
@@ -517,17 +473,6 @@ def test_the_installed_build_beats_a_stale_record(box):
         tty=True,
     )
     assert _lock_of(calls) == str(box.cpu_lock) and not _asked(calls)
-
-
-@pytest.mark.parametrize("rag,asks", [(True, True), (False, False)])
-def test_without_torch_it_asks_only_when_installing_rag(box, rag, asks):
-    def recorded(m):
-        if not rag:
-            del m["packages"]["rag-mcp"]
-        return {**m, "torch_variant": "cpu"}
-
-    calls, _ = _update(box, manifest=recorded, torch="", tty=True)
-    assert bool(_asked(calls)) is asks
 
 
 @pytest.mark.parametrize("cpu", [False, True])
@@ -622,17 +567,9 @@ def test_after_yes_no_dependency_check_says_the_removal_did_not_finish(box, caps
 
 
 def test_a_hanging_gpu_probe_means_no_gpu_and_the_update_goes_on(box, capsys):
-    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[""], smi_hangs=True)
-    assert exited is None and "no NVIDIA GPU was found" in capsys.readouterr().out
-    assert _lock_of(calls) == str(box.cpu_lock)
-
-
-def test_no_answer_at_the_variant_question_installs_nothing(box, capsys):
-    """End of input mustn't become a silent swap to the CPU default."""
-    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[EOFError])
-    assert exited is not None and exited.code == 1
-    assert "nothing installed" in capsys.readouterr().err
-    assert not _steps(calls)
+    calls, exited = _update(box, torch="2.10.0", tty=True, smi_hangs=True)
+    assert exited is None and "no NVIDIA GPU was found" in capsys.readouterr().err
+    assert _lock_of(calls) == str(box.lock)  # the installed build is kept
 
 
 def _finished(box, calls, exited):
@@ -753,13 +690,6 @@ def test_a_timeout_after_the_pull_prints_the_part_way_block(box, capsys, hang):
     assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
     block = steps_block(err)
     assert block and block[-1].endswith("finish with: vhir update")
-
-
-def test_no_answer_to_the_pytorch_question_prints_the_part_way_block(box, capsys):
-    _, exited = _update(box, torch="2.10.0", tty=True, answers=[EOFError])
-    assert exited is not None and exited.code == 1
-    err = capsys.readouterr().err
-    assert "Re-run with: vhir update --cpu or --gpu" in err and PART_WAY in err
 
 
 # --- The gateway's own launch lines get -I before the restart -----------------

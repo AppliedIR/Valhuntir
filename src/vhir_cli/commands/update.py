@@ -450,13 +450,27 @@ def _torch_installed(venv_python: str) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
-def _torch_variant(
-    args, manifest: dict, installed: str, ask: bool = True
-) -> tuple[str, str]:
+def _gpu_found() -> bool:
+    """Whether `nvidia-smi -L` lists a GPU. A probe that fails or hangs: no."""
+    import shutil
+
+    if not shutil.which("nvidia-smi"):
+        return False
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return smi.returncode == 0 and smi.stdout.startswith("GPU")
+
+
+def _torch_variant(args, manifest: dict, installed: str) -> tuple[str, str]:
     """(the build to install, the record to keep). The flag, else the build
-    already in the venv, else CPU. Asked only on a terminal, with no flag,
-    when the venv has torch but was never asked (no record), or forensic-rag
-    is to be installed without it. macOS has one build (PyPI's) and no record."""
+    already in the venv, else CPU; forensic-rag to install with no torch gets
+    CPU unless an NVIDIA GPU is found. Nothing is asked. With no record, the
+    build is recorded, and one the GPU probe disagrees with gets its switch in
+    the end block. macOS has one build (PyPI's) and no record."""
     flag = "cpu" if args.cpu else "gpu" if args.gpu else ""
     record = manifest.get("torch_variant", "")
     if sys.platform == "darwin":
@@ -469,52 +483,38 @@ def _torch_variant(
         return flag, flag
     variant = "cpu" if installed.endswith("+cpu") or not installed else "gpu"
     rag = "rag-mcp" in manifest.get("packages", {})
-    asked = (installed and not record) or (rag and not installed)
-    if ask and sys.stdin.isatty() and asked:
-        import shutil
-
-        found = "no NVIDIA GPU was found"
-        default = "cpu"  # no GPU: Enter keeps CPU even if a GPU build is installed
-        if shutil.which("nvidia-smi"):
-            try:
-                smi = subprocess.run(
-                    ["nvidia-smi", "-L"], capture_output=True, text=True, timeout=30
-                )
-                if smi.returncode == 0 and smi.stdout.startswith("GPU"):
-                    found = "an NVIDIA GPU was found"
-                    default = variant  # a GPU is here: Enter keeps the build installed
-            except (OSError, subprocess.SubprocessError):
-                pass  # a probe that fails or hangs: no GPU detected
-        print(f"\n  PyTorch for knowledge search ({found}):")
-        if installed:
-            print(
-                f"    Installed now: the {variant.upper()} build (torch {installed})."
-            )
-            print(
-                "    Choosing the other build replaces it; CUDA packages it leaves"
-                " are listed after the install."
-            )
-        print("    cpu  about 0.2 GB download, 0.7 GB on disk; slower index builds")
-        print(
-            "    gpu  about 3 GB download, 5.4 GB on disk; much faster index"
-            " builds; needs an NVIDIA GPU"
-        )
-        while True:
-            try:
-                answer = input(f"    PyTorch build (cpu/gpu) [{default}]: ")
-            except EOFError:  # no answer mustn't become a silent swap to CPU
-                human_steps.add(
-                    "\nNo answer to the PyTorch question; nothing installed."
-                    " Re-run with: vhir update --cpu or --gpu",
-                    file=sys.stderr,
-                )
-                _stop_part_way(args)
-            answer = answer.strip().lower() or default
-            if answer in ("cpu", "gpu"):
-                return answer, answer
-            print("    Please enter cpu or gpu.")
+    if (installed and not record) or (rag and not installed):
+        gpu = _gpu_found()
+        if not installed:
+            variant = "gpu" if gpu else "cpu"
+        if not record:
+            record = variant
+            _name_the_switch(variant, installed, gpu)
     print(f"  PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)")
     return variant, record
+
+
+def _name_the_switch(variant: str, installed: str, gpu: bool) -> None:
+    """The step for a build the GPU probe disagrees with."""
+    if variant == "gpu" and not gpu:
+        cuda = "+cu" in installed or (
+            "+" not in installed and sys.platform.startswith("linux")
+        )
+        human_steps.add(
+            "PyTorch: the GPU build is installed, and no NVIDIA GPU was found.\n"
+            + (
+                "vhir update --cpu switches to the CPU build, then, on a terminal,"
+                " lists the CUDA packages it no longer needs, with their sizes,"
+                " and offers to remove them."
+                if cuda
+                else "vhir update --cpu switches to the CPU build."
+            )
+        )
+    elif variant == "cpu" and gpu:
+        human_steps.add(
+            "PyTorch: the CPU build is installed, and an NVIDIA GPU was found.\n"
+            "vhir update --gpu for faster index builds"
+        )
 
 
 # D11: every update offer's declines, in the install manifest: {offer: subject}
@@ -1034,6 +1034,8 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
 
     if after_pull is not None:  # Steps 1-4 ran in the process that started this one
         pre_update_git, torch_record, older = _read_handoff(after_pull, repos, manifest)
+        if not torch_record and sys.platform != "darwin":  # no handoff: the flag
+            torch_record = "cpu" if args.cpu else "gpu" if args.gpu else ""
         # An older vhir's update pulled this code: Step 4 again, from the lock
         if older:
             _write_update_state(
@@ -1230,10 +1232,10 @@ def _install_packages(
     ask: bool = True,
 ) -> str:
     """Step 4: every package, each third-party one from the lock in the freshly
-    pulled sift-mcp. Returns the torch record to keep. ask=False asks nothing
-    (an older vhir's update already asked its questions)."""
+    pulled sift-mcp. Returns the torch record to keep. ask=False makes no
+    offers (an older vhir's update already made its own)."""
     torch_installed = _torch_installed(venv_python)
-    variant, torch_record = _torch_variant(args, manifest, torch_installed, ask)
+    variant, torch_record = _torch_variant(args, manifest, torch_installed)
     lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
     checker = source / "deps" / "check-lock.py"
     if not lock.is_file() or not checker.is_file():
@@ -1357,6 +1359,7 @@ def _reexec_after_pull(
     argv = [venv_python, str(script), "update", "--after-pull", handoff]
     if getattr(args, "no_restart", False):
         argv.append("--no-restart")
+    argv += ["--cpu"] if args.cpu else ["--gpu"] if args.gpu else []
     if not script.is_file():
         _update_incomplete(f"{script} was not found")
     print("  Continuing the update with the new code...", flush=True)
@@ -1391,13 +1394,12 @@ def _read_handoff(
         data = json.loads(text)
     except ValueError:
         data = None
+    record = data.get("torch_record") if isinstance(data, dict) else None
+    record = record if record in ("cpu", "gpu") else ""
     if isinstance(data, dict) and data.get("older_update") is True:
-        record = data.get("torch_record")
-        record = record if record in ("cpu", "gpu") else ""
         return _heads_before_older_update(manifest, repos), record, True
     if isinstance(data, dict) and isinstance(data.get("pre_update_git"), dict):
-        record = data.get("torch_record")
-        return data["pre_update_git"], record if isinstance(record, str) else "", False
+        return data["pre_update_git"], record, False
     return _current_heads(repos), "", False
 
 

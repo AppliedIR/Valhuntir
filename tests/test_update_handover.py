@@ -347,7 +347,8 @@ def test_a_torch_answer_other_than_cpu_or_gpu_is_not_recorded(manifest_dir, reco
     home, manifest_path = manifest_dir
     payload = '{"older_update": true, "torch_record": ' + record + "}"
     _finish_older(home, payload=payload, no_restart=True)
-    assert "torch_variant" not in json.loads(manifest_path.read_text())
+    # the build detected is recorded (the stub's torch, untagged, is gpu)
+    assert json.loads(manifest_path.read_text())["torch_variant"] == "gpu"
 
 
 def test_an_older_uv_is_refused_on_the_hand_over(manifest_dir, capsys):
