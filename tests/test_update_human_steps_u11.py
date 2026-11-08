@@ -1396,10 +1396,10 @@ def test_the_reset_hint_is_in_the_block_only_for_a_kept_short_passphrase(
         assert r.scan_hits() == []
 
 
-# ---- E33: the hand-over keeps one block and carries the first process's steps
+# ---- The hand-over keeps one block and carries the first process's steps
 
 
-def test_e33_a_missing_repo_notice_is_carried_into_the_one_end_block(u):
+def test_a_missing_repo_notice_is_carried_into_the_one_end_block(u):
     r = u.go(opensearch="missing", moves={"vhir"})
     assert r.exec_argv is not None, "no hand-over"
     assert r.lines("1-after-exec") == []
@@ -1407,7 +1407,7 @@ def test_e33_a_missing_repo_notice_is_carried_into_the_one_end_block(u):
     assert "Update manually" in " ".join(r.exec_argv), r.exec_argv
 
 
-def test_e33_with_no_terminal_each_process_prints_one_block(u):
+def test_with_no_terminal_each_process_prints_one_block(u):
     r = u.go(tty=False, moves={"vhir"})
     assert r.exec_argv is not None, "no hand-over"
     assert r.lines("1-after-exec") == []
@@ -1415,14 +1415,14 @@ def test_e33_with_no_terminal_each_process_prints_one_block(u):
     assert any(NOTERM1 in line for line in r.blocks("1")[0])
 
 
-def test_e33_an_exec_that_fails_puts_the_carried_steps_in_its_block(u):
+def test_an_exec_that_fails_puts_the_carried_steps_in_its_block(u):
     r = u.go(opensearch="missing", moves={"vhir"}, exec_oserror=True)
     last = r.blocks("1")[-1] if r.blocks("1") else []
     assert any("UPDATE INCOMPLETE" in line for line in last), last
     assert any("Update manually:" in line for line in last), last
 
 
-def test_e33_opensearch_is_asked_once_across_the_hand_over(u):
+def test_opensearch_is_asked_once_across_the_hand_over(u):
     r = u.go(
         opensearch="mismatch",
         image="opensearchproject/opensearch:3.4.0",
@@ -1433,16 +1433,16 @@ def test_e33_opensearch_is_asked_once_across_the_hand_over(u):
     assert sum("OpenSearch" in p for p in r.prompts) == 1, r.prompts
 
 
-def test_e33_a_terminal_hand_over_prints_no_block_in_the_first_process(u):
+def test_a_terminal_hand_over_prints_no_block_in_the_first_process(u):
     r = u.go(moves={"vhir"})
     assert r.exec_argv is not None, "no hand-over"
     assert r.lines("1-after-exec") == []
     assert r.opens("1") == 0
 
 
-# ---- E34: the scan finds each form a step takes ---------------------------
+# ---- The scan finds each form a step takes --------------------------------
 
-E34 = [
+STEP_FORMS = [
     "  UPDATE INCOMPLETE: run `vhir update` again",
     "Your update to 0.6.6.1 didn't finish. Run: vhir update",
     "  Then restart the gateway: systemctl --user restart vhir-gateway",
@@ -1454,8 +1454,10 @@ E34 = [
 ]
 
 
-@pytest.mark.parametrize("form", E34, ids=[f"e34-{i}" for i in range(len(E34))])
-def test_e34_the_scan_finds_a_step_printed_outside_a_block(u, form):
+@pytest.mark.parametrize(
+    "form", STEP_FORMS, ids=[f"form-{i}" for i in range(len(STEP_FORMS))]
+)
+def test_the_scan_finds_a_step_printed_outside_a_block(u, form):
     r = u
     out, err = _Stream(r, "stdout"), _Stream(r, "stderr")
     saved = sys.stdout, sys.stderr

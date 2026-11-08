@@ -1,4 +1,4 @@
-"""U8 offers (SPEC-011): on a terminal each offer is made once with its cost; a
+"""U8 offers: on a terminal each offer is made once with its cost; a
 decline is recorded in the install manifest under D11's key and not asked
 again while its subject stays the same; with no terminal nothing is asked and
 the U11 block lists each skipped offer by its text."""
