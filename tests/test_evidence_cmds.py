@@ -11,6 +11,7 @@ from vhir_cli.commands.evidence import (
     cmd_list_evidence,
     cmd_lock_evidence,
     cmd_register_evidence,
+    cmd_unlock_evidence,
     cmd_verify_evidence,
     register_evidence_data,
 )
@@ -71,6 +72,40 @@ class TestLockEvidence:
         mode = ev_file.stat().st_mode
         assert mode & stat.S_IWUSR == 0  # no write
         assert mode & stat.S_IRUSR != 0  # has read
+
+    def test_lock_sets_555_on_subdirectories(self, case_dir, identity, monkeypatch):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        nested = case_dir / "evidence" / "disk1" / "partition2"
+        nested.mkdir(parents=True)
+        ev_file = nested / "image.bin"
+        ev_file.write_bytes(b"evidence data")
+
+        cmd_lock_evidence(FakeArgs(), identity)
+
+        # A file can still be deleted or replaced if its parent directory is
+        # writable — POSIX unlink permission comes from the directory.
+        for subdir in (case_dir / "evidence" / "disk1", nested):
+            mode = subdir.stat().st_mode
+            assert mode & stat.S_IWUSR == 0, f"{subdir} still writable"
+            assert mode & stat.S_IXUSR != 0, f"{subdir} not traversable"
+        assert ev_file.stat().st_mode & stat.S_IWUSR == 0
+
+
+class TestUnlockEvidence:
+    def test_unlock_restores_755_on_subdirectories(
+        self, case_dir, identity, monkeypatch
+    ):
+        monkeypatch.setenv("VHIR_CASE_DIR", str(case_dir))
+        monkeypatch.setattr(
+            "vhir_cli.commands.evidence.require_tty_confirmation", lambda _: True
+        )
+        subdir = case_dir / "evidence" / "disk1"
+        subdir.mkdir()
+        subdir.chmod(0o555)
+
+        cmd_unlock_evidence(FakeArgs(), identity)
+
+        assert subdir.stat().st_mode & stat.S_IWUSR != 0
 
 
 class TestRegisterEvidence:
