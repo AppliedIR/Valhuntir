@@ -1036,7 +1036,12 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
         pre_update_git, torch_record, older = _read_handoff(after_pull, repos, manifest)
         # An older vhir's update pulled this code: Step 4 again, from the lock
         if older:
-            _write_update_state("", pre_update_git.get("vhir", ""), status="pending")
+            _write_update_state(
+                "",
+                pre_update_git.get("vhir", ""),
+                status="pending",
+                reason=UNFINISHED_REASON,
+            )
             _check_uv_floor()  # 0.6.0 and 0.6.1 have none
             record = _install_packages(
                 args,
@@ -1118,7 +1123,9 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
     # as started (version ""), so any stop before Step 9 keeps every command
     # warning until a later run finishes. A stop at Step 2 (e.g. offline) never
     # reaches here, so the record stays the last complete update's.
-    _write_update_state("", pre_update_git.get("vhir", ""), status="pending")
+    _write_update_state(
+        "", pre_update_git.get("vhir", ""), status="pending", reason=UNFINISHED_REASON
+    )
     pulled = False  # a repo's HEAD moved in this run, or couldn't be read
     post_update_git = {}
     for name, path in repos:
@@ -1607,6 +1614,11 @@ def _finish_update(
 
     # Last, so it isn't scrolled away: SIFT tools too old for Valhuntir
     _offer_sift_tools()
+
+
+# The record written before the pull, until Step 9 replaces it: a stop in
+# between leaves it, and every command then reads why
+UNFINISHED_REASON = "vhir update has not finished"
 
 
 def _offer_sift_tools() -> None:

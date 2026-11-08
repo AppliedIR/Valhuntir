@@ -276,6 +276,14 @@ def test_an_older_update_installs_from_the_lock_again_and_finishes(manifest_dir)
     assert not [c for c in joined if " fetch " in c or " pull " in c]
 
 
+def test_the_record_after_an_older_pull_says_why_it_is_pending(manifest_dir):
+    """The record written before Step 4 runs again is pending and says why,
+    never pending with an empty reason."""
+    _, at_install = _finish_older(manifest_dir[0], no_restart=True)
+    assert at_install.get("status") == "pending", at_install
+    assert str(at_install.get("reason", "")).strip(), at_install
+
+
 def test_before_heads_from_the_older_step_6(manifest_dir):
     """Its Step 6 wrote the pulled heads to git: pre_update_git is the before."""
     home, manifest_path = manifest_dir
