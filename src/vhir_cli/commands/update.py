@@ -1647,7 +1647,7 @@ def _offer_sift_tools() -> None:
     )
     print(
         "  SANS's installer updates them (15-20 minutes on the SANS OVA;"
-        " it asks for your password)."
+        " it asks for your sudo password)."
     )
     try:  # the command is in the question: it's asked, not a step to do later
         ask = "  Run `sudo cast install teamdfir/sift` now? [y/N] "
