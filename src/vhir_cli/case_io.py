@@ -258,10 +258,6 @@ class RecordFile:
         self.path, self.records, self.why = Path(path), list(records), why
         self.absent = absent
 
-    @property
-    def name(self) -> str:
-        return self.path.name
-
 
 def read_record_file(path) -> RecordFile:
     """A record file (findings, timeline, iocs or todos.json) read through
