@@ -103,9 +103,15 @@ class TestUpdate:
 
     def test_a_failed_restart_says_nothing_more(self, manifest_dir, capsys):
         self._update(manifest_dir[0], 1)
-        out = capsys.readouterr().out
+        got = capsys.readouterr()
+        out, block = got.out, test_update.steps_block(got.err)
         assert "failed (stubbed)" in out and HINT not in out
+        # U11 (spec :672): the hint's place is the end block; a failed restart adds none
+        assert not any(HINT in line for line in block)
 
     def test_no_restart_says_nothing(self, manifest_dir, capsys):
         self._update(manifest_dir[0], 0, no_restart=True)
-        assert HINT not in capsys.readouterr().out
+        got = capsys.readouterr()
+        # U11 (spec :672): neither on stdout nor in the end block
+        assert HINT not in got.out
+        assert not any(HINT in line for line in test_update.steps_block(got.err))

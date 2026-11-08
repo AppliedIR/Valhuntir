@@ -831,7 +831,11 @@ def test_no_note_when_nothing_was_rewritten(box, capsys):
     _update(box, no_restart=True)  # rewrites
     capsys.readouterr()
     _update(box, no_restart=True)  # nothing left to do
-    assert "takes effect at the next gateway restart" not in capsys.readouterr().out
+    got = capsys.readouterr()
+    # U11 (spec :675): neither on stdout nor in the end block
+    assert "takes effect at the next gateway restart" not in got.out
+    block = steps_block(got.err)
+    assert not any("takes effect at the next gateway restart" in line for line in block)
 
 
 def test_a_user_edited_launcher_is_noted_once_per_update(box, capsys, monkeypatch):
