@@ -54,7 +54,7 @@ ROWS = [
        [r"No approved, verified findings\.", r"Approved findings: withheld.*"]) for m in TEXT],
 ]  # fmt: skip
 W = "withheld: the case fails verification (see below)"
-# the lines a blanked view empties (SPEC-011), by mode: (the line, its sources);
+# the lines a blanked view empties, by mode: (the line, its sources);
 # one whose source is damaged is that row's replacement instead
 WITHHELD = {
     "ioc": [(f"  Approved IOC records: {W}", {F, IO}), (f"Total: {W}", {F, IO})],
