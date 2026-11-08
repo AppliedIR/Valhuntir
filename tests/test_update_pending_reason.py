@@ -138,3 +138,22 @@ def test_a_pending_record_older_than_the_install_prints_nothing(box, capsys):
     path.write_text(json.dumps(manifest))
     out, err = _vhir(box, capsys, "portal")
     assert FOREIGN.reason not in err and BAR not in err, (state, err)
+
+
+def _commands():
+    """Every top-level subcommand the parser has."""
+    import argparse
+
+    parser = main_mod.build_parser()
+    (action,) = [
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    ]
+    return sorted(action.choices)
+
+
+@pytest.mark.parametrize("command", _commands())
+def test_every_subcommand_help_prints_no_reason(box, capsys, command):
+    _pending(box, FOREIGN, no_restart=False)
+    out, err = _vhir(box, capsys, command, "--help")
+    assert "usage:" in out, (out, err)  # the help printed: argparse exited first
+    assert FOREIGN.reason not in out + err and FOREIGN.fix not in out + err, err
