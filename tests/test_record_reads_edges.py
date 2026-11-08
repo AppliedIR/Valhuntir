@@ -72,7 +72,7 @@ def test_no_matching_finding_with_another_file_unreadable_prints_the_block(
             ended = f"SystemExit({e.code})"
     out, err = out.getvalue(), err.getvalue()
     lines = [line for line in out.splitlines() if line.strip()]
-    assert lines[0] == "iocs.json holds null, not a list of records", out
+    assert lines[:1] == ["iocs.json holds null, not a list of records"], out
     assert "VERIFICATION" in lines, out
     assert "Not found: F-tester-999" in err and "No matching findings." in err, err
     assert ended == "SystemExit(1)" and "Traceback" not in out + err, (ended, err)
