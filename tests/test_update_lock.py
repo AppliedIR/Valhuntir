@@ -12,6 +12,7 @@ subprocess is a stand-in that records each command.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -21,9 +22,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import vhir_cli.gateway as gateway_mod
+from tests.stub_check import stubbed
 from vhir_cli.commands.update import _PACKAGE_PATHS, cmd_update
 
 REAL_FIND_SPEC = importlib.util.find_spec
+# `systemctl --user show vhir-gateway` for a gateway run by its systemd unit
+UNIT_SHOW = (
+    "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n"
+    "SubState=running\nMainPID=4242\n"
+)
 
 
 @pytest.fixture
@@ -91,13 +99,30 @@ def _update(
     gpu_found=False,
     check=False,
     no_restart=True,
+    after_pull=None,
+    vhir_moves=False,
+    pulls=(),
+    restart_rc=0,
+    unit_show=UNIT_SHOW,
+    gateway=None,
+    identity=None,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
     are what input() returns, in order; `leftovers` is check-lock's
-    --cuda-leftovers output."""
+    --cuda-leftovers output. `after_pull` is the --after-pull handoff text;
+    with `vhir_moves` the vhir pull moves its HEAD, so the run hands over to
+    the new code: os.execv is recorded as ["execv", *argv] and ends the run.
+    Each repo named in `pulls` moves its HEAD at the pull, without a hand-over.
+    `restart_rc` is the gateway restart's exit status and `unit_show` what
+    `systemctl --user show` prints. With `gateway`, the gateway check answers
+    it on every call, and the 3 s wait and the old connectivity test are
+    stand-ins. `identity` is what the gateway check's answer from disk
+    (`python -I -m sift_gateway.identity`) prints."""
     check_rc = check_rc or {}
     calls = []
+    moving = {f"/{name}" for name in pulls} | ({"/vhir"} if vhir_moves else set())
+    heads = {"/vhir": "v1"}
     if manifest:
         path = box.home / ".vhir" / "manifest.json"
         path.write_text(json.dumps(manifest(json.loads(path.read_text()))))
@@ -120,6 +145,9 @@ def _update(
     def run(cmd, **kw):
         calls.append([str(c) for c in cmd])
         result = MagicMock(returncode=0, stdout="0", stderr="")
+        if identity is not None and "sift_gateway.identity" in calls[-1]:
+            result.stdout = identity
+            return result
         if cmd[0] == "nvidia-smi" and smi_hangs:
             raise subprocess.TimeoutExpired(cmd, 30)
         if cmd[0] == "nvidia-smi" and gpu_found:
@@ -142,6 +170,19 @@ def _update(
             result.stdout = uv
         elif "symbolic-ref" in cmd:
             result.stdout = "main"
+        elif cmd[:2] == ["git", "-C"] and any(cmd[2].endswith(m) for m in moving):
+            repo = next(m for m in moving if cmd[2].endswith(m))
+            if cmd[3:] == ["rev-parse", "HEAD"]:
+                result.stdout = heads.setdefault(repo, "v1")
+            elif cmd[3:5] == ["pull", "--ff-only"]:
+                heads[repo] = "v2"
+        elif cmd[:3] == ["systemctl", "--user", "restart"]:
+            result.returncode = restart_rc
+            result.stderr = (
+                "" if restart_rc == 0 else "Job for vhir-gateway.service failed."
+            )
+        elif cmd[:3] == ["systemctl", "--user", "show"]:
+            result.stdout = unit_show
         elif len(cmd) > 2 and str(cmd[1]).endswith("check-lock.py"):
             if cmd[2] in hangs:
                 raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
@@ -160,8 +201,14 @@ def _update(
             raise EOFError
         return reply
 
+    def execv(exe, argv):
+        calls.append(["execv", *argv])
+        raise Execd
+
+    if vhir_moves:
+        (box.home / "venv" / "bin" / "vhir").write_text("#!/bin/sh\n")
     exited = None
-    with (
+    stands = [
         patch("pathlib.Path.home", return_value=box.home),
         patch("subprocess.run", side_effect=run),
         patch("importlib.util.find_spec", side_effect=find_spec),
@@ -172,14 +219,34 @@ def _update(
             "shutil.which",
             return_value="/usr/bin/nvidia-smi" if (smi_hangs or gpu_found) else None,
         ),
-    ):
+        patch("os.execv", side_effect=execv),
+    ]
+    if gateway is not None:
+        stands += [
+            # the base has no check_gateway yet, so a row fails on its own
+            # assert of the state, never on the missing name; stub_check (in
+            # the calling row's file) asserts the name and its use
+            stubbed(gateway_mod, "check_gateway", lambda *a, **kw: gateway),
+            patch("time.sleep"),
+            patch("vhir_cli.commands.setup._run_connectivity_test"),
+        ]
+    with contextlib.ExitStack() as stack:
+        for stand in stands:
+            stack.enter_context(stand)
         try:
             # A MagicMock's unset attributes are truthy: the flags are set.
             args = MagicMock(check=check, no_restart=no_restart, cpu=cpu, gpu=gpu)
+            args.after_pull = after_pull
             cmd_update(args, {})
         except SystemExit as e:
             exited = e
+        except Execd:
+            pass
     return calls, exited
+
+
+class Execd(Exception):
+    """os.execv was called (a real one never returns)."""
 
 
 def _steps(calls):
@@ -201,6 +268,7 @@ def test_one_locked_install_opencti_too_then_both_checks(box):
         "install",
         "--strict",
         "--final",
+        "--opencti-leftovers",  # asked or not, the query runs (spec :575, :919)
     ]
     locked = steps[1][1]
     # What the venv already has that the lock names goes into the locked
@@ -263,6 +331,7 @@ def test_without_opencti_both_checks_still_run(box):
         "install",
         "--strict",
         "--final",
+        "--opencti-leftovers",  # asked or not, the query runs (spec :575, :919)
     ]
 
 
@@ -323,6 +392,7 @@ def test_opencti_installed_but_not_in_the_manifest_joins_the_locked_install(box)
         "install",
         "--strict",
         "--final",
+        "--opencti-leftovers",  # asked or not, the query runs (spec :575, :919)
     ]
     assert str(box.src / "packages" / "opencti") in steps[1][1]
 

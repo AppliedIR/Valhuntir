@@ -9,8 +9,10 @@ command — they would need to re-run their client setup script.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import importlib.metadata
+import io
 import json
 import os
 import shlex
@@ -18,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
+
+from vhir_cli import human_steps
 
 # Install order matches setup-sift.sh dependency chain.
 # vhir-cli must come before case-mcp/report-mcp.
@@ -149,7 +153,9 @@ def _ensure_bwrap_profile() -> None:
                 print("  A reboot may be required.")
         else:
             print(f"  WARNING: apparmor_parser failed: {r.stderr.strip()}")
-            print("  Try manually: sudo apparmor_parser -rT /etc/apparmor.d/bwrap")
+            human_steps.add(
+                "  Try manually: sudo apparmor_parser -rT /etc/apparmor.d/bwrap"
+            )
     except subprocess.TimeoutExpired:
         print("  WARNING: apparmor_parser timed out")
     except OSError as e:
@@ -205,7 +211,7 @@ def _ensure_password_dir() -> None:
         print("done")
     else:
         print("failed")
-        print(
+        human_steps.add(
             f"  Run manually: sudo mkdir -p {passwords_dir} && "
             f"sudo chown $USER:$USER {passwords_dir} && "
             f"sudo chmod 700 {passwords_dir}",
@@ -226,23 +232,29 @@ def _offer_signing_key(identity: dict) -> None:
     """After an update: the examiner's signing credential, as the installer
     reports it. A 0.6 password is offered the upgrade; none is told how to
     set one up; a signing key's fingerprint is printed."""
-    from vhir_cli import credentials, keys
+    from vhir_cli import approval_auth, credentials, keys
 
     examiner = identity.get("examiner", "")
     config_path = Path.home() / ".vhir" / "config.yaml"
     try:
         current = credentials.state(examiner, config_path)
-    except (credentials.CredentialError, keys.KeysFileInvalid) as e:
-        print(
+        if current == "schema3":
+            fp = keys.key_fingerprint(keys.active(keys.load(examiner)))
+    except (
+        credentials.CredentialError,
+        keys.KeysFileInvalid,
+        OSError,
+        ValueError,
+    ) as e:
+        human_steps.add(
             f"  Signing key: can't be read ({e}); run `vhir config --forgot-password`."
         )
         return
     if current == "schema3":
-        fp = keys.key_fingerprint(keys.active(keys.load(examiner)))
         print(f"  Signing key for {examiner}: {fp}")
         return
     if current == "none":
-        print(
+        human_steps.add(
             f"  No signing passphrase for {examiner}: set one with `vhir config --setup-password`."
         )
         return
@@ -258,12 +270,25 @@ def _offer_signing_key(identity: dict) -> None:
         except EOFError:
             answer = "n"
     if not sys.stdin.isatty() or answer in ("n", "no"):
-        print("  Run `vhir config --upgrade-key` when you're ready.")
+        human_steps.add("  Run `vhir config --upgrade-key` when you're ready.")
+        return
+    retry = " Run `vhir config --upgrade-key` to try again."
+    try:  # the lockout check exits: catch it here, so the update still finishes
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            approval_auth._check_lockout(examiner)
+    except SystemExit:
+        human_steps.add(f"  {said.getvalue().strip()}{retry}", file=sys.stderr)
         return
     try:
         credentials.upgrade(examiner, config_path)
-    except credentials.CredentialError as e:
-        print(f"  {e} Run `vhir config --upgrade-key` to try again.", file=sys.stderr)
+    except (
+        credentials.CredentialError,
+        approval_auth.NoTerminal,
+        keys.KeysFileInvalid,
+        OSError,
+        ValueError,
+    ) as e:
+        human_steps.add(f"  {e}{retry}", file=sys.stderr)
 
 
 def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
@@ -292,7 +317,7 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
             # spec.origin = .../opensearch-mcp/src/opensearch_mcp/__init__.py
             # three levels up from __init__.py = repo root
             pkg_root = Path(spec.origin).resolve().parent.parent.parent
-            if (pkg_root / ".git").is_dir():
+            if (pkg_root / ".git").exists():  # a worktree's .git is a file
                 return pkg_root
     except Exception:  # noqa: BLE001 — any import-machinery failure falls through
         pass
@@ -316,7 +341,7 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
         if resolved in seen:
             continue
         seen.add(resolved)
-        if resolved.is_dir() and (resolved / ".git").is_dir():
+        if resolved.is_dir() and (resolved / ".git").exists():
             return resolved
     return None
 
@@ -363,7 +388,7 @@ def _check_uv_floor() -> None:
     uv_version = _uv_version()
     if uv_version is None or uv_version < _UV_FLOOR:
         shown = ".".join(map(str, uv_version)) if uv_version else "unknown"
-        print(
+        human_steps.add(
             f"uv {shown} is older than 0.6.9, which vhir update needs for"
             " --torch-backend and hash checks.\n"
             "Update it: uv self update   (or reinstall: "
@@ -376,7 +401,7 @@ def _check_uv_floor() -> None:
 def _stop_part_way(args) -> NoReturn:
     """Exit after the pull: say what state that leaves and how to finish."""
     flag = " --cpu" if args.cpu else " --gpu" if args.gpu else ""
-    print(
+    human_steps.add(
         "\n  Update stopped part-way: the code was pulled and packages may have"
         " changed, but the forensic controls weren't redeployed and the gateway"
         " wasn't restarted.\n  Fix the problem above, then finish with:"
@@ -394,10 +419,12 @@ def _check_lock(args, venv_python: str, checker: Path, lock: Path, mode: str) ->
             [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
         )
     except subprocess.TimeoutExpired:
-        print("  The dependency check timed out after 120 seconds.", file=sys.stderr)
+        human_steps.add(
+            "  The dependency check timed out after 120 seconds.", file=sys.stderr
+        )
         _stop_part_way(args)
     if result.returncode != 0:
-        print(
+        human_steps.add(
             "  The installed packages don't match the dependency lock (above).",
             file=sys.stderr,
         )
@@ -476,7 +503,7 @@ def _torch_variant(
             try:
                 answer = input(f"    PyTorch build (cpu/gpu) [{default}]: ")
             except EOFError:  # no answer mustn't become a silent swap to CPU
-                print(
+                human_steps.add(
                     "\nNo answer to the PyTorch question; nothing installed."
                     " Re-run with: vhir update --cpu or --gpu",
                     file=sys.stderr,
@@ -488,6 +515,64 @@ def _torch_variant(
             print("    Please enter cpu or gpu.")
     print(f"  PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)")
     return variant, record
+
+
+# D11: every update offer's declines, in the install manifest: {offer: subject}
+DECLINED = "declined_offers"
+
+
+def _manifest_file() -> Path:
+    return Path.home() / ".vhir" / "manifest.json"
+
+
+def _declined(offer: str):
+    try:
+        return json.loads(_manifest_file().read_text())[DECLINED].get(offer)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _record_decline(offer: str, subject: list[str]) -> None:
+    """Record a No, so the offer isn't made again while its subject is the same."""
+    path = _manifest_file()
+    try:
+        manifest = json.loads(path.read_text())
+        declined = manifest.get(DECLINED)
+        manifest[DECLINED] = {**(declined if isinstance(declined, dict) else {})}
+        manifest[DECLINED][offer] = subject
+        path.write_text(json.dumps(manifest, indent=2) + "\n")
+    except (OSError, ValueError, AttributeError) as e:
+        print(
+            f"  The decline couldn't be recorded ({e}); it is asked again next time.",
+            file=sys.stderr,
+        )
+
+
+def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> bool:
+    """D11 and U8: ask only on a terminal, and never again after a No for the
+    same subject. When it doesn't ask, the block (human_steps) says why."""
+    if _declined(offer) == subject:
+        human_steps.add(
+            f"Declined earlier: {offer} ({shown}). It is asked again when that changes.",
+            file=sys.stderr,
+        )
+        return False
+    if not sys.stdin.isatty():
+        human_steps.add(
+            f"Not asked (no terminal): {offer}."
+            " Re-run `vhir update` in a terminal to be asked.",
+            file=sys.stderr,
+        )
+        return False
+    if os.environ.get("VHIR_ASSUME_DEFAULTS") == "true":
+        human_steps.add(
+            f"Not asked (VHIR_ASSUME_DEFAULTS is set): {offer}."
+            + (f" {taken}" if taken else "")
+            + " Re-run `vhir update` without it to be asked.",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
@@ -512,6 +597,10 @@ def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     if out.returncode != 0 or not rows:
         return
     names = [r[0] for r in rows]
+    subject = sorted(names)
+    offer, kept = "CUDA package removal", "Left the CUDA packages installed."
+    if not _may_ask(offer, subject, ", ".join(subject), kept):
+        return
     total = sum(int(r[1]) for r in rows)
     print("\n  " + "=" * 66)
     print(
@@ -532,6 +621,7 @@ def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     )
     print("  " + "=" * 66)
     if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+        _record_decline(offer, subject)
         print("  Kept. The commands above remove them later.")
         return
     py = ["--python", venv_python]
@@ -551,7 +641,9 @@ def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
             capture_output=True, text=True, timeout=120,
         )  # fmt: skip
         names = out.stdout.split() if out.returncode == 0 else []
-        if not names:
+        subject, offer = sorted(names), "OpenCTI package removal"
+        kept = "Left the OpenCTI packages installed."
+        if not names or not _may_ask(offer, subject, ", ".join(subject), kept):
             return
         remove = f"uv pip uninstall --python {venv_python} {' '.join(names)}"
         print("\n  " + "=" * 66)
@@ -564,6 +656,7 @@ def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
         )
         print("  " + "=" * 66)
         if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
+            _record_decline(offer, subject)
             print("  Kept. The command above removes them later.")
             return
         py = ["--python", venv_python]
@@ -624,6 +717,11 @@ def _check_opensearch_version(source: Path) -> None:
     except (OSError, subprocess.SubprocessError) as e:
         return _cant_check_snapshots(f"docker: {e}")
     if result.returncode != 0:
+        if "no such object" in result.stderr.lower():  # no container: U8's offer
+            return _offer_opensearch(
+                "OpenSearch install", [pinned, "absent"], pinned, "", text,
+                setup_script, f"\n  OpenSearch {pinned} isn't installed on this box.",
+            )  # fmt: skip
         return _cant_check_snapshots(
             "docker inspect vhir-opensearch: "
             + (result.stderr.strip().splitlines() or ["failed"])[0]
@@ -635,42 +733,85 @@ def _check_opensearch_version(source: Path) -> None:
     running = running_m.group(1)
     if running == pinned:
         _tell_snapshot_setup(setup_script)
+        return
+    _offer_opensearch(
+        "OpenSearch upgrade", [pinned, running], f"{pinned}, running {running}",
+        f"Kept OpenSearch {running}.", text, setup_script,
+        f"\n  OpenSearch version mismatch: running {running}, code requires {pinned}.\n"
+        "  Upgrading recreates the container. Its indexed data is kept: it\n"
+        "  lives in a Docker volume the new container uses. Case records\n"
+        "  (findings, timeline, evidence) are NOT affected.",
+    )  # fmt: skip
 
-    if running != pinned:
-        print(
-            f"\n  OpenSearch version mismatch: running {running}, code requires {pinned}."
-        )
-        print("  Upgrading recreates the container. Its indexed data is kept: it")
-        print("  lives in a Docker volume the new container uses. Case records")
-        print("  (findings, timeline, evidence) are NOT affected.")
-        try:
-            answer = input("\n  Upgrade OpenSearch now? [y/N] ").strip().lower()
-        except EOFError:
-            answer = ""
-        if answer in ("y", "yes"):
-            print(f"  Running {setup_script}...")
-            try:
-                result = subprocess.run(["bash", str(setup_script)], timeout=300)
-            except subprocess.TimeoutExpired:  # the rest of update still runs
-                print(
-                    "  OpenSearch upgrade: setup-opensearch.sh didn't finish in 5 minutes"
-                    " and was stopped;\n  the container may still be starting (docker ps)."
-                    f" Run it again:\n    bash {shlex.quote(str(setup_script))}",
-                    file=sys.stderr,
-                )
-                print()
-                return
-            # setup-opensearch.sh exits 3: OpenSearch runs, but snapshots aren't set up
-            if result.returncode == 3:
-                print(
-                    "  OpenSearch was upgraded, but its snapshots aren't set up; see above.",
-                    file=sys.stderr,
-                )
-            elif result.returncode != 0:
-                print("  OpenSearch upgrade failed.", file=sys.stderr)
-        else:
-            print(f"  Skipped. To upgrade later: bash {shlex.quote(str(setup_script))}")
+
+def _opensearch_cost(compose: str) -> str:
+    """U8's cost: the heap and container limit docker-compose.yml sets, beside
+    this box's memory (MemTotal, kB / 1048576 GiB)."""
+    import re
+
+    def size(pattern: str) -> str | None:
+        m = re.search(pattern, compose)
+        if not m:
+            return None
+        return f"{m.group(1)} {'GiB' if m.group(2).lower() == 'g' else 'MiB'}"
+
+    heap = size(r"-Xms(\d+)([gGmM])")
+    limit = size(r"mem_limit:\s*['\"]?(\d+)([gGmM])")
+    cost = (f"a {heap} heap" if heap else "a heap docker-compose.yml doesn't size") + (
+        f", a {limit} container limit" if limit else ", no container memory limit"
+    )
+    try:
+        with open("/proc/meminfo") as fh:
+            kb = next(int(ln.split()[1]) for ln in fh if ln.startswith("MemTotal:"))
+        cost += f"; this box has {kb / 1048576:.1f} GiB of memory"
+    except (OSError, ValueError, IndexError, StopIteration):
+        pass
+    return f"  It needs {cost}."
+
+
+def _offer_opensearch(
+    offer: str, subject: list[str], shown: str, taken: str, compose: str,
+    setup_script: Path, intro: str,
+) -> None:  # fmt: skip
+    """The OpenSearch install or upgrade (U8, D11): asked on a terminal, with its
+    cost; the default is No. Nothing here stops the update."""
+    print(intro)
+    if not _may_ask(offer, subject, shown, taken):
+        return
+    print(_opensearch_cost(compose))
+    verb = "Install" if subject[1] == "absent" else "Upgrade"
+    try:
+        answer = input(f"\n  {verb} OpenSearch now? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    script = shlex.quote(str(setup_script))
+    if answer not in ("y", "yes"):
+        _record_decline(offer, subject)
+        human_steps.add(f"  Skipped. To {verb.lower()} later: bash {script}")
         print()
+        return
+    print(f"  Running {setup_script}...")
+    try:
+        result = subprocess.run(["bash", str(setup_script)], timeout=300)
+    except subprocess.TimeoutExpired:  # the rest of update still runs
+        human_steps.add(
+            f"  OpenSearch {verb.lower()}: setup-opensearch.sh didn't finish in 5 minutes"
+            " and was stopped;\n  the container may still be starting (docker ps)."
+            f" Run it again:\n    bash {script}",
+            file=sys.stderr,
+        )
+        print()
+        return
+    done = "installed" if verb == "Install" else "upgraded"
+    # setup-opensearch.sh exits 3: OpenSearch runs, but snapshots aren't set up
+    if result.returncode == 3:
+        human_steps.add(
+            f"  OpenSearch was {done}, but its snapshots aren't set up; see above.",
+            file=sys.stderr,
+        )
+    elif result.returncode != 0:
+        human_steps.add(f"  OpenSearch {verb.lower()} failed.", file=sys.stderr)
+    print()
 
 
 _SNAPSHOT_REPO = "/usr/share/opensearch/snapshots"
@@ -733,16 +874,13 @@ def _tell_snapshot_setup(setup_script: Path) -> bool | None:
         )
     if not problems:
         return True
-    print(
-        "\n  OpenSearch isn't set up for snapshots, so `vhir backup --include-opensearch`"
+    human_steps.add(
+        "\n  OpenSearch isn't set up for snapshots, so `vhir backup --include-opensearch`\n"
+        "  can't save its indices:\n"
+        + "".join(f"    - {line}\n" for line in problems)
+        + "  To set it up (it recreates the vhir-opensearch container; its indexed data\n"
+        f"  is kept), run:\n    bash {shlex.quote(str(setup_script))}\n"
     )
-    print("  can't save its indices:")
-    for line in problems:
-        print(f"    - {line}")
-    print(
-        "  To set it up (it recreates the vhir-opensearch container; its indexed data"
-    )
-    print(f"  is kept), run:\n    bash {shlex.quote(str(setup_script))}\n")
     return False
 
 
@@ -754,7 +892,7 @@ def _redeploy_clients(manifest: dict) -> list[str]:
     if "claude-desktop" in clients:
         from vhir_cli.commands.client_setup import DESKTOP_DROPPED
 
-        print(f"  {DESKTOP_DROPPED}")
+        human_steps.add(f"  {DESKTOP_DROPPED}")
     from vhir_cli.controls import MCP, print_block
 
     if "claude-code" in clients:
@@ -764,7 +902,7 @@ def _redeploy_clients(manifest: dict) -> list[str]:
         settings = _deploy_claude_code_assets()
         path = settings[0] if isinstance(settings, tuple) else None
         if isinstance(settings, tuple) and settings[1] == "kept":
-            print(f"  Forensic controls NOT applied to {path}; see above.")
+            human_steps.add(f"  Forensic controls NOT applied to {path}; see above.")
         print_block("claude-code", path)  # what the file holds now
     if "codex" in clients:
         from vhir_cli.commands.client_setup import deploy_codex_assets
@@ -788,49 +926,80 @@ def _redeploy_clients(manifest: dict) -> list[str]:
         print(f"  Client: {other} (no local controls to redeploy)")
         print_block(MCP)
     if not clients:
-        print("  No client type in manifest. Run 'vhir setup client' to configure.")
+        human_steps.add(
+            "  No client type in manifest. Run 'vhir setup client' to configure."
+        )
     return clients
 
 
+_handing_over = False  # set just before the exec: the new process prints the block
+
+
 def cmd_update(args, identity: dict) -> None:
-    """Pull latest code and redeploy Valhuntir installation."""
-    check_only = getattr(args, "check", False)
+    """Pull latest code and redeploy Valhuntir installation. What's left for
+    the examiner prints last, in one block (human_steps)."""
+    global _handing_over
     after_pull = getattr(args, "after_pull", None)
     if not isinstance(after_pull, str):
         after_pull = None
+    terminal = sys.stdin.isatty()
+    if after_pull is None and not terminal:
+        human_steps.no_terminal_notice()
+    human_steps.start(_handed_steps(after_pull))
+    _handing_over = False
+    try:
+        _update(args, identity, after_pull)
+    finally:
+        if _handing_over:
+            human_steps.drop()
+        else:
+            human_steps.finish(terminal)
+
+
+def _handed_steps(after_pull: str | None) -> list:
+    """The steps the first process collected before it handed over."""
+    try:
+        data = json.loads(after_pull) if after_pull else None
+    except ValueError:
+        data = None
+    steps = data.get("human_steps") if isinstance(data, dict) else None
+    return steps if isinstance(steps, list) else []
+
+
+def _stop(text: str) -> NoReturn:
+    human_steps.add(text, file=sys.stderr)
+    sys.exit(1)
+
+
+def _update(args, identity: dict, after_pull: str | None) -> None:
+    check_only = getattr(args, "check", False)
 
     # Step 1: Preflight
     manifest_path = Path.home() / ".vhir" / "manifest.json"
     if not manifest_path.is_file():
-        print(
+        _stop(
             "No manifest found at ~/.vhir/manifest.json.\n"
-            "This command requires a SIFT installation (setup-sift.sh).",
-            file=sys.stderr,
+            "This command requires a SIFT installation (setup-sift.sh)."
         )
-        sys.exit(1)
 
     try:
         manifest = json.loads(manifest_path.read_text())
     except (json.JSONDecodeError, OSError) as e:
-        print(f"Cannot read manifest: {e}", file=sys.stderr)
-        sys.exit(1)
+        _stop(f"Cannot read manifest: {e}")
 
     source = Path(manifest.get("source", ""))
     vhir_dir = source.parent / "vhir"
     venv = manifest.get("venv", "")
 
     if not source.is_dir():
-        print(f"Source directory not found: {source}", file=sys.stderr)
-        sys.exit(1)
+        _stop(f"Source directory not found: {source}")
 
     venv_python = str(Path(venv) / "bin" / "python")
     if not Path(venv_python).exists():
-        print(
+        _stop(
             "Virtual environment corrupted — python not found.\n"
-            "Re-run setup-sift.sh to rebuild.",
-            file=sys.stderr,
+            "Re-run setup-sift.sh to rebuild."
         )
-        sys.exit(1)
 
     # Verify uv is available (installed by setup-sift.sh)
     try:
@@ -838,11 +1007,7 @@ def cmd_update(args, identity: dict) -> None:
     except FileNotFoundError:
         uv_ok = False
     if not uv_ok:
-        print(
-            "uv not found. Run setup-sift.sh to install it.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        _stop("uv not found. Run setup-sift.sh to install it.")
 
     # Keep uv current (handles stale installs and pre-existing user installs)
     if after_pull is None:
@@ -859,7 +1024,7 @@ def cmd_update(args, identity: dict) -> None:
     elif after_pull is None and _opensearch_mcp_installed_but_missing(source):
         # Package is installed in the venv but no git repo found anywhere.
         # Silent skip was the v0.6.1 bug — make it visibly actionable.
-        print(
+        human_steps.add(
             "\n  WARNING: opensearch-mcp package is installed but its git repo\n"
             "  was not found in any known location. `vhir update` cannot\n"
             "  pull or reinstall it automatically. Update manually:\n"
@@ -910,29 +1075,22 @@ def cmd_update(args, identity: dict) -> None:
             timeout=30,
         )
         if result.returncode != 0:
-            print(
-                f"git fetch failed for {name}: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+            _stop(f"git fetch failed for {name}: {result.stderr.strip()}")
 
     for name, path in repos:
         if not path.is_dir():
             continue
-        result = subprocess.run(
-            ["git", "-C", str(path), "rev-list", "HEAD..origin/main", "--count"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        count = int(result.stdout.strip()) if result.returncode == 0 else 0
+        count = _commit_count(path, "HEAD..origin/main")
         current = _git_head(path)
-        if count == 0:
+        if current == "unknown":  # no count: it can't say how far behind
+            print(f"  {name}: head couldn't be read (unknown)")
+        elif count == "0":
             print(f"  {name}: up to date ({current[:7]})")
         else:
             remote = _git_remote_head(path)
+            remote = remote if remote == "unknown" else remote[:7]
             print(
-                f"  {name}: {count} commit{'s' if count != 1 else ''} behind ({current[:7]} → {remote[:7]})"
+                f"  {name}: {count} commit{'s' if count != '1' else ''} behind ({current[:7]} → {remote})"
             )
 
     if check_only:
@@ -951,22 +1109,22 @@ def cmd_update(args, identity: dict) -> None:
     for name, path in repos:
         branch = _git_branch(path) if path.is_dir() else ""
         if branch and branch != "main":
-            print(
+            _stop(
                 f"{name} is on branch '{branch}', expected 'main'.\n"
-                f"Switch to main: git -C {path} checkout main",
-                file=sys.stderr,
+                f"Switch to main: git -C {path} checkout main"
             )
-            sys.exit(1)
 
     # The fetch (Step 2) has succeeded and the pull is next: record the update
     # as started (version ""), so any stop before Step 9 keeps every command
     # warning until a later run finishes. A stop at Step 2 (e.g. offline) never
     # reaches here, so the record stays the last complete update's.
     _write_update_state("", pre_update_git.get("vhir", ""))
-    pulled = False  # a repo's HEAD moved in this run
+    pulled = False  # a repo's HEAD moved in this run, or couldn't be read
+    post_update_git = {}
     for name, path in repos:
         if not path.is_dir():
             continue
+        old = pre_update_git.get(name, "")
         try:
             result = subprocess.run(
                 ["git", "-C", str(path), "pull", "--ff-only"],
@@ -975,17 +1133,14 @@ def cmd_update(args, identity: dict) -> None:
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            print(f"Pulling {name} timed out after 60 seconds.", file=sys.stderr)
+            human_steps.add(
+                f"Pulling {name} timed out after 60 seconds.", file=sys.stderr
+            )
             # this repo too: a pull can merge, then fail or hang in a hook
-            if pulled or _git_head(path) not in (
-                "unknown",
-                pre_update_git.get(name, ""),
-            ):
-                _stop_part_way(args)
-            sys.exit(1)
+            _stop_after_pull(args, pulled, path, old)
         if result.returncode != 0:
             quoted_path = shlex.quote(str(path))
-            print(
+            human_steps.add(
                 f"Failed to pull {name}: {result.stderr.strip()}\n"
                 "  If the message above says your local changes would be overwritten\n"
                 f"  (git -C {quoted_path} status --short lists them):\n"
@@ -994,24 +1149,15 @@ def cmd_update(args, identity: dict) -> None:
                 f"    git -C {quoted_path} stash pop",
                 file=sys.stderr,
             )
-            if pulled or _git_head(path) not in (
-                "unknown",
-                pre_update_git.get(name, ""),
-            ):
-                _stop_part_way(args)
-            sys.exit(1)
-        # Count new commits
-        old = pre_update_git.get(name, "")
-        new = _git_head(path)
-        if old and old != new:
+            _stop_after_pull(args, pulled, path, old)
+        # One read: the count and the re-exec test below both use it
+        new = post_update_git[name] = _git_head(path)
+        if "unknown" in (old, new):  # it can't tell, so it may have moved
             pulled = True
-            count_result = subprocess.run(
-                ["git", "-C", str(path), "rev-list", f"{old}..{new}", "--count"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            n = count_result.stdout.strip() if count_result.returncode == 0 else "?"
+            print(f"  Pulling {name}... head couldn't be read")
+        elif old != new:
+            pulled = True
+            n = _commit_count(path, f"{old}..{new}")
             print(f"  Pulling {name}... {n} new commit{'s' if n != '1' else ''}")
         else:
             print(f"  Pulling {name}... already up to date")
@@ -1022,8 +1168,12 @@ def cmd_update(args, identity: dict) -> None:
     )
 
     # This process loaded vhir-cli before the pull: when the pull changed it,
-    # Steps 4.5-9 run in a new process, from the new code.
-    if "vhir" in pre_update_git and pre_update_git["vhir"] != _git_head(vhir_dir):
+    # or its head can't be read, Steps 4.5-9 run in a new process, from the
+    # new code.
+    vhir_now = post_update_git.get("vhir", "unknown")
+    if "vhir" in pre_update_git and (
+        vhir_now == "unknown" or vhir_now != pre_update_git["vhir"]
+    ):
         _reexec_after_pull(args, venv, venv_python, pre_update_git, torch_record)
     _finish_update(
         args,
@@ -1036,6 +1186,30 @@ def cmd_update(args, identity: dict) -> None:
         pre_update_git,
         torch_record,
     )
+
+
+def _stop_after_pull(args, pulled: bool, path: Path, pre: str) -> NoReturn:
+    """A pull failed: nothing changed only if no repo moved before it and this
+    HEAD reads as it did before the pull. Else stop part-way."""
+    now = _git_head(path)
+    if pulled or now == "unknown" or now != pre:
+        _stop_part_way(args)
+    sys.exit(1)
+
+
+def _commit_count(path: Path, revs: str) -> str:
+    """`git rev-list --count revs` as text; "?" when git can't count."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-list", revs, "--count"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "?"
+    count = result.stdout.strip()
+    return count if result.returncode == 0 and count.isdigit() else "?"
 
 
 def _install_packages(
@@ -1056,7 +1230,7 @@ def _install_packages(
     lock = source / "deps" / ("vhir-cpu.lock" if variant == "cpu" else "vhir.lock")
     checker = source / "deps" / "check-lock.py"
     if not lock.is_file() or not checker.is_file():
-        print(
+        human_steps.add(
             f"Dependency lock not found in {source / 'deps'}.\n"
             "The sift-mcp checkout is older than this vhir-cli; pull it to main.",
             file=sys.stderr,
@@ -1122,13 +1296,13 @@ def _install_packages(
             timeout=120,
         )
     except subprocess.TimeoutExpired:
-        print(
+        human_steps.add(
             "  Reading the venv's packages timed out after 120 seconds.",
             file=sys.stderr,
         )
         _stop_part_way(args)
     if held.returncode != 0:
-        print(
+        human_steps.add(
             f"  Cannot read the venv's packages against the dependency lock: "
             f"{held.stderr.strip()}",
             file=sys.stderr,
@@ -1140,20 +1314,21 @@ def _install_packages(
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(
+        human_steps.add(
             f"  Package install failed: {result.stderr.strip()}",
             file=sys.stderr,
         )
         if variant == "cpu":
-            print(_TORCH_INDEX_HINT, file=sys.stderr)
+            human_steps.add(_TORCH_INDEX_HINT, file=sys.stderr)
         _stop_part_way(args)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
     _check_lock(args, venv_python, checker, lock, "--strict")
 
     _check_lock(args, venv_python, checker, lock, "--final")
-    if variant == "cpu" and ask and sys.stdin.isatty():
+    # With no terminal these still run their query: the block lists the offer
+    if variant == "cpu" and ask:
         _offer_cuda_cleanup(venv_python, checker, lock)
-    if ask and sys.stdin.isatty():  # with no terminal, --final's note names them
+    if ask:
         _offer_opencti_cleanup(venv_python, checker, lock)
     return torch_record
 
@@ -1161,10 +1336,16 @@ def _install_packages(
 def _reexec_after_pull(
     args, venv: str, venv_python: str, pre_update_git: dict, torch_record: str
 ) -> NoReturn:
-    """Replace this process with `vhir update --after-pull` from the new code."""
+    """Replace this process with `vhir update --after-pull` from the new code,
+    handing it the steps collected so far: the new process prints the block."""
+    global _handing_over
     script = Path(venv) / "bin" / "vhir"
     handoff = json.dumps(
-        {"pre_update_git": pre_update_git, "torch_record": torch_record}
+        {
+            "pre_update_git": pre_update_git,
+            "torch_record": torch_record,
+            "human_steps": human_steps.steps(),
+        }
     )
     argv = [venv_python, str(script), "update", "--after-pull", handoff]
     if getattr(args, "no_restart", False):
@@ -1173,22 +1354,21 @@ def _reexec_after_pull(
         _update_incomplete(f"{script} was not found")
     print("  Continuing the update with the new code...", flush=True)
     sys.stderr.flush()
+    _handing_over = True
     try:
         os.execv(venv_python, argv)
     except OSError as e:
+        _handing_over = False
         _update_incomplete(f"Cannot start the new code: {e}")
     sys.exit(1)  # execv returns only by raising
 
 
 def _update_incomplete(reason: str) -> NoReturn:
-    bar = "=" * 72
-    print(
-        f"\n{bar}\n"
+    human_steps.add(
         "  UPDATE INCOMPLETE: run `vhir update` again\n"
         f"  {reason}.\n"
         "  The new code is installed, but the forensic controls, the manifest and\n"
-        "  the gateway restart were not done with it.\n"
-        f"{bar}",
+        "  the gateway restart were not done with it.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -1310,6 +1490,11 @@ def _finish_update(
     for name, path in repos:
         if path.is_dir():
             git_hashes[name] = _git_head(path)
+            if git_hashes[name] == "unknown":
+                human_steps.add(
+                    f"{name} head couldn't be read: run `vhir update` again"
+                    " once git works there."
+                )
     manifest["git"] = git_hashes
     if torch_record:  # the user chose (asked, or --cpu/--gpu)
         manifest["torch_variant"] = torch_record
@@ -1323,11 +1508,13 @@ def _finish_update(
     # claude-code installs had it at Step 5, so this finds nothing to do)
     client_setup._isolate_gateway_launchers()
     if client_setup._LAUNCHERS_UPDATED and no_restart:
-        print("  The updated launch line takes effect at the next gateway restart.")
+        human_steps.add(
+            "  The updated launch line takes effect at the next gateway restart."
+        )
 
     # Step 7: Restart gateway
     if no_restart:
-        print(
+        human_steps.add(
             "  Gateway restart skipped (--no-restart): portal approvals and portal saves "
             "must wait for the gateway restart. Until then, a commit through the old "
             "gateway applies every staged entry as the committer's decision, and a save "
@@ -1364,8 +1551,8 @@ def _finish_update(
             print("done")
         else:
             print(f"failed ({failure})")
-            print("  Check with: systemctl --user status vhir-gateway")
-            print(
+            human_steps.add(
+                "  Check with: systemctl --user status vhir-gateway\n"
                 "  Or, if you start it by hand: stop it, then run"
                 " ~/.vhir/start-gateway.sh"
             )
@@ -1390,25 +1577,77 @@ def _finish_update(
 
     # Step 9: Summary
     hashes = manifest.get("git", {})
-    parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
+    parts = [  # "unknown" whole
+        f"{name}@{h if h == 'unknown' else h[:7]}" for name, h in sorted(hashes.items())
+    ]
     print(f"\n  Updated to {', '.join(parts)}")
     # The version installed now, read fresh: vhir_cli.__version__ was read
     # when this process started, which can be before the pull
     installed = importlib.metadata.version("vhir-cli")
     _write_update_state(installed, manifest.get("git", {}).get("vhir", ""))
     if "claude-code" in clients or "codex" in clients:
-        print("  Restart your LLM client to pick up new rules.")
+        human_steps.add("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)
     _print_share_rejoin_notice()
     if not no_restart and restart_ok:
         from vhir_cli.gateway import RECONNECT_HINT
 
-        print(f"  {RECONNECT_HINT}")
+        human_steps.add(f"  {RECONNECT_HINT}")
 
     # Last, so it isn't scrolled away: SIFT tools too old for Valhuntir
+    _offer_sift_tools()
+
+
+def _offer_sift_tools() -> None:
+    """U8: when Volatility 3 is too old, offer SANS's installer with its time;
+    the default is No. Hayabusa alone stays the printed warning (SANS's
+    installer doesn't bring it)."""
+    from vhir_cli import sift_tools
     from vhir_cli.commands.setup import _print_sift_tools_warning
 
-    _print_sift_tools_warning()
+    try:
+        vol = sift_tools.volatility_problem()
+    except Exception:  # noqa: BLE001 — the warning says it couldn't check
+        vol = None
+    offer = "SIFT tools update"
+    if not vol or not _may_ask(offer, [vol], vol, "Kept the installed SIFT tools."):
+        return _print_sift_tools_warning()
+    hayabusa = sift_tools.hayabusa_missing()
+    problem, _ = sift_tools.parts_for(vol, hayabusa)
+    print("\n  WARNING: " + problem)
+    rerun = (
+        f"re-run `{sift_tools.installer()}` with the same options you installed"
+        " with (your shell history has the command)."
+        + (sift_tools.HAYABUSA_CHOICE if hayabusa else "")
+    )
+    print(
+        "  SANS's installer updates them (15-20 minutes on the SANS OVA;"
+        " it asks for your password)."
+    )
+    try:  # the command is in the question: it's asked, not a step to do later
+        ask = "  Run `sudo cast install teamdfir/sift` now? [y/N] "
+        answer = input(ask).strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in ("y", "yes"):
+        _record_decline(offer, [vol])
+        human_steps.add(
+            "Skipped. To update later: `sudo cast install teamdfir/sift`, then " + rerun
+        )
+        return
+    try:
+        ok = (
+            subprocess.run(["sudo", "cast", "install", "teamdfir/sift"]).returncode == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    if ok:
+        human_steps.add("SIFT tools updated. Now " + rerun)
+    else:
+        human_steps.add(
+            "The SIFT update didn't finish (a download outage can leave failed states):"
+            " run `sudo cast install teamdfir/sift` again, then " + rerun
+        )
 
 
 def _print_share_rejoin_notice() -> None:
@@ -1417,7 +1656,7 @@ def _print_share_rejoin_notice() -> None:
     from vhir_cli.commands.join import SHARE_NAME, share_needs_rejoin
 
     if share_needs_rejoin():
-        print(
+        human_steps.add(
             f"\n  wintools: vhir now shares the case as //SIFT/{SHARE_NAME}. This box still"
             " shares it as [cases], which also covers SIFT's own [cases] share.\n"
             "  Join wintools again to move to the new share: on SIFT run"
@@ -1430,13 +1669,20 @@ def _print_share_rejoin_notice() -> None:
 
 
 def _git_head(path: Path) -> str:
-    """Return current HEAD commit hash."""
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    """Return current HEAD commit hash, or "unknown" when git can't say."""
+    return _git_rev(path, "HEAD")
+
+
+def _git_rev(path: Path, rev: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", rev],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "unknown"
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
@@ -1478,7 +1724,14 @@ def _detect_constraint_changed_packages(
             continue
         old = pre_update_git.get(name, "")
         new = _git_head(path)
-        if not old or old == new or new == "unknown":
+        if old and "unknown" in (old, new):  # can't diff: reinstall them all
+            changed |= _dependency_names(path, DEP_LINE)
+            human_steps.add(
+                f"The dependency-constraint check couldn't read {name}'s heads:"
+                " every constrained package was reinstalled."
+            )
+            continue
+        if not old or old == new:
             continue
         # Whole-repo diff (monorepos like sift-mcp have many
         # pyproject.toml — packages/*/pyproject.toml + root). Git's
@@ -1531,6 +1784,37 @@ def _detect_constraint_changed_packages(
     return changed
 
 
+def _dependency_names(path: Path, dep_line) -> set[str]:
+    """The names in every dependency array of the repo's pyproject.toml files
+    (the root and packages/*): [project] dependencies and each
+    [project.optional-dependencies] array. Read line by line, since Python
+    3.10 has no tomllib; classifiers and other strings are never matched."""
+    names: set[str] = set()
+    for f in [path / "pyproject.toml", *sorted(path.glob("packages/*/pyproject.toml"))]:
+        try:
+            lines = f.read_text().splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        table, inside = "", False
+        for line in lines:
+            text = line.split(" #", 1)[0].strip()
+            if not inside:
+                if text.startswith("["):
+                    table = text
+                    continue
+                key, _, value = text.partition("=")
+                inside = value.strip().startswith("[") and (
+                    table == "[project.optional-dependencies]"
+                    or (table == "[project]" and key.strip() == "dependencies")
+                )
+                if not inside:
+                    continue
+                text = value
+            names.update(dep_line.findall(text))
+            inside = not text.endswith("]")
+    return names
+
+
 def _git_branch(path: Path) -> str:
     """Return current branch name, or empty string if detached."""
     result = subprocess.run(
@@ -1543,11 +1827,5 @@ def _git_branch(path: Path) -> str:
 
 
 def _git_remote_head(path: Path) -> str:
-    """Return origin/main HEAD commit hash."""
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "origin/main"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "unknown"
+    """Return origin/main HEAD commit hash, or "unknown"."""
+    return _git_rev(path, "origin/main")

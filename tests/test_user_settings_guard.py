@@ -603,12 +603,7 @@ def test_anchor_a_fresh_file_is_created_with_no_undo_line(box, setup, capsys):
 def test_y_leaves_the_projects_agents_md_and_installs_the_product_rule(
     box, setup, monkeypatch
 ):
-    (box.repo / "AGENTS.md").write_text("PRODUCT AGENTS\n")
-    monkeypatch.setattr(  # where an install finds it: after the cwd candidate
-        cs,
-        "_AGENTS_MD_CANDIDATES",
-        cs._AGENTS_MD_CANDIDATES + [lambda: box.repo / "AGENTS.md"],
-    )
+    (box.repo / "AGENTS.md").write_text("PRODUCT AGENTS\n")  # gateway.yaml's checkout
     project = box.home.parent / "AGENTS.md"  # the cwd: some repo's own file
     project.write_text("SOME REPO'S AGENT INSTRUCTIONS\n")
     setup()

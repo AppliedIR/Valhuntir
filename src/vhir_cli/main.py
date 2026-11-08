@@ -752,8 +752,10 @@ def _warn_if_update_incomplete() -> None:
     git = manifest.get("git")
     commit = git.get("vhir", "") if isinstance(git, dict) else ""
     if state is not None:
-        stale = (
-            state.get("version") != __version__ or state.get("vhir_commit") != commit
+        stale = (  # a head the update couldn't read is not a finished update
+            state.get("version") != __version__
+            or state.get("vhir_commit") != commit
+            or commit == "unknown"
         )
         line = f"Your update to {__version__} didn't finish. Run: vhir update"
     else:

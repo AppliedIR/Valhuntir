@@ -315,7 +315,9 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         )
         changed = True
     elif len(typed) < passphrase.RECOMMENDED:
-        print(
+        from vhir_cli import human_steps  # in update's flow, a step for the block
+
+        human_steps.add(
             f"Your passphrase is {len(typed)} characters; 15 or more is recommended. "
             "You can change it later with `vhir config --reset-password`."
         )

@@ -16,6 +16,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from vhir_cli import human_steps
 from vhir_cli.setup.config_gen import _write_600
 from vhir_cli.update_handover import hand_over_older_update
 
@@ -977,40 +978,33 @@ def _print_mcp_block() -> None:
     print_block(MCP)
 
 
-def _find_claude_code_assets() -> Path | None:
-    """Locate the sift-mcp/claude-code/ directory.
+def _sift_mcp_checkout() -> Path | None:
+    """The sift-mcp checkout every product file comes from: the one the
+    manifest names (the checkout `vhir update` pulled), else gateway.yaml's
+    sift_mcp_dir, else a known install path. The one owner of "which
+    checkout", so AGENTS.md, the claude-code assets and Codex's
+    developer_instructions never come from two different checkouts."""
+    import yaml  # JSON is YAML too
 
-    Search order:
-    1. Well-known paths relative to sift-mcp installation
-    2. ~/.vhir/src/sift-mcp/claude-code/
-    3. /opt/vhir/sift-mcp/claude-code/
-    """
-    candidates = [
-        lambda: Path.home() / ".vhir" / "src" / "sift-mcp" / "claude-code",
-        lambda: Path.home() / "vhir" / "sift-mcp" / "claude-code",
-        lambda: Path("/opt/vhir/sift-mcp/claude-code"),
-    ]
-
-    # Also check gateway.yaml for sift-mcp source path
-    gw_config = Path.home() / ".vhir" / "gateway.yaml"
-    if gw_config.is_file():
+    vhir = Path.home() / ".vhir"
+    named = []
+    for name, key in (("manifest.json", "source"), ("gateway.yaml", "sift_mcp_dir")):
         try:
-            import yaml
-
-            config = yaml.safe_load(gw_config.read_text()) or {}
-            src_dir = config.get("sift_mcp_dir", "")
-            if src_dir:
-                candidate = Path(src_dir) / "claude-code"
-                if candidate.is_dir():
-                    return candidate
-        except Exception:
+            named.append((yaml.safe_load((vhir / name).read_text()) or {}).get(key))
+        except Exception:  # noqa: BLE001 - absent or unreadable: the next one
             pass
-
-    for fn in candidates:
-        p = fn()
-        if p.is_dir():
-            return p
+    known = [vhir / "src", Path.home() / "vhir", Path("/opt/vhir")]
+    for p in [*named, *(d / "sift-mcp" for d in known)]:
+        if p and isinstance(p, (str, Path)) and Path(p).is_dir():
+            return Path(p)
     return None
+
+
+def _find_claude_code_assets() -> Path | None:
+    """The sift-mcp/claude-code/ directory of the one checkout, or None."""
+    checkout = _sift_mcp_checkout()
+    assets = checkout / "claude-code" if checkout else None
+    return assets if assets and assets.is_dir() else None
 
 
 _PRODUCT_HOOKS = ("forensic-audit.sh", "case-dir-check.sh", "case-data-guard.sh")
@@ -1119,7 +1113,9 @@ def ensure_signing_dirs() -> None:
         if state == "fine":
             continue
         if state == "other":
-            print(f"  {credentials.other_owner_text(folder)}", file=sys.stderr)
+            human_steps.add(
+                f"  {credentials.other_owner_text(folder)}", file=sys.stderr
+            )
             continue
         what = "Giving back" if state == "give back" else "Creating"
         print(f"  {what} {folder}... ", end="", flush=True)
@@ -1142,7 +1138,7 @@ def ensure_signing_dirs() -> None:
             print("done")
             continue
         print("failed")
-        print(
+        human_steps.add(
             f"  Run manually: sudo mkdir -p {folder} && sudo find {folder} -xdev -uid 0 "
             f"-exec chown -h $USER:$USER {{}} + && sudo chmod 700 {folder}",
             file=sys.stderr,
@@ -1168,7 +1164,9 @@ def _ensure_signing_dirs_fresh() -> None:
             [sys.executable, "-I", "-c", _ENSURE_SCRIPT], timeout=900, check=False
         )
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"  The signing folders weren't made ({e}); run `vhir update` again.")
+        human_steps.add(
+            f"  The signing folders weren't made ({e}); run `vhir update` again."
+        )
 
 
 def _under_an_older_update() -> bool:
@@ -1252,7 +1250,7 @@ def _isolate_gateway_launchers() -> list[Path]:
                         check=True,
                     )
                 except (OSError, subprocess.SubprocessError):
-                    print(
+                    human_steps.add(
                         "  Note: run `systemctl --user daemon-reload` so the next"
                         " gateway restart uses the updated unit."
                     )
@@ -1337,7 +1335,9 @@ def _write_user_file(
         try:
             before, after = json.loads(old), json.loads(new)
         except json.JSONDecodeError as e:
-            print(f"  Not changed: {path} isn't valid JSON ({e}); fix it and re-run.")
+            human_steps.add(
+                f"  Not changed: {path} isn't valid JSON ({e}); fix it and re-run."
+            )
             return "kept"
         if before == after:
             return "unchanged"
@@ -1360,7 +1360,7 @@ def _write_user_file(
     for line in diff:
         print(f"    {redact(line) if redact else line}")
     if _APPLIED is None and not sys.stdin.isatty():
-        print(
+        human_steps.add(
             f"  Not changed: {path}. To review and apply, re-run `vhir update` "
             "or `vhir setup client` in a terminal."
         )
@@ -1481,7 +1481,9 @@ def _merged_settings(
     try:
         existing = json.loads(target.read_text()) if target.is_file() else {}
     except json.JSONDecodeError as e:
-        print(f"  Not changed: {target} isn't valid JSON ({e}); fix it and re-run.")
+        human_steps.add(
+            f"  Not changed: {target} isn't valid JSON ({e}); fix it and re-run."
+        )
         return None
     except OSError as e:
         print(f"  Not changed: {target} can't be read ({e}).")
@@ -2496,7 +2498,7 @@ def deploy_codex_assets(
     if servers is None:
         found = _codex_servers_from_box(path)
         if found is None:
-            print(
+            human_steps.add(
                 f"  Kept:      {path}: the gateway can't be reached, so its "
                 "backends can't be listed. Run `vhir update` again once it runs."
             )
@@ -3215,24 +3217,17 @@ def _write_librechat_yaml(path: Path, servers: dict) -> None:
     _write_600(path, "\n".join(lines) + "\n")
 
 
-_AGENTS_MD_CANDIDATES = [
-    lambda: Path.cwd() / "AGENTS.md",
-    lambda: Path.home() / ".vhir" / "src" / "sift-mcp" / "AGENTS.md",
-    lambda: Path.home() / "vhir" / "sift-mcp" / "AGENTS.md",
-    lambda: Path.home() / "vhir" / "forensic-mcp" / "AGENTS.md",
-    lambda: Path("/opt/vhir/sift-mcp") / "AGENTS.md",
-    lambda: Path("/opt/vhir") / "AGENTS.md",
-]
-
-
 def _find_agents_md(global_rule: bool = False) -> Path | None:
-    """Find AGENTS.md from known locations. Returns path or None. For the
-    global rule, never the cwd's: any repo's instructions would become a rule
-    in every Claude session."""
-    for candidate_fn in (
-        _AGENTS_MD_CANDIDATES[1:] if global_rule else _AGENTS_MD_CANDIDATES
-    ):
-        src = candidate_fn()
+    """The one checkout's AGENTS.md, then the older layouts' copies, or None.
+    Not for the global rule, the cwd's first: any repo's instructions would
+    become a rule in every Claude session."""
+    checkout = _sift_mcp_checkout()
+    for src in [
+        *([] if global_rule else [Path.cwd() / "AGENTS.md"]),
+        *([checkout / "AGENTS.md"] if checkout else []),
+        Path.home() / "vhir" / "forensic-mcp" / "AGENTS.md",
+        Path("/opt/vhir") / "AGENTS.md",
+    ]:
         if src.is_file():
             return src
     return None

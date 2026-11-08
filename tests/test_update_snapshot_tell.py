@@ -56,6 +56,13 @@ def box(tmp_path, monkeypatch):
         "services:\n  opensearch:\n    image: opensearchproject/opensearch:3.5.0\n"
     )
     monkeypatch.setattr(update, "_resolve_opensearch_mcp_repo", lambda source: repo)
+    # The upgrade is offered on a terminal; a No is recorded in this home (D11)
+    home = tmp_path / "home"
+    (home / ".vhir").mkdir(parents=True)
+    (home / ".vhir" / "manifest.json").write_text("{}\n")
+    monkeypatch.setattr(update.Path, "home", lambda *a: home)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv("VHIR_ASSUME_DEFAULTS", raising=False)
     seen = SimpleNamespace(bash=[], prompts=[], image="opensearchproject/opensearch:3.5.0",
                            mount="", docker_rc=0, setup_rc=0, answer="", nodes={}, raises=None)  # fmt: skip
 
