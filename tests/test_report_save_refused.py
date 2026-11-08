@@ -264,6 +264,32 @@ def test_a_record_written_after_the_view_is_read_is_defanged(
     assert "late[.]example[.]net" in saved, saved
 
 
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("row", BAD)
+def test_a_file_spoiled_after_the_report_is_read_refuses_the_save(
+    tmp_path, monkeypatch, row, route
+):
+    """The report read both files whole; one is spoiled just before the write,
+    so the read made then refuses the save, and the prior report stays."""
+    case = _case(tmp_path, monkeypatch)
+    name, how, _ = BAD[row]
+    report = case / "reports" / f"{route}.txt"
+    report.write_bytes(PRIOR)
+    real = rep._save_output
+
+    def spoil_then_save(case_dir, *a, **kw):
+        _spoil(case_dir / name, how)
+        return real(case_dir, *a, **kw)
+
+    monkeypatch.setattr(rep, "_save_output", spoil_then_save)
+    ended, saved, err, out = _save_out(case, route)
+    assert not any(x.startswith(f"{name} ") for x in out.splitlines()), out
+    assert ended == "SystemExit(1)", (ended, err)
+    assert report.read_bytes() == PRIOR, saved
+    assert f"Report not saved: {name} can't be read." in err, err
+    assert "Saved to:" not in err + out and "Traceback" not in err + out, err
+
+
 @pytest.mark.parametrize(
     "route",
     ("ioc", "findings", "timeline", "executive_summary", "status_brief", "full"),
