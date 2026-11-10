@@ -593,12 +593,6 @@ class Run:
             )
         if k["key"] == "legacy":
             _legacy(k["pw"])
-        if k["lockout"]:
-            now = time.time()
-            # _patch points approval_auth._LOCKOUT_FILE here; _prepare runs first
-            (self.tmp / ".password_lockout").write_text(
-                json.dumps({"alice": [now, now, now]})
-            )
         if k["setup"]:
             k["setup"](b)
 
@@ -760,7 +754,6 @@ class Run:
             hayabusa=False,
             key="none",
             pw="",
-            lockout=False,
             bwrap=False,
             real_password_dir=False,
             manifest={},
@@ -1253,14 +1246,9 @@ def test_k21_the_block_is_last_after_the_signing_key_question(u):
     assert at_prompt and _state_complete(at_prompt[0]), at_prompt
 
 
-# ---- V6 / X3 / X4 / X5: a signing-key upgrade that fails -----------------
+# ---- V6 / X5: a signing-key upgrade that fails ---------------------------
 
 V6 = {
-    "lockout": (dict(lockout=True), "Passphrase locked"),
-    "no_terminal": (
-        dict(secrets=[approval_auth.NoTerminal("Passphrase entry requires /dev/tty.")]),
-        "requires /dev/tty",
-    ),
     "wrong": (dict(secrets=["not-the-passphrase"]), "Incorrect passphrase"),
     "short": (
         dict(pw="abc1234", secrets=["abc1234", "abc", "abc", "abc"]),
@@ -1281,73 +1269,6 @@ def test_v6_a_failed_upgrade_ends_the_update_with_its_reason_in_the_block(
     assert r.log and r.log[-1][2].strip() == CLOSE, r.log[-3:]
     assert _state_complete(r.state()), r.state()
     assert r.rc == 0
-
-
-def _raise(exc):
-    def f(*a, **kw):
-        raise exc
-
-    return f
-
-
-X3 = {
-    "keys_save_oserror": (keys, "save", OSError(28, "No space left on device")),
-    "keys_save_invalid": (
-        keys,
-        "save",
-        keys.KeysFileInvalid("set-aside copy unreadable"),
-    ),
-    "keys_save_valueerror": (keys, "save", ValueError("bad key record")),
-    "stub_oserror": (
-        approval_auth,
-        "_save_password_entry",
-        OSError(5, "Input/output error"),
-    ),
-    "stub_permission": (
-        approval_auth,
-        "_save_password_entry",
-        PermissionError(13, "Permission denied"),
-    ),
-}
-
-
-@pytest.mark.parametrize("which,declared", [(w, "RED") for w in X3], ids=list(X3))
-def test_x3_a_write_that_fails_during_the_upgrade_is_named_in_the_block(
-    u, which, declared
-):
-    obj, name, exc = X3[which]
-    r = u.go(
-        key="legacy",
-        pw=LONG_PW,
-        answers=[(r"Upgrade it now", "y", False)],
-        secrets=[LONG_PW],
-        stubs=[(obj, name, _raise(exc))],
-    )
-    assert not r.traceback(), r.lines(stream="stderr")
-    text = str(exc).split("] ")[-1]
-    assert r.in_last(text), (text, r.last_block())
-
-
-def test_x4_an_unreadable_keys_file_at_the_fingerprint_is_named(u):
-    r = u.go(
-        stubs=[
-            (credentials, "state", lambda *a, **kw: "schema3"),
-            (keys, "load", _raise(keys.KeysFileInvalid("keys file: bad schema"))),
-        ]
-    )
-    assert not r.traceback(), r.lines(stream="stderr")
-    assert r.in_last("bad schema"), r.last_block()
-
-
-def test_x5_the_lockout_reason_is_only_in_the_block(u):
-    r = u.go(
-        key="legacy",
-        pw=LONG_PW,
-        answers=[(r"Upgrade it now", "y", False)],
-        lockout=True,
-    )
-    assert r.in_last("Passphrase locked"), r.last_block()
-    assert not r.out_has("Passphrase locked"), r.outside()
 
 
 def test_x5_ctrl_c_at_the_passphrase_stops_the_update(u):

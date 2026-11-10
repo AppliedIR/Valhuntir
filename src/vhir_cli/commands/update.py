@@ -9,10 +9,8 @@ command — they would need to re-run their client setup script.
 
 from __future__ import annotations
 
-import contextlib
 import datetime
 import importlib.metadata
-import io
 import json
 import os
 import shlex
@@ -231,25 +229,19 @@ def _offer_signing_key(identity: dict) -> None:
     """After an update: the examiner's signing credential, as the installer
     reports it. A 0.6 password is offered the upgrade; none is told how to
     set one up; a signing key's fingerprint is printed."""
-    from vhir_cli import approval_auth, credentials, keys
+    from vhir_cli import credentials, keys
 
     examiner = identity.get("examiner", "")
     config_path = Path.home() / ".vhir" / "config.yaml"
     try:
         current = credentials.state(examiner, config_path)
-        if current == "schema3":
-            fp = keys.key_fingerprint(keys.active(keys.load(examiner)))
-    except (
-        credentials.CredentialError,
-        keys.KeysFileInvalid,
-        OSError,
-        ValueError,
-    ) as e:
+    except (credentials.CredentialError, keys.KeysFileInvalid) as e:
         human_steps.add(
             f"  Signing key: can't be read ({e}); run `vhir config --forgot-password`."
         )
         return
     if current == "schema3":
+        fp = keys.key_fingerprint(keys.active(keys.load(examiner)))
         print(f"  Signing key for {examiner}: {fp}")
         return
     if current == "none":
@@ -271,23 +263,10 @@ def _offer_signing_key(identity: dict) -> None:
     if not sys.stdin.isatty() or answer in ("n", "no"):
         human_steps.add("  Run `vhir config --upgrade-key` when you're ready.")
         return
-    retry = " Run `vhir config --upgrade-key` to try again."
-    try:  # the lockout check exits: catch it here, so the update still finishes
-        with contextlib.redirect_stderr(io.StringIO()) as said:
-            approval_auth._check_lockout(examiner)
-    except SystemExit:
-        human_steps.add(f"  {said.getvalue().strip()}{retry}")
-        return
     try:
         credentials.upgrade(examiner, config_path)
-    except (
-        credentials.CredentialError,
-        approval_auth.NoTerminal,
-        keys.KeysFileInvalid,
-        OSError,
-        ValueError,
-    ) as e:
-        human_steps.add(f"  {e}{retry}")
+    except credentials.CredentialError as e:
+        human_steps.add(f"  {e} Run `vhir config --upgrade-key` to try again.")
 
 
 def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
