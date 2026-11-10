@@ -579,12 +579,11 @@ def _finished(box, calls, exited):
 
 
 def test_no_answer_at_the_clean_up_keeps_them_and_the_update_goes_on(box, capsys):
+    """No answer is No, and the No is recorded, as at every offer."""
     calls, exited = _cleanup(box, answers=[EOFError])
     _finished(box, calls, exited)
-    assert (
-        "Clean-up not finished; the commands above complete it"
-        in capsys.readouterr().out
-    )
+    assert "Kept. The commands above remove them later." in capsys.readouterr().out
+    assert "CUDA package removal" in _manifest(box).get("declined_offers", {})
     assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
 
 
