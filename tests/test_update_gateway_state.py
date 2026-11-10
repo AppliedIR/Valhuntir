@@ -325,9 +325,7 @@ def test_the_fail_reasons(box, capsys, answer, host, names):
     assert names in run.state.get("reason", "") + run.state.get("fix", ""), run.state
 
 
-@pytest.mark.parametrize(
-    "host", ["localhost", "::1", "::"], ids=["localhost", "ipv6-loopback", "ipv6-all"]
-)
+@pytest.mark.parametrize("host", ["localhost"], ids=["localhost"])
 def test_a_loopback_or_all_interfaces_host_names_the_stopped_gateway(box, capsys, host):
     gw = {"gateway": {"host": host, "port": 4508}}
     (box.home / ".vhir" / "gateway.yaml").write_text(yaml.dump(gw))
@@ -337,6 +335,24 @@ def test_a_loopback_or_all_interfaces_host_names_the_stopped_gateway(box, capsys
         run.state
     )
     assert run.state.get("fix") == f"start the gateway: {RESTART_FIX}", run.state
+
+
+@pytest.mark.parametrize("host", ["::1", "::"], ids=["ipv6-loopback", "ipv6-all"])
+def test_an_ipv6_host_gets_the_bind_hint(box, capsys, host):
+    """An IPv6 bind listens on IPv6 only, so the 127.0.0.1 probe is refused
+    while the gateway runs: the fix is the bind, not a restart."""
+    gw = {"gateway": {"host": host, "port": 4508}}
+    (box.home / ".vhir" / "gateway.yaml").write_text(yaml.dump(gw))
+    run = _run(box, capsys, no_restart=False, gateway=Answer(ConnectionRefusedError()))
+    assert run.state.get("status") == "pending", run.state
+    want = (
+        f"set gateway.host in ~/.vhir/gateway.yaml to 127.0.0.1 or 0.0.0.0,"
+        f" then: {RESTART_FIX}"
+    )
+    assert run.state.get("fix") == want, run.state
+    assert run.state.get("reason") == (
+        f"the gateway is set to listen only on {host}, and local clients dial 127.0.0.1"
+    ), run.state
 
 
 def test_the_deadline_is_240_s():

@@ -176,3 +176,32 @@ def test_a_recorded_fix_that_doesn_t_name_vhir_update_keeps_the_run_line(
     out, err = _vhir(box, capsys, "portal")
     assert fix and fix in err and "vhir update" not in fix, (state, err)
     assert f"Your update to {__version__} didn't finish. Run: vhir update\n" in err, err
+
+
+def test_a_refresh_skip_s_banner_names_vhir_update_once(box, capsys):
+    from tests.test_update_claude_refresh import _entry, _ok, _refresh
+
+    with patch("importlib.metadata.version", side_effect=_installed):
+        run = _refresh(
+            box,
+            capsys,
+            servers={"forensic-mcp": _entry("forensic-mcp")},
+            health=_ok("forensic-mcp", jdoe_os="stopped"),
+        )
+    assert run.state.get("fix") == "vhir update", run.state
+    out, err = _vhir(box, capsys, "portal")
+    assert f"  Your update to {__version__} didn't finish.\n" in err, err
+    assert "\n  vhir update\n" in err and "Run: vhir update" not in err, err
+
+
+def test_a_pending_record_with_no_fix_keeps_the_run_line(box, capsys):
+    from vhir_cli.commands import update
+
+    # the record a run leaves when it stops before Step 9: pending, no fix
+    with patch("pathlib.Path.home", return_value=box.home):
+        update._write_update_state(
+            "", "v1", status="pending", reason=update.UNFINISHED_REASON
+        )
+    out, err = _vhir(box, capsys, "portal")
+    assert f"Your update to {__version__} didn't finish. Run: vhir update\n" in err, err
+    assert f"  {update.UNFINISHED_REASON}\n" in err, err
