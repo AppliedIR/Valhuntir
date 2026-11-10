@@ -45,6 +45,7 @@ from vhir_cli.ioc_groups import (
     record_groups,
     record_status,
 )
+from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
 from vhir_cli.provenance_view import finding_lines, grade_label
 
 _EM_DASH = "\u2014"
@@ -413,16 +414,25 @@ def _show_iocs(case_dir: Path) -> None:
         if not groups:
             continue
         shown = True
+        scoped = scope_iocs(groups)
         print(f"\n=== {one_line(labels.get(status, status + ' IOCs'))} ===")
-        for ioc_type, values in groups.items():
+        for ioc_type, values in scoped.routable.items():
             print(
                 f"  {one_line(ioc_type) + ':':<10} {', '.join(one_line(v) for v in values)}"
             )
+        for ioc_type, entries in scoped.non_routable.items():
+            listed = ", ".join(f"{one_line(v)} ({SCOPE_NOTES[s]})" for v, s in entries)
+            print(f"  {one_line(ioc_type) + ' (non-routable):':<10} {listed}")
     if not shown:
         print("IOC records: none")
     if rest := not_recorded(load_findings(case_dir), records):
+        scoped = scope_iocs({TEXT_ONLY: rest})
         print(f"\n=== {TEXT_ONLY} ===")
-        print(f"  {', '.join(one_line(v) for v in rest)}")
+        if values := scoped.routable.get(TEXT_ONLY):
+            print(f"  {', '.join(one_line(v) for v in values)}")
+        if entries := scoped.non_routable.get(TEXT_ONLY):
+            listed = ", ".join(f"{one_line(v)} ({SCOPE_NOTES[s]})" for v, s in entries)
+            print(f"  {'(non-routable):':<10} {listed}")
 
 
 # The line forensic-mcp ends an artifact's content with when it stored only

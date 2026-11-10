@@ -38,6 +38,7 @@ from vhir_cli.defang import (
 from vhir_cli.display import cited_text, ioc_text, list_text, one_line
 from vhir_cli.display import lines as indent_lines
 from vhir_cli.ioc_groups import TEXT_ONLY, ioc_groups
+from vhir_cli.ioc_scope import SCOPE_NOTES, scope_iocs
 from vhir_cli.ledger_verify import (
     approved_view,
     shown_label,
@@ -434,18 +435,36 @@ def _report_ioc(
     groups = _extract_all_iocs(view["findings"], view["iocs"], snap["iocs"])
     records = {k: v for k, v in groups.items() if k != TEXT_ONLY}
 
+    scoped = scope_iocs(groups)
+
     lines = []
     lines.append("IOC REPORT (Approved IOCs Only)")
     lines.append("=" * 50)
     if not records:
         lines.append("\n  Approved IOC records: none")
-    for ioc_type, values in groups.items():
+    for ioc_type, values in scoped.routable.items():
         lines.append(f"\n  {_d(ioc_type, safe)} ({len(values)}):")
         for v in values:
             lines.append(f"    {_d(v, safe)}")
 
-    total = sum(len(v) for v in records.values())
-    lines.append(f"\nTotal: {total} IOC records across {len(records)} types")
+    listed = {k: v for k, v in scoped.routable.items() if k != TEXT_ONLY}
+    total = sum(len(v) for v in listed.values())
+    lines.append(f"\nTotal: {total} IOC records across {len(listed)} types")
+
+    if scoped.non_routable:
+        # Listed, never dropped: an internal address in a finding usually means
+        # something (lateral movement, the compromised host), it just is not a
+        # blocklist candidate. Which it is needs context this cannot supply.
+        lines.append("")
+        lines.append("-" * 50)
+        lines.append(
+            f"Non-routable addresses ({scoped.non_routable_count}), listed "
+            "separately, not blocklist candidates:"
+        )
+        for ioc_type, entries in scoped.non_routable.items():
+            lines.append(f"\n  {_d(ioc_type, safe)}:")
+            for value, scope in entries:
+                lines.append(f"    {_d(value, safe):<20} {SCOPE_NOTES[scope]}")
     return "\n".join(lines)
 
 
