@@ -103,6 +103,7 @@ def _update(
     vhir_moves=False,
     pulls=(),
     restart_rc=0,
+    restart_err=None,
     unit_show=UNIT_SHOW,
     gateway=None,
     unreadable=None,
@@ -114,7 +115,8 @@ def _update(
     with `vhir_moves` the vhir pull moves its HEAD, so the run hands over to
     the new code: os.execv is recorded as ["execv", *argv] and ends the run.
     Each repo named in `pulls` moves its HEAD at the pull, without a hand-over.
-    `restart_rc` is the gateway restart's exit status and `unit_show` what
+    `restart_rc` is the gateway restart's exit status (`restart_err` its
+    stderr, when set) and `unit_show` what
     `systemctl --user show` prints. `gateway` (tests.test_update_gateway_state)
     is what /health answers on every call, and the repos it pulls. A
     `restart_rc` exception is what the restart raises. `unreadable` is (repo,
@@ -193,6 +195,8 @@ def _update(
             result.stderr = (
                 "" if restart_rc == 0 else "Job for vhir-gateway.service failed."
             )
+            if restart_err is not None:
+                result.stderr = restart_err
         elif cmd[:3] == ["systemctl", "--user", "show"]:
             result.stdout = unit_show
         elif len(cmd) > 2 and str(cmd[1]).endswith("check-lock.py"):

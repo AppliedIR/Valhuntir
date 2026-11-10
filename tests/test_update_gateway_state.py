@@ -157,6 +157,30 @@ def test_a_failed_restart_is_pending_with_one_fix_and_no_wait(box, capsys, resta
     assert "Traceback" not in run.out + run.err
 
 
+def test_a_failed_restart_with_no_stderr_names_its_exit_status(box, capsys):
+    run = _run(box, capsys, no_restart=False, restart_rc=3, restart_err="")
+    assert run.state.get("reason") == "the gateway restart failed (exit status 3)", (
+        run.state
+    )
+    assert "failed (exit status 3)" in run.out, run.out
+
+
+@pytest.mark.parametrize(
+    ("kw", "fix"),
+    [
+        ({"restart_rc": 1}, RESTART_FAILED_FIX),
+        ({"gateway": REFUSED}, REFUSED.fix),
+        ({"gateway": STALE_HEADS, "no_restart": True}, RESTART_FIX),
+    ],
+    ids=["restart-failed", "no-answer", "asked"],
+)
+def test_the_pending_lines_are_the_reason_and_the_fix_only(box, capsys, kw, fix):
+    run = _run(box, capsys, **{"no_restart": False, **kw})
+    at = next(i for i, line in enumerate(run.block) if "Update pending:" in line)
+    assert run.block[at + 1] == f"Run: {fix}", run.block
+    assert not any("Then run" in line for line in run.block), run.block
+
+
 def test_a_restart_that_worked_says_to_reconnect_only_when_health_passes(box, capsys):
     from vhir_cli.gateway import RECONNECT_HINT
 
@@ -226,6 +250,23 @@ def test_a_restart_owed_by_the_last_run_is_named_once_health_passes(
     lines = [line for line in run.block if UNPROVEN in line]
     assert bool(lines) == says, run.block
     assert not says or RESTART_FIX in lines[0]
+
+
+def test_a_restart_owed_is_still_named_when_the_update_hands_over(box, capsys):
+    """The new code's process reads the handoff, not the record the first
+    process wrote before the pull."""
+    path = box.home / ".vhir" / "update-state.json"
+    path.write_text(
+        json.dumps({"status": "pending", "reason": RESTART, "fix": RESTART_FIX})
+    )
+    first = _run(box, capsys, no_restart=True, vhir_moves=True)
+    execv = next(c for c in first.calls if c[0] == "execv")
+    handoff = execv[execv.index("--after-pull") + 1]
+    assert json.loads(path.read_text()).get("reason") != RESTART  # the pre-pull record
+    run = _run(box, capsys, no_restart=True, after_pull=handoff)
+    assert run.state.get("status") == "complete", run.state
+    lines = [line for line in run.block if UNPROVEN in line]
+    assert lines and RESTART_FIX in lines[0], run.block
 
 
 # --- what counts as an answer, and the reasons -----------------------------
