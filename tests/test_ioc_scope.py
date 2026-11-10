@@ -231,9 +231,23 @@ def test_report_ioc_lists_non_routable_addresses_apart(tmp_path):
     head, _, tail = out.partition("Non-routable addresses")
     assert "185.220.101.45" in head and "10.4.1.22" not in head
     assert "8.8.8.8" in head and "100.64.3.9" not in head
-    assert "Total: 1 IOC records across 1 types" in head
+    total = "Total: 2 IOC records across 1 types (1 listed above, 1 non-routable below)"
+    assert total in head
     assert "10.4.1.22" in tail and "RFC 1918" in tail
     assert "100.64.3.9" in tail and "carrier-grade NAT" in tail
+
+
+def test_report_ioc_total_counts_every_approved_record(tmp_path):
+    # The Total is the count the CLI and the Portal give; only its note splits it.
+    from types import SimpleNamespace
+
+    from vhir_cli.commands.report import _report_ioc
+
+    recs = _records("10.4.1.22", "192.168.1.1", "172.16.0.5")
+    snap = {"view": {"findings": [], "iocs": recs}, "iocs": recs}
+    out = _report_ioc(tmp_path, SimpleNamespace(), True, snap)
+    total = "Total: 3 IOC records across 1 types (0 listed above, 3 non-routable below)"
+    assert f"\n{total}" in out
 
 
 def test_report_ioc_has_no_section_without_non_routable(tmp_path):
@@ -245,6 +259,7 @@ def test_report_ioc_has_no_section_without_non_routable(tmp_path):
     snap = {"view": {"findings": [], "iocs": recs}, "iocs": recs}
     out = _report_ioc(tmp_path, SimpleNamespace(), True, snap)
     assert "Non-routable" not in out
+    assert out.endswith("\nTotal: 1 IOC records across 1 types")
 
 
 def test_documentation_addresses_stay_in_the_main_list():

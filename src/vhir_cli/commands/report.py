@@ -447,9 +447,15 @@ def _report_ioc(
         for v in values:
             lines.append(f"    {_d(v, safe)}")
 
-    listed = {k: v for k, v in scoped.routable.items() if k != TEXT_ONLY}
-    total = sum(len(v) for v in listed.values())
-    lines.append(f"\nTotal: {total} IOC records across {len(listed)} types")
+    # Every approved record counts, as the CLI and the Portal count them; the
+    # line says how many of them are in the non-routable list below.
+    total = sum(len(v) for v in records.values())
+    listed = sum(len(v) for k, v in scoped.routable.items() if k != TEXT_ONLY)
+    split = f" ({listed} listed above, {total - listed} non-routable below)"
+    lines.append(
+        f"\nTotal: {total} IOC records across {len(records)} types"
+        + (split if listed != total else "")
+    )
 
     if scoped.non_routable:
         # Listed, never dropped: an internal address in a finding usually means
