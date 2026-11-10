@@ -515,29 +515,20 @@ def _name_the_switch(variant: str, installed: str, gpu: bool) -> None:
 DECLINED = "declined_offers"
 
 
-def _manifest_file() -> Path:
-    return Path.home() / ".vhir" / "manifest.json"
+def _declines() -> dict:
+    from vhir_cli.commands.client_setup import _manifest_get
 
-
-def _declined(offer: str):
-    try:
-        return json.loads(_manifest_file().read_text())[DECLINED].get(offer)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
+    declined = _manifest_get(DECLINED)
+    return declined if isinstance(declined, dict) else {}
 
 
 def _record_decline(offer: str, subject: list[str]) -> None:
     """Record a No, so the offer isn't made again while its subject is the same."""
-    path = _manifest_file()
-    try:
-        manifest = json.loads(path.read_text())
-        declined = manifest.get(DECLINED)
-        manifest[DECLINED] = {**(declined if isinstance(declined, dict) else {})}
-        manifest[DECLINED][offer] = subject
-        path.write_text(json.dumps(manifest, indent=2) + "\n")
-    except (OSError, ValueError, AttributeError) as e:
+    from vhir_cli.commands.client_setup import _manifest_set
+
+    if not _manifest_set(DECLINED, {**_declines(), offer: subject}):
         print(
-            f"  The decline couldn't be recorded ({e}); it is asked again next time.",
+            "  The decline couldn't be recorded; it is asked again next time.",
             file=sys.stderr,
         )
 
@@ -545,7 +536,7 @@ def _record_decline(offer: str, subject: list[str]) -> None:
 def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> bool:
     """D11 and U8: ask only on a terminal, and never again after a No for the
     same subject. When it doesn't ask, the block (human_steps) says why."""
-    if _declined(offer) == subject:
+    if _declines().get(offer) == subject:
         human_steps.add(
             f"Declined earlier: {offer} ({shown}). It is asked again when that changes.",
         )

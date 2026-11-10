@@ -335,6 +335,26 @@ def test_a_declined_sift_update_is_recorded_and_not_asked_again(box, capsys):
     assert _declined(SIFT, VOL) in capsys.readouterr().err
 
 
+def test_a_decline_is_written_by_the_manifest_owner(box):
+    from vhir_cli.commands import client_setup
+
+    with patch.object(
+        client_setup, "_manifest_set", wraps=client_setup._manifest_set
+    ) as owner:
+        _sift(box, answers=[""])
+    assert (KEY, {SIFT: [VOL]}) in [c.args for c in owner.call_args_list]
+    assert lock._manifest(box)[KEY] == {SIFT: [VOL]}
+
+
+def test_a_decline_that_cant_be_recorded_says_so(box, capsys):
+    from vhir_cli.commands import client_setup
+
+    with patch.object(client_setup, "_manifest_set", return_value=False):
+        _sift(box, answers=[""])
+    assert "The decline couldn't be recorded" in capsys.readouterr().err
+    assert KEY not in lock._manifest(box)
+
+
 def test_with_no_terminal_old_sift_tools_are_listed_skipped(box, capsys):
     calls, _ = _sift(box, tty=False, answers=["y"])
     assert not _asked(calls)

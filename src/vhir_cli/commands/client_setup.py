@@ -2354,17 +2354,19 @@ def _manifest_get(key: str):
     return manifest.get(key) if isinstance(manifest, dict) else None
 
 
-def _manifest_set(key: str, value) -> None:
+def _manifest_set(key: str, value) -> bool:
+    """Write one key of the install manifest; whether it was written."""
     path = Path.home() / ".vhir" / "manifest.json"
     try:
         manifest = json.loads(path.read_text())
         if not isinstance(manifest, dict):
-            return
+            return False
         manifest[key] = value
         mode = path.stat().st_mode & 0o777
         _replace_bytes(path, (json.dumps(manifest, indent=2) + "\n").encode(), mode)
     except (OSError, ValueError):
-        pass
+        return False
+    return True
 
 
 def _redact_tokens(text: str) -> str:
