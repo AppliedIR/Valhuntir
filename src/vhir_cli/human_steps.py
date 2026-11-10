@@ -75,9 +75,3 @@ def finish(terminal: bool) -> None:
         lines = [*NO_TERMINAL, *lines]
     if lines:
         _frame(lines)
-
-
-def drop() -> None:
-    """Close the collector without printing (the run handed over by exec)."""
-    global _steps
-    _steps = None

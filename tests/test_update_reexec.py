@@ -92,6 +92,22 @@ def test_a_pull_that_changes_vhir_runs_the_rest_from_the_new_code(manifest_dir):
     assert not step45.called  # Steps 4.5-9 belong to the new process
 
 
+def test_a_stubbed_exec_that_raises_prints_the_end_block_once(manifest_dir, capsys):
+    """A real exec never reaches cmd_update's finally; a stub that raises does,
+    and its end block prints there once, never dropped. With no terminal the
+    start notice is the other frame."""
+    from vhir_cli import human_steps
+
+    home = manifest_dir[0]
+    _vhir_script(home)
+    _, execv, _ = _update(home, _args(no_restart=True), moves={"vhir": "v2"})
+    assert execv.call_count == 1
+    err = capsys.readouterr().err
+    assert err.count(human_steps.OPEN) == 2, err
+    assert err.rstrip().endswith(human_steps.CLOSE), err
+    assert not human_steps.active()
+
+
 def test_the_after_pull_option_parses():
     from vhir_cli.main import build_parser
 

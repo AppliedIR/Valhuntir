@@ -921,13 +921,9 @@ def _redeploy_clients(manifest: dict) -> list[str]:
     return clients
 
 
-_handing_over = False  # set just before the exec: the new process prints the block
-
-
 def cmd_update(args, identity: dict) -> None:
     """Pull latest code and redeploy Valhuntir installation. What's left for
     the examiner prints last, in one block (human_steps)."""
-    global _handing_over
     after_pull = getattr(args, "after_pull", None)
     if not isinstance(after_pull, str):
         after_pull = None
@@ -935,14 +931,10 @@ def cmd_update(args, identity: dict) -> None:
     if after_pull is None and not terminal:
         human_steps.no_terminal_notice()
     human_steps.start(_handed_steps(after_pull))
-    _handing_over = False
     try:
         _update(args, identity, after_pull)
-    finally:
-        if _handing_over:
-            human_steps.drop()
-        else:
-            human_steps.finish(terminal)
+    finally:  # a successful exec never gets here: the new process prints it
+        human_steps.finish(terminal)
 
 
 def _handed_steps(after_pull: str | None) -> list:
@@ -1328,7 +1320,6 @@ def _reexec_after_pull(
 ) -> NoReturn:
     """Replace this process with `vhir update --after-pull` from the new code,
     handing it the steps collected so far: the new process prints the block."""
-    global _handing_over
     script = Path(venv) / "bin" / "vhir"
     handoff = json.dumps(
         {
@@ -1345,11 +1336,9 @@ def _reexec_after_pull(
         _update_incomplete(f"{script} was not found")
     print("  Continuing the update with the new code...", flush=True)
     sys.stderr.flush()
-    _handing_over = True
     try:
         os.execv(venv_python, argv)
     except OSError as e:
-        _handing_over = False
         _update_incomplete(f"Cannot start the new code: {e}")
     sys.exit(1)  # execv returns only by raising
 

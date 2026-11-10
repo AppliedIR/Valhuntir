@@ -13,7 +13,8 @@ pulled code (os.execv) ends the first process: the vhir_cli module globals are
 put back as they were before the run, and cmd_update runs again with the
 argv it was handed, as process "2". Output written after the exec call, while
 the first process unwinds, is kept apart as "1-after-exec": a real exec never
-returns, so it must be empty.
+returns, so it must be empty. The first process's end block is not printed
+there: a real exec never reaches cmd_update's finally.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ import pytest
 import vhir_cli
 from tests import test_update_lock
 from tests.stub_check import stub, stub_check  # noqa: F401 (the fixture)
-from vhir_cli import approval_auth, controls, credentials, keys, sift_tools
+from vhir_cli import approval_auth, controls, credentials, human_steps, keys, sift_tools
 from vhir_cli import gateway as gateway_mod
 from vhir_cli import main as main_mod
 from vhir_cli.commands import client_setup, codex_controls, join, setup
@@ -616,6 +617,12 @@ class Run:
             ),
         )
         mp.setattr(os, "execv", self._execv)
+        finish = human_steps.finish
+        mp.setattr(
+            human_steps,
+            "finish",
+            lambda terminal: None if self.proc == "1-after-exec" else finish(terminal),
+        )
         mp.setattr(approval_auth, "_LOCKOUT_FILE", self.tmp / ".password_lockout")
         mp.setattr(
             importlib.metadata,
