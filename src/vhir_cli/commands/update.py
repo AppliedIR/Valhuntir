@@ -1491,11 +1491,6 @@ def _finish_update(
             print("done")
         else:
             print(f"failed ({failure})")
-            human_steps.add(
-                "  Check with: systemctl --user status vhir-gateway\n"
-                "  Or, if you start it by hand: stop it, then run"
-                " ~/.vhir/start-gateway.sh"
-            )
             restart_ok = False
 
     # Step 7b: Check OpenSearch version mismatch
