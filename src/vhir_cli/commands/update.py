@@ -518,12 +518,14 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
     if _declines().get(offer) == subject:
         human_steps.add(
             f"Declined earlier: {offer} ({shown}). It is asked again when that changes.",
+            file=sys.stderr,
         )
         return False
     if not sys.stdin.isatty():
         human_steps.add(
             f"Not asked (no terminal): {offer}."
             " Re-run `vhir update` in a terminal to be asked.",
+            file=sys.stderr,
         )
         return False
     if os.environ.get("VHIR_ASSUME_DEFAULTS") == "true":
@@ -531,6 +533,7 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
             f"Not asked (VHIR_ASSUME_DEFAULTS is set): {offer}."
             + (f" {taken}" if taken else "")
             + " Re-run `vhir update` without it to be asked.",
+            file=sys.stderr,
         )
         return False
     return True
