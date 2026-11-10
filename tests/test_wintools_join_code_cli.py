@@ -16,6 +16,7 @@ import ipaddress
 import json
 import os
 import shutil
+import socket
 import ssl
 import stat
 import subprocess
@@ -119,7 +120,7 @@ def test_a_box_on_vhirs_own_share_needs_no_extra_group(home, monkeypatch):
     assert (stat.S_IMODE(audit.stat().st_mode), audit.stat().st_gid) == (0o664, own)
 
 
-def _cert(folder: Path) -> tuple[str, str]:
+def _cert(folder: Path, san=None) -> tuple[str, str]:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "stand-in")])
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -133,7 +134,7 @@ def _cert(folder: Path) -> tuple[str, str]:
         .not_valid_after(now + datetime.timedelta(days=1))
         .add_extension(
             x509.SubjectAlternativeName(
-                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+                [san or x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
             ),
             critical=False,
         )
@@ -156,8 +157,8 @@ class StandIn:
     """A TLS server on loopback answering every request with ``answer(method,
     path, headers)`` -> (status, body dict); it records each request."""
 
-    def __init__(self, folder: Path, answer):
-        self.cert = _cert(folder)
+    def __init__(self, folder: Path, answer, san=None):
+        self.cert = _cert(folder, san)
         self.requests: list[tuple[str, str]] = []
         stand_in = self
 
@@ -206,7 +207,11 @@ def test_a_refused_smb_credential_push_says_what_wintools_answered(
     try:
         pin = home / ".vhir" / "tls" / "wintools-cert.pem"
         pin.write_text(Path(wintools.cert[0]).read_text())
-        entry = {"url": f"{wintools.url}/mcp", "bearer_token": "vhir_wt_" + "c" * 24}
+        entry = {
+            "url": f"{wintools.url}/mcp",
+            "bearer_token": "vhir_wt_" + "c" * 24,
+            "tls_cert": str(pin),
+        }
         (home / ".vhir" / "gateway.yaml").write_text(
             yaml.safe_dump({"backends": {"wintools-mcp": entry}})
         )
@@ -221,6 +226,208 @@ def test_a_refused_smb_credential_push_says_what_wintools_answered(
         "The Windows installer gives them to it when it runs with the join code "
         "'vhir setup join-code' shows." in err
     )
+
+
+# Every request the CLI sends wintools-mcp trusts what the gateway trusts: one
+# row set over every route to the three requests and every state of the pin.
+# The entry's ``tls_cert`` is the pin, as the gateway's own connection reads
+# it; one that can't be used sends nothing and says why; no ``tls_cert``: the
+# system store. Either way the host name is checked, and no other file is tried.
+def _routes_share_nothing(monkeypatch):
+    """The share and Samba steps around a request are stand-ins: no command."""
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", "")
+    )
+    monkeypatch.setattr(join, "_repoint_samba_share", lambda case_dir: None)
+    monkeypatch.setattr(join, "private_primary_group", lambda user: "examiner")
+    monkeypatch.setattr(join, "_get_sift_ip", lambda: None)
+
+
+def _join_code_keeping_the_share(home, monkeypatch):
+    _routes_share_nothing(monkeypatch)
+    _samba(home, share_name=join.SHARE_NAME, wintools_ip="192.0.2.7")
+    monkeypatch.setattr(join, "_ask", lambda q, no_terminal, assume=False: "n")
+    return join._setup_samba_share("CODE-ONE")
+
+
+def _join_code_making_the_share(home, monkeypatch):
+    _routes_share_nothing(monkeypatch)
+    monkeypatch.setattr(join, "_ask", lambda q, no_terminal, assume=False: "")
+    return join._setup_samba_share("CODE-ONE")
+
+
+def _case_activation(home, monkeypatch):
+    _routes_share_nothing(monkeypatch)
+    monkeypatch.setattr(join, "samba_include_check", lambda: ("ok", ""))
+    monkeypatch.setattr(main, "_set_case_wintools_permissions", lambda case: None)
+    return main._share_active_case(_case(home), "CASE-1")
+
+
+def _case_close(home, monkeypatch):
+    from vhir_cli import case_copies
+
+    _routes_share_nothing(monkeypatch)
+    case = _case(home)
+    (case / "CASE.yaml").write_text(yaml.safe_dump({"case_id": "CASE-1"}))
+    monkeypatch.setenv("VHIR_CASES_DIR", str(case.parent))
+    monkeypatch.delenv("VHIR_CASE_DIR", raising=False)
+    (home / ".vhir" / "active_case").write_text(str(case))
+    _samba(home, share_name=join.SHARE_NAME, active_share_target=str(case))
+    monkeypatch.setattr(case_copies, "write_case_copies", lambda c, d: {"copies": []})
+    monkeypatch.setattr(case_copies, "summary_lines", lambda c, copied: [])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    args = argparse.Namespace(case_id="CASE-1", summary="")
+    return main._case_close(args, {"examiner": "tester"})
+
+
+# caller: how it runs, the request it sends, whether it returns sent-or-not
+PIN_CALLERS = {
+    "smb-push": (
+        lambda home, mp: join._push_smb_credentials("pw"),
+        "/config/update-smb",
+        False,
+    ),
+    "activate": (
+        lambda home, mp: join.notify_wintools_case_activated("CASE-1"),
+        "/cases/activate",
+        True,
+    ),
+    "deactivate": (
+        lambda home, mp: join.notify_wintools_case_deactivated(),
+        "/cases/deactivate",
+        True,
+    ),
+    "join-code-keeps-share": (
+        _join_code_keeping_the_share,
+        "/config/update-smb",
+        False,
+    ),
+    "join-code-makes-share": (
+        _join_code_making_the_share,
+        "/config/update-smb",
+        False,
+    ),
+    "case-activate": (_case_activation, "/cases/activate", False),
+    "case-close": (_case_close, "/cases/deactivate", False),
+}
+
+# state: what the pin path holds, whether the entry names it, what is sent
+PIN_STATES = {
+    "pin-matches": ("server", "line", "sent"),
+    "pin-is-another-cert": ("other", "line", "refused"),
+    "pin-file-absent": (None, "line", "unusable"),
+    "pin-unreadable": ("unreadable", "line", "unusable"),
+    "pin-is-a-folder": ("folder", "line", "unusable"),
+    "pin-empty": ("empty", "line", "unusable"),
+    "pin-not-a-cert": ("garbage", "line", "unusable"),
+    "line-names-another-file": ("server-elsewhere", "elsewhere", "sent"),
+    "no-line-self-signed": ("server", None, "refused"),
+    "no-line-system-store-trusts-it": (None, None, "sent-system-store"),
+    "pin-names-another-host": ("server", "line", "refused"),
+    "no-line-system-store-names-another-host": (None, None, "refused-system-store"),
+    "line-unusable-default-path-holds-it": (
+        "server-default-only",
+        "elsewhere",
+        "unusable",
+    ),
+    "line-is-a-relative-path": ("server-relative", "line", "unusable"),
+}
+# the server's certificate names wintools-mcp, not the 127.0.0.1 it is reached at
+OTHER_HOST = ("pin-names-another-host", "no-line-system-store-names-another-host")
+
+
+def _place_pin(home: Path, tmp_path: Path, wintools: StandIn, holds) -> Path:
+    pin = home / ".vhir" / "tls" / "wintools-cert.pem"
+    server = Path(wintools.cert[0]).read_text()
+    if holds in ("server", "unreadable", "server-default-only"):
+        pin.write_text(server)
+        if holds == "unreadable":
+            pin.chmod(0)
+        elif holds == "server-default-only":  # the entry names a file that is gone
+            pin = home / "pins" / "wintools.pem"
+    elif holds == "other":
+        other = tmp_path / "other"
+        other.mkdir()
+        pin.write_text(Path(_cert(other)[0]).read_text())
+    elif holds == "folder":
+        pin.mkdir()
+    elif holds == "empty":
+        pin.write_text("")
+    elif holds == "garbage":
+        pin.write_text("not a certificate\n")
+    elif holds == "server-elsewhere":  # the default path holds a stranger's cert
+        other = tmp_path / "other"
+        other.mkdir()
+        pin.write_text(Path(_cert(other)[0]).read_text())
+        pin = home / "pins" / "wintools.pem"
+        pin.parent.mkdir()
+        pin.write_text(server)
+    elif holds == "server-relative":  # from the working directory, the server's
+        (home / "pins").mkdir()
+        (home / "pins" / "wintools.pem").write_text(server)
+        pin = Path("pins") / "wintools.pem"
+    return pin
+
+
+@pytest.mark.parametrize("state", PIN_STATES)
+@pytest.mark.parametrize("caller", PIN_CALLERS)
+def test_a_wintools_request_trusts_only_what_the_gateway_trusts(
+    home, tmp_path, monkeypatch, capsys, caller, state
+):
+    holds, line, want = PIN_STATES[state]
+    if holds == "unreadable" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-0 file")
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    connects = []
+    real_connect = socket.create_connection
+    monkeypatch.setattr(
+        socket,
+        "create_connection",
+        lambda *a, **k: connects.append(a[0]) or real_connect(*a, **k),
+    )
+    san = x509.DNSName("wintools-mcp") if state in OTHER_HOST else None
+    wintools = StandIn(tmp_path, lambda m, p, h: (200, {"ok": True}), san)
+    try:
+        pin = _place_pin(home, tmp_path, wintools, holds)
+        monkeypatch.chdir(home)
+        if want.endswith("system-store"):
+            monkeypatch.setenv("SSL_CERT_FILE", wintools.cert[0])
+        else:
+            monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        entry = {"url": f"{wintools.url}/mcp", "bearer_token": "vhir_wt_" + "c" * 24}
+        if line:
+            entry["tls_cert"] = str(pin)
+        (home / ".vhir" / "gateway.yaml").write_text(
+            yaml.safe_dump({"backends": {"wintools-mcp": entry}})
+        )
+        run, path, says_if_sent = PIN_CALLERS[caller]
+        result = run(home, monkeypatch)
+    finally:
+        wintools.close()
+    out = capsys.readouterr()
+    said = out.out + out.err
+    assert "skipping verification" not in said
+    if want.startswith("sent"):
+        assert wintools.requests == [("POST", path)]
+        assert result is not False
+        return
+    assert wintools.requests == []
+    if says_if_sent:
+        assert result is False
+    if want == "unusable":  # nothing goes out, and the examiner is told why
+        assert connects == []
+        assert f"its pinned certificate {pin} can't be used" in out.err
+        assert "vhir setup join-code" in out.err
+    else:  # the handshake is refused
+        assert connects
+        assert "can't be used" not in said
+    assert "isn't answering" not in said
+
+
+def test_the_cli_names_no_pin_path_of_its_own():
+    package = Path(join.__file__).parents[1]
+    assert [p for p in package.rglob("*.py") if "wintools-cert" in p.read_text()] == []
 
 
 def test_the_join_code_printout_gives_the_unattended_form_and_the_client_step(

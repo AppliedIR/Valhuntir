@@ -1228,27 +1228,33 @@ def _post_join_code_setup(data: dict, static_ip: str | None) -> None:
     )
 
 
-def _wintools_ssl_context():
-    """Build SSL context for wintools connections using pinned cert.
-
-    Uses SSLContext(PROTOCOL_TLS_CLIENT) instead of create_default_context()
-    so that ONLY the pinned cert is trusted (no system CAs).
-    """
+def _wintools_ssl_context(wt: dict, what: str):
+    """TLS for a request to wintools-mcp, set up as the gateway sets up its own
+    connection to it: only the pin its join wrote (the entry's ``tls_cert``)
+    is trusted, host name checked; with no ``tls_cert``, the system store.
+    None when the pin can't be used, with the reason said: nothing is sent."""
     import ssl
 
-    cert_path = Path.home() / ".vhir" / "tls" / "wintools-cert.pem"
-    if cert_path.exists():
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.load_verify_locations(str(cert_path))
-    else:
+    tls_cert = wt.get("tls_cert")
+    if not tls_cert:
+        return ssl.create_default_context()
+    path = os.path.expanduser(str(tls_cert))
+    try:
+        if not os.path.isabs(path):  # it would depend on the working directory
+            raise ValueError("the path is relative")
+        pem = Path(path).read_text()
+        if not pem.strip():  # cadata="" would load the system store
+            raise ValueError("the file is empty")
+        return ssl.create_default_context(cadata=pem)
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        reason = getattr(e, "strerror", None) or str(e)
         print(
-            "Warning: wintools TLS cert not found, skipping verification",
+            f"Warning: {what} wasn't sent to wintools-mcp: its pinned certificate "
+            f"{path} can't be used ({reason}). Join it again to pin it: a code "
+            "from 'vhir setup join-code', then setup-windows.ps1 on its host.",
             file=sys.stderr,
         )
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+        return None
 
 
 def _no_answer(error: Exception) -> bool:
@@ -1305,7 +1311,9 @@ def _push_smb_credentials(password: str, smb_user: str = "vhir-smb") -> None:
 
     kwargs: dict = {"timeout": 3}
     if update_url.startswith("https"):
-        kwargs["context"] = _wintools_ssl_context()
+        kwargs["context"] = _wintools_ssl_context(wt, "the new SMB password")
+        if kwargs["context"] is None:
+            return
     last = "no answer"
     silent = True  # every try timed out or found nothing listening
     for attempt in range(2):
@@ -1383,7 +1391,9 @@ def notify_wintools_case_activated(case_id: str) -> bool:
     try:
         kwargs = {"timeout": 10}
         if activate_url.startswith("https"):
-            kwargs["context"] = _wintools_ssl_context()
+            kwargs["context"] = _wintools_ssl_context(wt, "the case activation")
+            if kwargs["context"] is None:
+                return False
         with urllib.request.urlopen(req, **kwargs):
             pass
         return True
@@ -1431,7 +1441,9 @@ def notify_wintools_case_deactivated() -> bool:
     try:
         kwargs = {"timeout": 10}
         if deactivate_url.startswith("https"):
-            kwargs["context"] = _wintools_ssl_context()
+            kwargs["context"] = _wintools_ssl_context(wt, "the case deactivation")
+            if kwargs["context"] is None:
+                return False
         with urllib.request.urlopen(req, **kwargs):
             return True
     except (ConnectionError, OSError):
