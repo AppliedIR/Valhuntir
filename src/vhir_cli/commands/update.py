@@ -908,6 +908,12 @@ def cmd_update(args, identity: dict) -> None:
     if after_pull is None and not terminal:
         human_steps.no_terminal_notice()
     human_steps.start(_handed_steps(after_pull))
+    global _RESTART_OWED
+    try:
+        state = json.loads((Path.home() / ".vhir" / "update-state.json").read_text())
+        _RESTART_OWED = state.get("reason") == RESTART_REASON
+    except (OSError, ValueError, AttributeError):
+        _RESTART_OWED = False
     try:
         _update(args, identity, after_pull)
     finally:  # a successful exec never gets here: the new process prints it
@@ -1364,8 +1370,8 @@ def _write_update_state(
     installed code (main._warn_if_update_incomplete). version "" is written
     just before the pull, so any stop before Step 9 keeps warning; the full
     record (the version installed on disk, read fresh) is written at Step 9.
-    status is complete only when the gateway check passed; a pending record
-    carries the reason and the fix."""
+    status is complete only when the gateway answered /health at Step 8; a
+    pending record carries the reason and the fix."""
     state = {
         "version": version,
         "vhir_commit": vhir_commit,
@@ -1453,6 +1459,7 @@ def _finish_update(
         )
 
     # Step 7: Restart gateway
+    restarted = failure = None  # None: --no-restart
     if no_restart:
         human_steps.add(
             "  Gateway restart skipped (--no-restart): portal approvals and portal saves "
@@ -1490,51 +1497,97 @@ def _finish_update(
         except OSError as e:  # no systemctl: a gateway started by hand
             restart_ok = False
             failure = str(e)
-        if restart_ok:
-            print("done")
-        else:
-            print(f"failed ({failure})")
-            restart_ok = False
+        restarted = restart_ok
+        print("done" if restart_ok else f"failed ({failure})")
 
     # Step 7b: Check OpenSearch version mismatch
     _check_opensearch_version(source)
 
-    # Step 8: Smoke test (wait for gateway to bind port after restart)
-    run_test = not no_restart
-    if not no_restart and not restart_ok:
-        print("  Skipping connectivity test (restart failed)")
-        run_test = False
-    if run_test:
-        import time as _time
+    # Step 8: the gateway answers /health (one 240 s budget, made after 7b)
+    from vhir_cli import gateway
 
-        _time.sleep(3)
-        print("  Running connectivity test...")
-        from vhir_cli.commands.setup import _run_connectivity_test
+    budget = gateway.Deadline(gateway.DEADLINE)
+    if restarted is False:
+        health = gateway.HealthAnswer(
+            False,
+            f"the gateway restart failed ({failure})",
+            gateway.RESTART_FAILED_FIX.format(
+                rerun="vhir update", hand_rerun="vhir update --no-restart"
+            ),
+        )
+    elif restarted:
+        health = gateway.wait_for_health(budget)
+    elif _needs_restart(pre_update_git, repos, client_setup._LAUNCHERS_UPDATED):
+        health = gateway.HealthAnswer(False, RESTART_REASON, gateway.RESTART_FIX)
+    else:
+        health = gateway.wait_for_health(budget, once=True)
 
-        _run_connectivity_test(sift_tools=False)
-
-    # Step 9: Summary
+    # Step 9: Summary, and the one decision of status and exit code
     hashes = manifest.get("git", {})
     parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
     # The version installed now, read fresh: vhir_cli.__version__ was read
     # when this process started, which can be before the pull
     installed = importlib.metadata.version("vhir-cli")
+    status = "complete" if health.ok else "pending"
     _write_update_state(
-        installed, manifest.get("git", {}).get("vhir", ""), status="complete"
+        installed,
+        manifest.get("git", {}).get("vhir", ""),
+        status=status,
+        reason=health.reason,
+        fix=health.fix,
     )
+    if not health.ok:
+        human_steps.add(
+            f"  Update pending: {health.reason}\n  Run: {health.fix}\n"
+            "  Then run: vhir update"
+        )
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
+    if health.ok:
+        b = health.backends or {}
+        if down := [
+            n
+            for n in sorted(b)
+            if not isinstance(b[n], dict) or b[n].get("status") != "ok"
+        ]:
+            human_steps.add(
+                f"  These backends aren't ok: {', '.join(down)}."
+                " Check: vhir service status"
+            )
+        if restarted is None and _RESTART_OWED:
+            human_steps.add(
+                "  This run checked that the gateway answers, but it can't tell that"
+                " the gateway was restarted after the last update. If you haven't"
+                f" restarted it: {gateway.RESTART_FIX}"
+            )
     _offer_signing_key(identity)
     _print_share_rejoin_notice()
-    if not no_restart and restart_ok:
-        from vhir_cli.gateway import RECONNECT_HINT
-
-        human_steps.add(f"  {RECONNECT_HINT}")
+    if restarted and health.ok:
+        human_steps.add(f"  {gateway.RECONNECT_HINT}")
 
     # Last, so it isn't scrolled away: SIFT tools too old for Valhuntir
     _offer_sift_tools()
+    if not health.ok and health.reason != RESTART_REASON:  # the asked one exits 0
+        sys.exit(1)
 
+
+def _needs_restart(pre_update_git: dict, repos, launchers_updated) -> bool:
+    """--no-restart: whether the running gateway serves old code. A tree it
+    serves moved (or a head couldn't be read), or a launch line was rewritten."""
+    for name, path in repos:
+        if name in ("sift-mcp", "opensearch-mcp"):
+            before = pre_update_git.get(name, "unknown")
+            after = _git_head(path) if path.is_dir() else "unknown"
+            if "unknown" in (before, after) or before != after:
+                return True
+    return bool(launchers_updated)
+
+
+# What the --no-restart run asks for (the asked pending: exit 0)
+RESTART_REASON = "restart the gateway"
+# The last run asked for that restart (cmd_update reads it before the pull)
+_RESTART_OWED = False
 
 # The record written before the pull, until Step 9 replaces it: a stop in
 # between leaves it, and every command then reads why
