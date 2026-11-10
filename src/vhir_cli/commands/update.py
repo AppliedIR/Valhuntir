@@ -1036,7 +1036,7 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
         pre_update_git, torch_record, older = _read_handoff(after_pull, repos, manifest)
         # An older vhir's update pulled this code: Step 4 again, from the lock
         if older:
-            _write_update_state("", pre_update_git.get("vhir", ""))
+            _write_update_state("", pre_update_git.get("vhir", ""), status="pending")
             _check_uv_floor()  # 0.6.0 and 0.6.1 have none
             record = _install_packages(
                 args,
@@ -1118,7 +1118,7 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
     # as started (version ""), so any stop before Step 9 keeps every command
     # warning until a later run finishes. A stop at Step 2 (e.g. offline) never
     # reaches here, so the record stays the last complete update's.
-    _write_update_state("", pre_update_git.get("vhir", ""))
+    _write_update_state("", pre_update_git.get("vhir", ""), status="pending")
     pulled = False  # a repo's HEAD moved in this run, or couldn't be read
     post_update_git = {}
     for name, path in repos:
@@ -1418,15 +1418,21 @@ def _heads_before_older_update(manifest: dict, repos: list[tuple[str, Path]]) ->
     return git or current
 
 
-def _write_update_state(version: str, vhir_commit: str) -> None:
+def _write_update_state(
+    version: str, vhir_commit: str, *, status: str, reason: str = "", fix: str = ""
+) -> None:
     """Record an update's progress; every vhir command compares it with the
     installed code (main._warn_if_update_incomplete). version "" is written
     just before the pull, so any stop before Step 9 keeps warning; the full
-    record (the version installed on disk, read fresh) is written after
-    Step 9."""
+    record (the version installed on disk, read fresh) is written at Step 9.
+    status is complete only when the gateway check passed; a pending record
+    carries the reason and the fix."""
     state = {
         "version": version,
         "vhir_commit": vhir_commit,
+        "status": status,
+        "reason": reason,
+        "fix": fix,
         "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     path = Path.home() / ".vhir" / "update-state.json"
@@ -1547,6 +1553,9 @@ def _finish_update(
                 state = "unknown"
             restart_ok = state == "active"
             failure = f"no answer in 60 s; the gateway is {state}"
+        except OSError as e:  # no systemctl: a gateway started by hand
+            restart_ok = False
+            failure = str(e)
         if restart_ok:
             print("done")
         else:
@@ -1584,7 +1593,9 @@ def _finish_update(
     # The version installed now, read fresh: vhir_cli.__version__ was read
     # when this process started, which can be before the pull
     installed = importlib.metadata.version("vhir-cli")
-    _write_update_state(installed, manifest.get("git", {}).get("vhir", ""))
+    _write_update_state(
+        installed, manifest.get("git", {}).get("vhir", ""), status="complete"
+    )
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
     _offer_signing_key(identity)
