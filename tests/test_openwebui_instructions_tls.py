@@ -100,33 +100,57 @@ def _servers_sharing_a_prefix(tmp_path: Path) -> tuple[Server, Server]:
 #          "on-gateway" (a backend the gateway serves) | "bad-port"
 #   cert:  "rogue" (self-signed, trusted by nothing) | "pinned" (the join's
 #          pin in gateway.yaml) | "system-store" (trusted by SSL_CERT_FILE) |
-#          "pin-gone" (the join's pin names a file that isn't there)
+#          "pin-gone" (the join's pin names a file that isn't there, and the
+#          system store trusts the server, so only the refusal keeps it back)
 ROWS = {
-    "R-a-direct-wintools-rogue-cert": ("own-port", "wintools-mcp", "rogue", "refused"),
-    "R-a-direct-wintools-pin-unusable": (
+    "wintools-direct-with-a-rogue-cert-is-refused": (
+        "own-port",
+        "wintools-mcp",
+        "rogue",
+        "refused",
+    ),
+    "wintools-direct-with-an-unusable-pin-sends-nothing": (
         "own-port",
         "wintools-mcp",
         "pin-gone",
         "refused",
     ),
-    "R-b-direct-wintools-pinned-cert": ("own-port", "wintools-mcp", "pinned", "sent"),
-    "R-c-gateway-backend-named-wintools": (
+    "wintools-direct-with-the-pinned-cert-is-sent": (
+        "own-port",
+        "wintools-mcp",
+        "pinned",
+        "sent",
+    ),
+    "wintools-served-by-the-gateway-is-sent": (
         "on-gateway",
         "wintools-mcp",
         "rogue",
         "sent",
     ),
-    "R-d-url-extends-the-gateways": ("prefix-port", "wintools-mcp", "rogue", "refused"),
-    "R-e-remnux-rogue-cert": ("own-port", "remnux-mcp", "rogue", "refused"),
-    "R-e-remnux-trusted-cert": ("own-port", "remnux-mcp", "system-store", "sent"),
-    "R-g-port-out-of-range": ("bad-port", "wintools-mcp", "rogue", "missing"),
-}
-# what each row does on the code before this change, shown by the gate's base run
-RED_ON_BASE = {
-    "R-a-direct-wintools-rogue-cert",
-    "R-a-direct-wintools-pin-unusable",
-    "R-d-url-extends-the-gateways",
-    "R-e-remnux-rogue-cert",
+    "a-url-extending-the-gateways-is-refused": (
+        "prefix-port",
+        "wintools-mcp",
+        "rogue",
+        "refused",
+    ),
+    "remnux-with-a-rogue-cert-is-refused": (
+        "own-port",
+        "remnux-mcp",
+        "rogue",
+        "refused",
+    ),
+    "remnux-trusted-by-the-system-store-is-sent": (
+        "own-port",
+        "remnux-mcp",
+        "system-store",
+        "sent",
+    ),
+    "a-port-out-of-range-is-listed-as-missing": (
+        "bad-port",
+        "wintools-mcp",
+        "rogue",
+        "missing",
+    ),
 }
 
 
@@ -182,7 +206,7 @@ def test_the_instructions_request_trusts_only_the_servers_own_check(
                 "wintools-mcp": {"url": f"{other.url}/mcp", "tls_cert": pin[cert]}
             }
         (home / ".vhir" / "gateway.yaml").write_text(yaml.safe_dump(doc))
-        if cert == "system-store":
+        if cert in ("system-store", "pin-gone"):
             monkeypatch.setenv("SSL_CERT_FILE", other.cert[0])
         served = ["forensic-mcp"] + (["wintools-mcp"] if where == "on-gateway" else [])
         monkeypatch.setattr(
@@ -217,7 +241,7 @@ def test_the_instructions_request_trusts_only_the_servers_own_check(
             assert f"Bearer {token}" in other.bearers
         assert note == [] or name not in note[0]
         return
-    assert other.bearers == []  # the rogue cert's server got nothing
+    assert other.bearers == []  # nothing reached the other server
     assert f"## {name}" not in prompt
     assert len(note) == 1 and name in note[0]
     assert "Traceback" not in out.err
@@ -235,8 +259,9 @@ def test_a_port_out_of_range_matches_no_gateway_and_gets_the_system_store(
     )
     monkeypatch.setenv("HOME", str(tmp_path))
     gw = "https://127.0.0.1:4508"
+    # an entry on the gateway's own origin gets that check, verifying nothing
     assert cs._instructions_context("forensic-mcp", f"{gw}/mcp/x", gw).verify_mode == (
         ssl.CERT_NONE
-    )  # the planted must-fail: a match would get this
+    )
     ctx = cs._instructions_context("remnux-mcp", "https://127.0.0.1:99999/mcp", gw)
     assert (ctx.verify_mode, ctx.check_hostname) == (ssl.CERT_REQUIRED, True)
