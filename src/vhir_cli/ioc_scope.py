@@ -29,6 +29,7 @@ import ipaddress
 import re
 from dataclasses import dataclass
 
+from vhir_cli import ioc_types
 from vhir_cli.ioc_groups import TEXT_ONLY
 
 #: Scope labels, ordered from "hand this to a blocklist" to "definitely not".
@@ -133,10 +134,10 @@ _V6 = _table(
 
 
 def classify_address(value: str) -> str:
-    """Return the routability scope of ``value``: the first row of its
-    family's table that holds it."""
+    """Return the routability scope of ``value``, refanged as record_finding
+    refangs it: the first row of its family's table that holds it."""
     try:
-        addr = ipaddress.ip_address(value.strip())
+        addr = ipaddress.ip_address(ioc_types.refang(value).strip())
     except ValueError:
         return NOT_AN_ADDRESS
     if addr.version == 6 and addr.ipv4_mapped is not None:
@@ -185,8 +186,8 @@ _PORT = re.compile(r":\d{1,5}$")
 
 def _bare(value: str) -> str:
     """The address of a value that may carry a trailing :port (IPv4 only; an
-    IPv6 address has colons of its own)."""
-    v = value.strip()
+    IPv6 address has colons of its own), refanged first: 10[.]0[.]0[.]5[:]445."""
+    v = ioc_types.refang(value).strip()
     return _PORT.sub("", v) if v.count(":") == 1 else v
 
 

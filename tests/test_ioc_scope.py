@@ -170,6 +170,31 @@ def test_ipv4_with_port_is_classified_by_its_address():
     assert scoped.non_routable["IPv4"] == [("10.0.0.5:445", PRIVATE)]
 
 
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("10[.]4[.]1[.]22", PRIVATE),
+        ("192[.]168[.]1[.]1", PRIVATE),
+        ("8[.]8[.]8[.]8", ROUTABLE),
+        ("100[.]64[.]0[.]1", CGNAT),
+    ],
+)
+def test_a_defanged_address_is_classified_as_its_refanged_form(value, expected):
+    assert classify_address(value) == expected
+
+
+def test_a_defanged_address_is_tiered_and_listed_as_given():
+    from vhir_cli.ioc_groups import TEXT_ONLY
+
+    values = ["10[.]4[.]1[.]22", "10[.]0[.]0[.]5[:]445", "185[.]220[.]101[.]45"]
+    scoped = scope_iocs({"IPv4": values, TEXT_ONLY: ["192[.]168[.]1[.]1"]})
+    assert scoped.routable == {"IPv4": ["185[.]220[.]101[.]45"]}
+    assert scoped.non_routable == {
+        "IPv4": [("10[.]0[.]0[.]5[:]445", PRIVATE), ("10[.]4[.]1[.]22", PRIVATE)],
+        TEXT_ONLY: [("192[.]168[.]1[.]1", PRIVATE)],
+    }
+
+
 def test_unparseable_address_value_stays_listed_as_is():
     scoped = scope_iocs({"IPv4": ["10.0.0.1/8", "not-an-ip"]})
     assert scoped.routable["IPv4"] == ["10.0.0.1/8", "not-an-ip"]
