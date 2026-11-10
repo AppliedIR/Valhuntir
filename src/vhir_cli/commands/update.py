@@ -557,6 +557,17 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
     return True
 
 
+def _confirm(offer: str, subject: list[str], question: str) -> bool:
+    """y or yes is Yes; anything else, or no answer, is No and recorded."""
+    try:
+        yes = input(question).strip().lower() in ("y", "yes")
+    except EOFError:
+        yes = False
+    if not yes:
+        _record_decline(offer, subject)
+    return yes
+
+
 def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     """After the CPU build is in and --final passed: offer to remove the CUDA
     packages it doesn't use. Asks first, loudly; the default is No. Nothing
@@ -602,8 +613,7 @@ def _cleanup(venv_python: str, checker: Path, lock: Path) -> None:
         "  links into it). A later GPU install downloads them again (~3 GB)."
     )
     print("  " + "=" * 66)
-    if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
-        _record_decline(offer, subject)
+    if not _confirm(offer, subject, "  Remove them now? [y/N] "):
         print("  Kept. The commands above remove them later.")
         return
     py = ["--python", venv_python]
@@ -637,8 +647,7 @@ def _offer_opencti_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
             f"  use it again: uv pip install --python {venv_python} pycti"
         )
         print("  " + "=" * 66)
-        if input("  Remove them now? [y/N] ").strip().lower() not in ("y", "yes"):
-            _record_decline(offer, subject)
+        if not _confirm(offer, subject, "  Remove them now? [y/N] "):
             print("  Kept. The command above removes them later.")
             return
         py = ["--python", venv_python]
@@ -762,13 +771,8 @@ def _offer_opensearch(
         return
     print(_opensearch_cost(compose))
     verb = "Install" if subject[1] == "absent" else "Upgrade"
-    try:
-        answer = input(f"\n  {verb} OpenSearch now? [y/N] ").strip().lower()
-    except EOFError:
-        answer = ""
     script = shlex.quote(str(setup_script))
-    if answer not in ("y", "yes"):
-        _record_decline(offer, subject)
+    if not _confirm(offer, subject, f"\n  {verb} OpenSearch now? [y/N] "):
         human_steps.add(f"  Skipped. To {verb.lower()} later: bash {script}")
         print()
         return
@@ -1609,13 +1613,10 @@ def _offer_sift_tools() -> None:
         "  SANS's installer updates them (15-20 minutes on the SANS OVA;"
         " it asks for your sudo password)."
     )
-    try:  # the command is in the question: it's asked, not a step to do later
-        ask = "  Run `sudo cast install teamdfir/sift` now? [y/N] "
-        answer = input(ask).strip().lower()
-    except EOFError:
-        answer = ""
-    if answer not in ("y", "yes"):
-        _record_decline(offer, [vol])
+    # the command is in the question: it's asked, not a step to do later
+    if not _confirm(
+        offer, [vol], "  Run `sudo cast install teamdfir/sift` now? [y/N] "
+    ):
         human_steps.add(
             "Skipped. To update later: `sudo cast install teamdfir/sift`, then " + rerun
         )

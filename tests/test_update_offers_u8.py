@@ -431,3 +431,23 @@ def test_with_no_terminal_opencti_leftovers_are_listed_skipped(box, capsys):
     calls, _ = lock._opencti(box, tty=False, answers=["y"])
     assert not _asked(calls)
     assert _skipped(OPENCTI) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("reply", [EOFError, "", "n", "no", "yep", "ok", "y es"])
+def test_confirm_takes_no_answer_and_anything_but_yes_as_no(reply):
+    with (
+        patch("builtins.input", side_effect=[reply]),
+        patch.object(update, "_record_decline") as record,
+    ):
+        assert update._confirm("an offer", ["a"], "  Go? [y/N] ") is False
+    record.assert_called_once_with("an offer", ["a"])
+
+
+@pytest.mark.parametrize("reply", ["y", "yes", " Y ", "YES"])
+def test_confirm_takes_y_or_yes_as_yes(reply):
+    with (
+        patch("builtins.input", side_effect=[reply]),
+        patch.object(update, "_record_decline") as record,
+    ):
+        assert update._confirm("an offer", ["a"], "  Go? [y/N] ") is True
+    assert not record.called
