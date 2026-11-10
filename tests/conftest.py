@@ -154,6 +154,17 @@ def _outside_codex_s_sandbox(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def data_installed(monkeypatch):
+    """vhir update offers the knowledge index and the triage databases only
+    when the venv's packages say they are absent; the stand-in subprocess
+    answers elsewhere say nothing about them, so every test finds them
+    present. tests/test_update_data_offer.py overrides this fixture."""
+    from vhir_cli.commands import update
+
+    monkeypatch.setattr(update, "_data_absent", lambda *a: False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def gateway_health(monkeypatch):
     """No test dials the gateway or sleeps for real while vhir waits for its
     /health: the gateway module gets the stand-in's transport and clock

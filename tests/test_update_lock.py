@@ -107,6 +107,7 @@ def _update(
     unit_show=UNIT_SHOW,
     gateway=None,
     unreadable=None,
+    data=None,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
@@ -120,7 +121,9 @@ def _update(
     `systemctl --user show` prints. `gateway` (tests.test_update_gateway_state)
     is what /health answers on every call, and the repos it pulls. A
     `restart_rc` exception is what the restart raises. `unreadable` is (repo,
-    "before" or "after"): its HEAD can't be read before its pull, or after it."""
+    "before" or "after"): its HEAD can't be read before its pull, or after it.
+    `data(cmd)` answers a command first when it returns a result
+    (tests.test_update_data_offer)."""
     check_rc = check_rc or {}
     calls = []
     if gateway is not None:
@@ -149,6 +152,8 @@ def _update(
 
     def run(cmd, **kw):
         calls.append([str(c) for c in cmd])
+        if data and (answered := data([str(c) for c in cmd])):
+            return answered
         result = MagicMock(returncode=0, stdout="0", stderr="")
         if cmd[0] == "nvidia-smi" and smi_hangs:
             raise subprocess.TimeoutExpired(cmd, 30)
