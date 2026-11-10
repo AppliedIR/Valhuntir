@@ -117,7 +117,10 @@ def _refresh(
         )
     run.path, run.before = path, before
     run.after = path.read_bytes() if path.exists() else None
-    run.doc = json.loads(run.after) if run.after else None
+    try:
+        run.doc = json.loads(run.after) if run.after else None
+    except json.JSONDecodeError:  # a row that leaves the file broken asserts on it
+        run.doc = None
     run.prompts = [c[1] for c in run.calls if c[0] == "input"]
     run.asked = [p for p in run.prompts if APPLY in p]
     run.backups = sorted(box.home.glob(".claude.json.vhir-backup-*"))
