@@ -547,6 +547,63 @@ def _confirm(offer: str, subject: list[str], question: str) -> bool:
     return yes
 
 
+# A3: (package, offer, what, the venv call that says absent, the downloader)
+_TRIAGE_CHECK = (
+    "import sys; from windows_triage.config import get_config; c = get_config();"
+    " sys.exit(not all(p.is_file() and p.stat().st_size"
+    " for p in (c.known_good_db, c.context_db)))"
+)
+_DATA = (
+    ("rag-mcp", "knowledge index download", "The knowledge index",
+     ["-m", "rag_mcp.status", "--json", "--no-check"], "rag_mcp.scripts.download_index"),
+    ("windows-triage-mcp", "triage database download", "The triage databases",
+     ["-c", _TRIAGE_CHECK], "windows_triage.scripts.download_databases"),
+)  # fmt: skip
+
+
+def _data_absent(venv_python: str, check: list[str]) -> bool:
+    """The package's own answer: the status JSON's document_count (as
+    setup-sift.sh reads it), else the check's exit status."""
+    try:
+        r = subprocess.run(
+            [venv_python, "-I", *check], capture_output=True, text=True, timeout=120
+        )
+        if check[0] == "-c":
+            return r.returncode != 0
+        status = json.loads(r.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return True
+    return not (isinstance(status, dict) and status.get("document_count", 0))
+
+
+def _offer_data(manifest: dict, venv_python: str) -> bool:
+    """A3, before the restart, for installed packages only: True when a
+    download ran. No --tag: each downloader takes its own default release."""
+    downloaded = False
+    for package, offer, what, check, module in _DATA:
+        if package not in manifest.get("packages", {}):
+            continue
+        if not _data_absent(venv_python, check) or not _may_ask(
+            offer, ["absent"], "absent"
+        ):
+            continue
+        question = f"\n  {what} isn't installed. Download it now? [y/N] "
+        if not _confirm(offer, ["absent"], question):
+            continue
+        cmd = [venv_python, "-I", "-m", module]
+        try:
+            ok = subprocess.run(cmd, timeout=3600).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        downloaded = downloaded or ok
+        if not ok:
+            human_steps.add(
+                "  Download failed. Set GITHUB_TOKEN (GitHub can refuse unauthenticated"
+                f" downloads) and run: {shlex.join(cmd)}, then restart the gateway."
+            )
+    return downloaded
+
+
 def _offer_cuda_cleanup(venv_python: str, checker: Path, lock: Path) -> None:
     """After the CPU build is in and --final passed: offer to remove the CUDA
     packages it doesn't use. Asks first, loudly; the default is No. Nothing
@@ -1470,6 +1527,9 @@ def _finish_update(
             "  The updated launch line takes effect at the next gateway restart."
         )
 
+    # Step 6.6 (A3): absent data, downloaded before the restart that loads it
+    downloaded = _offer_data(manifest, str(Path(venv) / "bin" / "python"))
+
     # Step 7: Restart gateway
     restarted = failure = None  # None: --no-restart
     if no_restart:
@@ -1529,7 +1589,9 @@ def _finish_update(
         )
     elif restarted:
         health = gateway.wait_for_health(budget)
-    elif _needs_restart(pre_update_git, repos, client_setup._LAUNCHERS_UPDATED):
+    elif downloaded or _needs_restart(
+        pre_update_git, repos, client_setup._LAUNCHERS_UPDATED
+    ):
         health = gateway.HealthAnswer(False, RESTART_REASON, gateway.RESTART_FIX)
     else:
         health = gateway.wait_for_health(budget)
