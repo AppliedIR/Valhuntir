@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 import pytest
 
 from vhir_cli.ioc_scope import (
+    BENCHMARKING,
+    BROADCAST,
     CGNAT,
     DOCUMENTATION,
     LINK_LOCAL,
@@ -12,7 +16,12 @@ from vhir_cli.ioc_scope import (
     MULTICAST,
     NOT_AN_ADDRESS,
     PRIVATE,
+    PROTOCOL,
+    RESERVED,
     ROUTABLE,
+    SIX_TO_FOUR,
+    THIS_NETWORK,
+    UNIQUE_LOCAL,
     UNSPECIFIED,
     classify_address,
     is_blocklist_candidate,
@@ -52,13 +61,57 @@ def test_classify_ipv4(value, expected):
         ("2606:4700:4700::1111", ROUTABLE),
         ("::1", LOOPBACK),
         ("fe80::1", LINK_LOCAL),
-        ("fd00::1", PRIVATE),
+        ("fd00::1", UNIQUE_LOCAL),
         ("2001:db8::1", DOCUMENTATION),
         ("ff02::1", MULTICAST),
     ],
 )
 def test_classify_ipv6(value, expected):
     assert classify_address(value) == expected
+
+
+# Each special-purpose range under its own label, and the IPv4-mapped form of an
+# address under its IPv4 address's label: the same on every supported Python.
+LABELS = [
+    ("192.0.0.8", PROTOCOL),
+    ("192.0.0.170", PROTOCOL),
+    ("192.0.0.9", ROUTABLE),
+    ("198.18.0.1", BENCHMARKING),
+    ("198.19.255.254", BENCHMARKING),
+    ("240.0.0.1", RESERVED),
+    ("255.255.255.255", BROADCAST),
+    ("0.1.2.3", THIS_NETWORK),
+    ("fd00::1", UNIQUE_LOCAL),
+    ("fc00::1", UNIQUE_LOCAL),
+    ("2001:2::1", BENCHMARKING),
+    ("2001::1", PROTOCOL),
+    ("2001:20::1", ROUTABLE),
+    ("2002::1", SIX_TO_FOUR),
+    ("3fff::1", DOCUMENTATION),
+    ("4000::1", RESERVED),
+    ("::ffff:10.0.0.1", PRIVATE),
+    ("::ffff:8.8.8.8", ROUTABLE),
+    ("::ffff:192.0.2.1", DOCUMENTATION),
+    ("::ffff:100.64.0.1", CGNAT),
+    ("::ffff:127.0.0.1", LOOPBACK),
+]
+
+
+@pytest.mark.parametrize("value,expected", LABELS)
+def test_each_range_has_its_own_label(value, expected):
+    assert classify_address(value) == expected
+
+
+def test_no_answer_comes_from_the_ipaddress_flags(monkeypatch):
+    # The flags changed between Python versions; the table must not lean on them.
+    def unused(self):
+        raise AssertionError("an ipaddress is_* flag was read")
+
+    for cls in (ipaddress.IPv4Address, ipaddress.IPv6Address):
+        for flag in [n for n in dir(cls) if n.startswith("is_")]:
+            monkeypatch.setattr(cls, flag, property(unused))
+    for value, expected in LABELS + [("10.4.1.22", PRIVATE), ("8.8.8.8", ROUTABLE)]:
+        assert classify_address(value) == expected, value
 
 
 def test_172_16_boundaries_are_exact():

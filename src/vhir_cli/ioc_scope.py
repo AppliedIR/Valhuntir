@@ -16,8 +16,11 @@ Deciding whether a given internal address is an indicator or infrastructure
 needs context this module does not have, so it does not pretend to: it reports
 routability, which is a fact, and leaves the judgement to the examiner.
 
-Uses the standard library's ``ipaddress``, so the classification follows the
-IANA special-purpose registries rather than a hand-maintained prefix list.
+The ranges are the IANA IPv4 and IPv6 special-purpose address registries, written
+out below as one table rather than read from ``ipaddress``'s ``is_*`` flags:
+those flags changed between Python versions, and an examiner must get the same
+answer for the same address on every supported Python. An IPv4-mapped IPv6
+address (``::ffff:10.0.0.1``) is classified as the IPv4 address it carries.
 """
 
 from __future__ import annotations
@@ -38,6 +41,15 @@ DOCUMENTATION = "documentation"
 MULTICAST = "multicast"
 RESERVED = "reserved"
 UNSPECIFIED = "unspecified"
+THIS_NETWORK = "this-network"
+PROTOCOL = "protocol-assignments"
+BENCHMARKING = "benchmarking"
+BROADCAST = "broadcast"
+UNIQUE_LOCAL = "unique-local"
+SIX_TO_FOUR = "6to4"
+TRANSLATION = "translation"
+DISCARD = "discard"
+SRV6 = "srv6"
 NOT_AN_ADDRESS = "not-an-address"
 
 #: What each label means, shown in reports so the tiering explains itself.
@@ -47,53 +59,90 @@ SCOPE_NOTES: dict[str, str] = {
     LOOPBACK: "loopback",
     LINK_LOCAL: "link-local (RFC 3927 / RFC 4291)",
     CGNAT: "carrier-grade NAT (RFC 6598)",
-    DOCUMENTATION: "documentation range (RFC 5737 / RFC 3849)",
+    DOCUMENTATION: "documentation range (RFC 5737 / RFC 3849 / RFC 9637)",
     MULTICAST: "multicast",
     RESERVED: "reserved by IANA",
     UNSPECIFIED: "unspecified address",
+    THIS_NETWORK: '"this network" (RFC 791)',
+    PROTOCOL: "IETF protocol assignments (RFC 6890)",
+    BENCHMARKING: "benchmarking (RFC 2544 / RFC 5180)",
+    BROADCAST: "limited broadcast (RFC 919)",
+    UNIQUE_LOCAL: "unique local (RFC 4193) — internal host, not a blocklist candidate",
+    SIX_TO_FOUR: "6to4 transition address (RFC 3056)",
+    TRANSLATION: "local-use IPv4/IPv6 translation (RFC 8215)",
+    DISCARD: "discard-only (RFC 6666)",
+    SRV6: "SRv6 segment identifiers (RFC 9602)",
     NOT_AN_ADDRESS: "not parseable as an IP address",
 }
 
-_CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
-_DOC_V4 = (
-    ipaddress.ip_network("192.0.2.0/24"),
-    ipaddress.ip_network("198.51.100.0/24"),
-    ipaddress.ip_network("203.0.113.0/24"),
+
+def _table(rows: tuple[tuple[str, str], ...]) -> tuple:
+    return tuple((ipaddress.ip_network(net), scope) for net, scope in rows)
+
+
+#: First match wins, so a globally reachable exception sits above its block.
+_V4 = _table(
+    (
+        ("0.0.0.0/32", UNSPECIFIED),
+        ("0.0.0.0/8", THIS_NETWORK),
+        ("10.0.0.0/8", PRIVATE),
+        ("100.64.0.0/10", CGNAT),
+        ("127.0.0.0/8", LOOPBACK),
+        ("169.254.0.0/16", LINK_LOCAL),
+        ("172.16.0.0/12", PRIVATE),
+        ("192.0.0.9/32", ROUTABLE),
+        ("192.0.0.10/32", ROUTABLE),
+        ("192.0.0.0/24", PROTOCOL),
+        ("192.0.2.0/24", DOCUMENTATION),
+        ("192.168.0.0/16", PRIVATE),
+        ("198.18.0.0/15", BENCHMARKING),
+        ("198.51.100.0/24", DOCUMENTATION),
+        ("203.0.113.0/24", DOCUMENTATION),
+        ("224.0.0.0/4", MULTICAST),
+        ("255.255.255.255/32", BROADCAST),
+        ("240.0.0.0/4", RESERVED),
+        ("0.0.0.0/0", ROUTABLE),
+    )
 )
-_DOC_V6 = ipaddress.ip_network("2001:db8::/32")
+_V6 = _table(
+    (
+        ("::/128", UNSPECIFIED),
+        ("::1/128", LOOPBACK),
+        ("64:ff9b::/96", ROUTABLE),
+        ("64:ff9b:1::/48", TRANSLATION),
+        ("100::/64", DISCARD),
+        ("2001:1::1/128", ROUTABLE),
+        ("2001:1::2/128", ROUTABLE),
+        ("2001:3::/32", ROUTABLE),
+        ("2001:4:112::/48", ROUTABLE),
+        ("2001:20::/28", ROUTABLE),
+        ("2001:30::/28", ROUTABLE),
+        ("2001:2::/48", BENCHMARKING),
+        ("2001::/23", PROTOCOL),
+        ("2001:db8::/32", DOCUMENTATION),
+        ("2002::/16", SIX_TO_FOUR),
+        ("3fff::/20", DOCUMENTATION),
+        ("5f00::/16", SRV6),
+        ("fc00::/7", UNIQUE_LOCAL),
+        ("fe80::/10", LINK_LOCAL),
+        ("ff00::/8", MULTICAST),
+        ("2000::/3", ROUTABLE),
+        ("::/0", RESERVED),
+    )
+)
 
 
 def classify_address(value: str) -> str:
-    """Return the routability scope of ``value``.
-
-    Order matters: an address can satisfy several predicates, and the most
-    specific, most useful-to-an-examiner label wins.
-    """
+    """Return the routability scope of ``value``: the first row of its
+    family's table that holds it."""
     try:
         addr = ipaddress.ip_address(value.strip())
     except ValueError:
         return NOT_AN_ADDRESS
-
-    if addr.is_unspecified:
-        return UNSPECIFIED
-    if addr.is_loopback:
-        return LOOPBACK
-    if addr.is_link_local:
-        return LINK_LOCAL
-    if addr.is_multicast:
-        return MULTICAST
-    if addr.version == 4:
-        if addr in _CGNAT_V4:
-            return CGNAT
-        if any(addr in net for net in _DOC_V4):
-            return DOCUMENTATION
-    elif addr in _DOC_V6:
-        return DOCUMENTATION
-    if addr.is_private:
-        return PRIVATE
-    if addr.is_reserved:
-        return RESERVED
-    return ROUTABLE
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    table = _V4 if addr.version == 4 else _V6
+    return next(scope for net, scope in table if addr in net)
 
 
 def is_blocklist_candidate(value: str) -> bool:
