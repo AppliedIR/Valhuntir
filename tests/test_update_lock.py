@@ -22,8 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import vhir_cli.gateway as gateway_mod
-from tests.stub_check import stubbed
+from tests import health_stand_in
 from tests.test_update import STEPS_CLOSE, STEPS_OPEN, steps_block
 from vhir_cli.commands.update import _PACKAGE_PATHS, cmd_update
 
@@ -106,7 +105,7 @@ def _update(
     restart_rc=0,
     unit_show=UNIT_SHOW,
     gateway=None,
-    identity=None,
+    unreadable=None,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
@@ -116,14 +115,19 @@ def _update(
     the new code: os.execv is recorded as ["execv", *argv] and ends the run.
     Each repo named in `pulls` moves its HEAD at the pull, without a hand-over.
     `restart_rc` is the gateway restart's exit status and `unit_show` what
-    `systemctl --user show` prints. With `gateway`, the gateway check answers
-    it on every call, and the 3 s wait and the old connectivity test are
-    stand-ins. `identity` is what the gateway check's answer from disk
-    (`python -I -m sift_gateway.identity`) prints."""
+    `systemctl --user show` prints. `gateway` (tests.test_update_gateway_state)
+    is what /health answers on every call, and the repos it pulls. A
+    `restart_rc` exception is what the restart raises. `unreadable` is (repo,
+    "before" or "after"): its HEAD can't be read at the pre-pull read, or at
+    every read after it."""
     check_rc = check_rc or {}
     calls = []
+    if gateway is not None:
+        health_stand_in.current().answer = gateway.health
+        pulls = (*pulls, *gateway.pulls)
     moving = {f"/{name}" for name in pulls} | ({"/vhir"} if vhir_moves else set())
     heads = {"/vhir": "v1"}
+    reads = []
     if manifest:
         path = box.home / ".vhir" / "manifest.json"
         path.write_text(json.dumps(manifest(json.loads(path.read_text()))))
@@ -146,9 +150,6 @@ def _update(
     def run(cmd, **kw):
         calls.append([str(c) for c in cmd])
         result = MagicMock(returncode=0, stdout="0", stderr="")
-        if identity is not None and "sift_gateway.identity" in calls[-1]:
-            result.stdout = identity
-            return result
         if cmd[0] == "nvidia-smi" and smi_hangs:
             raise subprocess.TimeoutExpired(cmd, 30)
         if cmd[0] == "nvidia-smi" and gpu_found:
@@ -171,6 +172,15 @@ def _update(
             result.stdout = uv
         elif "symbolic-ref" in cmd:
             result.stdout = "main"
+        elif (
+            unreadable
+            and cmd[:2] == ["git", "-C"]
+            and cmd[2].endswith(f"/{unreadable[0]}")
+            and cmd[3:] == ["rev-parse", "HEAD"]
+        ):
+            reads.append(cmd)
+            if (len(reads) == 1) == (unreadable[1] == "before"):
+                result.returncode, result.stdout = 128, ""
         elif cmd[:2] == ["git", "-C"] and any(cmd[2].endswith(m) for m in moving):
             repo = next(m for m in moving if cmd[2].endswith(m))
             if cmd[3:] == ["rev-parse", "HEAD"]:
@@ -178,6 +188,8 @@ def _update(
             elif cmd[3:5] == ["pull", "--ff-only"]:
                 heads[repo] = "v2"
         elif cmd[:3] == ["systemctl", "--user", "restart"]:
+            if isinstance(restart_rc, BaseException):
+                raise restart_rc
             result.returncode = restart_rc
             result.stderr = (
                 "" if restart_rc == 0 else "Job for vhir-gateway.service failed."
@@ -222,15 +234,6 @@ def _update(
         ),
         patch("os.execv", side_effect=execv),
     ]
-    if gateway is not None:
-        stands += [
-            # the base has no check_gateway yet, so a row fails on its own
-            # assert of the state, never on the missing name; stub_check (in
-            # the calling row's file) asserts the name and its use
-            stubbed(gateway_mod, "check_gateway", lambda *a, **kw: gateway),
-            patch("time.sleep"),
-            patch("vhir_cli.commands.setup._run_connectivity_test"),
-        ]
     with contextlib.ExitStack() as stack:
         for stand in stands:
             stack.enter_context(stand)

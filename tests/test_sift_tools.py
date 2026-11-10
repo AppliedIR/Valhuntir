@@ -389,10 +389,7 @@ def test_vhir_update_ends_with_it_and_the_smoke_test_leaves_it_out(
     assert "UPDATE THEM" not in out
     block = got.err[got.err.rindex(human_steps.OPEN) :]
     assert "\n  UPDATE THEM\n" in block
-    if no_restart:
-        smoke.assert_not_called()
-    else:
-        smoke.assert_called_once_with(sift_tools=False)
+    smoke.assert_not_called()  # update no longer runs it
 
 
 # A Volatility 2.27.0 that can't save its symbols, and no Hayabusa: the SIFT

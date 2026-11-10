@@ -44,7 +44,6 @@ import vhir_cli
 from tests import test_update_lock
 from tests.stub_check import stub, stub_check  # noqa: F401 (the fixture)
 from vhir_cli import approval_auth, controls, credentials, human_steps, keys, sift_tools
-from vhir_cli import gateway as gateway_mod
 from vhir_cli import main as main_mod
 from vhir_cli.commands import client_setup, codex_controls, join, setup
 from vhir_cli.commands import update as upd
@@ -90,7 +89,6 @@ HEADS = {
     "vhir": ("a" * 40, "b" * 40),
     "opensearch-mcp": ("c" * 40, "d" * 40),
 }
-PASS = SimpleNamespace(outcome="pass", reason="", fix="", stale=False)
 LONG_PW = "Qz7mVt2pLxR4nW8s"  # 16
 MID_PW = "Qz7mVt2pLx"  # 10
 CJK = "漢字仮名交じり文書体系統計画表"  # 15 code points
@@ -565,15 +563,6 @@ class Run:
         if k["real_password_dir"]:
             mp.setattr(upd, "_ensure_password_dir", _REAL_ENSURE_PASSWORD_DIR)
         stub(mp, approval_auth, "getpass_prompt", self._getpass, calls="any")
-        # the base has no check_gateway yet; Step 8 reaches it at the fix
-        stub(
-            mp,
-            gateway_mod,
-            "check_gateway",
-            lambda *a, **kw: PASS,
-            exists=False,
-            calls="any",
-        )
         stub(mp, setup, "_run_connectivity_test", lambda *a, **kw: None, calls="any")
         stub(mp, controls, "applied", lambda *a, **kw: (False, ""), calls="any")
         settings = b.home / ".claude" / "settings.json"
