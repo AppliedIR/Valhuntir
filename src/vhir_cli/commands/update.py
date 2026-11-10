@@ -215,7 +215,6 @@ def _ensure_password_dir() -> None:
             f"  Run manually: sudo mkdir -p {passwords_dir} && "
             f"sudo chown $USER:$USER {passwords_dir} && "
             f"sudo chmod 700 {passwords_dir}",
-            file=sys.stderr,
         )
 
 
@@ -277,7 +276,7 @@ def _offer_signing_key(identity: dict) -> None:
         with contextlib.redirect_stderr(io.StringIO()) as said:
             approval_auth._check_lockout(examiner)
     except SystemExit:
-        human_steps.add(f"  {said.getvalue().strip()}{retry}", file=sys.stderr)
+        human_steps.add(f"  {said.getvalue().strip()}{retry}")
         return
     try:
         credentials.upgrade(examiner, config_path)
@@ -288,7 +287,7 @@ def _offer_signing_key(identity: dict) -> None:
         OSError,
         ValueError,
     ) as e:
-        human_steps.add(f"  {e}{retry}", file=sys.stderr)
+        human_steps.add(f"  {e}{retry}")
 
 
 def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
@@ -393,7 +392,6 @@ def _check_uv_floor() -> None:
             " --torch-backend and hash checks.\n"
             "Update it: uv self update   (or reinstall: "
             "curl -LsSf https://astral.sh/uv/install.sh | sh)",
-            file=sys.stderr,
         )
         sys.exit(1)
 
@@ -406,7 +404,6 @@ def _stop_part_way(args) -> NoReturn:
         " changed, but the forensic controls weren't redeployed and the gateway"
         " wasn't restarted.\n  Fix the problem above, then finish with:"
         f" vhir update{flag}",
-        file=sys.stderr,
     )
     sys.exit(1)
 
@@ -419,14 +416,11 @@ def _check_lock(args, venv_python: str, checker: Path, lock: Path, mode: str) ->
             [venv_python, str(checker), mode, "--lock", str(lock)], timeout=120
         )
     except subprocess.TimeoutExpired:
-        human_steps.add(
-            "  The dependency check timed out after 120 seconds.", file=sys.stderr
-        )
+        human_steps.add("  The dependency check timed out after 120 seconds.")
         _stop_part_way(args)
     if result.returncode != 0:
         human_steps.add(
             "  The installed packages don't match the dependency lock (above).",
-            file=sys.stderr,
         )
         _stop_part_way(args)
 
@@ -554,14 +548,12 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
     if _declined(offer) == subject:
         human_steps.add(
             f"Declined earlier: {offer} ({shown}). It is asked again when that changes.",
-            file=sys.stderr,
         )
         return False
     if not sys.stdin.isatty():
         human_steps.add(
             f"Not asked (no terminal): {offer}."
             " Re-run `vhir update` in a terminal to be asked.",
-            file=sys.stderr,
         )
         return False
     if os.environ.get("VHIR_ASSUME_DEFAULTS") == "true":
@@ -569,7 +561,6 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
             f"Not asked (VHIR_ASSUME_DEFAULTS is set): {offer}."
             + (f" {taken}" if taken else "")
             + " Re-run `vhir update` without it to be asked.",
-            file=sys.stderr,
         )
         return False
     return True
@@ -798,7 +789,6 @@ def _offer_opensearch(
             f"  OpenSearch {verb.lower()}: setup-opensearch.sh didn't finish in 5 minutes"
             " and was stopped;\n  the container may still be starting (docker ps)."
             f" Run it again:\n    bash {script}",
-            file=sys.stderr,
         )
         print()
         return
@@ -807,10 +797,9 @@ def _offer_opensearch(
     if result.returncode == 3:
         human_steps.add(
             f"  OpenSearch was {done}, but its snapshots aren't set up; see above.",
-            file=sys.stderr,
         )
     elif result.returncode != 0:
-        human_steps.add(f"  OpenSearch {verb.lower()} failed.", file=sys.stderr)
+        human_steps.add(f"  OpenSearch {verb.lower()} failed.")
     print()
 
 
@@ -967,7 +956,7 @@ def _handed_steps(after_pull: str | None) -> list:
 
 
 def _stop(text: str) -> NoReturn:
-    human_steps.add(text, file=sys.stderr)
+    human_steps.add(text)
     sys.exit(1)
 
 
@@ -1029,7 +1018,6 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
             "  was not found in any known location. `vhir update` cannot\n"
             "  pull or reinstall it automatically. Update manually:\n"
             "    cd <path-to-opensearch-mcp> && git pull && uv pip install -e .\n",
-            file=sys.stderr,
         )
 
     if after_pull is not None:  # Steps 1-4 ran in the process that started this one
@@ -1142,9 +1130,7 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
                 timeout=60,
             )
         except subprocess.TimeoutExpired:
-            human_steps.add(
-                f"Pulling {name} timed out after 60 seconds.", file=sys.stderr
-            )
+            human_steps.add(f"Pulling {name} timed out after 60 seconds.")
             # this repo too: a pull can merge, then fail or hang in a hook
             _stop_after_pull(args, pulled, path, old)
         if result.returncode != 0:
@@ -1156,7 +1142,6 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
                 f"    git -C {quoted_path} stash push -u\n"
                 "    vhir update\n"
                 f"    git -C {quoted_path} stash pop",
-                file=sys.stderr,
             )
             _stop_after_pull(args, pulled, path, old)
         # One read: the count and the re-exec test below both use it
@@ -1242,7 +1227,6 @@ def _install_packages(
         human_steps.add(
             f"Dependency lock not found in {source / 'deps'}.\n"
             "The sift-mcp checkout is older than this vhir-cli; pull it to main.",
-            file=sys.stderr,
         )
         _stop_part_way(args)
     installed = manifest.get("packages", {})
@@ -1307,14 +1291,12 @@ def _install_packages(
     except subprocess.TimeoutExpired:
         human_steps.add(
             "  Reading the venv's packages timed out after 120 seconds.",
-            file=sys.stderr,
         )
         _stop_part_way(args)
     if held.returncode != 0:
         human_steps.add(
             f"  Cannot read the venv's packages against the dependency lock: "
             f"{held.stderr.strip()}",
-            file=sys.stderr,
         )
         _stop_part_way(args)
     cmd.extend(held.stdout.split())
@@ -1325,10 +1307,9 @@ def _install_packages(
     if result.returncode != 0:
         human_steps.add(
             f"  Package install failed: {result.stderr.strip()}",
-            file=sys.stderr,
         )
         if variant == "cpu":
-            human_steps.add(_TORCH_INDEX_HINT, file=sys.stderr)
+            human_steps.add(_TORCH_INDEX_HINT)
         _stop_part_way(args)
     print(f"  Reinstalling packages... {len(pkg_paths)} packages")
     _check_lock(args, venv_python, checker, lock, "--strict")
@@ -1379,7 +1360,6 @@ def _update_incomplete(reason: str) -> NoReturn:
         f"  {reason}.\n"
         "  The new code is installed, but the forensic controls, the manifest and\n"
         "  the gateway restart were not done with it.",
-        file=sys.stderr,
     )
     sys.exit(1)
 
