@@ -1529,22 +1529,24 @@ def _finish_update(
     # The version installed now, read fresh: vhir_cli.__version__ was read
     # when this process started, which can be before the pull
     installed = importlib.metadata.version("vhir-cli")
-    status = "complete" if health.ok else "pending"
+    # A4, on Step 8's budget: Claude Code's server list from the gateway's backends
+    skip = client_setup.refresh_claude_code(budget, clients) if health.ok else None
+    reason, fix = skip or (health.reason, health.fix)
+    done = health.ok and skip is None
     _write_update_state(
         installed,
         manifest.get("git", {}).get("vhir", ""),
-        status=status,
-        reason=health.reason,
-        fix=health.fix,
+        status="complete" if done else "pending",
+        reason=reason,
+        fix=fix,
     )
-    if not health.ok:
+    if not done:
         human_steps.add(
-            f"  Update pending: {health.reason}\n  Run: {health.fix}\n"
-            "  Then run: vhir update"
+            f"  Update pending: {reason}\n  Run: {fix}\n  Then run: vhir update"
         )
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
-    if health.ok:
+    if done:  # a skip's pending line already names the backends not up
         b = health.backends or {}
         if down := [
             n
@@ -1568,7 +1570,7 @@ def _finish_update(
 
     # Last, so it isn't scrolled away: SIFT tools too old for Valhuntir
     _offer_sift_tools()
-    if not health.ok and health.reason != RESTART_REASON:  # the asked one exits 0
+    if not done and reason != RESTART_REASON:  # the asked one exits 0
         sys.exit(1)
 
 

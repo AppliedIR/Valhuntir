@@ -447,32 +447,41 @@ def _ask(question: str, no_terminal: str | None, *, assume: bool = False) -> str
 
 
 def _ensure_remote_binding() -> None:
-    """Check if gateway is localhost-only and offer to rebind for remote access.
+    """Offer to rebind a localhost-only gateway to 0.0.0.0, then make sure it
+    answers /health before a code is requested; exits 1 when it doesn't.
 
-    Only acts when gateway.host is exactly '127.0.0.1' and no TLS is configured.
-    Prompts the user, updates gateway.yaml, and restarts the gateway service.
+    Only rebinds when gateway.host is exactly '127.0.0.1' and no TLS is
+    configured: prompts, updates gateway.yaml and restarts the service.
     """
     import subprocess
-    import time
+
+    from vhir_cli.gateway import (
+        DEADLINE,
+        RECONNECT_HINT,
+        RESTART_FAILED_FIX,
+        Deadline,
+        wait_for_health,
+    )
+
+    def up_or_exit(answer) -> None:
+        if not answer.ok:
+            print(answer.reason, file=sys.stderr)
+            print(answer.fix, file=sys.stderr)
+            print("Then run `vhir join-code` again.", file=sys.stderr)
+            sys.exit(1)
 
     gateway_config = Path.home() / ".vhir" / "gateway.yaml"
-    if not gateway_config.exists():
-        return
-
+    config = None
     try:
         with open(gateway_config) as f:
             config = yaml.safe_load(f) or {}
     except (yaml.YAMLError, OSError):
-        return
-
-    gw = config.get("gateway", {})
-    if not isinstance(gw, dict):
-        return
+        pass
+    gw = config.get("gateway") if isinstance(config, dict) else None
 
     # Only rebind if bound to localhost; don't touch 0.0.0.0, custom IPs, or TLS
-    if gw.get("host") != "127.0.0.1":
-        return
-    if gw.get("tls"):
+    if not isinstance(gw, dict) or gw.get("host") != "127.0.0.1" or gw.get("tls"):
+        up_or_exit(wait_for_health(Deadline(DEADLINE), once=True))
         return
 
     print("The gateway is bound to 127.0.0.1 (localhost only).")
@@ -488,7 +497,7 @@ def _ensure_remote_binding() -> None:
         return
 
     # Update gateway.yaml
-    config["gateway"]["host"] = "0.0.0.0"
+    gw["host"] = "0.0.0.0"
     try:
         fd = os.open(str(gateway_config), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -500,6 +509,7 @@ def _ensure_remote_binding() -> None:
 
     # Restart gateway via systemd
     print("Restarting gateway...", end="", flush=True)
+    failed = None
     try:
         result = subprocess.run(
             ["systemctl", "--user", "restart", "vhir-gateway"],
@@ -508,45 +518,19 @@ def _ensure_remote_binding() -> None:
             text=True,
         )
         if result.returncode != 0:
-            print(f" failed: {result.stderr.strip()}", file=sys.stderr)
-            print(
-                "Try manually: systemctl --user restart vhir-gateway",
-                file=sys.stderr,
-            )
-            return
+            failed = result.stderr.strip() or f"exit status {result.returncode}"
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f" failed: {e}", file=sys.stderr)
-        return
-
-    # Wait for gateway to become healthy
-    from vhir_cli.gateway import (
-        RECONNECT_HINT,
-        get_local_gateway_url,
-        get_local_ssl_context,
-    )
-
-    port = gw.get("port", 4508)
-    health_url = f"{get_local_gateway_url()}/health"
-    ssl_ctx = get_local_ssl_context()
-    for _attempt in range(10):
-        time.sleep(1)
-        try:
-            import urllib.request
-
-            kwargs = {"timeout": 3}
-            if ssl_ctx is not None:
-                kwargs["context"] = ssl_ctx
-            with urllib.request.urlopen(health_url, **kwargs) as resp:
-                if resp.status == 200:
-                    print(" done.")
-                    print(f"Gateway now listening on 0.0.0.0:{port} (all interfaces).")
-                    print(RECONNECT_HINT)
-                    return
-        except OSError:
-            print(".", end="", flush=True)
-
-    print(" gateway did not become healthy in time.", file=sys.stderr)
-    print("Check: systemctl --user status vhir-gateway", file=sys.stderr)
+        failed = str(e)
+    if failed is not None:
+        print(f" failed ({failed})", file=sys.stderr)
+        # gateway.yaml says 0.0.0.0 now: after the restart, the rerun has no rebind
+        rerun = "vhir join-code"
+        print(RESTART_FAILED_FIX.format(rerun=rerun, hand_rerun=rerun), file=sys.stderr)
+        sys.exit(1)
+    print(" done.")
+    up_or_exit(wait_for_health(Deadline(DEADLINE)))
+    print(f"Gateway now listening on 0.0.0.0:{gw.get('port', 4508)} (all interfaces).")
+    print(RECONNECT_HINT)
 
 
 def _find_ca_cert() -> str | None:

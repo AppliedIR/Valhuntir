@@ -292,14 +292,9 @@ def _setup_client(args, identity: dict) -> None:
             if running:
                 backends_discovered = True
                 for s in running:
-                    name = s["name"]
-                    entry: dict = {
-                        "type": "streamable-http",
-                        "url": f"{sift_url.rstrip('/')}/mcp/{name}",
-                    }
-                    if local_token:
-                        entry["headers"] = {"Authorization": f"Bearer {local_token}"}
-                    servers[name] = entry
+                    servers[s["name"]] = _backend_entry(
+                        sift_url, s["name"], local_token
+                    )
 
         if not backends_discovered:
             # Gateway not reachable or no backends — fall back to aggregate
@@ -740,6 +735,105 @@ def _duplicate_backends(servers: dict, path: Path | None = None) -> list[str]:
         # "vhir" is the aggregate at /mcp, never a route under /mcp/
         and _gateway_of(str(entry.get("url", "")), routed=name != "vhir") == gw
     ]
+
+
+def _backend_entry(url: str, name: str, token, kind="streamable-http") -> dict:
+    """A per-backend gateway entry: /mcp/<name>, with the bearer if any."""
+    entry: dict = {"type": kind, "url": f"{url.rstrip('/')}/mcp/{name}"}
+    if token:
+        entry["headers"] = {"Authorization": f"Bearer {token}"}
+    return entry
+
+
+def refresh_claude_code(budget, clients) -> tuple[str, str] | None:
+    """`vhir update`: bring Claude Code's entries for the local gateway in line
+    with the backends /health lists, on the update's budget. Valhuntir's entries
+    are told by URL alone: the local gateway's /mcp or /mcp/<name>. Returns
+    None, or a pending (reason, fix) when a backend isn't up."""
+    from urllib.parse import urlsplit
+
+    from vhir_cli import gateway
+
+    path = Path.home() / ".claude.json"
+    if "claude-code" not in clients or not path.is_file():
+        return None
+
+    def fine(v) -> bool:  # busy: alive, answering a call
+        return isinstance(v, dict) and v.get("status") in ("ok", "busy")
+
+    def up(b):
+        if not isinstance(b, dict) or not b:
+            return False
+        return True if all(map(fine, b.values())) else None
+
+    answer = gateway.wait_for_health(budget, until=up)
+    b = answer.backends if answer.ok else None
+    if up(b) is not True:
+        why = answer.reason or "the gateway listed no backends"
+        if b:
+            why = ", ".join(n for n in sorted(b) if not fine(b[n])) + " not up"
+        return f"the AI client's server list was not refreshed: {why}", "vhir update"
+    kept = (
+        "  To refresh the AI client's server list, run `vhir setup client` in a"
+        " terminal."
+    )
+    url = gateway.get_local_gateway_url()
+    here = _gateway_of(url)
+
+    def ours(e) -> bool:
+        u = str(e.get("url", "")) if isinstance(e, dict) else ""
+        return _gateway_of(u) == here and bool(
+            re.fullmatch(r"/mcp(/[^/]+)?/?", urlsplit(u).path)
+        )
+
+    def read():
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        servers = doc.setdefault("mcpServers", {})
+        if not isinstance(servers, dict):
+            raise TypeError("mcpServers isn't an object")
+        return doc, servers
+
+    try:
+        _, servers = read()
+    except (ValueError, OSError, AttributeError, TypeError) as e:
+        human_steps.add(f"  Not changed: {path} ({e}).\n{kept}")
+        return None
+    if not any(map(ours, servers.values())):
+        human_steps.add(
+            f"  Claude Code has no server entries for this gateway ({url}). To"
+            " refresh its server list, run `vhir setup client` in a terminal."
+        )
+        return None
+    gone = [n for n, e in servers.items() if ours(e) and n not in b]
+    token = _read_local_token()
+    # a name that holds someone else's entry keeps it (a direct wintools-mcp)
+    add = {n: _backend_entry(url, n, token, "http") for n in b if n not in servers}
+
+    def apply():  # the shown changes, on the file as it is now
+        try:
+            doc, servers = read()
+        except (ValueError, OSError, AttributeError, TypeError):
+            return None
+        for n in gone:
+            servers.pop(n, None)
+        for n, e in add.items():
+            servers.setdefault(n, e)
+        return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+    summary = [f"add {n}" for n in add] + [f"remove {n}" for n in gone]
+    why = "its server list for this gateway, from the backends the gateway lists"
+    got = _write_user_file(
+        path,
+        apply() or "",
+        why,
+        as_json=True,
+        redact=_redact_tokens,
+        summary=summary,
+        rebuild=apply,
+    )
+    if got == "kept":
+        human_steps.add(kept)
+    return None
 
 
 def _gateway_of(url: str, routed: bool = False) -> tuple | None:
@@ -1312,6 +1406,7 @@ def _write_user_file(
     mode: int | None = None,
     redact=None,
     summary: list[str] | None = None,
+    rebuild=None,
 ) -> str:
     """Write a file the user may have edited, only with their consent.
 
@@ -1319,7 +1414,8 @@ def _write_user_file(
     "written" (they said yes, or `vhir setup client -y`; a backup was made
     first) or "kept". Asks only on a terminal (default Yes; n/no keeps);
     otherwise prints the change and keeps the file. summary: lines that say
-    what the change does, printed before the diff.
+    what the change does, printed before the diff. rebuild: called after the
+    Yes for the text to write, from the file as it is then (None: kept).
     """
     if not path.exists():
         if mode is None:
@@ -1369,6 +1465,8 @@ def _write_user_file(
         f"  Apply these changes to {path}? [Y/n] "
     ).strip().lower() not in ("", "y", "yes"):
         print(f"  Kept: {path} unchanged.")
+        return "kept"
+    if rebuild is not None and (new := rebuild()) is None:
         return "kept"
     bak = _backup(path)
     _replace_bytes(path, new.encode(), path.stat().st_mode & 0o777)
