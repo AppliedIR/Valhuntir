@@ -138,7 +138,12 @@ def test_a_gateway_that_answers_after_30_s_is_complete(box, capsys):
     ids=["rc-1", "no-systemctl"],
 )
 def test_a_failed_restart_is_pending_with_one_fix_and_no_wait(box, capsys, restart):
-    run = _run(box, capsys, no_restart=False, restart_rc=restart)
+    escaped = None
+    try:
+        run = _run(box, capsys, no_restart=False, restart_rc=restart)
+    except Exception as e:  # what the restart raised must not end the update
+        escaped = e
+    assert escaped is None, f"no exception escaped: {escaped!r}"
     assert run.state.get("status") == "pending", run.state
     assert run.state.get("fix") == RESTART_FAILED_FIX, run.state
     assert run.state.get("reason", "").startswith("the gateway restart failed ("), (

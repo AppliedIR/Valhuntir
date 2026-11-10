@@ -211,6 +211,8 @@ def _update(
         reply = replies.pop(0) if replies else ""
         if reply is EOFError:  # end of input at this prompt
             raise EOFError
+        if callable(reply):  # a row's own answer, which may act before it replies
+            reply = reply(prompt)
         return reply
 
     def execv(exe, argv):

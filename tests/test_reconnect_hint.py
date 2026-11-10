@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from tests import test_update
+from tests import health_stand_in, test_update
 from vhir_cli.commands import join
 from vhir_cli.commands.update import cmd_update
 
@@ -50,6 +50,9 @@ class TestJoin:
         return tmp_path
 
     def _rebind(self, home, code, health):
+        """The rebind with the restart answering `code`; returns the exit status
+        (None: it returned). /health is the stand-in (tests/health_stand_in.py);
+        `health` answers the old loop's urlopen."""
         with (
             patch("pathlib.Path.home", return_value=home),
             patch("builtins.input", return_value="y"),
@@ -57,26 +60,31 @@ class TestJoin:
             patch("time.sleep"),
             patch("urllib.request.urlopen", side_effect=health),
         ):
-            join._ensure_remote_binding()
+            try:
+                join._ensure_remote_binding()
+            except SystemExit as e:
+                return e.code
+        return None
 
     def test_a_restart_that_came_back_healthy_says_to_reconnect(self, home, capsys):
         ok = contextlib.nullcontext(MagicMock(status=200))
-        self._rebind(home, 0, lambda *a, **k: ok)
+        assert self._rebind(home, 0, lambda *a, **k: ok) is None
         out = capsys.readouterr().out
         assert "Gateway now listening on 0.0.0.0:4508" in out and HINT in out
 
     def test_a_failed_restart_says_nothing_more(self, home, capsys):
-        self._rebind(home, 1, lambda *a, **k: pytest.fail("health checked"))
+        assert self._rebind(home, 1, lambda *a, **k: pytest.fail("health checked")) == 1
         captured = capsys.readouterr()
-        assert "failed: stubbed" in captured.err
+        assert "failed (stubbed)" in captured.err
         assert HINT not in captured.out + captured.err
 
     def test_a_gateway_that_didn_t_come_back_healthy_says_nothing_more(
         self, home, capsys
     ):
-        self._rebind(home, 0, OSError("refused"))
+        health_stand_in.current().answer = ConnectionRefusedError()
+        assert self._rebind(home, 0, OSError("refused")) == 1
         captured = capsys.readouterr()
-        assert "did not become healthy" in captured.err
+        assert "Then run `vhir join-code` again." in captured.err
         assert HINT not in captured.out + captured.err
 
 
