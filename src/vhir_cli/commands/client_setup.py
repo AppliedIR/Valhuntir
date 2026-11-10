@@ -360,7 +360,7 @@ def _setup_client(args, identity: dict) -> None:
 
     # 3. Generate config for selected client
     try:
-        _generate_config(client, servers, examiner)
+        _generate_config(client, servers, examiner, sift_url)
     except OSError as e:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)
@@ -816,7 +816,7 @@ def _announce_claude_json(path: Path, plan: tuple, removed: list) -> None:
         )
 
 
-def _generate_config(client: str, servers: dict, examiner: str) -> None:
+def _generate_config(client: str, servers: dict, examiner: str, gateway=None) -> None:
     config = {"mcpServers": servers}
     sift = _is_sift()
 
@@ -950,7 +950,7 @@ def _generate_config(client: str, servers: dict, examiner: str) -> None:
         print_block("codex")  # what is installed now
 
     elif client == "open-webui":
-        _write_openwebui(servers)
+        _write_openwebui(servers, gateway)
         _print_mcp_block()
 
     elif client == "librechat":
@@ -2860,11 +2860,10 @@ OPENWEBUI_ADMIN_PANEL = (
 )  # fmt: skip
 
 
-def _initialize_instructions(url: str, token: str | None) -> str | None:
-    """The `instructions` an MCP endpoint returns at initialize, or None."""
+def _initialize_instructions(url: str, token: str | None, context=None) -> str | None:
+    """The `instructions` an MCP endpoint returns at initialize, or None; an
+    https URL with no ``context`` is never asked."""
     import urllib.request
-
-    from vhir_cli.gateway import get_local_ssl_context
 
     body = json.dumps(
         {
@@ -2885,9 +2884,9 @@ def _initialize_instructions(url: str, token: str | None) -> str | None:
         req.add_header("Authorization", f"Bearer {token}")
     kwargs: dict = {"timeout": 10}
     if url.startswith("https"):
-        ctx = get_local_ssl_context()
-        if ctx is not None:
-            kwargs["context"] = ctx
+        if context is None:
+            return None
+        kwargs["context"] = context
     try:
         with urllib.request.urlopen(req, **kwargs) as resp:
             raw = resp.read().decode()
@@ -2913,7 +2912,36 @@ def _initialize_instructions(url: str, token: str | None) -> str | None:
     return None
 
 
-def _write_openwebui(servers: dict) -> None:
+def _instructions_context(name: str, url: str, gateway: str | None):
+    """TLS for an entry's instructions request, by whose server it is: the
+    gateway setup discovered from (same parsed origin, never the name), else
+    wintools-mcp by its join's pin, else the system store. None: http, or a
+    pin that can't be used (then nothing is sent)."""
+    import ssl
+    from urllib.parse import urlsplit
+
+    from vhir_cli.commands.join import _wintools_ssl_context
+    from vhir_cli.gateway import _read_gateway_config, get_local_ssl_context
+
+    def origin(u: str):
+        p = urlsplit(u)
+        return p.scheme, p.hostname, p.port or {"https": 443}.get(p.scheme, 80)
+
+    if not url.startswith("https"):
+        return None
+    try:
+        same = bool(gateway) and origin(url) == origin(gateway)
+    except ValueError:  # a port that isn't one
+        same = False
+    if same:
+        return get_local_ssl_context() or ssl.create_default_context()
+    if name != "wintools-mcp":
+        return ssl.create_default_context()
+    wt = (_read_gateway_config().get("backends") or {}).get("wintools-mcp")
+    return _wintools_ssl_context(wt or {}, "the instructions request")
+
+
+def _write_openwebui(servers: dict, gateway: str | None = None) -> None:
     """Open WebUI: the lock-profile env file, the system prompt (Open WebUI
     drops the instructions MCP servers send, so they go here), and the steps
     to add each backend in its Admin Panel. The token is never printed."""
@@ -2930,7 +2958,10 @@ def _write_openwebui(servers: dict) -> None:
     for name, entry in backends.items():
         auth = (entry.get("headers") or {}).get("Authorization", "")
         token = auth[len("Bearer ") :] if auth.startswith("Bearer ") else None
-        text = _initialize_instructions(entry["url"], token)
+        url = entry["url"]
+        text = _initialize_instructions(
+            url, token, _instructions_context(name, url, gateway)
+        )
         if text is None:
             missing.append(name)
         else:
@@ -3883,7 +3914,7 @@ def _cmd_setup_client_remote(args, identity: dict) -> None:
         if client == "codex":
             _setup_codex_remote(servers)
         else:
-            _generate_config(client, servers, examiner)
+            _generate_config(client, servers, examiner, gateway_url)
     except OSError as e:
         print(f"Failed to write client configuration: {e}", file=sys.stderr)
         sys.exit(1)

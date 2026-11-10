@@ -43,7 +43,7 @@ def owui(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: False))
     asked = []
 
-    def initialize(url, token):
+    def initialize(url, token, context=None):
         asked.append((url, token))
         return INSTRUCTIONS.get(url.rsplit("/", 1)[1])
 

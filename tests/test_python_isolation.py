@@ -37,7 +37,9 @@ def test_the_opensearch_entry_runs_isolated(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        cs, "_generate_config", lambda client, servers, ex: seen.update(servers)
+        cs,
+        "_generate_config",
+        lambda client, servers, ex, gateway=None: seen.update(servers),
     )
     args = argparse.Namespace(
         client="claude-code",

@@ -728,7 +728,9 @@ def test_remote_setup_with_wintools_down_writes_its_section_and_names_it(
 def generated(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        cs, "_generate_config", lambda client, servers, ex: calls.append(servers)
+        cs,
+        "_generate_config",
+        lambda client, servers, ex, gateway=None: calls.append(servers),
     )
     monkeypatch.setattr(cs, "_record_client", lambda client: None)
     return calls
