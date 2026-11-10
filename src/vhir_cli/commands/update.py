@@ -909,9 +909,14 @@ def cmd_update(args, identity: dict) -> None:
         human_steps.no_terminal_notice()
     human_steps.start(_handed_steps(after_pull))
     global _RESTART_OWED
-    try:
-        state = json.loads((Path.home() / ".vhir" / "update-state.json").read_text())
-        _RESTART_OWED = state.get("reason") == RESTART_REASON
+    try:  # after a hand-over the record is the pre-pull one: the first process read it
+        state = json.loads(after_pull or "{}")
+        if not isinstance(owed := state.get("restart_owed"), bool):
+            state = json.loads(
+                (Path.home() / ".vhir" / "update-state.json").read_text()
+            )
+            owed = state.get("reason") == RESTART_REASON
+        _RESTART_OWED = owed
     except (OSError, ValueError, AttributeError):
         _RESTART_OWED = False
     try:
@@ -1293,6 +1298,7 @@ def _reexec_after_pull(
             "pre_update_git": pre_update_git,
             "torch_record": torch_record,
             "human_steps": human_steps.steps(),
+            "restart_owed": _RESTART_OWED,
         }
     )
     argv = [venv_python, str(script), "update", "--after-pull", handoff]
@@ -1477,7 +1483,7 @@ def _finish_update(
                 timeout=60,
             )
             restart_ok = result.returncode == 0
-            failure = result.stderr.strip()
+            failure = result.stderr.strip() or f"exit status {result.returncode}"
         except subprocess.TimeoutExpired:
             # systemd carries on with the restart: report the state it reached
             try:
@@ -1541,9 +1547,7 @@ def _finish_update(
         fix=fix,
     )
     if not done:
-        human_steps.add(
-            f"  Update pending: {reason}\n  Run: {fix}\n  Then run: vhir update"
-        )
+        human_steps.add(f"  Update pending: {reason}\n  Run: {fix}")
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
     if done:  # a skip's pending line already names the backends not up
