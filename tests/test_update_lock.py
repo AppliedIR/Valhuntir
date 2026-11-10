@@ -277,7 +277,7 @@ def test_one_locked_install_opencti_too_then_both_checks(box):
         "install",
         "--strict",
         "--final",
-        "--opencti-leftovers",  # asked or not, the query runs (spec :575, :919)
+        "--opencti-leftovers",  # asked or not, the query runs
     ]
     locked = steps[1][1]
     # What the venv already has that the lock names goes into the locked
@@ -340,7 +340,7 @@ def test_without_opencti_both_checks_still_run(box):
         "install",
         "--strict",
         "--final",
-        "--opencti-leftovers",  # asked or not, the query runs (spec :575, :919)
+        "--opencti-leftovers",  # asked or not, the query runs
     ]
 
 
@@ -401,7 +401,7 @@ def test_opencti_installed_but_not_in_the_manifest_joins_the_locked_install(box)
         "install",
         "--strict",
         "--final",
-        "--opencti-leftovers",  # asked or not, the query runs (spec :575, :919)
+        "--opencti-leftovers",  # asked or not, the query runs
     ]
     assert str(box.src / "packages" / "opencti") in steps[1][1]
 
@@ -675,7 +675,7 @@ def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
     assert exited is not None and exited.code == 1
     err = capsys.readouterr().err
     assert PART_WAY in err and "the gateway wasn't restarted" in err
-    # U11 (spec :686): the finish command is the end block's last step
+    # the finish command is the end block's last step
     assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
     block = steps_block(err)
     finish = block[-1] if block else ""
@@ -693,7 +693,7 @@ def test_a_timeout_after_the_pull_prints_the_part_way_block(box, capsys, hang):
     assert exited is not None and exited.code == 1  # not a traceback
     err = capsys.readouterr().err
     assert "timed out" in err and PART_WAY in err
-    # U11 (spec :686): the finish command is the end block's last step
+    # the finish command is the end block's last step
     assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
     block = steps_block(err)
     assert block and block[-1].endswith("finish with: vhir update")
@@ -732,7 +732,7 @@ def test_no_restart_still_rewrites_and_says_when_it_applies(box, capsys):
     assert exited is None and "python -I -m" in unit.read_text()
     assert ["systemctl", "--user", "restart", "vhir-gateway"] not in calls
     got = capsys.readouterr()
-    # U11 (spec :675): the --no-restart line moved from stdout into the end block
+    # the --no-restart line moved from stdout into the end block
     block = steps_block(got.err)
     assert any("takes effect at the next gateway restart" in line for line in block)
     assert "takes effect at the next gateway restart" not in got.out
@@ -758,7 +758,7 @@ def test_no_restart_says_when_it_applies_after_the_client_deploy_rewrote(
     got = capsys.readouterr()
     out, block = got.out, steps_block(got.err)
     assert "python -I -m" in unit.read_text() and f"Updated: {unit}" in out
-    # U11 (spec :675): the --no-restart line moved from stdout into the end block
+    # the --no-restart line moved from stdout into the end block
     assert any("takes effect at the next gateway restart" in line for line in block)
     assert "takes effect at the next gateway restart" not in out
 
@@ -769,7 +769,7 @@ def test_no_note_when_nothing_was_rewritten(box, capsys):
     capsys.readouterr()
     _update(box, no_restart=True)  # nothing left to do
     got = capsys.readouterr()
-    # U11 (spec :675): neither on stdout nor in the end block
+    # neither on stdout nor in the end block
     assert "takes effect at the next gateway restart" not in got.out
     block = steps_block(got.err)
     assert not any("takes effect at the next gateway restart" in line for line in block)

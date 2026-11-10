@@ -814,8 +814,9 @@ def refresh_claude_code(budget, clients) -> tuple[str, str] | None:
             doc, servers = read()
         except (ValueError, OSError, AttributeError, TypeError):
             return None
-        for n in gone:
-            servers.pop(n, None)
+        for n in gone:  # only if still ours: it may have been replaced since
+            if ours(servers.get(n)):
+                servers.pop(n)
         for n, e in add.items():
             servers.setdefault(n, e)
         return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"

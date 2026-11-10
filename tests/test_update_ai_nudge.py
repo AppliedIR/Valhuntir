@@ -1,4 +1,4 @@
-"""U12: the AI nudge line reaches both of the update's outputs, from one checkout.
+"""The AI nudge line reaches both of the update's outputs, from one checkout.
 
 The line (UPDATE_NUDGE) is in sift-mcp's AGENTS.md. `vhir update` deploys that
 file as ~/.claude/rules/AGENTS.md and builds Codex's developer_instructions
@@ -11,8 +11,8 @@ written. An edited deployed copy is kept, and the end block names it.
 The bed rows run update._redeploy_clients (Step 5) with every file under
 tmp_path: a scratch HOME holding fake sift-mcp checkouts, a gateway.yaml and a
 manifest written here. The gateway's backends are stubbed; nothing reaches a
-gateway or the box's own ~/.vhir. The E1b row runs the whole update through
-U11's harness.
+gateway or the box's own ~/.vhir. One row runs the whole update through
+the end block's harness (test_update_human_steps).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import pytest
 
 import vhir_cli
 from tests.stub_check import stub, stub_check  # noqa: F401 (the fixture)
-from tests.test_update_human_steps_u11 import box, u  # noqa: F401 (the fixtures)
+from tests.test_update_human_steps import box, u  # noqa: F401 (the fixtures)
 from vhir_cli.commands import client_setup
 from vhir_cli.commands import codex_controls as cc
 from vhir_cli.commands import update as upd
@@ -160,7 +160,7 @@ def _from_only(text, source, others):
 # ---- the default layout: both outputs carry the line ---------------------
 
 
-def test_v1a_the_deployed_rule_has_the_nudge_from_sift_mcps_agents_md(bed):
+def test_the_deployed_rule_has_the_nudge_from_sift_mcps_agents_md(bed):
     p = _default(bed)
     assert bed.rule.read_bytes() == (p / "AGENTS.md").read_bytes(), (
         f"{bed.rule} is not {p / 'AGENTS.md'}",
@@ -169,7 +169,7 @@ def test_v1a_the_deployed_rule_has_the_nudge_from_sift_mcps_agents_md(bed):
     assert UPDATE_NUDGE in bed.rule.read_text().splitlines()
 
 
-def test_v1b_codex_developer_instructions_have_the_nudge(bed):
+def test_codex_developer_instructions_have_the_nudge(bed):
     # The profile vhir writes: ~/.codex/valhuntir.config.toml (codex_profile_path)
     p = _default(bed)
     text = _instructions(bed)
@@ -177,7 +177,7 @@ def test_v1b_codex_developer_instructions_have_the_nudge(bed):
     assert _from_only(text, p, []) == ([], [])
 
 
-def test_v2_the_users_codex_config_is_never_written(bed):
+def test_the_users_codex_config_is_never_written(bed):
     # vhir writes valhuntir.config.toml; the user's config.toml is only read, to warn
     bed.config.parent.mkdir(parents=True)
     bed.config.write_text(USER_CODEX)
@@ -186,7 +186,7 @@ def test_v2_the_users_codex_config_is_never_written(bed):
     assert UPDATE_NUDGE in _instructions(bed).splitlines()
 
 
-def test_v3_the_cwds_agents_md_reaches_neither_output(bed):
+def test_the_cwds_agents_md_reaches_neither_output(bed):
     (bed.cwd / "AGENTS.md").write_text("# Some repo's own agent file\n\nCWD ONLY.\n")
     p = _default(bed)
     assert bed.rule.read_bytes() == (p / "AGENTS.md").read_bytes()
@@ -194,9 +194,9 @@ def test_v3_the_cwds_agents_md_reaches_neither_output(bed):
     assert "CWD ONLY." not in _instructions(bed)
 
 
-# ---- K17: one checkout, manifest["source"], on every layout --------------
+# ---- one checkout, manifest["source"], on every layout -------------------
 
-K17 = [
+LAYOUTS = [
     ("decoy_at_vhir_src", "rule", "RED"),
     ("decoy_at_vhir_src", "codex", "GUARD"),
     ("decoy_at_sift_mcp_dir", "rule", "GUARD"),
@@ -205,11 +205,9 @@ K17 = [
 
 
 @pytest.mark.parametrize(
-    "leg,output,declared", K17, ids=[f"{a}-{b}" for a, b, _ in K17]
+    "leg,output,declared", LAYOUTS, ids=[f"{a}-{b}" for a, b, _ in LAYOUTS]
 )
-def test_k17_both_outputs_come_from_the_pulled_checkout_only(
-    bed, leg, output, declared
-):
+def test_both_outputs_come_from_the_pulled_checkout_only(bed, leg, output, declared):
     if leg == "decoy_at_vhir_src":  # sift_mcp_dir isn't ~/.vhir/src/sift-mcp
         p = _checkout(bed.tmp / "pulled" / "sift-mcp", "the pulled checkout")
         _checkout(bed.src, "a decoy checkout")
@@ -232,7 +230,7 @@ def test_k17_both_outputs_come_from_the_pulled_checkout_only(
 # ---- an edited copy is kept, and the block names it ----------------------
 
 
-def test_e1a_an_edited_rule_is_kept_with_no_terminal(bed, capsys):
+def test_an_edited_rule_is_kept_with_no_terminal(bed, capsys):
     bed.rule.write_text(EDITED)
     _default(bed)
     out = capsys.readouterr().out

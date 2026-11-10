@@ -1,4 +1,4 @@
-"""K17: every client control deploys from manifest["source"], on any install dir.
+"""Every client control deploys from manifest["source"], on any install dir.
 
 `vhir setup client` and Step 5 of `vhir update` both deploy the controls through
 _deploy_claude_code_assets: settings.json (the audit hook and the deny rules),
@@ -88,8 +88,8 @@ def _checkout(path, marker):
         (full / "hooks" / hook).write_text(f"#!/bin/bash\n# {hook} of {marker}\n")
     (full / "CLAUDE.md").write_text(f"# CLAUDE.md of {marker}\n")
     (full / "FORENSIC_DISCIPLINE.md").write_text(f"# Discipline of {marker}\n")
-    (path / "skills" / "k17-skill").mkdir(parents=True)
-    (path / "skills" / "k17-skill" / "SKILL.md").write_text(f"# Skill of {marker}\n")
+    (path / "skills" / "sample-skill").mkdir(parents=True)
+    (path / "skills" / "sample-skill" / "SKILL.md").write_text(f"# Skill of {marker}\n")
     (path / "codex").mkdir()
     (path / "codex" / "OVERLAY.md").write_text(f"## Codex\n\nOverlay of {marker}.\n")
     (path / "AGENTS.md").write_text(f"# Valhuntir core\n\nCheckout: {marker}\n")
@@ -216,8 +216,8 @@ def _check(bed, output, out):
         _same(home / ".claude" / "rules" / "AGENTS.md", bed.pulled / "AGENTS.md")
     elif output == "skills":
         _same(
-            home / ".claude" / "skills" / "k17-skill" / "SKILL.md",
-            bed.pulled / "skills" / "k17-skill" / "SKILL.md",
+            home / ".claude" / "skills" / "sample-skill" / "SKILL.md",
+            bed.pulled / "skills" / "sample-skill" / "SKILL.md",
         )
     else:
         assert output == "codex"
@@ -243,12 +243,12 @@ ROWS = [
 
 
 @pytest.mark.parametrize("layout,entry,output", ROWS, ids=["-".join(r) for r in ROWS])
-def test_k17_controls_deploy_from_manifest_source(bed, capsys, layout, entry, output):
+def test_controls_deploy_from_manifest_source(bed, capsys, layout, entry, output):
     bed.run(layout, entry)
     _check(bed, output, capsys.readouterr().out)
 
 
-def test_k17_source_without_assets_skips_and_never_falls_back(bed, capsys):
+def test_source_without_assets_skips_and_never_falls_back(bed, capsys):
     """The checkout manifest["source"] names exists but has no claude-code/,
     and a complete checkout sits at ~/.vhir/src/sift-mcp: the assets are
     skipped, with the note, and nothing is deployed from the other checkout.

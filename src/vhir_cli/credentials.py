@@ -399,7 +399,7 @@ def forgot(examiner: str, config_path: Path) -> None:
         enrol(examiner, config_path)
         return
     _confirm_new_key()
-    if current == "invalid":  # set aside as K5, then a new key
+    if current == "invalid":  # set aside, then a new key
         pw = _new_passphrase(examiner)
         data = keys.new_credential(examiner, pw)
         retired = _found_keys(examiner) + _ledger_keys(examiner)

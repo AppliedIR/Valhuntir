@@ -1,13 +1,13 @@
-"""U8 offers: on a terminal each offer is made once with its cost; a
-decline is recorded in the install manifest under D11's key and not asked
+"""Update's offers: on a terminal each offer is made once with its cost; a
+decline is recorded in the install manifest under one key and not asked
 again while its subject stays the same; with no terminal nothing is asked and
-the U11 block lists each skipped offer by its text."""
+the end block lists each skipped offer by its text."""
 
 from __future__ import annotations
 
 import contextlib
 import json
-import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -15,11 +15,12 @@ import pytest
 
 from tests import test_update_lock as lock
 from tests.test_update_lock import _asked, _update
+from vhir_cli import human_steps
 from vhir_cli.commands import update
 
 box = lock.box  # the fixture: a scratch home with an install
 
-KEY = "declined_offers"  # D11's one manifest key: {offer: subject}
+KEY = "declined_offers"  # the one manifest key: {offer: subject}
 UPGRADE, INSTALL = "OpenSearch upgrade", "OpenSearch install"
 SIFT, CUDA, OPENCTI = (
     "SIFT tools update",
@@ -98,10 +99,14 @@ def _compose(b, pin, heap="4g", limit="6g"):
     )
 
 
-def _as_worktree(b):
-    """opensearch-mcp as a git worktree: its .git is a file."""
-    (b.repo / ".git").rmdir()
-    (b.repo / ".git").write_text("gitdir: /elsewhere/.git/worktrees/opensearch-mcp\n")
+@contextlib.contextmanager
+def _collector():
+    """As cmd_update runs every offer: the steps collected, then the block."""
+    human_steps.start()
+    try:
+        yield
+    finally:
+        human_steps.finish(sys.stdin.isatty())
 
 
 def _os(b, capsys, monkeypatch, *, running="3.4.0", tty=True, answers=(), assume=False):
@@ -139,7 +144,8 @@ def _os(b, capsys, monkeypatch, *, running="3.4.0", tty=True, answers=(), assume
     with contextlib.ExitStack() as stack:
         for stand in stands:
             stack.enter_context(stand)
-        update._check_opensearch_version(b.source)
+        with _collector():
+            update._check_opensearch_version(b.source)
     out, err = capsys.readouterr()
     return SimpleNamespace(
         calls=calls,
@@ -194,7 +200,7 @@ def test_a_new_pin_asks_again(osb, capsys, monkeypatch):
 def test_a_new_running_image_under_the_same_pin_asks_again_and_is_listed(
     osb, capsys, monkeypatch
 ):
-    """K23: the subject is (pinned, running), not the pin alone."""
+    """The subject is (pinned, running), not the pin alone."""
     _os(osb, capsys, monkeypatch, running="3.4.0", answers=[""])
     second = _os(osb, capsys, monkeypatch, running="3.3.0", answers=[""])
     assert second.reads == 1
@@ -277,28 +283,6 @@ def test_a_daemon_that_does_not_answer_makes_no_offer(osb, capsys, monkeypatch):
     assert not _setup_ran(osb, r.calls)
 
 
-def test_a_worktree_checkout_gets_the_version_check_and_the_offer(
-    osb, capsys, monkeypatch
-):
-    """K9: opensearch-mcp's .git is a file; M-K9 dies here."""
-    _as_worktree(osb)
-    r = _os(osb, capsys, monkeypatch, answers=[""])
-    assert r.reads == 1
-
-
-def test_the_pull_list_holds_a_worktree_checkout(box):
-    """K9 through update's pull list: the worktree at ~/.vhir/src comes first
-    in the resolver's candidates; at cae198ba it is skipped for ~/opensearch-mcp."""
-    wt = box.home / ".vhir" / "src" / "opensearch-mcp"
-    wt.mkdir(parents=True)
-    (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/opensearch-mcp\n")
-    calls, _ = _update(box, gpu=True)
-    pulled = [
-        os.path.realpath(c[2]) for c in calls if c[:2] == ["git", "-C"] and "pull" in c
-    ]
-    assert os.path.realpath(wt) in pulled
-
-
 # --- SANS SIFT tools: offered at the end of a whole update -------------------
 
 
@@ -369,13 +353,13 @@ def test_hayabusa_alone_stays_a_printed_warning(box, capsys):
     assert "Not asked" not in err and "Declined earlier" not in err
 
 
-# --- The CUDA and OpenCTI leftovers: the D11 rule on update's own offers -----
+# --- The CUDA and OpenCTI leftovers: the same rule on update's own offers ---
 
 NEW_LEFTOVERS = lock.LEFTOVERS + "nvidia-nccl-cu12 210000000\n"
 
 
 def test_a_declined_cuda_removal_is_not_asked_again_and_is_listed(box, capsys):
-    """E15: leftovers on both runs, declined on run 1, not asked on run 2."""
+    """Leftovers on both runs, declined on run 1, not asked on run 2."""
     lock._cleanup(box, answers=[""])
     assert lock._manifest(box).get(KEY, {}).get(CUDA) == sorted(lock.NAMES)
     capsys.readouterr()

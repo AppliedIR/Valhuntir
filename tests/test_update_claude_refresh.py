@@ -307,6 +307,33 @@ def test_a_key_written_during_the_prompt_is_kept(box, capsys):
     assert b"jdoeAdded" in run.backups[0].read_bytes()
 
 
+def test_an_entry_replaced_during_the_prompt_is_kept(box, capsys):
+    path = box.home / ".claude.json"
+    theirs = {"command": "example-server", "args": ["--stdio"]}
+
+    def replaced_then_yes(prompt):
+        doc = json.loads(path.read_text())
+        doc["mcpServers"]["old-mcp"] = theirs
+        path.write_text(json.dumps(doc, indent=2, ensure_ascii=False))
+        return "y"
+
+    run = _refresh(
+        box,
+        capsys,
+        servers={
+            "forensic-mcp": _entry("forensic-mcp"),
+            "old-mcp": _entry("old-mcp"),
+        },
+        health=_ok("forensic-mcp"),
+        answers=(replaced_then_yes,),
+    )
+    assert len(run.asked) == 1, run.prompts
+    assert _servers(run) == {
+        "forensic-mcp": _entry("forensic-mcp"),
+        "old-mcp": theirs,
+    }
+
+
 def test_a_file_that_stops_being_json_before_the_yes_is_not_written(box, capsys):
     path = box.home / ".claude.json"
 

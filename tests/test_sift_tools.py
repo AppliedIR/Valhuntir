@@ -370,7 +370,7 @@ manifest_dir = test_update.manifest_dir  # the update tests' install layout
 def test_vhir_update_ends_with_it_and_the_smoke_test_leaves_it_out(
     manifest_dir, capsys, monkeypatch, no_restart
 ):
-    # U11: the problem prints in the run's output, its fixing step in the block
+    # The problem prints in the run's output, its fixing step in the block
     monkeypatch.setattr(
         sift_tools, "warning_parts", lambda: ("TOOLS ARE OLD", "UPDATE THEM")
     )
@@ -452,7 +452,7 @@ def test_vhir_update_names_the_installer_it_updated_from(
         cmd_update(test_update._make_args(), {})
     installer = str(home / ".vhir" / "src" / "sift-mcp" / "setup-sift.sh")
     problem, step = _named(installer, BOTH).split(" Update SIFT with: ")
-    got = capsys.readouterr()  # U11: the problem prints here, the step in the block
+    got = capsys.readouterr()  # the problem prints here, the step in the block
     assert got.out.endswith("\n  WARNING: " + problem + "\n")
     block = got.err[got.err.rindex(human_steps.OPEN) :]
     assert f"\n  Update SIFT with: {step}{CHOICE}\n" in block

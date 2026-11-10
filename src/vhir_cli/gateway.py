@@ -156,7 +156,7 @@ RESTART_FAILED_FIX = (
     " fix what it shows, then run {rerun}. If you start it by hand: stop it,"
     " run ~/.vhir/start-gateway.sh, then run {hand_rerun}."
 )
-_ALL_OR_LOOPBACK = (None, "", "127.0.0.1", "0.0.0.0")
+_ALL_OR_LOOPBACK = (None, "", "127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
 
 
 class Deadline:

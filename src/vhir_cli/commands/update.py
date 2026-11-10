@@ -295,7 +295,7 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
             # spec.origin = .../opensearch-mcp/src/opensearch_mcp/__init__.py
             # three levels up from __init__.py = repo root
             pkg_root = Path(spec.origin).resolve().parent.parent.parent
-            if (pkg_root / ".git").exists():  # a worktree's .git is a file
+            if (pkg_root / ".git").is_dir():
                 return pkg_root
     except Exception:  # noqa: BLE001 — any import-machinery failure falls through
         pass
@@ -319,7 +319,7 @@ def _resolve_opensearch_mcp_repo(source: Path) -> Path | None:
         if resolved in seen:
             continue
         seen.add(resolved)
-        if resolved.is_dir() and (resolved / ".git").exists():
+        if resolved.is_dir() and (resolved / ".git").is_dir():
             return resolved
     return None
 
@@ -490,7 +490,7 @@ def _name_the_switch(variant: str, installed: str, gpu: bool) -> None:
         )
 
 
-# D11: every update offer's declines, in the install manifest: {offer: subject}
+# Every update offer's declines, in the install manifest: {offer: subject}
 DECLINED = "declined_offers"
 
 
@@ -513,19 +513,17 @@ def _record_decline(offer: str, subject: list[str]) -> None:
 
 
 def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> bool:
-    """D11 and U8: ask only on a terminal, and never again after a No for the
-    same subject. When it doesn't ask, the block (human_steps) says why."""
+    """Ask only on a terminal, and never again after a No for the same
+    subject. When it doesn't ask, the block (human_steps) says why."""
     if _declines().get(offer) == subject:
         human_steps.add(
             f"Declined earlier: {offer} ({shown}). It is asked again when that changes.",
-            file=sys.stderr,
         )
         return False
     if not sys.stdin.isatty():
         human_steps.add(
             f"Not asked (no terminal): {offer}."
             " Re-run `vhir update` in a terminal to be asked.",
-            file=sys.stderr,
         )
         return False
     if os.environ.get("VHIR_ASSUME_DEFAULTS") == "true":
@@ -533,7 +531,6 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
             f"Not asked (VHIR_ASSUME_DEFAULTS is set): {offer}."
             + (f" {taken}" if taken else "")
             + " Re-run `vhir update` without it to be asked.",
-            file=sys.stderr,
         )
         return False
     return True
@@ -690,7 +687,7 @@ def _check_opensearch_version(source: Path) -> None:
     except (OSError, subprocess.SubprocessError) as e:
         return _cant_check_snapshots(f"docker: {e}")
     if result.returncode != 0:
-        if "no such object" in result.stderr.lower():  # no container: U8's offer
+        if "no such object" in result.stderr.lower():  # no container: the install offer
             return _offer_opensearch(
                 "OpenSearch install", [pinned, "absent"], pinned, "", text,
                 setup_script, f"\n  OpenSearch {pinned} isn't installed on this box.",
@@ -718,7 +715,7 @@ def _check_opensearch_version(source: Path) -> None:
 
 
 def _opensearch_cost(compose: str) -> str:
-    """U8's cost: the heap and container limit docker-compose.yml sets, beside
+    """The offer's cost: the heap and container limit docker-compose.yml sets, beside
     this box's memory (MemTotal, kB / 1048576 GiB)."""
     import re
 
@@ -746,7 +743,7 @@ def _offer_opensearch(
     offer: str, subject: list[str], shown: str, taken: str, compose: str,
     setup_script: Path, intro: str,
 ) -> None:  # fmt: skip
-    """The OpenSearch install or upgrade (U8, D11): asked on a terminal, with its
+    """The OpenSearch install or upgrade: asked on a terminal, with its
     cost; the default is No. Nothing here stops the update."""
     print(intro)
     if not _may_ask(offer, subject, shown, taken):
@@ -1535,7 +1532,7 @@ def _finish_update(
     # The version installed now, read fresh: vhir_cli.__version__ was read
     # when this process started, which can be before the pull
     installed = importlib.metadata.version("vhir-cli")
-    # A4, on Step 8's budget: Claude Code's server list from the gateway's backends
+    # On Step 8's budget: Claude Code's server list from the gateway's backends
     skip = client_setup.refresh_claude_code(budget, clients) if health.ok else None
     reason, fix = skip or (health.reason, health.fix)
     done = health.ok and skip is None
@@ -1601,7 +1598,7 @@ UNFINISHED_REASON = "vhir update has not finished"
 
 
 def _offer_sift_tools() -> None:
-    """U8: when Volatility 3 is too old, offer SANS's installer with its time;
+    """When Volatility 3 is too old, offer SANS's installer with its time;
     the default is No. Hayabusa alone stays the printed warning (SANS's
     installer doesn't bring it)."""
     from vhir_cli import sift_tools

@@ -1,4 +1,4 @@
-"""U11: every step `vhir update` leaves for the examiner is in one framed block.
+"""Every step `vhir update` leaves for the examiner is in one framed block.
 
 The block opens with OPEN and closes with CLOSE, on stderr, after the run's
 own output; each step is indented two spaces. With no terminal, a start block
@@ -941,9 +941,9 @@ def test_check_with_no_terminal_says_the_controls_are_not_applied(u):
     assert r.in_blocks(NOTERM1) >= 1, r.blocks()
 
 
-# ---- K11: a failed or hung pull of a later repo ---------------------------
+# ---- a failed or hung pull of a later repo --------------------------------
 
-K11 = {
+LATER_PULLS = {
     "earlier_moved": dict(moves={"sift-mcp"}),
     "this_moved": dict(),
     "none": dict(),
@@ -951,11 +951,13 @@ K11 = {
 
 
 @pytest.mark.parametrize("how", ["timeout", "fail"])
-@pytest.mark.parametrize("which,declared", [(w, "RED") for w in K11], ids=list(K11))
+@pytest.mark.parametrize(
+    "which,declared", [(w, "RED") for w in LATER_PULLS], ids=list(LATER_PULLS)
+)
 def test_a_later_repo_that_fails_to_pull_says_whether_code_changed(
     u, which, declared, how
 ):
-    knobs = dict(K11[which])
+    knobs = dict(LATER_PULLS[which])
     pull = how + ("-moved" if which == "this_moved" else "")
     knobs["pulls"] = {"vhir": pull}
     r = u.go(**knobs)
@@ -969,10 +971,10 @@ def test_a_later_repo_that_fails_to_pull_says_whether_code_changed(
         assert r.in_last("finish with: vhir update"), r.last_block()
 
 
-# ---- K21: the signing-key question comes before the block ----------------
+# ---- the signing-key question comes before the block ---------------------
 
 
-def test_k21_the_block_is_last_after_the_signing_key_question(u):
+def test_the_block_is_last_after_the_signing_key_question(u):
     r = u.go(
         key="legacy",
         pw=LONG_PW,
@@ -990,9 +992,9 @@ def test_k21_the_block_is_last_after_the_signing_key_question(u):
     assert at_prompt and _state_complete(at_prompt[0]), at_prompt
 
 
-# ---- V6 / X5: a signing-key upgrade that fails ---------------------------
+# ---- a signing-key upgrade that fails ------------------------------------
 
-V6 = {
+FAILED_UPGRADES = {
     "wrong": (dict(secrets=["not-the-passphrase"]), "Incorrect passphrase"),
     "short": (
         dict(pw="abc1234", secrets=["abc1234", "abc", "abc", "abc"]),
@@ -1001,11 +1003,13 @@ V6 = {
 }
 
 
-@pytest.mark.parametrize("which,declared", [(w, "RED") for w in V6], ids=list(V6))
-def test_v6_a_failed_upgrade_ends_the_update_with_its_reason_in_the_block(
+@pytest.mark.parametrize(
+    "which,declared", [(w, "RED") for w in FAILED_UPGRADES], ids=list(FAILED_UPGRADES)
+)
+def test_a_failed_upgrade_ends_the_update_with_its_reason_in_the_block(
     u, which, declared
 ):
-    knobs, reason = V6[which]
+    knobs, reason = FAILED_UPGRADES[which]
     knobs = {"pw": LONG_PW, **knobs}
     r = u.go(key="legacy", answers=[(r"Upgrade it now", "y", False)], **knobs)
     assert not r.traceback(), r.lines(stream="stderr")
@@ -1015,7 +1019,7 @@ def test_v6_a_failed_upgrade_ends_the_update_with_its_reason_in_the_block(
     assert r.rc == 0
 
 
-def test_x5_ctrl_c_at_the_passphrase_stops_the_update(u):
+def test_ctrl_c_at_the_passphrase_stops_the_update(u):
     with pytest.raises(KeyboardInterrupt):
         u.go(
             key="legacy",
@@ -1025,7 +1029,7 @@ def test_x5_ctrl_c_at_the_passphrase_stops_the_update(u):
         )
 
 
-# ---- V10 / X6 / X21: the reset hint for a short kept passphrase ----------
+# ---- the reset hint for a short kept passphrase -------------------------
 
 RESET = "--reset-password"
 
@@ -1033,12 +1037,12 @@ RESET = "--reset-password"
 @pytest.mark.parametrize(
     "pw,new,hint,declared",
     [
-        pytest.param(MID_PW, [], True, "RED", id="v10-10-ascii"),
-        pytest.param(LONG_PW, [], False, "RED", id="v10-16-ascii"),
-        pytest.param("abc1234", [MID_PW, MID_PW], False, "GUARD", id="x6-new-10"),
-        pytest.param(CJK[:8], [], True, "RED", id="x21-8-cjk"),
-        pytest.param(CJK[:7], [LONG_PW, LONG_PW], False, "GUARD", id="x21-7-cjk-new"),
-        pytest.param(CJK[:14], [], True, "RED", id="x21-14-cjk"),
+        pytest.param(MID_PW, [], True, "RED", id="10-ascii"),
+        pytest.param(LONG_PW, [], False, "RED", id="16-ascii"),
+        pytest.param("abc1234", [MID_PW, MID_PW], False, "GUARD", id="new-10"),
+        pytest.param(CJK[:8], [], True, "RED", id="8-cjk"),
+        pytest.param(CJK[:7], [LONG_PW, LONG_PW], False, "GUARD", id="7-cjk-new"),
+        pytest.param(CJK[:14], [], True, "RED", id="14-cjk"),
     ],
 )
 def test_the_reset_hint_is_in_the_block_only_for_a_kept_short_passphrase(

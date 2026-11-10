@@ -189,7 +189,7 @@ def _switch_lines(text):
 @pytest.mark.parametrize(
     "torch,gpu_found,record,line,not_line",
     [
-        ("2.14.1", False, "gpu", CUDA_LINE, None),  # R5's shape
+        ("2.14.1", False, "gpu", CUDA_LINE, None),
         ("2.5.1+rocm6.2", False, "gpu", OTHER_LINE, "lists the CUDA packages"),
         ("2.5.1+xpu", False, "gpu", OTHER_LINE, "lists the CUDA packages"),
         ("2.14.1+cpu", True, "cpu", GPU_LINE, None),

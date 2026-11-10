@@ -157,3 +157,11 @@ def test_every_subcommand_help_prints_no_reason(box, capsys, command):
     out, err = _vhir(box, capsys, command, "--help")
     assert "usage:" in out, (out, err)  # the help printed: argparse exited first
     assert FOREIGN.reason not in out + err and FOREIGN.fix not in out + err, err
+
+
+def test_a_failed_restart_s_banner_gives_only_the_recorded_fix(box, capsys):
+    state = _pending(box, PASS, no_restart=False, restart_rc=1)
+    out, err = _vhir(box, capsys, "portal")
+    assert state.get("fix") and state["fix"].split(".")[0] in err, (state, err)
+    assert f"Your update to {__version__} didn't finish." in err, err
+    assert "Run: vhir update" not in err, err

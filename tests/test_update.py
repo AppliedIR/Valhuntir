@@ -76,7 +76,7 @@ def _make_args(**kwargs):
     return args
 
 
-# The end block of steps for the examiner, on stderr (U11). Literals, not
+# The end block of steps for the examiner, on stderr. Literals, not
 # vhir_cli.human_steps, so a tree without the block fails on the assert.
 STEPS_OPEN = "==== vhir update: steps for you ===="
 STEPS_CLOSE = "==== end of steps ===="
@@ -335,7 +335,7 @@ def test_old_manifest_no_client(manifest_dir, capsys):
         cmd_update(_make_args(no_restart=True), {})
 
     got = capsys.readouterr()
-    # U11 (spec :685): "Run 'vhir setup client'" moved from stdout into the end block
+    # "Run 'vhir setup client'" moved from stdout into the end block
     assert any("vhir setup client" in line for line in steps_block(got.err))
     assert "vhir setup client" not in got.out
 

@@ -142,7 +142,7 @@ def test_a_failed_pull_after_another_moved_is_part_way(world, capsys):
     # and brings them back — not a bare, misleading "Resolve conflicts".
     assert "Not possible to fast-forward" in err and "Resolve conflicts" not in err
     assert "stash push -u" in err and "stash pop" in err and "git -C" in err
-    # U11 (spec :686): the finish command is the end block's last step
+    # the finish command is the end block's last step
     assert PART_WAY in err and err.rstrip().splitlines()[-1] == STEPS_CLOSE
     block = steps_block(err)
     assert (

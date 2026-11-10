@@ -325,6 +325,20 @@ def test_the_fail_reasons(box, capsys, answer, host, names):
     assert names in run.state.get("reason", "") + run.state.get("fix", ""), run.state
 
 
+@pytest.mark.parametrize(
+    "host", ["localhost", "::1", "::"], ids=["localhost", "ipv6-loopback", "ipv6-all"]
+)
+def test_a_loopback_or_all_interfaces_host_names_the_stopped_gateway(box, capsys, host):
+    gw = {"gateway": {"host": host, "port": 4508}}
+    (box.home / ".vhir" / "gateway.yaml").write_text(yaml.dump(gw))
+    run = _run(box, capsys, no_restart=False, gateway=Answer(ConnectionRefusedError()))
+    assert run.state.get("status") == "pending", run.state
+    assert run.state.get("reason") == "nothing answered on port 4508 (refused)", (
+        run.state
+    )
+    assert run.state.get("fix") == f"start the gateway: {RESTART_FIX}", run.state
+
+
 def test_the_deadline_is_240_s():
     from vhir_cli import gateway
 
