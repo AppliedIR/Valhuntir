@@ -765,7 +765,8 @@ def _warn_if_update_incomplete() -> None:
             or state.get("vhir_commit") != commit
         )
         line = f"Your update to {__version__} didn't finish."
-        if not (pending and state.get("fix")):  # else the recorded fix says what to run
+        # only vhir update clears the record: say so unless the fix already does
+        if not (pending and "vhir update" in str(state.get("fix") or "")):
             line += " Run: vhir update"
     else:
         # No record that counts: an updater before 0.6.4.1 wrote updated_at

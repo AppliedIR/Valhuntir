@@ -165,3 +165,14 @@ def test_a_failed_restart_s_banner_gives_only_the_recorded_fix(box, capsys):
     assert state.get("fix") and state["fix"].split(".")[0] in err, (state, err)
     assert f"Your update to {__version__} didn't finish." in err, err
     assert "Run: vhir update" not in err, err
+
+
+@pytest.mark.parametrize("case", ["foreign-listener", "no-restart-stale"])
+def test_a_recorded_fix_that_doesn_t_name_vhir_update_keeps_the_run_line(
+    box, capsys, case
+):
+    answer, flags, _, fix = PENDING[case]
+    state = _pending(box, answer, **flags)
+    out, err = _vhir(box, capsys, "portal")
+    assert fix and fix in err and "vhir update" not in fix, (state, err)
+    assert f"Your update to {__version__} didn't finish. Run: vhir update\n" in err, err
