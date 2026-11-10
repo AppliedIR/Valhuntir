@@ -73,29 +73,29 @@ SHAPES = {
         {"File": [UNC], "IPv4": ["203.0.113.7"], TEXT_ONLY: ["192.0.2.62", SID, "jdoe"]},
     ),
     # a record's type
-    "type-null": ([], [_r(1, "10.1.2.3", None)], {"IPv4": ["10.1.2.3"]}),
+    "type-null": ([], [_r(1, "100.1.2.3", None)], {"IPv4": ["100.1.2.3"]}),
     "type-missing": ([], [{"id": "IOC-tester-001", "value": "evil.com", "status": "APPROVED"}],
                      {"Domain": ["evil.com"]}),
     "type-empty": ([], [_r(1, SHA, "")], {"SHA256": [SHA]}),
     "type-blank": ([], [_r(1, "a" * 32, "  ")], {"MD5": ["a" * 32]}),
     "type-none-matches": ([], [_r(1, "hello", None)], {"Unknown": ["hello"]}),
-    "type-list": ([], [_r(1, "10.1.2.3", ["ipv4-addr"])], {"['ipv4-addr']": ["10.1.2.3"]}),
-    "type-int": ([], [_r(1, "10.1.2.3", 4)], {"4": ["10.1.2.3"]}),
+    "type-list": ([], [_r(1, "100.1.2.3", ["ipv4-addr"])], {"['ipv4-addr']": ["100.1.2.3"]}),
+    "type-int": ([], [_r(1, "100.1.2.3", 4)], {"4": ["100.1.2.3"]}),
     "type-dict": ([], [_r(1, "x", {"a": 1})], {"{'a': 1}": ["x"]}),
-    "type-mapped-any-case": ([], [_r(1, "10.1.2.3", " IPv4-ADDR ")], {"IPv4": ["10.1.2.3"]}),
+    "type-mapped-any-case": ([], [_r(1, "100.1.2.3", " IPv4-ADDR ")], {"IPv4": ["100.1.2.3"]}),
     "type-in-another-case": ([], [_r(1, "svc", "User-Account")], {"Account": ["svc"]}),
     "type-control-char": ([], [_r(1, "x", "evil\x1b[2J")], {"evil\x1b[2J": ["x"]}),
     "type-unknown": ([], [_r(1, SID, "unknown")], {"Unknown": [SID]}),
     "patterns": (
         [], [_r(i, v, None) for i, v in enumerate(
-            ["10.9.8.7", SHA, "b" * 40, "c" * 32, "C:\\Temp\\x.exe", "bad.ru", "hello"])],
-        {"Domain": ["bad.ru"], "File": ["C:\\Temp\\x.exe"], "IPv4": ["10.9.8.7"],
+            ["100.9.8.7", SHA, "b" * 40, "c" * 32, "C:\\Temp\\x.exe", "bad.ru", "hello"])],
+        {"Domain": ["bad.ru"], "File": ["C:\\Temp\\x.exe"], "IPv4": ["100.9.8.7"],
          "MD5": ["c" * 32], "SHA1": ["b" * 40], "SHA256": [SHA], "Unknown": ["hello"]},
     ),
     # a record's value
     "each-record-listed": (
-        [], [_r(1, "10.1.2.3", "ipv4-addr"), _r(2, "10.1.2.4", "ipv4-addr")],
-        {"IPv4": ["10.1.2.3", "10.1.2.4"]},
+        [], [_r(1, "100.1.2.3", "ipv4-addr"), _r(2, "100.1.2.4", "ipv4-addr")],
+        {"IPv4": ["100.1.2.3", "100.1.2.4"]},
     ),
     "value-not-a-string": ([], [_r(1, 445, "port")], {"port": ["445"]}),
     "value-shown-as-stored": ([], [_r(1, "evil[.]com", "domain-name")], {"Domain": ["evil[.]com"]}),
@@ -170,9 +170,9 @@ SHAPES = {
         {"7": ["jdoe"], "IPv4": ["203.0.113.7"]},
     ),
     "finding-ioc-odd-types-not-recorded": (
-        [_f(1, [{"value": "10.0.0.1", "type": None}, {"value": "10.0.0.2", "type": ["ip"]},
-                {"value": "10.0.0.3", "type": 7}])],
-        [], {TEXT_ONLY: ["10.0.0.1", "10.0.0.2", "10.0.0.3"]},
+        [_f(1, [{"value": "100.0.0.1", "type": None}, {"value": "100.0.0.2", "type": ["ip"]},
+                {"value": "100.0.0.3", "type": 7}])],
+        [], {TEXT_ONLY: ["100.0.0.1", "100.0.0.2", "100.0.0.3"]},
     ),
     "text-recorded": (
         [_f(1, observation="Beacon to evil[.]com and 8.8.4.4.")],
@@ -183,8 +183,8 @@ SHAPES = {
         [], {TEXT_ONLY: [SHA.lower(), "bad.com"]},
     ),
     "text-local-addresses-left-out": (
-        [_f(1, observation="Bound 0.0.0.0, then 127.0.0.1 and 255.255.255.255; beacon to 10.9.8.7.")],
-        [], {TEXT_ONLY: ["10.9.8.7"]},
+        [_f(1, observation="Bound 0.0.0.0, then 127.0.0.1 and 255.255.255.255; beacon to 100.9.8.7.")],
+        [], {TEXT_ONLY: ["100.9.8.7"]},
     ),
     "text-path-sentence-punctuation": (
         [_f(1, ["C:\\Windows\\System32\\AppUpdate.exe", "C:\\Windows\\System32\\Helper.exe"],
@@ -270,10 +270,10 @@ def test_a_record_s_status_reads_as_the_portal_reads_it(record, status):
 @pytest.mark.parametrize(
     "value, key",
     [(SHA, SHA.lower()), (" " + "C" * 40 + " ", "c" * 40), ("Evil.COM.", "evil.com"),
-     ("10.1.2.3", "10.1.2.3"), (UNC.upper(), UNC.lower()), ("Jdoe", "Jdoe"),
+     ("100.1.2.3", "100.1.2.3"), (UNC.upper(), UNC.lower()), ("Jdoe", "Jdoe"),
      ("evil[.]com", "evil.com"), ("hxxp://Evil[.]com/a", "http://evil.com/a"),
      ("user[@]evil.com", "user@evil.com"), (" 203.0.113.7:8443 ", "203.0.113.7"),
-     ("203[.]0[.]113[.]7:8443", "203.0.113.7"), ("10.0.0.1/24", "10.0.0.1/24"),
+     ("203[.]0[.]113[.]7:8443", "203.0.113.7"), ("100.0.0.1/24", "100.0.0.1/24"),
      ("300.1.1.1:80", "300.1.1.1:80"), ("evil.com:443", "evil.com:443")],
 )  # fmt: skip
 def test_values_compare_as_forensic_mcp_records_them(value, key):
@@ -405,16 +405,16 @@ def test_review_iocs_lists_a_draft_record_with_an_odd_type(
 # --- each record's status ---------------------------------------------------------
 
 STATUS_RECORDS = [
-    _r(1, "10.0.0.1", "ipv4-addr"),
+    _r(1, "100.0.0.1", "ipv4-addr"),
     _r(2, "evil.com", "domain-name", "DRAFT"),
-    _r(3, "10.0.0.3", "ipv4-addr", "REJECTED"),
-    {**_r(4, "10.0.0.4", "ipv4-addr"), "status": None},
-    _r(5, "10.0.0.5", "ipv4-addr", "draft"),
-    _r(6, "10.0.0.6", "ipv4-addr", "HELD"),
+    _r(3, "100.0.0.3", "ipv4-addr", "REJECTED"),
+    {**_r(4, "100.0.0.4", "ipv4-addr"), "status": None},
+    _r(5, "100.0.0.5", "ipv4-addr", "draft"),
+    _r(6, "100.0.0.6", "ipv4-addr", "HELD"),
 ]
 STATUS_FINDINGS = [
-    _f(1, ["10.0.0.1"], observation="Beacon to evil[.]com and 10.0.0.9."),
-    _f(2, ["10.0.0.3", "10.0.0.8"], status="DRAFT"),
+    _f(1, ["100.0.0.1"], observation="Beacon to evil[.]com and 100.0.0.9."),
+    _f(2, ["100.0.0.3", "100.0.0.8"], status="DRAFT"),
 ]
 
 
@@ -426,16 +426,16 @@ def test_review_iocs_lists_each_record_under_its_own_status(case, monkeypatch, c
     out = _cli(monkeypatch, capsys, ["review", "--iocs"])
     assert out.endswith(
         "\n=== Approved IOCs ===\n"
-        f"  {'IPv4:':<10} 10.0.0.1\n"
+        f"  {'IPv4:':<10} 100.0.0.1\n"
         "\n=== Draft IOCs (unverified) ===\n"
         f"  {'Domain:':<10} evil.com\n"
-        f"  {'IPv4:':<10} 10.0.0.4, 10.0.0.5\n"
+        f"  {'IPv4:':<10} 100.0.0.4, 100.0.0.5\n"
         "\n=== Rejected IOCs ===\n"
-        f"  {'IPv4:':<10} 10.0.0.3\n"
+        f"  {'IPv4:':<10} 100.0.0.3\n"
         "\n=== HELD IOCs ===\n"
-        f"  {'IPv4:':<10} 10.0.0.6\n"
+        f"  {'IPv4:':<10} 100.0.0.6\n"
         f"\n=== {TEXT_ONLY} ===\n"
-        "  10.0.0.8, 10.0.0.9\n"
+        "  100.0.0.8, 100.0.0.9\n"
     ), out
 
 
@@ -444,7 +444,7 @@ def test_report_ioc_lists_the_approved_records(case, monkeypatch, capsys):  # no
     record holds is recorded, so it is not in the text group."""
     _case_with(case, STATUS_FINDINGS, STATUS_RECORDS)
     out = _cli(monkeypatch, capsys, ["report", "--ioc"])
-    assert _report_ioc({"IPv4": ["10.0.0.1"], TEXT_ONLY: ["10.0.0.9"]}) in out, out
+    assert _report_ioc({"IPv4": ["100.0.0.1"], TEXT_ONLY: ["100.0.0.9"]}) in out, out
 
 
 def test_a_value_recorded_from_a_draft_finding_is_never_not_recorded(
@@ -483,12 +483,12 @@ def test_no_empty_label_is_printed(case, monkeypatch, capsys):  # noqa: F811
     records = [
         _r(1, "", "unknown"),
         _r(2, None, "unknown"),
-        _r(3, "10.0.0.1", "ipv4-addr"),
+        _r(3, "100.0.0.1", "ipv4-addr"),
     ]
     _case_with(case, [], records)
     for argv in (["review", "--iocs"], ["report", "--ioc"]):
         out = _cli(monkeypatch, capsys, argv)
-        assert "Unknown" not in out and "10.0.0.1" in out, out
+        assert "Unknown" not in out and "100.0.0.1" in out, out
 
 
 def test_a_saved_ioc_report_lists_the_records(case, monkeypatch, capsys):  # noqa: F811
@@ -505,14 +505,14 @@ def test_a_saved_ioc_report_lists_the_records(case, monkeypatch, capsys):  # noq
     assert "Total: 12 IOC records across 5 types" in saved
 
 
-SIGNED = [_r(n, f"10.0.0.{n}", "ipv4-addr") for n in range(1, 6)]
+SIGNED = [_r(n, f"100.0.0.{n}", "ipv4-addr") for n in range(1, 6)]
 SIGNED += [_r(6, "evil.com", "domain-name")]
 
 
 def test_the_signed_approved_records_are_printed_and_counted(case, monkeypatch, capsys):  # noqa: F811
     _case_with(case, [_f(1)], SIGNED)
     out = _cli(monkeypatch, capsys, ["report", "--ioc"])
-    ips = [f"10.0.0.{n}" for n in range(1, 6)]
+    ips = [f"100.0.0.{n}" for n in range(1, 6)]
     assert _report_ioc({"Domain": ["evil.com"], "IPv4": ips}) in out, out
     assert out.count("Total: 6 IOC records across 2 types") == 1
 
@@ -528,9 +528,9 @@ def test_approved_records_no_signature_verifies_are_not_reported(
     save_findings(case, [_f(1)])
     (case / "iocs.json").write_text(json.dumps(SIGNED))
     out = _cli(monkeypatch, capsys, ["report", "--ioc"])
-    assert "\n  Approved IOC records: none\n" in out and "10.0.0.1" not in out, out
+    assert "\n  Approved IOC records: none\n" in out and "100.0.0.1" not in out, out
     out = _cli(monkeypatch, capsys, ["review", "--iocs"])
-    ips = ", ".join(f"10.0.0.{n}" for n in range(1, 6))
+    ips = ", ".join(f"100.0.0.{n}" for n in range(1, 6))
     assert out == (
         f"\n=== Approved IOCs ===\n  {'Domain:':<10} evil.com\n  {'IPv4:':<10} {ips}\n"
     ), out

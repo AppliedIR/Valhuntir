@@ -72,8 +72,13 @@ def _ioc_lines():
 def _reported(monkeypatch, capsys):
     code, out, err = _vhir(monkeypatch, capsys, "report", "--ioc")
     assert code == 0, out + err
-    listed = "Total: 1 IOC records" in out and "10.0.0.7" in out
-    assert listed or ("Total: 0 IOC records" in out and "10.0.0.7" not in out), out
+    # 10.0.0.7 is private, so it is listed in the non-routable section: it
+    # counts as reported wherever it is listed
+    listed = "10.0.0.7" in out
+    if listed:
+        assert "Total: 1 IOC records" in out or "Non-routable addresses (1)" in out, out
+    else:
+        assert "Total: 0 IOC records" in out, out
     return listed
 
 
