@@ -1041,17 +1041,20 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
     for name, path in repos:
         if not path.is_dir():
             continue
-        count = _commit_count(path, "HEAD..origin/main")
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-list", "HEAD..origin/main", "--count"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        count = int(result.stdout.strip()) if result.returncode == 0 else 0
         current = _git_head(path)
-        if current == "unknown":  # no count: it can't say how far behind
-            print(f"  {name}: head couldn't be read (unknown)")
-        elif count == "0":
+        if count == 0:
             print(f"  {name}: up to date ({current[:7]})")
         else:
             remote = _git_remote_head(path)
-            remote = remote if remote == "unknown" else remote[:7]
             print(
-                f"  {name}: {count} commit{'s' if count != '1' else ''} behind ({current[:7]} → {remote})"
+                f"  {name}: {count} commit{'s' if count != 1 else ''} behind ({current[:7]} → {remote[:7]})"
             )
 
     if check_only:
@@ -1082,8 +1085,7 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
     _write_update_state(
         "", pre_update_git.get("vhir", ""), status="pending", reason=UNFINISHED_REASON
     )
-    pulled = False  # a repo's HEAD moved in this run, or couldn't be read
-    post_update_git = {}
+    pulled = False  # a repo's HEAD moved in this run
     for name, path in repos:
         if not path.is_dir():
             continue
@@ -1110,14 +1112,17 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
                 f"    git -C {quoted_path} stash pop",
             )
             _stop_after_pull(args, pulled, path, old)
-        # One read: the count and the re-exec test below both use it
-        new = post_update_git[name] = _git_head(path)
-        if "unknown" in (old, new):  # it can't tell, so it may have moved
+        # Count new commits
+        new = _git_head(path)
+        if old and old != new:
             pulled = True
-            print(f"  Pulling {name}... head couldn't be read")
-        elif old != new:
-            pulled = True
-            n = _commit_count(path, f"{old}..{new}")
+            count_result = subprocess.run(
+                ["git", "-C", str(path), "rev-list", f"{old}..{new}", "--count"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            n = count_result.stdout.strip() if count_result.returncode == 0 else "?"
             print(f"  Pulling {name}... {n} new commit{'s' if n != '1' else ''}")
         else:
             print(f"  Pulling {name}... already up to date")
@@ -1128,12 +1133,8 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
     )
 
     # This process loaded vhir-cli before the pull: when the pull changed it,
-    # or its head can't be read, Steps 4.5-9 run in a new process, from the
-    # new code.
-    vhir_now = post_update_git.get("vhir", "unknown")
-    if "vhir" in pre_update_git and (
-        vhir_now == "unknown" or vhir_now != pre_update_git["vhir"]
-    ):
+    # Steps 4.5-9 run in a new process, from the new code.
+    if "vhir" in pre_update_git and pre_update_git["vhir"] != _git_head(vhir_dir):
         _reexec_after_pull(args, venv, venv_python, pre_update_git, torch_record)
     _finish_update(
         args,
@@ -1149,27 +1150,10 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
 
 
 def _stop_after_pull(args, pulled: bool, path: Path, pre: str) -> NoReturn:
-    """A pull failed: nothing changed only if no repo moved before it and this
-    HEAD reads as it did before the pull. Else stop part-way."""
-    now = _git_head(path)
-    if pulled or now == "unknown" or now != pre:
+    """A pull failed: stop part-way if a repo moved before it or this HEAD moved."""
+    if pulled or _git_head(path) not in ("unknown", pre):
         _stop_part_way(args)
     sys.exit(1)
-
-
-def _commit_count(path: Path, revs: str) -> str:
-    """`git rev-list --count revs` as text; "?" when git can't count."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(path), "rev-list", revs, "--count"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return "?"
-    count = result.stdout.strip()
-    return count if result.returncode == 0 and count.isdigit() else "?"
 
 
 def _install_packages(
@@ -1448,11 +1432,6 @@ def _finish_update(
     for name, path in repos:
         if path.is_dir():
             git_hashes[name] = _git_head(path)
-            if git_hashes[name] == "unknown":
-                human_steps.add(
-                    f"{name} head couldn't be read: run `vhir update` again"
-                    " once git works there."
-                )
     manifest["git"] = git_hashes
     if torch_record:  # the user chose (asked, or --cpu/--gpu)
         manifest["torch_variant"] = torch_record
@@ -1538,9 +1517,7 @@ def _finish_update(
 
     # Step 9: Summary
     hashes = manifest.get("git", {})
-    parts = [  # "unknown" whole
-        f"{name}@{h if h == 'unknown' else h[:7]}" for name, h in sorted(hashes.items())
-    ]
+    parts = [f"{name}@{h[:7]}" for name, h in sorted(hashes.items())]
     print(f"\n  Updated to {', '.join(parts)}")
     # The version installed now, read fresh: vhir_cli.__version__ was read
     # when this process started, which can be before the pull
@@ -1634,20 +1611,13 @@ def _print_share_rejoin_notice() -> None:
 
 
 def _git_head(path: Path) -> str:
-    """Return current HEAD commit hash, or "unknown" when git can't say."""
-    return _git_rev(path, "HEAD")
-
-
-def _git_rev(path: Path, rev: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", rev],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return "unknown"
+    """Return current HEAD commit hash."""
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
@@ -1689,14 +1659,7 @@ def _detect_constraint_changed_packages(
             continue
         old = pre_update_git.get(name, "")
         new = _git_head(path)
-        if old and "unknown" in (old, new):  # can't diff: reinstall them all
-            changed |= _dependency_names(path, DEP_LINE)
-            human_steps.add(
-                f"The dependency-constraint check couldn't read {name}'s heads:"
-                " every constrained package was reinstalled."
-            )
-            continue
-        if not old or old == new:
+        if not old or old == new or new == "unknown":
             continue
         # Whole-repo diff (monorepos like sift-mcp have many
         # pyproject.toml — packages/*/pyproject.toml + root). Git's
@@ -1749,37 +1712,6 @@ def _detect_constraint_changed_packages(
     return changed
 
 
-def _dependency_names(path: Path, dep_line) -> set[str]:
-    """The names in every dependency array of the repo's pyproject.toml files
-    (the root and packages/*): [project] dependencies and each
-    [project.optional-dependencies] array. Read line by line, since Python
-    3.10 has no tomllib; classifiers and other strings are never matched."""
-    names: set[str] = set()
-    for f in [path / "pyproject.toml", *sorted(path.glob("packages/*/pyproject.toml"))]:
-        try:
-            lines = f.read_text().splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
-        table, inside = "", False
-        for line in lines:
-            text = line.split(" #", 1)[0].strip()
-            if not inside:
-                if text.startswith("["):
-                    table = text
-                    continue
-                key, _, value = text.partition("=")
-                inside = value.strip().startswith("[") and (
-                    table == "[project.optional-dependencies]"
-                    or (table == "[project]" and key.strip() == "dependencies")
-                )
-                if not inside:
-                    continue
-                text = value
-            names.update(dep_line.findall(text))
-            inside = not text.endswith("]")
-    return names
-
-
 def _git_branch(path: Path) -> str:
     """Return current branch name, or empty string if detached."""
     result = subprocess.run(
@@ -1792,5 +1724,11 @@ def _git_branch(path: Path) -> str:
 
 
 def _git_remote_head(path: Path) -> str:
-    """Return origin/main HEAD commit hash, or "unknown"."""
-    return _git_rev(path, "origin/main")
+    """Return origin/main HEAD commit hash."""
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "origin/main"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unknown"

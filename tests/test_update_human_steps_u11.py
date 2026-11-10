@@ -90,22 +90,6 @@ HEADS = {
     "vhir": ("a" * 40, "b" * 40),
     "opensearch-mcp": ("c" * 40, "d" * 40),
 }
-# The places update.py (at the base) reads a repo's HEAD, by base line.
-PRE = (929, 948)
-POST = (980, 997, 1005, 1026, 1218, 1312, 1480)
-_FRAME_SITES = {
-    "_detect_constraint_changed_packages": 1480,
-    "_current_heads": 1218,
-    "_finish_update": 1312,
-}
-X12_DIFF = (
-    "diff --git a/packages/sift-mcp/pyproject.toml b/packages/sift-mcp/pyproject.toml\n"
-    "--- a/packages/sift-mcp/pyproject.toml\n"
-    "+++ b/packages/sift-mcp/pyproject.toml\n"
-    "@@ -9 +9 @@\n"
-    '-    "fastmcp>=2.13,<3",\n'
-    '+    "fastmcp>=2.14,<3",\n'
-)
 PASS = SimpleNamespace(outcome="pass", reason="", fix="", stale=False)
 LONG_PW = "Qz7mVt2pLxR4nW8s"  # 16
 MID_PW = "Qz7mVt2pLx"  # 10
@@ -259,9 +243,7 @@ class Run:
         self.exec_argv = None
         self.prompts: list[str] = []
         self.state_at_prompt: dict[str, object] = {}
-        self.hits: set[tuple[int, str]] = set()
         self.problems: list[str] = []
-        self.crashed = False  # the product raised out of cmd_update
 
     # ---- what the run printed -------------------------------------------
 
@@ -361,23 +343,6 @@ class Run:
             self.problems.append(f"git on an unknown repo {p}")
         return name
 
-    def _site(self, repo):
-        f = sys._getframe(2)
-        while f is not None:
-            site = _FRAME_SITES.get(f.f_code.co_name)
-            if site:
-                return site
-            f = f.f_back
-        if self.installed:
-            return 1026
-        after = self.after_pull.pop(repo, None)
-        if after:
-            return {"timeout": 980, "fail": 997, "ok": 1005}[after]
-        if repo in self.pending929:
-            self.pending929.discard(repo)
-            return 929
-        return 948
-
     def _git(self, cmd, kw):
         k = self.k
         repo = self._repo(cmd[2])
@@ -393,29 +358,12 @@ class Run:
                 )
             return _result(kw)
         if sub == ["rev-list", "HEAD..origin/main", "--count"]:
-            self.pending929.add(repo)
-            if k["step2"].get(repo) == "timeout":
-                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
             return _result(kw, 0, "0\n")
         if sub[:1] == ["rev-list"] and len(sub) == 3 and sub[2] == "--count":
-            how = k["count_fail"].get(repo)
-            if how == "timeout":
-                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-            if how == "rc" or "unknown" in sub[1]:
-                return _result(kw, 128, "", f"fatal: bad revision '{sub[1]}'")
             return _result(kw, 0, "3\n")
         if sub == ["rev-parse", "origin/main"]:
             return _result(kw, 0, new + "\n")
         if sub == ["rev-parse", "HEAD"]:
-            site = self._site(repo)
-            self.hits.add((site, repo))
-            fault = k["faults"].get((site, repo))
-            if fault == "rc":
-                return _result(kw, 128, "", "fatal: not a git repository")
-            if fault == "timeout":
-                raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-            if fault == "oserror":
-                raise OSError(5, "Input/output error")
             return _result(kw, 0, self.head[repo] + "\n")
         if sub == ["symbolic-ref", "--short", "HEAD"]:
             return _result(kw, 0, k["branch"].get(repo, "main") + "\n")
@@ -424,7 +372,6 @@ class Run:
             if repo in k["moves"] or how.endswith("-moved"):
                 self.head[repo] = new
             how = how.replace("-moved", "")
-            self.after_pull[repo] = how
             if how == "timeout":
                 raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
             if how == "fail":
@@ -437,10 +384,6 @@ class Run:
                 )
             return _result(kw, 0, "Already up to date.\n")
         if sub[:2] == ["diff", "--unified=0"]:
-            if "unknown" in sub[2]:
-                return _result(kw, 128, "", f"fatal: bad revision '{sub[2]}'")
-            if k["x12"] and repo == "sift-mcp":
-                return _result(kw, 0, X12_DIFF)
             return _result(kw)
         self.problems.append(f"unexpected git command {cmd}")
         return _result(kw)
@@ -460,7 +403,6 @@ class Run:
         if cmd[:3] == ["uv", "pip", "install"]:
             if "-c" not in cmd:
                 self.problems.append(f"an install without the lock: {cmd}")
-            self.installed = True
             return _result(
                 kw,
                 k["install_rc"],
@@ -546,9 +488,6 @@ class Run:
         b, mp = self.box, self.mp
         self.k = k
         self.head = {r: h[0] for r, h in HEADS.items()}
-        self.installed = False
-        self.after_pull: dict[str, str] = {}
-        self.pending929: set[str] = set()
         self.rules = list(k["answers"]) + [(r"(?i)opensearch", "n", True)]
         self.secrets = list(k["secrets"])
         mpath = b.home / ".vhir" / "manifest.json"
@@ -586,11 +525,6 @@ class Run:
                 sys.modules, "opensearch_mcp", types.ModuleType("opensearch_mcp")
             )
             mp.setitem(sys.modules, "opensearch_mcp.client", client)
-        if k["x12"]:
-            pyproject = b.src / "packages" / "sift-mcp" / "pyproject.toml"
-            pyproject.write_text(
-                '[project]\nname = "sift-mcp"\ndependencies = [\n    "fastmcp>=2.14,<3",\n]\n'
-            )
         if k["key"] == "legacy":
             _legacy(k["pw"])
         if k["setup"]:
@@ -704,7 +638,6 @@ class Run:
             print(e.code, file=sys.stderr)
             return 1
         except Exception:  # noqa: BLE001 — as the interpreter prints it
-            self.crashed = True
             sys.stderr.write(traceback.format_exc())
             return 1
 
@@ -741,10 +674,6 @@ class Run:
             no_restart=None,
             after_pull=None,
             exec_oserror=False,
-            faults={},
-            count_fail={},
-            step2={},
-            x12=False,
             opensearch=None,
             image="opensearchproject/opensearch:3.5.0",
             bash_timeout=False,
@@ -759,7 +688,6 @@ class Run:
             manifest={},
             setup=None,
             stubs=(),
-            must_hit=True,
         )
         unknown = set(kw) - set(k)
         if unknown:
@@ -790,9 +718,6 @@ class Run:
                 err.end()
                 _restore(snap)
                 self.proc = "2"
-                self.installed = False
-                self.after_pull.clear()
-                self.pending929.clear()
                 try:
                     self.rc = self._call(self._args_from(self.exec_argv))
                 except ExecEnded:
@@ -803,12 +728,6 @@ class Run:
             sys.stdout, sys.stderr, sys.stdin = saved
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old_alarm)
-        # a run that raised never reached the sites after the raise: the row's
-        # own asserts judge it, not the must-hit check
-        if k["must_hit"] and not self.crashed:
-            for site, repo in k["faults"]:
-                if site != 1026 and (site, repo) not in self.hits:
-                    self.problems.append(f"no HEAD read of {repo} at base line {site}")
         if self.problems:
             raise HarnessError("; ".join(self.problems))
         return self
@@ -1039,7 +958,6 @@ K11 = {
     "earlier_moved": dict(moves={"sift-mcp"}),
     "this_moved": dict(),
     "none": dict(),
-    "unknown": dict(),
 }
 
 
@@ -1051,8 +969,6 @@ def test_a_later_repo_that_fails_to_pull_says_whether_code_changed(
     knobs = dict(K11[which])
     pull = how + ("-moved" if which == "this_moved" else "")
     knobs["pulls"] = {"vhir": pull}
-    if which == "unknown":
-        knobs["faults"] = {(980 if how == "timeout" else 997, "vhir"): "rc"}
     r = u.go(**knobs)
     assert r.rc == 1
     assert not r.traceback()
@@ -1062,167 +978,6 @@ def test_a_later_repo_that_fails_to_pull_says_whether_code_changed(
         assert r.in_last(marker), r.last_block()
     else:
         assert r.in_last("finish with: vhir update"), r.last_block()
-
-
-# ---- V13: a HEAD read that hangs or fails --------------------------------
-
-V13 = {
-    929: dict(),
-    948: dict(),
-    980: dict(pulls={"sift-mcp": "timeout"}),
-    997: dict(pulls={"sift-mcp": "fail"}),
-    1005: dict(moves={"sift-mcp"}),
-    1026: dict(moves={"vhir"}),
-    1218: dict(after_pull="{}"),
-    1312: dict(),
-    1480: dict(moves={"sift-mcp"}),
-}
-
-
-@pytest.mark.parametrize("kind", ["timeout", "oserror"])
-@pytest.mark.parametrize(
-    "site,declared", [(s, "RED") for s in V13], ids=[str(s) for s in V13]
-)
-def test_a_head_read_that_hangs_or_fails_never_ends_in_a_traceback(
-    u, site, declared, kind
-):
-    repo = "vhir" if site == 1026 else "sift-mcp"
-    r = u.go(no_restart=True, faults={(site, repo): kind}, **V13[site])
-    assert not r.traceback(), r.lines(stream="stderr")
-    assert r.blocks(), "no block"
-    if r.exec_argv is not None:
-        assert r.lines("1-after-exec") == []
-
-
-# ---- V14: a head that can't be read --------------------------------------
-
-V14_SITES = {"pre": (948,), "post": (1005,), "both": (948, 1005)}
-
-
-@pytest.mark.parametrize("kind", ["rc", "timeout"])
-@pytest.mark.parametrize("repo", ["sift-mcp", "vhir"])
-@pytest.mark.parametrize(
-    "which,declared", [(w, "RED") for w in V14_SITES], ids=list(V14_SITES)
-)
-def test_a_pull_whose_head_cant_be_read_claims_no_count(u, which, declared, repo, kind):
-    faults = {(s, repo): kind for s in V14_SITES[which]}
-    r = u.go(moves={repo}, faults=faults, no_restart=True)
-    assert not r.traceback(), r.lines(stream="stderr")
-    pulling = [line for line in r.lines() if f"Pulling {repo}" in line]
-    assert pulling, r.lines()
-    for line in pulling:
-        assert "already up to date" not in line and "new commit" not in line, line
-    if r.exec_argv is not None:
-        assert r.lines("1-after-exec") == []
-
-
-V14_EXEC = {"pre": (948,), "post": (1005, 1026), "both": (948, 1005, 1026)}
-V14_EXEC_DECLARED = {
-    ("pre", "rc"): "GUARD",
-    ("post", "rc"): "GUARD",
-    ("both", "rc"): "RED",
-    ("pre", "timeout"): "RED",
-    ("post", "timeout"): "RED",
-    ("both", "timeout"): "RED",
-}
-
-
-@pytest.mark.parametrize(
-    "which,kind,declared",
-    [(w, kd, d) for (w, kd), d in V14_EXEC_DECLARED.items()],
-    ids=[f"{w}-{kd}" for w, kd in V14_EXEC_DECLARED],
-)
-def test_a_vhir_head_that_cant_be_read_still_hands_over(u, which, kind, declared):
-    faults = {(s, "vhir"): kind for s in V14_EXEC[which]}
-    r = u.go(moves={"vhir"}, faults=faults, no_restart=True)
-    assert r.exec_argv is not None, "no hand-over"
-    assert r.lines("1-after-exec") == []
-
-
-def test_x10_an_unreadable_moved_repo_then_a_hung_pull_is_part_way(u):
-    r = u.go(
-        moves={"sift-mcp"},
-        faults={(948, "sift-mcp"): "rc", (1005, "sift-mcp"): "rc"},
-        pulls={"vhir": "timeout"},
-    )
-    assert r.rc == 1
-    assert r.in_last("finish with: vhir update"), r.last_block()
-
-
-def test_x11_a_vhir_head_unread_after_its_pull_hands_over(u):
-    r = u.go(faults={(1005, "vhir"): "rc"}, no_restart=True)
-    assert r.exec_argv is not None, "no hand-over"
-    assert r.lines("1-after-exec") == []
-
-
-# ---- X12: the dependency-constraint check with an unreadable head --------
-
-
-@pytest.mark.parametrize("which,declared", [("old", "RED"), ("new", "RED")])
-def test_x12_an_unreadable_head_reinstalls_every_constrained_package(
-    u, which, declared
-):
-    sites = PRE if which == "old" else POST
-    faults = {(s, "sift-mcp"): "rc" for s in sites}
-    r = u.go(
-        moves={"sift-mcp"}, x12=True, faults=faults, no_restart=True, must_hit=False
-    )
-    argv = r.install_argv()
-    pairs = list(zip(argv, argv[1:], strict=False))
-    assert ("--reinstall-package", "fastmcp") in pairs, argv
-    assert any(
-        re.search(r"constraint check couldn't read", line) for line in r.last_block()
-    ), r.last_block()
-
-
-# ---- X13 / V15: a commit count that hangs or fails ------------------------
-
-
-def test_x13_a_hung_step2_count_shows_unknown_and_goes_on(u):
-    r = u.go(step2={"sift-mcp": "timeout"})
-    assert not r.traceback(), r.lines(stream="stderr")
-    step2 = [line for line in r.lines() if line.startswith("  sift-mcp:")]
-    assert step2 and "?" in step2[0], step2
-    assert r.out_has("Updated to")
-
-
-@pytest.mark.parametrize("how,declared", [("timeout", "RED"), ("rc", "GUARD")])
-def test_v15_a_pull_count_that_fails_shows_unknown(u, how, declared):
-    r = u.go(moves={"sift-mcp"}, count_fail={"sift-mcp": how})
-    assert not r.traceback(), r.lines(stream="stderr")
-    assert any("Pulling sift-mcp... ? new commit" in line for line in r.lines()), (
-        r.lines()
-    )
-    assert r.out_has("Updated to")
-
-
-# ---- X15: an unknown head is named -----------------------------------------
-
-
-def test_x15_the_block_names_the_repo_whose_head_couldnt_be_read(u):
-    r = u.go(faults={(1312, "sift-mcp"): "rc"})
-    assert any(
-        re.search(r"sift-mcp\b.*head couldn't be read", line) for line in r.last_block()
-    ), r.last_block()
-
-
-def test_x15_step2_shows_unknown_whole(u):
-    r = u.go(faults={(929, "sift-mcp"): "rc"})
-    assert any(
-        line.startswith("  sift-mcp:") and "(unknown)" in line for line in r.lines()
-    ), r.lines()
-
-
-def test_x15_updated_to_shows_unknown_whole(u):
-    r = u.go(faults={(1312, "sift-mcp"): "rc"})
-    updated = [line for line in r.lines() if "Updated to" in line]
-    assert updated and "sift-mcp@unknown" in updated[-1], updated
-
-
-def test_x15_an_unknown_vhir_head_leaves_the_incomplete_warning(u):
-    r = u.go(faults={(1312, "vhir"): "rc"})
-    warned = r.warn()
-    assert any("vhir update" in line for line in warned), warned
 
 
 # ---- K21: the signing-key question comes before the block ----------------

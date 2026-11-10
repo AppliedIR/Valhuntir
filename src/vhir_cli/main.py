@@ -759,11 +759,10 @@ def _warn_if_update_incomplete() -> None:
             from vhir_cli.display import one_line
 
             detail = [one_line(state[k]) for k in ("reason", "fix") if state.get(k)]
-        stale = (  # a head the update couldn't read is not a finished update
+        stale = (
             pending
             or state.get("version") != __version__
             or state.get("vhir_commit") != commit
-            or commit == "unknown"
         )
         line = f"Your update to {__version__} didn't finish. Run: vhir update"
     else:
