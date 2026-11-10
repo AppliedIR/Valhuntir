@@ -10,6 +10,7 @@ stays so a tree that still runs it dials nothing)."""
 from __future__ import annotations
 
 import subprocess
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -42,7 +43,9 @@ def _run(state):
 
 
 def _update(home, state):
+    """Run the update; a restart that didn't come up is pending: exit 1."""
     with (
+        pytest.raises(SystemExit) if state != "active" else nullcontext() as ended,
         patch("pathlib.Path.home", return_value=home),
         patch("subprocess.run", side_effect=_run(state)),
         patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
@@ -51,6 +54,7 @@ def _update(home, state):
     ):
         cmd_update(test_update._make_args(), {})
     smoke.assert_not_called()
+    assert state == "active" or ended.value.code == 1
     return health_stand_in.current().calls  # Step 8's /health calls
 
 

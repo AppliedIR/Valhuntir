@@ -118,8 +118,7 @@ def _update(
     `systemctl --user show` prints. `gateway` (tests.test_update_gateway_state)
     is what /health answers on every call, and the repos it pulls. A
     `restart_rc` exception is what the restart raises. `unreadable` is (repo,
-    "before" or "after"): its HEAD can't be read at the pre-pull read, or at
-    every read after it."""
+    "before" or "after"): its HEAD can't be read before its pull, or after it."""
     check_rc = check_rc or {}
     calls = []
     if gateway is not None:
@@ -127,7 +126,6 @@ def _update(
         pulls = (*pulls, *gateway.pulls)
     moving = {f"/{name}" for name in pulls} | ({"/vhir"} if vhir_moves else set())
     heads = {"/vhir": "v1"}
-    reads = []
     if manifest:
         path = box.home / ".vhir" / "manifest.json"
         path.write_text(json.dumps(manifest(json.loads(path.read_text()))))
@@ -178,8 +176,9 @@ def _update(
             and cmd[2].endswith(f"/{unreadable[0]}")
             and cmd[3:] == ["rev-parse", "HEAD"]
         ):
-            reads.append(cmd)
-            if (len(reads) == 1) == (unreadable[1] == "before"):
+            repo = cmd[2]
+            pulled = any(c[2:4] == [repo, "pull"] for c in calls if c[:2] == cmd[:2])
+            if pulled == (unreadable[1] == "after"):
                 result.returncode, result.stdout = 128, ""
         elif cmd[:2] == ["git", "-C"] and any(cmd[2].endswith(m) for m in moving):
             repo = next(m for m in moving if cmd[2].endswith(m))

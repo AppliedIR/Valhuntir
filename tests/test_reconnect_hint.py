@@ -102,7 +102,9 @@ class TestUpdate:
         assert "Restarting gateway... done" in got.out and HINT not in got.out
 
     def test_a_failed_restart_says_nothing_more(self, manifest_dir, capsys):
-        self._update(manifest_dir[0], 1)
+        with pytest.raises(SystemExit) as ended:  # a failed restart is pending
+            self._update(manifest_dir[0], 1)
+        assert ended.value.code == 1
         got = capsys.readouterr()
         out, block = got.out, test_update.steps_block(got.err)
         assert "failed (stubbed)" in out and HINT not in out
