@@ -1021,11 +1021,14 @@ ONE_FILE = {
     "fetch_failed": STOPS["fetch_failed"][0],
     "exec_failed": STOPS["incomplete"][0],
 }
+ONE_FILE_GUARD = {"fetch_failed", "exec_failed"}  # stdout holds nothing at the block
 
 
 @pytest.mark.parametrize("tty", [False, True], ids=["no-terminal", "terminal"])
 @pytest.mark.parametrize(
-    "path,declared", [(p, "RED") for p in ONE_FILE], ids=list(ONE_FILE)
+    "path,declared",
+    [(p, "GUARD" if p in ONE_FILE_GUARD else "RED") for p in ONE_FILE],
+    ids=list(ONE_FILE),
 )
 def test_in_one_file_nothing_follows_the_end_of_steps(u, path, declared, tty):
     r = u.go(one_file=True, tty=tty, **ONE_FILE[path])
