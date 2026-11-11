@@ -5,8 +5,9 @@ after a restart that worked, for at most 240 s; Step 9 writes the update state
 from that answer and is the one place that sets the exit status. A failed
 restart is pending without a wait. With --no-restart, an update that pulled a
 tree the gateway serves (or rewrote its launch line) is the asked pending,
-"restart the gateway", and exits 0; with nothing to restart, one /health call
-decides. Every other pending exits 1.
+"restart the gateway", and exits 0; with nothing to restart, Step 8 waits for
+/health on the same 240 s budget (a gateway the user just restarted may still be
+starting). Every other pending exits 1.
 
 /health is the stand-in from tests/health_stand_in.py, on its own clock: no row
 dials a port or sleeps for real. The texts are literals, so a tree without the
@@ -229,6 +230,35 @@ def test_no_restart_with_nothing_to_restart_asks_health_once(box, capsys):
     assert run.state.get("status") == "complete", run.state
     assert run.rc == 0
     assert len(run.health.calls) == 1
+
+
+def test_no_restart_waits_for_a_gateway_that_starts_listening_late(box, capsys):
+    """The user restarted the gateway just before `vhir update --no-restart`, and
+    it listens after 8 s: Step 8 waits on its budget, then judges."""
+    path = box.home / ".vhir" / "update-state.json"
+    path.write_text(
+        json.dumps({"status": "pending", "reason": RESTART, "fix": RESTART_FIX})
+    )
+    run = _run(box, capsys, no_restart=True, gateway=Answer(_passes_after(8)))
+    assert run.state.get("status") == "complete", run.state
+    assert run.rc == 0
+    assert len(run.health.calls) > 1
+    assert 8 <= run.health.waited() < 10  # the stand-in's clock: no real sleep
+    assert any(UNPROVEN in line for line in run.block), run.block
+
+
+def test_no_restart_with_a_gateway_that_never_answers_is_pending_after_the_budget(
+    box, capsys, monkeypatch
+):
+    from vhir_cli import gateway
+
+    monkeypatch.setattr(gateway, "DEADLINE", 20.0)  # a short budget, the same loop
+    run = _run(box, capsys, no_restart=True, gateway=REFUSED)
+    _pending(run, REFUSED.reason, REFUSED.fix)
+    assert run.rc == 1
+    assert len(run.health.calls) > 1
+    assert all(at < T0 + 20 for _, _, at in run.health.calls)
+    assert run.health.waited() <= 20
 
 
 @pytest.mark.parametrize(

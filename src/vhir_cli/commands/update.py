@@ -1526,7 +1526,7 @@ def _finish_update(
     elif _needs_restart(pre_update_git, repos, client_setup._LAUNCHERS_UPDATED):
         health = gateway.HealthAnswer(False, RESTART_REASON, gateway.RESTART_FIX)
     else:
-        health = gateway.wait_for_health(budget, once=True)
+        health = gateway.wait_for_health(budget)
 
     # Step 9: Summary, and the one decision of status and exit code
     hashes = manifest.get("git", {})
