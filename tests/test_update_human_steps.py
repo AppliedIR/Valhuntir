@@ -121,15 +121,17 @@ class _Stream(io.TextIOBase):
     """sys.stdout or sys.stderr: each whole line goes to the run's log as
     (process, stream, line). A held stream is stdout written to a file: what
     it's given reaches the log only at a flush (a partial line too) or at the
-    process's end, as a block-buffered file gets it."""
+    process's end, as a block-buffered file gets it. A broken held stream is
+    a pipe whose reader has gone: a flush with anything held raises
+    BrokenPipeError, and what it held is lost."""
 
     encoding = "utf-8"
     errors = "strict"
 
-    def __init__(self, run, name, held=False):
+    def __init__(self, run, name, held=False, broken=False):
         super().__init__()
         self.run, self.name, self.buf = run, name, ""
-        self.held, self.pending = held, ""
+        self.held, self.pending, self.broken = held or broken, "", broken
 
     def writable(self):
         return True
@@ -151,12 +153,16 @@ class _Stream(io.TextIOBase):
             self.run.log.append((self.run.proc, self.name, line))
 
     def flush(self):
+        if self.broken and self.pending:
+            raise BrokenPipeError(32, "Broken pipe")
         if self.held:
             self._lines(self.pending)
             self.pending = ""
             self.end()
 
     def end(self):
+        if self.broken:
+            self.pending = ""
         if self.pending:
             self.flush()
         if self.buf:
@@ -692,6 +698,7 @@ class Run:
             setup=None,
             stubs=(),
             one_file=False,
+            broken_pipe=False,
         )
         unknown = set(kw) - set(k)
         if unknown:
@@ -709,7 +716,7 @@ class Run:
             no_restart=k["no_restart"],
             after_pull=k["after_pull"],
         )
-        out = _Stream(self, "stdout", held=k["one_file"])
+        out = _Stream(self, "stdout", held=k["one_file"], broken=k["broken_pipe"])
         err = _Stream(self, "stderr")
         saved = sys.stdout, sys.stderr, sys.stdin
         old_alarm = signal.signal(signal.SIGALRM, _alarm)
@@ -1034,6 +1041,59 @@ def test_in_one_file_nothing_follows_the_end_of_steps(u, path, declared, tty):
     r = u.go(one_file=True, tty=tty, **ONE_FILE[path])
     assert r.blocks(), "no block"
     assert r.log[-1][2].strip() == CLOSE, r.log[r.last_open() :][-8:]
+
+
+# ---- a stdout that can't be flushed: the block still prints in full ------
+
+STEP = "Run `vhir update` again."
+FRAMES = {
+    "notice": (lambda: human_steps.no_terminal_notice(), [*human_steps.NO_TERMINAL]),
+    "finish-terminal": (lambda: human_steps.finish(True), [STEP]),
+    "finish-no-terminal": (
+        lambda: human_steps.finish(False),
+        [*human_steps.NO_TERMINAL, STEP],
+    ),
+}
+
+
+def _closed():
+    s = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")  # as sys.stdout is
+    s.close()
+    return s
+
+
+@pytest.mark.parametrize("frame", list(FRAMES))
+@pytest.mark.parametrize("stdout", ["broken_pipe", "closed", "none"])
+def test_a_stdout_that_cannot_be_flushed_still_gets_the_whole_block(
+    u, monkeypatch, stdout, frame
+):
+    call, want = FRAMES[frame]
+    monkeypatch.setattr(human_steps, "_steps", [STEP])
+    out = {
+        "broken_pipe": lambda: _Stream(u, "stdout", broken=True),
+        "closed": _closed,
+        "none": lambda: None,
+    }[stdout]()
+    if stdout == "broken_pipe":
+        out.write("held output\n")
+    err = _Stream(u, "stderr")
+    saved = sys.stdout, sys.stderr
+    try:
+        sys.stdout, sys.stderr = out, err
+        call()
+    finally:
+        err.end()
+        sys.stdout, sys.stderr = saved
+    assert [line.strip() for line in u.lines(stream="stderr")] == [OPEN, *want, CLOSE]
+
+
+def test_a_broken_pipe_on_stdout_still_prints_the_end_block_with_no_terminal(u):
+    # The broken pipe stops the update; the end block must still follow the
+    # start notice. (With a terminal and nothing collected there is no block.)
+    r = u.go(broken_pipe=True, tty=False)
+    assert len(r.blocks()) == 2, r.lines(stream="stderr")[-8:]
+    head = [line.strip() for line in r.last_block()][: len(human_steps.NO_TERMINAL)]
+    assert head == list(human_steps.NO_TERMINAL), r.last_block()
 
 
 # ---- a signing-key upgrade that fails ------------------------------------

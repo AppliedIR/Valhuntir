@@ -57,7 +57,14 @@ def steps() -> list[str]:
 
 
 def _frame(lines) -> None:
-    sys.stdout.flush()  # in one file (`> f 2>&1`) the block follows all of it
+    # In one file (`> f 2>&1`) the block then follows all that was written
+    # before it. Best effort: a closed or broken stdout must not lose the block.
+    out = sys.stdout
+    if out is not None:
+        try:
+            out.flush()
+        except (OSError, ValueError):
+            pass
     print(OPEN, file=sys.stderr)
     for line in lines:
         print(f"  {line}", file=sys.stderr)
