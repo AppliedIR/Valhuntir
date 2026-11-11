@@ -102,6 +102,21 @@ def test_each_range_has_its_own_label(value, expected):
     assert classify_address(value) == expected
 
 
+# One address the IANA registries mark apart from its block: the 6a44 relay
+# anycast is not globally reachable (RFC 6751), the SRP anycast is (RFC 9665).
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("192.88.99.2", "6a44"),
+        ("192.88.99.1", ROUTABLE),
+        ("2001:1::3", ROUTABLE),
+        ("2001:1::4", PROTOCOL),
+    ],
+)
+def test_a_single_address_apart_from_its_block_has_its_own_row(value, expected):
+    assert classify_address(value) == expected
+
+
 def test_no_answer_comes_from_the_ipaddress_flags(monkeypatch):
     # The flags changed between Python versions; the table must not lean on them.
     def unused(self):
@@ -195,6 +210,26 @@ def test_a_defanged_address_is_tiered_and_listed_as_given():
     }
 
 
+UNTYPED = ["10.0.0.1:445", "10[.]0[.]0[.]1", "fd00::1", "not-an-address"]
+
+
+@pytest.mark.parametrize("t", [None, "", "unknown"])
+def test_an_address_record_with_no_named_type_is_tiered(t):
+    from vhir_cli.ioc_groups import record_groups
+
+    groups = record_groups([{"value": v, "type": t} for v in UNTYPED])
+    assert list(groups) == ["Unknown"]
+    scoped = scope_iocs(groups)
+    assert scoped.non_routable == {
+        "Unknown": [
+            ("10.0.0.1:445", PRIVATE),
+            ("10[.]0[.]0[.]1", PRIVATE),
+            ("fd00::1", UNIQUE_LOCAL),
+        ]
+    }
+    assert scoped.routable == {"Unknown": ["not-an-address"]}
+
+
 def test_unparseable_address_value_stays_listed_as_is():
     scoped = scope_iocs({"IPv4": ["10.0.0.1/8", "not-an-ip"]})
     assert scoped.routable["IPv4"] == ["10.0.0.1/8", "not-an-ip"]
@@ -231,7 +266,7 @@ def test_report_ioc_lists_non_routable_addresses_apart(tmp_path):
     head, _, tail = out.partition("Non-routable addresses")
     assert "185.220.101.45" in head and "10.4.1.22" not in head
     assert "8.8.8.8" in head and "100.64.3.9" not in head
-    total = "Total: 2 IOC records across 1 types (1 listed above, 1 non-routable below)"
+    total = "Total: 2 IOC records across 1 types (2 listed above, 2 non-routable below)"
     assert total in head
     assert "10.4.1.22" in tail and "RFC 1918" in tail
     assert "100.64.3.9" in tail and "carrier-grade NAT" in tail
@@ -248,6 +283,34 @@ def test_report_ioc_total_counts_every_approved_record(tmp_path):
     out = _report_ioc(tmp_path, SimpleNamespace(), True, snap)
     total = "Total: 3 IOC records across 1 types (0 listed above, 3 non-routable below)"
     assert f"\n{total}" in out
+
+
+def test_report_ioc_note_counts_what_the_section_heading_counts(tmp_path):
+    # Only a value found in text is non-routable: the note still says so.
+    from types import SimpleNamespace
+
+    from vhir_cli.commands.report import _report_ioc
+
+    recs = _records("185.220.101.45")
+    finding = {"observation": "beacon to 10.4.1.22", "interpretation": ""}
+    snap = {"view": {"findings": [finding], "iocs": recs}, "iocs": recs}
+    out = _report_ioc(tmp_path, SimpleNamespace(), True, snap)
+    total = "Total: 1 IOC records across 1 types (1 listed above, 1 non-routable below)"
+    assert f"\n{total}\n" in out
+    assert "Non-routable addresses (1), listed" in out
+
+
+def test_report_ioc_tiers_an_untyped_address_record(tmp_path):
+    from types import SimpleNamespace
+
+    from vhir_cli.commands.report import _report_ioc
+
+    recs = [{"value": v, "type": None, "status": "APPROVED"} for v in UNTYPED]
+    snap = {"view": {"findings": [], "iocs": recs}, "iocs": recs}
+    out = _report_ioc(tmp_path, SimpleNamespace(), True, snap)
+    head, _, tail = out.partition("Non-routable addresses (3)")
+    assert "10.0.0.1:445" in tail and "fd00::1" in tail
+    assert "10.0.0.1:445" not in head and "not-an-address" in head
 
 
 def test_report_ioc_has_no_section_without_non_routable(tmp_path):

@@ -48,6 +48,7 @@ BENCHMARKING = "benchmarking"
 BROADCAST = "broadcast"
 UNIQUE_LOCAL = "unique-local"
 SIX_TO_FOUR = "6to4"
+SIX_A_FOUR = "6a44"
 TRANSLATION = "translation"
 DISCARD = "discard"
 SRV6 = "srv6"
@@ -70,6 +71,7 @@ SCOPE_NOTES: dict[str, str] = {
     BROADCAST: "limited broadcast (RFC 919)",
     UNIQUE_LOCAL: "unique local (RFC 4193) — internal host, not a blocklist candidate",
     SIX_TO_FOUR: "6to4 transition address (RFC 3056)",
+    SIX_A_FOUR: "6a44 relay anycast (RFC 6751)",
     TRANSLATION: "local-use IPv4/IPv6 translation (RFC 8215)",
     DISCARD: "discard-only (RFC 6666)",
     SRV6: "SRv6 segment identifiers (RFC 9602)",
@@ -95,6 +97,7 @@ _V4 = _table(
         ("192.0.0.10/32", ROUTABLE),
         ("192.0.0.0/24", PROTOCOL),
         ("192.0.2.0/24", DOCUMENTATION),
+        ("192.88.99.2/32", SIX_A_FOUR),  # IANA: not globally reachable
         ("192.168.0.0/16", PRIVATE),
         ("198.18.0.0/15", BENCHMARKING),
         ("198.51.100.0/24", DOCUMENTATION),
@@ -114,6 +117,7 @@ _V6 = _table(
         ("100::/64", DISCARD),
         ("2001:1::1/128", ROUTABLE),
         ("2001:1::2/128", ROUTABLE),
+        ("2001:1::3/128", ROUTABLE),  # IANA: SRP anycast (RFC 9665)
         ("2001:3::/32", ROUTABLE),
         ("2001:4:112::/48", ROUTABLE),
         ("2001:20::/28", ROUTABLE),
@@ -170,9 +174,10 @@ class ScopedIocs:
 #: IOC labels whose values are addresses. Others pass through untouched.
 ADDRESS_TYPES = frozenset({"IPv4", "IPv6", "IP"})
 
-#: A group that mixes types (the values found in text, no record holds): each
-#: value is tiered only if it parses as an address.
-MIXED_GROUPS = frozenset({TEXT_ONLY})
+#: A group that mixes types (the values found in text, no record holds, and
+#: the records with no type a pattern names): each value is tiered only if it
+#: parses as an address.
+MIXED_GROUPS = frozenset({TEXT_ONLY, ioc_types.label("unknown")})
 
 #: Scopes that stay in the main list. A documentation address (RFC 5737 /
 #: RFC 3849) is the placeholder every example, report template and test corpus

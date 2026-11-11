@@ -448,13 +448,13 @@ def _report_ioc(
             lines.append(f"    {_d(v, safe)}")
 
     # Every approved record counts, as the CLI and the Portal count them; the
-    # line says how many of them are in the non-routable list below.
+    # note counts the values on the page, as the non-routable heading does.
     total = sum(len(v) for v in records.values())
-    listed = sum(len(v) for k, v in scoped.routable.items() if k != TEXT_ONLY)
-    split = f" ({listed} listed above, {total - listed} non-routable below)"
+    listed = sum(len(v) for v in scoped.routable.values())
+    split = f" ({listed} listed above, {scoped.non_routable_count} non-routable below)"
     lines.append(
         f"\nTotal: {total} IOC records across {len(records)} types"
-        + (split if listed != total else "")
+        + (split if scoped.non_routable else "")
     )
 
     if scoped.non_routable:
