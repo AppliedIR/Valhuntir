@@ -320,6 +320,7 @@ PIN_STATES = {
     "pin-is-a-folder": ("folder", "line", "unusable"),
     "pin-empty": ("empty", "line", "unusable"),
     "pin-not-a-cert": ("garbage", "line", "unusable"),
+    "pin-not-ascii": ("not-ascii", "line", "unusable"),
     "line-names-another-file": ("server-elsewhere", "elsewhere", "sent"),
     "no-line-self-signed": ("server", None, "refused"),
     "no-line-system-store-trusts-it": (None, None, "sent-system-store"),
@@ -355,6 +356,8 @@ def _place_pin(home: Path, tmp_path: Path, wintools: StandIn, holds) -> Path:
         pin.write_text("")
     elif holds == "garbage":
         pin.write_text("not a certificate\n")
+    elif holds == "not-ascii":  # the server's PEM under a comment line with a U+00E9
+        pin.write_bytes(("# café\n" + server).encode("utf-8"))
     elif holds == "server-elsewhere":  # the default path holds a stranger's cert
         other = tmp_path / "other"
         other.mkdir()
@@ -419,6 +422,8 @@ def test_a_wintools_request_trusts_only_what_the_gateway_trusts(
         assert connects == []
         assert f"its pinned certificate {pin} can't be used" in out.err
         assert "vhir setup join-code" in out.err
+        if holds == "not-ascii":
+            assert "'ascii' codec can't decode" in out.err
     else:  # the handshake is refused
         assert connects
         assert "can't be used" not in said

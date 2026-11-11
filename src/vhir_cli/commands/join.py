@@ -1242,7 +1242,7 @@ def _wintools_ssl_context(wt: dict, what: str):
     try:
         if not os.path.isabs(path):  # it would depend on the working directory
             raise ValueError("the path is relative")
-        pem = Path(path).read_text()
+        pem = Path(path).read_text(encoding="ascii")  # cadata takes ASCII only
         if not pem.strip():  # cadata="" would load the system store
             raise ValueError("the file is empty")
         return ssl.create_default_context(cadata=pem)
