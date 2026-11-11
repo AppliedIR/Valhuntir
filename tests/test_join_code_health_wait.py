@@ -1,4 +1,4 @@
-"""`vhir join-code` asks the gateway for a code only once /health passes.
+"""`vhir setup join-code` asks the gateway for a code only once /health passes.
 
 After a rebind that restarted the gateway, join-code waits for /health on one
 240 s budget (vhir_cli.gateway.wait_for_health). With no rebind to do, it
@@ -16,6 +16,7 @@ dials a port or sleeps for real on any tree. Values are synthetic.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -31,11 +32,11 @@ from tests.health_stand_in import T0
 from vhir_cli.commands import join
 
 TOKEN = "vhir_gw_" + "1" * 24
-RERUN = "Then run `vhir join-code` again."
+RERUN = "Then run `vhir setup join-code` again."
 RESTART_FAILED_FIX = (
     "If the gateway runs as a service: systemctl --user status vhir-gateway,"
-    " fix what it shows, then run vhir join-code. If you start it by hand: stop it,"
-    " run ~/.vhir/start-gateway.sh, then run vhir join-code."
+    " fix what it shows, then run vhir setup join-code. If you start it by hand: stop it,"
+    " run ~/.vhir/start-gateway.sh, then run vhir setup join-code."
 )
 REFUSED_REASON = "nothing answered on port 4508 (refused)"
 REFUSED_FIX = "start the gateway: systemctl --user restart vhir-gateway"
@@ -212,6 +213,31 @@ def test_a_failed_restart_names_join_code_in_both_fixes(
     assert run.yaml["gateway"]["host"] == "0.0.0.0"  # the rerun has no rebind
     assert HINT not in run.out + run.err
     assert run.done == []
+
+
+@pytest.mark.parametrize(
+    "ends",
+    [
+        dict(health=ConnectionRefusedError()),
+        dict(restart=1),
+        dict(host="0.0.0.0", health=ConnectionRefusedError()),
+    ],
+    ids=["health-never-passes", "restart-failed", "no-rebind-nothing-answering"],
+)
+def test_every_command_the_failure_text_names_is_one_the_cli_takes(
+    tmp_path, monkeypatch, capsys, ends
+):
+    from vhir_cli.main import build_parser
+
+    run = _join_code(tmp_path, monkeypatch, capsys, **ends)
+    assert run.rc == 1, run.out + run.err
+    named = set(re.findall(r"\bvhir(?: --?[a-z][a-z-]*| [a-z][a-z-]*)+", run.err))
+    assert any("join-code" in command for command in named), run.err
+    for command in sorted(named):
+        try:
+            build_parser().parse_args(command.split()[1:])
+        except SystemExit:
+            pytest.fail(f"the text names `{command}`, which the CLI refuses")
 
 
 # --- no rebind to do -----------------------------------------------------------

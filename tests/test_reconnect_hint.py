@@ -84,7 +84,7 @@ class TestJoin:
         health_stand_in.current().answer = ConnectionRefusedError()
         assert self._rebind(home, 0, OSError("refused")) == 1
         captured = capsys.readouterr()
-        assert "Then run `vhir join-code` again." in captured.err
+        assert "Then run `vhir setup join-code` again." in captured.err
         assert HINT not in captured.out + captured.err
 
 

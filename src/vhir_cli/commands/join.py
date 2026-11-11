@@ -467,7 +467,7 @@ def _ensure_remote_binding() -> None:
         if not answer.ok:
             print(answer.reason, file=sys.stderr)
             print(answer.fix, file=sys.stderr)
-            print("Then run `vhir join-code` again.", file=sys.stderr)
+            print("Then run `vhir setup join-code` again.", file=sys.stderr)
             sys.exit(1)
 
     gateway_config = Path.home() / ".vhir" / "gateway.yaml"
@@ -524,7 +524,7 @@ def _ensure_remote_binding() -> None:
     if failed is not None:
         print(f" failed ({failed})", file=sys.stderr)
         # gateway.yaml says 0.0.0.0 now: after the restart, the rerun has no rebind
-        rerun = "vhir join-code"
+        rerun = "vhir setup join-code"
         print(RESTART_FAILED_FIX.format(rerun=rerun, hand_rerun=rerun), file=sys.stderr)
         sys.exit(1)
     print(" done.")
