@@ -414,7 +414,8 @@ def test_step_8_pending_skips_the_refresh(box, capsys):
         servers={"forensic-mcp": _entry("forensic-mcp")},
         health=ConnectionRefusedError(),
     )
-    assert len(run.health.calls) <= 1  # Step 8's one call, no more
+    # Step 8 polls on the one 240 s budget; the skip itself is asserted below
+    assert all(at < T0 + 240 for _, _, at in run.health.calls)
     assert run.after == run.before and run.asked == []
     assert NOT_REFRESHED not in run.out + run.err
 
