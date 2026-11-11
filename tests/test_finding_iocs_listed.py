@@ -439,6 +439,26 @@ def test_review_iocs_lists_each_record_under_its_own_status(case, monkeypatch, c
     ), out
 
 
+def test_review_iocs_sets_a_private_address_apart(case, monkeypatch, capsys):  # noqa: F811
+    """A private address, recorded or only in a finding's text, is listed on
+    its own line with what its range means; the routable ones stay listed as
+    before."""
+    private = "RFC 1918 private — internal host, not a blocklist candidate"
+    note = "Beacon to 100.0.0.9 from 192.168.1.5."
+    findings = [_f(1, ["100.0.0.1", "10.0.0.7"], observation=note)]
+    records = [_r(1, "10.0.0.7", "ipv4-addr"), _r(2, "100.0.0.1", "ipv4-addr")]
+    _case_with(case, findings, records)
+    out = _cli(monkeypatch, capsys, ["review", "--iocs"])
+    assert out.endswith(
+        "\n=== Approved IOCs ===\n"
+        f"  {'IPv4:':<10} 100.0.0.1\n"
+        f"  IPv4 (non-routable): 10.0.0.7 ({private})\n"
+        f"\n=== {TEXT_ONLY} ===\n"
+        "  100.0.0.9\n"
+        f"  (non-routable): 192.168.1.5 ({private})\n"
+    ), out
+
+
 def test_report_ioc_lists_the_approved_records(case, monkeypatch, capsys):  # noqa: F811
     """Only the approved records are listed; a value a draft or rejected
     record holds is recorded, so it is not in the text group."""
