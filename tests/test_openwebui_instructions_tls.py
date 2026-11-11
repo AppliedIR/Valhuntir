@@ -17,6 +17,7 @@ import argparse
 import json
 import ssl
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -190,6 +191,9 @@ def test_the_instructions_request_trusts_only_the_servers_own_check(
     monkeypatch.chdir(home)
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    # a contextless urlopen reuses one opener whose TLS context was made at
+    # its first use; drop it, so such a request would trust this row's store
+    urllib.request.install_opener(None)
     if where == "prefix-port":
         gateway, other = _servers_sharing_a_prefix(tmp_path)
     else:
