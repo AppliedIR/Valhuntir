@@ -2,10 +2,11 @@
 
 The block opens with OPEN and closes with CLOSE, on stderr, after the run's
 own output; each step is indented two spaces. With no terminal, a start block
-(NOTERM1, NOTERM2) prints before anything else, in the first process only,
-and the end block always prints. A terminal run with nothing to do prints no
-block. A line that tells the examiner to run, re-run or restart something
-(SCAN) never prints outside a block.
+(NOTERM1, NOTERM2) prints before anything else, once: in the first process,
+or in the second when an older vhir ran the first (its hand-over carries no
+step list, or can't be read). The end block always prints. A terminal run
+with nothing to do prints no block. A line that tells the examiner to run,
+re-run or restart something (SCAN) never prints outside a block.
 
 The harness runs cmd_update in this process with every outside effect faked:
 subprocess.run, os.execv, input and the passphrase prompt. A hand-over to the
