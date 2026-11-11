@@ -119,14 +119,17 @@ class Args(SimpleNamespace):
 
 class _Stream(io.TextIOBase):
     """sys.stdout or sys.stderr: each whole line goes to the run's log as
-    (process, stream, line)."""
+    (process, stream, line). A held stream is stdout written to a file: what
+    it's given reaches the log only at a flush (a partial line too) or at the
+    process's end, as a block-buffered file gets it."""
 
     encoding = "utf-8"
     errors = "strict"
 
-    def __init__(self, run, name):
+    def __init__(self, run, name, held=False):
         super().__init__()
         self.run, self.name, self.buf = run, name, ""
+        self.held, self.pending = held, ""
 
     def writable(self):
         return True
@@ -135,16 +138,27 @@ class _Stream(io.TextIOBase):
         return False
 
     def write(self, s):
+        if self.held:
+            self.pending += s
+            return len(s)
+        self._lines(s)
+        return len(s)
+
+    def _lines(self, s):
         self.buf += s
         *lines, self.buf = self.buf.split("\n")
         for line in lines:
             self.run.log.append((self.run.proc, self.name, line))
-        return len(s)
 
     def flush(self):
-        pass
+        if self.held:
+            self._lines(self.pending)
+            self.pending = ""
+            self.end()
 
     def end(self):
+        if self.pending:
+            self.flush()
         if self.buf:
             self.run.log.append((self.run.proc, self.name, self.buf))
             self.buf = ""
@@ -677,6 +691,7 @@ class Run:
             manifest={},
             setup=None,
             stubs=(),
+            one_file=False,
         )
         unknown = set(kw) - set(k)
         if unknown:
@@ -694,7 +709,8 @@ class Run:
             no_restart=k["no_restart"],
             after_pull=k["after_pull"],
         )
-        out, err = _Stream(self, "stdout"), _Stream(self, "stderr")
+        out = _Stream(self, "stdout", held=k["one_file"])
+        err = _Stream(self, "stderr")
         saved = sys.stdout, sys.stderr, sys.stdin
         old_alarm = signal.signal(signal.SIGALRM, _alarm)
         signal.alarm(60)
@@ -703,6 +719,9 @@ class Run:
             try:
                 self.rc = self._call(args)
             except ExecEnded:
+                if out.pending:  # a real exec drops what stdout still holds
+                    self.problems.append(f"stdout held at exec: {out.pending!r}")
+                    out.pending = ""
                 out.end()
                 err.end()
                 _restore(snap)
@@ -990,6 +1009,28 @@ def test_the_block_is_last_after_the_signing_key_question(u):
     assert r.in_last("when you're ready"), r.last_block()
     at_prompt = [v for p, v in r.state_at_prompt.items() if "Upgrade it now" in p]
     assert at_prompt and _state_complete(at_prompt[0]), at_prompt
+
+
+# ---- stdout and stderr in one file: nothing follows the block --------------
+
+ONE_FILE = {
+    "finished": dict(),
+    "no_restart": dict(no_restart=True),
+    "hand_over": dict(moves={"vhir"}),
+    "stop": STOPS["install_fail"][0],
+    "fetch_failed": STOPS["fetch_failed"][0],
+    "exec_failed": STOPS["incomplete"][0],
+}
+
+
+@pytest.mark.parametrize("tty", [False, True], ids=["no-terminal", "terminal"])
+@pytest.mark.parametrize(
+    "path,declared", [(p, "RED") for p in ONE_FILE], ids=list(ONE_FILE)
+)
+def test_in_one_file_nothing_follows_the_end_of_steps(u, path, declared, tty):
+    r = u.go(one_file=True, tty=tty, **ONE_FILE[path])
+    assert r.blocks(), "no block"
+    assert r.log[-1][2].strip() == CLOSE, r.log[r.last_open() :][-8:]
 
 
 # ---- a signing-key upgrade that fails ------------------------------------

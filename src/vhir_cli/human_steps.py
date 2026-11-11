@@ -57,6 +57,7 @@ def steps() -> list[str]:
 
 
 def _frame(lines) -> None:
+    sys.stdout.flush()  # in one file (`> f 2>&1`) the block follows all of it
     print(OPEN, file=sys.stderr)
     for line in lines:
         print(f"  {line}", file=sys.stderr)
