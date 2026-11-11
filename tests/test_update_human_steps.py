@@ -1220,6 +1220,54 @@ def test_a_terminal_hand_over_prints_no_block_in_the_first_process(u):
     assert r.opens("1") == 0
 
 
+# ---- The second process, after an older vhir ran the first ----------------
+
+PRE_PULL = {r: h[0] for r, h in HEADS.items()}
+OLD_HANDOFFS = {  # what 0.6.6 and older send, the older-update hand-over, a bad one
+    "pre-pull-heads-only": json.dumps({"pre_update_git": PRE_PULL, "torch_record": ""}),
+    "older-update": json.dumps({"older_update": True}),
+    "unparseable": "{not json",
+}
+NEW_HANDOFFS = {
+    "no-steps": json.dumps(
+        {"pre_update_git": PRE_PULL, "torch_record": "", "human_steps": []}
+    ),
+    "a-step": json.dumps(
+        {"pre_update_git": PRE_PULL, "torch_record": "", "human_steps": ["Do X."]}
+    ),
+}
+
+
+@pytest.mark.parametrize("handoff", OLD_HANDOFFS.values(), ids=list(OLD_HANDOFFS))
+def test_after_an_older_first_process_the_start_block_is_the_first_output(u, handoff):
+    r = u.go(tty=False, after_pull=handoff)
+    assert [(s, line.strip()) for _p, s, line in r.log[:1]] == [("stderr", OPEN)]
+    blocks = r.blocks()
+    assert len(blocks) == 2, blocks
+    assert [line.strip() for line in blocks[0]] == list(human_steps.NO_TERMINAL)
+    head = [line.strip() for line in r.last_block()][: len(human_steps.NO_TERMINAL)]
+    assert head == list(human_steps.NO_TERMINAL), r.last_block()
+    last_close = max(c for _p, _o, c, _i in r._spans())
+    assert [line for _p, _s, line in r.log[last_close + 1 :] if line.strip()] == []
+
+
+@pytest.mark.parametrize("handoff", NEW_HANDOFFS.values(), ids=list(NEW_HANDOFFS))
+def test_after_this_code_ran_first_no_start_block_prints_again(u, handoff):
+    r = u.go(tty=False, after_pull=handoff)
+    assert len(r.blocks()) == 1, r.blocks()
+    assert [line.strip() for _p, _s, line in r.log[:1]] != [OPEN], r.log[:4]
+
+
+@pytest.mark.parametrize(
+    "handoff",
+    [*OLD_HANDOFFS.values(), *NEW_HANDOFFS.values()],
+    ids=[*OLD_HANDOFFS.keys(), *NEW_HANDOFFS.keys()],
+)
+def test_a_terminal_second_process_prints_no_start_block(u, handoff):
+    r = u.go(after_pull=handoff)
+    assert not any(NOTERM1 in line for _p, _s, line in r.log), r.log
+
+
 # ---- The scan finds each form a step takes --------------------------------
 
 STEP_FORMS = [

@@ -3,8 +3,9 @@
 While an update runs, add() collects each step; finish() prints them all on
 stderr, framed by OPEN and CLOSE, each indented two spaces, after the run's
 own output. With no terminal the block always prints and starts with the
-NO_TERMINAL lines, which also print before anything else in the first
-process. A terminal run with nothing collected prints no block. With no
+NO_TERMINAL lines, which also print once before anything else: in the first
+process, or in the second when an older vhir ran the first. A terminal run
+with nothing collected prints no block. With no
 collector open (another command calls a shared helper), add() prints the
 step at once, as before.
 """

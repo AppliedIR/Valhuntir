@@ -902,9 +902,10 @@ def cmd_update(args, identity: dict) -> None:
     if not isinstance(after_pull, str):
         after_pull = None
     terminal = sys.stdin.isatty()
-    if after_pull is None and not terminal:
+    handed = _handed_steps(after_pull)
+    if handed is None and not terminal:
         human_steps.no_terminal_notice()
-    human_steps.start(_handed_steps(after_pull))
+    human_steps.start(handed)
     global _RESTART_OWED
     try:  # after a hand-over the record is the pre-pull one: the first process read it
         state = json.loads(after_pull or "{}")
@@ -922,14 +923,16 @@ def cmd_update(args, identity: dict) -> None:
         human_steps.finish(terminal)
 
 
-def _handed_steps(after_pull: str | None) -> list:
-    """The steps the first process collected before it handed over."""
+def _handed_steps(after_pull: str | None) -> list | None:
+    """The steps the first process collected before it handed over. None when
+    no process of this code ran first (an older vhir's update, or no hand-over):
+    then the start block hasn't printed yet."""
     try:
         data = json.loads(after_pull) if after_pull else None
     except ValueError:
         data = None
     steps = data.get("human_steps") if isinstance(data, dict) else None
-    return steps if isinstance(steps, list) else []
+    return steps if isinstance(steps, list) else None
 
 
 def _stop(text: str) -> NoReturn:
@@ -1294,7 +1297,7 @@ def _reexec_after_pull(
         {
             "pre_update_git": pre_update_git,
             "torch_record": torch_record,
-            "human_steps": human_steps.steps(),
+            "human_steps": human_steps.steps(),  # also says the start block printed
             "restart_owed": _RESTART_OWED,
         }
     )
