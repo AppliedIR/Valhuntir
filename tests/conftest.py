@@ -151,3 +151,19 @@ def _outside_codex_s_sandbox(monkeypatch):
     setup test reads it. A suite run from there would take the sandbox path in
     every test that reaches setup test; the rows about that path set it."""
     monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def gateway_health(monkeypatch):
+    """No test dials the gateway or sleeps for real while vhir waits for its
+    /health: the gateway module gets the stand-in's transport and clock
+    (tests/health_stand_in.py). A row sets `.answer` to what the gateway gives."""
+    from tests import health_stand_in
+    from vhir_cli import gateway
+
+    h = health_stand_in.HealthStandIn()
+    monkeypatch.setattr(gateway, "_transport", h.send, raising=False)
+    monkeypatch.setattr(gateway, "time", h, raising=False)
+    health_stand_in.CURRENT.append(h)
+    yield h
+    health_stand_in.CURRENT.remove(h)

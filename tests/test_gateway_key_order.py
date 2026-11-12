@@ -8,6 +8,7 @@ would act as that examiner.
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import MagicMock, patch
 
 import yaml
@@ -35,6 +36,7 @@ def test_rebinding_keeps_the_owners_key_first(tmp_path):
         patch("pathlib.Path.home", return_value=tmp_path),
         patch("builtins.input", return_value="y"),
         patch("subprocess.run", return_value=restart),
+        contextlib.suppress(SystemExit),  # a failed restart ends join-code
     ):
         join._ensure_remote_binding()
     written = yaml.safe_load(gw.read_text())

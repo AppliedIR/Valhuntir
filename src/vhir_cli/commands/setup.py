@@ -49,16 +49,22 @@ def cmd_setup(args, identity: dict) -> None:
 
 
 def _print_sift_tools_warning() -> None:
-    """Print the out-of-date SIFT tools warning, if there is one."""
-    from vhir_cli.sift_tools import warning
+    """Print the out-of-date SIFT tools warning, if there is one. In an
+    update, its fixing step goes to the block (human_steps)."""
+    from vhir_cli import human_steps
+    from vhir_cli.sift_tools import warning, warning_parts
 
     try:
-        text = warning()
+        problem, step = (
+            warning_parts() if human_steps.active() else (warning(), None)
+        ) or (None, None)
     except Exception as e:  # noqa: BLE001 — the check itself couldn't run
         print(f"\n  SIFT tools: couldn't check ({type(e).__name__}: {e})")
         return
-    if text:
-        print("\n  WARNING: " + text)
+    if problem:
+        print("\n  WARNING: " + problem)
+    if step:
+        human_steps.add(step)
 
 
 def _print_codex_controls() -> None:

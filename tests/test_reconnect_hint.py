@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from tests import test_update
+from tests import health_stand_in, test_update
 from vhir_cli.commands import join
 from vhir_cli.commands.update import cmd_update
 
@@ -50,6 +50,9 @@ class TestJoin:
         return tmp_path
 
     def _rebind(self, home, code, health):
+        """The rebind with the restart answering `code`; returns the exit status
+        (None: it returned). /health is the stand-in (tests/health_stand_in.py);
+        `health` answers the old loop's urlopen."""
         with (
             patch("pathlib.Path.home", return_value=home),
             patch("builtins.input", return_value="y"),
@@ -57,26 +60,31 @@ class TestJoin:
             patch("time.sleep"),
             patch("urllib.request.urlopen", side_effect=health),
         ):
-            join._ensure_remote_binding()
+            try:
+                join._ensure_remote_binding()
+            except SystemExit as e:
+                return e.code
+        return None
 
     def test_a_restart_that_came_back_healthy_says_to_reconnect(self, home, capsys):
         ok = contextlib.nullcontext(MagicMock(status=200))
-        self._rebind(home, 0, lambda *a, **k: ok)
+        assert self._rebind(home, 0, lambda *a, **k: ok) is None
         out = capsys.readouterr().out
         assert "Gateway now listening on 0.0.0.0:4508" in out and HINT in out
 
     def test_a_failed_restart_says_nothing_more(self, home, capsys):
-        self._rebind(home, 1, lambda *a, **k: pytest.fail("health checked"))
+        assert self._rebind(home, 1, lambda *a, **k: pytest.fail("health checked")) == 1
         captured = capsys.readouterr()
-        assert "failed: stubbed" in captured.err
+        assert "failed (stubbed)" in captured.err
         assert HINT not in captured.out + captured.err
 
     def test_a_gateway_that_didn_t_come_back_healthy_says_nothing_more(
         self, home, capsys
     ):
-        self._rebind(home, 0, OSError("refused"))
+        health_stand_in.current().answer = ConnectionRefusedError()
+        assert self._rebind(home, 0, OSError("refused")) == 1
         captured = capsys.readouterr()
-        assert "did not become healthy" in captured.err
+        assert "Then run `vhir setup join-code` again." in captured.err
         assert HINT not in captured.out + captured.err
 
 
@@ -96,14 +104,24 @@ class TestUpdate:
 
     def test_a_restart_that_succeeded_says_to_reconnect(self, manifest_dir, capsys):
         self._update(manifest_dir[0], 0)
-        out = capsys.readouterr().out
-        assert "Restarting gateway... done" in out and HINT in out
+        got = capsys.readouterr()
+        # RECONNECT_HINT moved from stdout into the end block
+        assert any(HINT in line for line in test_update.steps_block(got.err))
+        assert "Restarting gateway... done" in got.out and HINT not in got.out
 
     def test_a_failed_restart_says_nothing_more(self, manifest_dir, capsys):
-        self._update(manifest_dir[0], 1)
-        out = capsys.readouterr().out
+        with pytest.raises(SystemExit) as ended:  # a failed restart is pending
+            self._update(manifest_dir[0], 1)
+        assert ended.value.code == 1
+        got = capsys.readouterr()
+        out, block = got.out, test_update.steps_block(got.err)
         assert "failed (stubbed)" in out and HINT not in out
+        # the hint's place is the end block; a failed restart adds none
+        assert not any(HINT in line for line in block)
 
     def test_no_restart_says_nothing(self, manifest_dir, capsys):
         self._update(manifest_dir[0], 0, no_restart=True)
-        assert HINT not in capsys.readouterr().out
+        got = capsys.readouterr()
+        # neither on stdout nor in the end block
+        assert HINT not in got.out
+        assert not any(HINT in line for line in test_update.steps_block(got.err))

@@ -92,6 +92,22 @@ def test_a_pull_that_changes_vhir_runs_the_rest_from_the_new_code(manifest_dir):
     assert not step45.called  # Steps 4.5-9 belong to the new process
 
 
+def test_a_stubbed_exec_that_raises_prints_the_end_block_once(manifest_dir, capsys):
+    """A real exec never reaches cmd_update's finally; a stub that raises does,
+    and its end block prints there once, never dropped. With no terminal the
+    start notice is the other frame."""
+    from vhir_cli import human_steps
+
+    home = manifest_dir[0]
+    _vhir_script(home)
+    _, execv, _ = _update(home, _args(no_restart=True), moves={"vhir": "v2"})
+    assert execv.call_count == 1
+    err = capsys.readouterr().err
+    assert err.count(human_steps.OPEN) == 2, err
+    assert err.rstrip().endswith(human_steps.CLOSE), err
+    assert not human_steps.active()
+
+
 def test_the_after_pull_option_parses():
     from vhir_cli.main import build_parser
 
@@ -179,11 +195,8 @@ def test_the_record_names_the_installed_version_not_the_running_one(
     assert BANNER not in capsys.readouterr().err
 
 
-def test_a_record_with_no_version_is_written_before_the_pull(manifest_dir):
-    """Just before the pull, update records version "" (with the pre-pull vhir
-    commit), so any stop before Step 9 keeps every command warning. RED at
-    v0.6.4: nothing writes the record, so none exists at pull time."""
-    home = manifest_dir[0]
+def _record_at_pull(home):
+    """The update record as it stands when the first `git pull` runs."""
     _vhir_script(home)
     rec = home / ".vhir" / "update-state.json"
     heads = {"sift-mcp": "s1", "vhir": "v1"}
@@ -216,8 +229,24 @@ def test_a_record_with_no_version_is_written_before_the_pull(manifest_dir):
         except Execd:
             pass
     assert seen.get("at_pull") is not None, "no update-state.json at pull time"
-    assert seen["at_pull"]["version"] == ""
-    assert seen["at_pull"]["vhir_commit"] == "v1"
+    return seen["at_pull"]
+
+
+def test_a_record_with_no_version_is_written_before_the_pull(manifest_dir):
+    """Just before the pull, update records version "" (with the pre-pull vhir
+    commit), so any stop before Step 9 keeps every command warning. RED at
+    v0.6.4: nothing writes the record, so none exists at pull time."""
+    at_pull = _record_at_pull(manifest_dir[0])
+    assert at_pull["version"] == ""
+    assert at_pull["vhir_commit"] == "v1"
+
+
+def test_the_record_before_the_pull_says_why_it_is_pending(manifest_dir):
+    """A stop before Step 9 leaves this record, and every command reads it: it
+    is pending and says why, never pending with an empty reason."""
+    at_pull = _record_at_pull(manifest_dir[0])
+    assert at_pull.get("status") == "pending", at_pull
+    assert str(at_pull.get("reason", "")).strip(), at_pull
 
 
 # Every other vhir command checks the record against the installed code.

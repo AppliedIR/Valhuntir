@@ -21,7 +21,7 @@ import pytest
 import vhir_cli.commands.setup as setup
 from tests import test_update
 from tests.test_reconnect_hint import _run
-from vhir_cli import sift_tools
+from vhir_cli import human_steps, sift_tools
 from vhir_cli.commands.update import cmd_update
 
 TEXT = (
@@ -370,7 +370,10 @@ manifest_dir = test_update.manifest_dir  # the update tests' install layout
 def test_vhir_update_ends_with_it_and_the_smoke_test_leaves_it_out(
     manifest_dir, capsys, monkeypatch, no_restart
 ):
-    monkeypatch.setattr(sift_tools, "warning", lambda: "TOOLS ARE OLD")
+    # The problem prints in the run's output, its fixing step in the block
+    monkeypatch.setattr(
+        sift_tools, "warning_parts", lambda: ("TOOLS ARE OLD", "UPDATE THEM")
+    )
     with (
         patch("pathlib.Path.home", return_value=manifest_dir[0]),
         patch("subprocess.run", side_effect=_run(0)),
@@ -379,13 +382,14 @@ def test_vhir_update_ends_with_it_and_the_smoke_test_leaves_it_out(
         patch("time.sleep"),
     ):
         cmd_update(test_update._make_args(no_restart=no_restart), {})
-    out = capsys.readouterr().out
+    got = capsys.readouterr()
+    out = got.out
     assert out.endswith("\n  WARNING: TOOLS ARE OLD\n")
     assert out.count("TOOLS ARE OLD") == 1
-    if no_restart:
-        smoke.assert_not_called()
-    else:
-        smoke.assert_called_once_with(sift_tools=False)
+    assert "UPDATE THEM" not in out
+    block = got.err[got.err.rindex(human_steps.OPEN) :]
+    assert "\n  UPDATE THEM\n" in block
+    smoke.assert_not_called()  # update no longer runs it
 
 
 # A Volatility 2.27.0 that can't save its symbols, and no Hayabusa: the SIFT
@@ -447,5 +451,8 @@ def test_vhir_update_names_the_installer_it_updated_from(
     ):
         cmd_update(test_update._make_args(), {})
     installer = str(home / ".vhir" / "src" / "sift-mcp" / "setup-sift.sh")
-    want = _named(installer, BOTH) + CHOICE
-    assert capsys.readouterr().out.endswith("\n  WARNING: " + want + "\n")
+    problem, step = _named(installer, BOTH).split(" Update SIFT with: ")
+    got = capsys.readouterr()  # the problem prints here, the step in the block
+    assert got.out.endswith("\n  WARNING: " + problem + "\n")
+    block = got.err[got.err.rindex(human_steps.OPEN) :]
+    assert f"\n  Update SIFT with: {step}{CHOICE}\n" in block

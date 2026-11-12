@@ -732,7 +732,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _warn_if_update_incomplete() -> None:
     """Warn when the installed code is newer than the last update that ran to
-    the end (an older vhir update ran its own steps after pulling this code)."""
+    the end (an older vhir update ran its own steps after pulling this code),
+    or when the last update is pending: then its recorded reason and fix too."""
     import json
 
     vhir = Path.home() / ".vhir"
@@ -751,11 +752,22 @@ def _warn_if_update_incomplete() -> None:
         state = None  # setup-sift.sh ran since
     git = manifest.get("git")
     commit = git.get("vhir", "") if isinstance(git, dict) else ""
+    detail = []
     if state is not None:
+        pending = state.get("status") == "pending"  # the gateway check didn't pass
+        if pending:
+            from vhir_cli.display import one_line
+
+            detail = [one_line(state[k]) for k in ("reason", "fix") if state.get(k)]
         stale = (
-            state.get("version") != __version__ or state.get("vhir_commit") != commit
+            pending
+            or state.get("version") != __version__
+            or state.get("vhir_commit") != commit
         )
-        line = f"Your update to {__version__} didn't finish. Run: vhir update"
+        line = f"Your update to {__version__} didn't finish."
+        # only vhir update clears the record: say so unless the fix already does
+        if not (pending and "vhir update" in str(state.get("fix") or "")):
+            line += " Run: vhir update"
     else:
         # No record that counts: an updater before 0.6.4.1 wrote updated_at
         # and no record. (Every updater 0.6.0-0.6.4 writes updated_at.)
@@ -763,7 +775,8 @@ def _warn_if_update_incomplete() -> None:
         line = f"Your update to {__version__} has one step left. Run: vhir update"
     if stale:
         bar = "=" * 72
-        print(f"{bar}\n  {line}\n{bar}", file=sys.stderr)
+        body = "\n".join(f"  {text}" for text in [line, *detail])
+        print(f"{bar}\n{body}\n{bar}", file=sys.stderr)
 
 
 def main() -> None:

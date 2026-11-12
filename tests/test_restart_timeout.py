@@ -2,16 +2,20 @@
 gateway's state, not as a traceback.
 
 systemd carries on with a restart its systemctl client gave up on, so the
-gateway may be up by then: `is-active` says whether it is."""
+gateway may be up by then: `is-active` says whether it is. Step 8 waits for
+/health (the stand-in in tests/health_stand_in.py) only after a restart that
+came up; the connectivity test of `vhir setup test` is no longer run (its stub
+stays so a tree that still runs it dials nothing)."""
 
 from __future__ import annotations
 
 import subprocess
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tests import test_update
+from tests import health_stand_in, test_update
 from vhir_cli.commands.update import cmd_update
 
 manifest_dir = test_update.manifest_dir
@@ -39,7 +43,9 @@ def _run(state):
 
 
 def _update(home, state):
+    """Run the update; a restart that didn't come up is pending: exit 1."""
     with (
+        pytest.raises(SystemExit) if state != "active" else nullcontext() as ended,
         patch("pathlib.Path.home", return_value=home),
         patch("subprocess.run", side_effect=_run(state)),
         patch("vhir_cli.commands.client_setup._deploy_claude_code_assets"),
@@ -47,28 +53,33 @@ def _update(home, state):
         patch("time.sleep"),
     ):
         cmd_update(test_update._make_args(), {})
-    return smoke
+    smoke.assert_not_called()
+    assert state == "active" or ended.value.code == 1
+    return health_stand_in.current().calls  # Step 8's /health calls
 
 
 def test_a_slow_restart_that_came_up_is_done(manifest_dir, capsys):
-    smoke = _update(manifest_dir[0], "active")
+    waits = _update(manifest_dir[0], "active")
     out = capsys.readouterr().out
     assert "Restarting gateway... done" in out
-    assert smoke.called
+    assert waits
 
 
 def test_a_slow_restart_still_starting_says_so(manifest_dir, capsys):
-    smoke = _update(manifest_dir[0], "activating")
-    out = capsys.readouterr().out
+    waits = _update(manifest_dir[0], "activating")
+    got = capsys.readouterr()
+    out, block = got.out, test_update.steps_block(got.err)
     assert "failed (no answer in 60 s; the gateway is activating)" in out
+    # the restart-failed lines moved from stdout into the end block.
     # A gateway started by hand has no systemd unit to restart; the hint also
     # names the manual launcher so that user isn't left at a dead end.
-    assert "~/.vhir/start-gateway.sh" in out
+    assert any("~/.vhir/start-gateway.sh" in line for line in block)
+    assert "~/.vhir/start-gateway.sh" not in out
     # A hand-started gateway must be stopped before relaunch —
     # start-gateway.sh is a bare exec that would collide on the port otherwise —
     # so "stop" comes before the launcher in the hint.
-    assert "stop it, then run ~/.vhir/start-gateway.sh" in out
-    assert "Skipping connectivity test" in out and not smoke.called
+    assert any("stop it, run ~/.vhir/start-gateway.sh" in line for line in block)
+    assert not waits
 
 
 @pytest.mark.parametrize(
@@ -82,7 +93,7 @@ def test_a_slow_restart_still_starting_says_so(manifest_dir, capsys):
     ids=["empty", "timeout", "not-found", "permission"],
 )
 def test_no_state_from_is_active_reads_unknown(manifest_dir, capsys, state):
-    smoke = _update(manifest_dir[0], state)
+    waits = _update(manifest_dir[0], state)
     out = capsys.readouterr().out
     assert "failed (no answer in 60 s; the gateway is unknown)" in out
-    assert "Skipping connectivity test" in out and not smoke.called
+    assert not waits

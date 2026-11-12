@@ -24,6 +24,7 @@ import pytest
 
 pytest.importorskip("opensearch_mcp")
 
+from tests.test_update_offers import _collector  # noqa: E402
 from vhir_cli.commands import update  # noqa: E402
 
 REPO = "/usr/share/opensearch/snapshots"
@@ -56,6 +57,13 @@ def box(tmp_path, monkeypatch):
         "services:\n  opensearch:\n    image: opensearchproject/opensearch:3.5.0\n"
     )
     monkeypatch.setattr(update, "_resolve_opensearch_mcp_repo", lambda source: repo)
+    # The upgrade is offered on a terminal; a No is recorded in this home
+    home = tmp_path / "home"
+    (home / ".vhir").mkdir(parents=True)
+    (home / ".vhir" / "manifest.json").write_text("{}\n")
+    monkeypatch.setattr(update.Path, "home", lambda *a: home)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.delenv("VHIR_ASSUME_DEFAULTS", raising=False)
     seen = SimpleNamespace(bash=[], prompts=[], image="opensearchproject/opensearch:3.5.0",
                            mount="", docker_rc=0, setup_rc=0, answer="", nodes={}, raises=None)  # fmt: skip
 
@@ -94,7 +102,8 @@ def box(tmp_path, monkeypatch):
 
 
 def _check(box, capsys) -> str:
-    update._check_opensearch_version(box.script.parent)
+    with _collector():
+        update._check_opensearch_version(box.script.parent)
     out = capsys.readouterr()
     return out.out + out.err
 
@@ -214,7 +223,8 @@ def test_every_printed_command_survives_a_space_in_its_path(
         box.image = "opensearchproject/opensearch:3.4.0"
         box.answer = "y" if path == "upgrade timed out" else "n"
         box.setup_rc = "timeout" if path == "upgrade timed out" else 0
-    update._check_opensearch_version(script.parent)
+    with _collector():
+        update._check_opensearch_version(script.parent)
     out = capsys.readouterr()
     lines = [ln for ln in (out.out + out.err).splitlines() if "bash " in ln]
     assert lines, out

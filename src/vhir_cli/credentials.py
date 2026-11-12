@@ -315,7 +315,9 @@ def upgrade(examiner: str, config_path: Path, typed: str | None = None) -> bool:
         )
         changed = True
     elif len(typed) < passphrase.RECOMMENDED:
-        print(
+        from vhir_cli import human_steps  # in update's flow, a step for the block
+
+        human_steps.add(
             f"Your passphrase is {len(typed)} characters; 15 or more is recommended. "
             "You can change it later with `vhir config --reset-password`."
         )
@@ -397,7 +399,7 @@ def forgot(examiner: str, config_path: Path) -> None:
         enrol(examiner, config_path)
         return
     _confirm_new_key()
-    if current == "invalid":  # set aside as K5, then a new key
+    if current == "invalid":  # set aside, then a new key
         pw = _new_passphrase(examiner)
         data = keys.new_credential(examiner, pw)
         retired = _found_keys(examiner) + _ledger_keys(examiner)

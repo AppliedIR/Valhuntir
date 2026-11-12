@@ -191,25 +191,35 @@ def hayabusa_missing() -> bool:
 
 def warning() -> str | None:
     """The one warning to print, or None when nothing is out of date."""
+    parts = warning_parts()
+    return f"{parts[0]} {parts[1]}" if parts else None
+
+
+def warning_parts() -> tuple[str, str] | None:
+    """The warning as (what's wrong, the step that fixes it), or None."""
+    return parts_for(volatility_problem(), hayabusa_missing())
+
+
+def parts_for(vol: str | None, hayabusa: bool) -> tuple[str, str] | None:
+    """warning_parts() for problems already measured."""
     problems = []
-    vol = volatility_problem()
     if vol:
         problems.append(f"{vol}: memory analysis fails")
-    hayabusa = hayabusa_missing()
     if hayabusa:
         problems.append("Hayabusa missing: no event-log detections")
     if not problems:
         return None
     if not vol:
         # SANS's installer doesn't bring Hayabusa: name only Valhuntir's
-        return "Hayabusa missing: no event-log detections." + HAYABUSA_CHOICE
+        return "Hayabusa missing: no event-log detections.", HAYABUSA_CHOICE.strip()
     return (
         "Some SIFT tools are out of date and parts of Valhuntir won't work with them "
-        f"({'; '.join(problems)}). Update SIFT with: `sudo cast install teamdfir/sift` "
+        f"({'; '.join(problems)}).",
+        "Update SIFT with: `sudo cast install teamdfir/sift` "
         "(15-20 minutes on the SANS OVA; if it reports failed states, run it again, "
         f"since a download outage can cause them), then re-run `{installer()}` "
         "with the same options you installed with (your shell history has the command)."
-        + (HAYABUSA_CHOICE if hayabusa else "")
+        + (HAYABUSA_CHOICE if hayabusa else ""),
     )
 
 

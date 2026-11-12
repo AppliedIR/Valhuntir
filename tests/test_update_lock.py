@@ -12,6 +12,7 @@ subprocess is a stand-in that records each command.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -21,9 +22,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests import health_stand_in
+from tests.test_update import STEPS_CLOSE, STEPS_OPEN, steps_block
 from vhir_cli.commands.update import _PACKAGE_PATHS, cmd_update
 
 REAL_FIND_SPEC = importlib.util.find_spec
+# `systemctl --user show vhir-gateway` for a gateway run by its systemd unit
+UNIT_SHOW = (
+    "LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n"
+    "SubState=running\nMainPID=4242\n"
+)
 
 
 @pytest.fixture
@@ -91,13 +99,35 @@ def _update(
     gpu_found=False,
     check=False,
     no_restart=True,
+    after_pull=None,
+    vhir_moves=False,
+    pulls=(),
+    restart_rc=0,
+    restart_err=None,
+    unit_show=UNIT_SHOW,
+    gateway=None,
+    unreadable=None,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
     are what input() returns, in order; `leftovers` is check-lock's
-    --cuda-leftovers output."""
+    --cuda-leftovers output. `after_pull` is the --after-pull handoff text;
+    with `vhir_moves` the vhir pull moves its HEAD, so the run hands over to
+    the new code: os.execv is recorded as ["execv", *argv] and ends the run.
+    Each repo named in `pulls` moves its HEAD at the pull, without a hand-over.
+    `restart_rc` is the gateway restart's exit status (`restart_err` its
+    stderr, when set) and `unit_show` what
+    `systemctl --user show` prints. `gateway` (tests.test_update_gateway_state)
+    is what /health answers on every call, and the repos it pulls. A
+    `restart_rc` exception is what the restart raises. `unreadable` is (repo,
+    "before" or "after"): its HEAD can't be read before its pull, or after it."""
     check_rc = check_rc or {}
     calls = []
+    if gateway is not None:
+        health_stand_in.current().answer = gateway.health
+        pulls = (*pulls, *gateway.pulls)
+    moving = {f"/{name}" for name in pulls} | ({"/vhir"} if vhir_moves else set())
+    heads = {"/vhir": "v1"}
     if manifest:
         path = box.home / ".vhir" / "manifest.json"
         path.write_text(json.dumps(manifest(json.loads(path.read_text()))))
@@ -142,6 +172,33 @@ def _update(
             result.stdout = uv
         elif "symbolic-ref" in cmd:
             result.stdout = "main"
+        elif (
+            unreadable
+            and cmd[:2] == ["git", "-C"]
+            and cmd[2].endswith(f"/{unreadable[0]}")
+            and cmd[3:] == ["rev-parse", "HEAD"]
+        ):
+            repo = cmd[2]
+            pulled = any(c[2:4] == [repo, "pull"] for c in calls if c[:2] == cmd[:2])
+            if pulled == (unreadable[1] == "after"):
+                result.returncode, result.stdout = 128, ""
+        elif cmd[:2] == ["git", "-C"] and any(cmd[2].endswith(m) for m in moving):
+            repo = next(m for m in moving if cmd[2].endswith(m))
+            if cmd[3:] == ["rev-parse", "HEAD"]:
+                result.stdout = heads.setdefault(repo, "v1")
+            elif cmd[3:5] == ["pull", "--ff-only"]:
+                heads[repo] = "v2"
+        elif cmd[:3] == ["systemctl", "--user", "restart"]:
+            if isinstance(restart_rc, BaseException):
+                raise restart_rc
+            result.returncode = restart_rc
+            result.stderr = (
+                "" if restart_rc == 0 else "Job for vhir-gateway.service failed."
+            )
+            if restart_err is not None:
+                result.stderr = restart_err
+        elif cmd[:3] == ["systemctl", "--user", "show"]:
+            result.stdout = unit_show
         elif len(cmd) > 2 and str(cmd[1]).endswith("check-lock.py"):
             if cmd[2] in hangs:
                 raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
@@ -158,10 +215,18 @@ def _update(
         reply = replies.pop(0) if replies else ""
         if reply is EOFError:  # end of input at this prompt
             raise EOFError
+        if callable(reply):  # a row's own answer, which may act before it replies
+            reply = reply(prompt)
         return reply
 
+    def execv(exe, argv):
+        calls.append(["execv", *argv])
+        raise Execd
+
+    if vhir_moves:
+        (box.home / "venv" / "bin" / "vhir").write_text("#!/bin/sh\n")
     exited = None
-    with (
+    stands = [
         patch("pathlib.Path.home", return_value=box.home),
         patch("subprocess.run", side_effect=run),
         patch("importlib.util.find_spec", side_effect=find_spec),
@@ -172,14 +237,25 @@ def _update(
             "shutil.which",
             return_value="/usr/bin/nvidia-smi" if (smi_hangs or gpu_found) else None,
         ),
-    ):
+        patch("os.execv", side_effect=execv),
+    ]
+    with contextlib.ExitStack() as stack:
+        for stand in stands:
+            stack.enter_context(stand)
         try:
             # A MagicMock's unset attributes are truthy: the flags are set.
             args = MagicMock(check=check, no_restart=no_restart, cpu=cpu, gpu=gpu)
+            args.after_pull = after_pull
             cmd_update(args, {})
         except SystemExit as e:
             exited = e
+        except Execd:
+            pass
     return calls, exited
+
+
+class Execd(Exception):
+    """os.execv was called (a real one never returns)."""
 
 
 def _steps(calls):
@@ -201,6 +277,7 @@ def test_one_locked_install_opencti_too_then_both_checks(box):
         "install",
         "--strict",
         "--final",
+        "--opencti-leftovers",  # asked or not, the query runs
     ]
     locked = steps[1][1]
     # What the venv already has that the lock names goes into the locked
@@ -263,6 +340,7 @@ def test_without_opencti_both_checks_still_run(box):
         "install",
         "--strict",
         "--final",
+        "--opencti-leftovers",  # asked or not, the query runs
     ]
 
 
@@ -323,6 +401,7 @@ def test_opencti_installed_but_not_in_the_manifest_joins_the_locked_install(box)
         "install",
         "--strict",
         "--final",
+        "--opencti-leftovers",  # asked or not, the query runs
     ]
     assert str(box.src / "packages" / "opencti") in steps[1][1]
 
@@ -374,63 +453,19 @@ def test_a_flag_sets_the_build_and_the_record(box, cpu, gpu):
 @pytest.mark.parametrize(
     "installed,variant", [("2.10.0", "gpu"), ("2.14.0+cpu", "cpu"), ("", "cpu")]
 )
-def test_without_a_terminal_the_installed_build_is_kept(
-    box, capsys, installed, variant
+@pytest.mark.parametrize("tty", [False, True])
+def test_with_or_without_a_terminal_the_installed_build_is_kept_and_recorded(
+    box, capsys, installed, variant, tty
 ):
-    calls, exited = _update(box, torch=installed)
+    calls, exited = _update(box, torch=installed, tty=tty)
     assert exited is None and not _asked(calls)
     assert _lock_of(calls) == str(box.cpu_lock if variant == "cpu" else box.lock)
     out = capsys.readouterr().out
     assert f"PyTorch build: {variant} (switch with: vhir update --cpu or --gpu)" in out
-    assert "torch_variant" not in _manifest(box)
-
-
-@pytest.mark.parametrize(
-    "answer,variant", [("", "cpu"), ("gpu", "gpu"), ("CPU", "cpu")]
-)
-def test_an_old_install_on_a_terminal_is_asked_default_cpu(
-    box, capsys, answer, variant
-):
-    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[answer])
-    assert exited is None and len(_asked(calls)) == 1
-    out = capsys.readouterr().out
-    assert "Installed now: the GPU build (torch 2.10.0)" in out
-    assert "0.2 GB download" in out and "3 GB download" in out
-    assert _lock_of(calls) == str(box.cpu_lock if variant == "cpu" else box.lock)
     assert _manifest(box)["torch_variant"] == variant
 
 
-@pytest.mark.parametrize(
-    "installed,variant,default",
-    [
-        ("2.10.0", "gpu", "gpu"),  # GPU build + GPU found: Enter keeps gpu
-        ("2.14.0+cpu", "cpu", "cpu"),  # CPU build + GPU found: Enter stays cpu
-        ("", "cpu", "cpu"),  # no torch, rag installed, GPU found: Enter stays cpu
-    ],
-)
-def test_a_found_gpu_defaults_enter_to_the_installed_build(
-    box, capsys, installed, variant, default
-):
-    # With a GPU present the Enter default is the installed build, so a GPU
-    # build isn't thrown away; a CPU or absent build still defaults to cpu.
-    calls, exited = _update(
-        box, torch=installed, tty=True, answers=[""], gpu_found=True
-    )
-    assert exited is None and len(_asked(calls)) == 1
-    assert "an NVIDIA GPU was found" in capsys.readouterr().out
-    assert f"[{default}]" in _asked(calls)[0]
-    assert _lock_of(calls) == str(box.lock if default == "gpu" else box.cpu_lock)
-    if installed:
-        assert _manifest(box)["torch_variant"] == variant
-
-
-def test_a_wrong_answer_is_asked_again(box):
-    calls, _ = _update(box, torch="2.10.0", tty=True, answers=["gpus", "gpu"])
-    assert len(_asked(calls)) == 2 and _manifest(box)["torch_variant"] == "gpu"
-
-
-def test_an_install_already_asked_is_not_asked_again(box):
-    """Its twin above asks: the record is what stops it."""
+def test_a_recorded_install_is_not_asked(box):
     calls, exited = _update(
         box, manifest=lambda m: {**m, "torch_variant": "gpu"}, torch="2.14.0", tty=True
     )
@@ -446,17 +481,6 @@ def test_the_installed_build_beats_a_stale_record(box):
         tty=True,
     )
     assert _lock_of(calls) == str(box.cpu_lock) and not _asked(calls)
-
-
-@pytest.mark.parametrize("rag,asks", [(True, True), (False, False)])
-def test_without_torch_it_asks_only_when_installing_rag(box, rag, asks):
-    def recorded(m):
-        if not rag:
-            del m["packages"]["rag-mcp"]
-        return {**m, "torch_variant": "cpu"}
-
-    calls, _ = _update(box, manifest=recorded, torch="", tty=True)
-    assert bool(_asked(calls)) is asks
 
 
 @pytest.mark.parametrize("cpu", [False, True])
@@ -551,17 +575,9 @@ def test_after_yes_no_dependency_check_says_the_removal_did_not_finish(box, caps
 
 
 def test_a_hanging_gpu_probe_means_no_gpu_and_the_update_goes_on(box, capsys):
-    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[""], smi_hangs=True)
-    assert exited is None and "no NVIDIA GPU was found" in capsys.readouterr().out
-    assert _lock_of(calls) == str(box.cpu_lock)
-
-
-def test_no_answer_at_the_variant_question_installs_nothing(box, capsys):
-    """End of input mustn't become a silent swap to the CPU default."""
-    calls, exited = _update(box, torch="2.10.0", tty=True, answers=[EOFError])
-    assert exited is not None and exited.code == 1
-    assert "nothing installed" in capsys.readouterr().err
-    assert not _steps(calls)
+    calls, exited = _update(box, torch="2.10.0", tty=True, smi_hangs=True)
+    assert exited is None and "no NVIDIA GPU was found" in capsys.readouterr().err
+    assert _lock_of(calls) == str(box.lock)  # the installed build is kept
 
 
 def _finished(box, calls, exited):
@@ -571,12 +587,11 @@ def _finished(box, calls, exited):
 
 
 def test_no_answer_at_the_clean_up_keeps_them_and_the_update_goes_on(box, capsys):
+    """No answer is No, and the No is recorded, as at every offer."""
     calls, exited = _cleanup(box, answers=[EOFError])
     _finished(box, calls, exited)
-    assert (
-        "Clean-up not finished; the commands above complete it"
-        in capsys.readouterr().out
-    )
+    assert "Kept. The commands above remove them later." in capsys.readouterr().out
+    assert "CUDA package removal" in _manifest(box).get("declined_offers", {})
     assert not any(c[:3] == ["uv", "pip", "uninstall"] for c in calls)
 
 
@@ -660,7 +675,10 @@ def test_every_post_pull_stop_prints_the_part_way_block_and_the_finish_command(
     assert exited is not None and exited.code == 1
     err = capsys.readouterr().err
     assert PART_WAY in err and "the gateway wasn't restarted" in err
-    finish = err.rstrip().splitlines()[-1]
+    # the finish command is the end block's last step
+    assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
+    block = steps_block(err)
+    finish = block[-1] if block else ""
     assert finish.endswith("finish with: vhir update" + (f" --{flag}" if flag else ""))
 
 
@@ -675,14 +693,10 @@ def test_a_timeout_after_the_pull_prints_the_part_way_block(box, capsys, hang):
     assert exited is not None and exited.code == 1  # not a traceback
     err = capsys.readouterr().err
     assert "timed out" in err and PART_WAY in err
-    assert err.rstrip().endswith("finish with: vhir update")
-
-
-def test_no_answer_to_the_pytorch_question_prints_the_part_way_block(box, capsys):
-    _, exited = _update(box, torch="2.10.0", tty=True, answers=[EOFError])
-    assert exited is not None and exited.code == 1
-    err = capsys.readouterr().err
-    assert "Re-run with: vhir update --cpu or --gpu" in err and PART_WAY in err
+    # the finish command is the end block's last step
+    assert err.rstrip().splitlines()[-1] == STEPS_CLOSE and STEPS_OPEN in err
+    block = steps_block(err)
+    assert block and block[-1].endswith("finish with: vhir update")
 
 
 # --- The gateway's own launch lines get -I before the restart -----------------
@@ -717,7 +731,11 @@ def test_no_restart_still_rewrites_and_says_when_it_applies(box, capsys):
     calls, exited = _update(box, no_restart=True)
     assert exited is None and "python -I -m" in unit.read_text()
     assert ["systemctl", "--user", "restart", "vhir-gateway"] not in calls
-    assert "takes effect at the next gateway restart" in capsys.readouterr().out
+    got = capsys.readouterr()
+    # the --no-restart line moved from stdout into the end block
+    block = steps_block(got.err)
+    assert any("takes effect at the next gateway restart" in line for line in block)
+    assert "takes effect at the next gateway restart" not in got.out
 
 
 def test_check_writes_nothing(box):
@@ -737,9 +755,12 @@ def test_no_restart_says_when_it_applies_after_the_client_deploy_rewrote(
     script, unit = _launchers(box)
     monkeypatch.setattr(client_setup, "_find_claude_code_assets", lambda: None)
     _update(box, no_restart=True, manifest=lambda m: {**m, "client": "claude-code"})
-    out = capsys.readouterr().out
+    got = capsys.readouterr()
+    out, block = got.out, steps_block(got.err)
     assert "python -I -m" in unit.read_text() and f"Updated: {unit}" in out
-    assert "takes effect at the next gateway restart" in out
+    # the --no-restart line moved from stdout into the end block
+    assert any("takes effect at the next gateway restart" in line for line in block)
+    assert "takes effect at the next gateway restart" not in out
 
 
 def test_no_note_when_nothing_was_rewritten(box, capsys):
@@ -747,7 +768,11 @@ def test_no_note_when_nothing_was_rewritten(box, capsys):
     _update(box, no_restart=True)  # rewrites
     capsys.readouterr()
     _update(box, no_restart=True)  # nothing left to do
-    assert "takes effect at the next gateway restart" not in capsys.readouterr().out
+    got = capsys.readouterr()
+    # neither on stdout nor in the end block
+    assert "takes effect at the next gateway restart" not in got.out
+    block = steps_block(got.err)
+    assert not any("takes effect at the next gateway restart" in line for line in block)
 
 
 def test_a_user_edited_launcher_is_noted_once_per_update(box, capsys, monkeypatch):

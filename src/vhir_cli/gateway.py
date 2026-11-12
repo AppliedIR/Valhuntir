@@ -10,7 +10,13 @@ not updating config.yaml) is moot because local commands use gateway.yaml.
 
 from __future__ import annotations
 
+import http.client
+import json
 import ssl
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from vhir_cli.update_handover import hand_over_older_update
@@ -135,3 +141,124 @@ def local_gateway_ca_cert() -> str | None:
     if not isinstance(tls, dict) or not tls.get("certfile"):
         return None
     return find_ca_cert()
+
+
+# --- waiting for the gateway's /health (update Step 8, join-code) ------------
+
+DEADLINE = 240.0  # one owner for vhir; setup-sift.sh GW_WAIT_BOUND is a pinned copy
+CALL_CAP = 15.0  # setup-sift.sh's --max-time 15; /health may take 10 s per backend
+POLL = 2.0
+RESTART_FIX = "systemctl --user restart vhir-gateway"
+# One text for every failed restart: rc != 0, a timeout that left it inactive,
+# and no systemctl (a box with systemctl but no user bus also returns rc != 0)
+RESTART_FAILED_FIX = (
+    "If the gateway runs as a service: systemctl --user status vhir-gateway,"
+    " fix what it shows, then run {rerun}. If you start it by hand: stop it,"
+    " run ~/.vhir/start-gateway.sh, then run {hand_rerun}."
+)
+# "::1" and "::" aren't here: asyncio sets IPV6_V6ONLY, so 127.0.0.1 can't reach them
+_ALL_OR_LOOPBACK = (None, "", "127.0.0.1", "localhost", "0.0.0.0")
+
+
+class Deadline:
+    """One budget of monotonic time for a caller's whole wait."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds, self.end = seconds, time.monotonic() + seconds
+
+    def left(self) -> float:
+        return self.end - time.monotonic()
+
+
+@dataclass
+class HealthAnswer:
+    ok: bool
+    reason: str = ""
+    fix: str = ""
+    backends: dict | None = None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):
+        return None  # a 3xx is the answer
+
+
+def _transport(url, timeout, context):
+    """(status, body); raises what the dial raised. No proxy: it is local."""
+    handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    try:
+        with urllib.request.build_opener(*handlers).open(url, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, BaseException):
+            raise e.reason from e
+        raise OSError(str(e.reason)) from e
+
+
+def _health(send, url, context, timeout, port, host) -> HealthAnswer:
+    """One GET /health (unauthenticated: no bearer is sent)."""
+    fix = f"start the gateway: {RESTART_FIX}"
+    try:
+        status, body = send(url, timeout, context)
+    except ssl.SSLError as e:
+        why = f"the gateway's TLS didn't match: {e}"
+        fix = "check gateway.tls in ~/.vhir/gateway.yaml and the CA vhir trusts"
+    except (ConnectionRefusedError, TimeoutError) as e:
+        late = isinstance(e, TimeoutError)
+        why = f"nothing answered on port {port} ("
+        why += "didn't answer in time)" if late else "refused)"
+        if host not in _ALL_OR_LOOPBACK:
+            why = f"the gateway is set to listen only on {host}, and local"
+            why += " clients dial 127.0.0.1"
+            fix = "set gateway.host in ~/.vhir/gateway.yaml to 127.0.0.1 or"
+            fix += f" 0.0.0.0, then: {RESTART_FIX}"
+    except (OSError, http.client.HTTPException) as e:
+        why = f"couldn't reach the gateway: {e}"
+    else:
+        try:
+            data = json.loads(body) if status == 200 else None
+        except (ValueError, TypeError):
+            data = None
+        if isinstance(data, dict) and data.get("status") in ("ok", "degraded"):
+            b = data.get("backends")
+            return HealthAnswer(True, backends=b if isinstance(b, dict) else None)
+        why = f"something on port {port} answered /health, but not as the"
+        why += " Valhuntir gateway"
+        fix = f"find what holds port {port} (ss -ltnp), stop it, then: {RESTART_FIX}"
+        if status != 200:
+            why = f"the gateway answered /health with HTTP {status}"
+            fix = "systemctl --user status vhir-gateway"
+    return HealthAnswer(False, why, fix)
+
+
+def wait_for_health(
+    budget: Deadline, *, transport=None, once=False, until=None
+) -> HealthAnswer:
+    """Poll /health every POLL s until a pass (HTTP 200, a JSON object whose
+    status is "ok" or "degraded") or the budget is spent; returns the last
+    answer. once: one call. until(backends) on a pass: True done, False stop,
+    None keep polling (the last pass is returned if time runs out)."""
+    gw = _read_gateway_config().get("gateway")
+    gw = gw if isinstance(gw, dict) else {}
+    port, host = gw.get("port", 4508), gw.get("host")
+    url, context = get_local_gateway_url() + "/health", get_local_ssl_context()
+    answer = HealthAnswer(False, "no time was left to check the gateway", RESTART_FIX)
+    shown = 0
+    while (left := budget.left()) > 0:
+        answer = _health(
+            transport or _transport, url, context, min(CALL_CAP, left), port, host
+        )
+        if answer.ok and (until is None or until(answer.backends) is not None):
+            return answer
+        left = budget.left()
+        if once or left <= 0:
+            return answer
+        if (waited := int(budget.seconds - left)) // 10 > shown:
+            shown = waited // 10
+            print(f"  waiting for the gateway ({waited} of {budget.seconds:.0f} s)")
+        time.sleep(min(POLL, left))
+    return answer
