@@ -275,8 +275,9 @@ def select_network_ioc(value, type=None, *, network=...) -> str | None:
     left out, the verdict is the walk over `type` alone. An IPv4 address with
     a port is its bare address when its nearest type is ipv4-addr, or none
     encloses it; any other type leaves it out, as before. Otherwise a value
-    the walk says is network is picked as a typed one, one it says is not is
-    never picked, and one no type speaks for as an untyped one."""
+    the walk says is network is picked as a typed one, and any other as an
+    untyped one: a URL or an IPv4 address is picked whatever its type, as in
+    0.6.6, and a name only when the walk says network."""
     if network is ...:
         network = _verdict([type])
     v = ioc_types.unbracket(refang(ioc_types.unbracket(str(value).strip())))
@@ -284,9 +285,7 @@ def select_network_ioc(value, type=None, *, network=...) -> str | None:
         if _absent(type) or ioc_types.canonical(type) == "ipv4-addr":
             return v.rpartition(":")[0]
         return None
-    if network is False:
-        return None
-    return network_ioc(value, bool(network))
+    return network_ioc(value, network is True)
 
 
 def structured_iocs(findings: list) -> list[tuple]:
