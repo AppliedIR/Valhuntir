@@ -239,14 +239,33 @@ def finding_lines(finding: dict, indent: str = "  ") -> list[str]:
     return lines
 
 
-def provenance_block(view: dict) -> list[str]:
+# a report line whose source file can't be read, and one the blanked
+# approved view empties: `<label>: ...`
+UNREADABLE = "unreadable (see above)"
+WITHHELD = "withheld: the case fails verification (see below)"
+
+
+def withheld(view: dict) -> bool:
+    """Whether the approved view is blanked: verify's case-level failures are
+    non-empty, so nothing counts as approved (`ledger_verify.approved_view`)."""
+    result = view.get("result")
+    return bool(getattr(result, "failures", None))
+
+
+def provenance_block(view: dict, findings_unreadable: bool = False) -> list[str]:
     """The block both reports end with, after VERIFICATION: each approved,
-    verified finding's provenance."""
+    verified finding's provenance. With none, why: findings.json can't be
+    read (`findings_unreadable`), or the case fails verification."""
     lines = ["PROVENANCE", "=" * 50]
     findings = view.get("findings") or []
     for f in findings:
         lines.append(f"[{_s(f.get('id', '?'))}] {_s(f.get('title', ''))}")
         lines += finding_lines(f)
     if not findings:
-        lines.append("No approved, verified findings.")
+        if findings_unreadable:
+            lines.append(f"Approved findings: {UNREADABLE}")
+        elif withheld(view):
+            lines.append(f"Approved findings: {WITHHELD}")
+        else:
+            lines.append("No approved, verified findings.")
     return lines

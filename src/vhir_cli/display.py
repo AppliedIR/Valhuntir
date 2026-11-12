@@ -21,6 +21,9 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # separator characters: they reorder or break what the line shows
 _UNSAFE_CATEGORIES = frozenset({"Cf", "Cs", "Zl", "Zp"})
 
+# The levels of nesting ioc_text shows; deeper, it shows "..."
+IOC_DEPTH = 8
+
 # Fields `vhir approve` shows as indented blocks
 MULTI_LINE = frozenset({"observation", "interpretation", "description", "context"})
 
@@ -50,7 +53,7 @@ def ioc_text(iocs, _depth: int = 0) -> str:
     The print site still makes the text safe for its line."""
     if iocs is None:
         return ""
-    if _depth > 8:
+    if _depth > IOC_DEPTH:
         return "..."
     if isinstance(iocs, dict):
         if "value" in iocs:

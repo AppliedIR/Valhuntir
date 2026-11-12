@@ -1127,7 +1127,7 @@ def test_the_json_report_keeps_every_override_reason(case, capsys, monkeypatch):
             "report_findings": None, "status_brief": False, "save": None}  # fmt: skip
     cmd_report(Namespace(**args), {"examiner": "analyst1"})
     out = capsys.readouterr().out
-    report, _ = json.JSONDecoder().raw_decode(out[out.index("{") :])
+    report = json.loads(out)
     assert report["verification"]["overrides"] == {FID: [REASON]}
 
 

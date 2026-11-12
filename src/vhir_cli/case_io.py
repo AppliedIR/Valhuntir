@@ -208,6 +208,134 @@ def read_case_log_whole(path) -> bytes:
     return _read_whole(path, FILE_BUDGET)
 
 
+# The record files a report reads, in the order its header names them, and
+# which kind of item each holds (todos.json holds no signed items).
+RECORD_FILES = ("findings.json", "timeline.json", "iocs.json", "todos.json")
+_FILE_OF_KIND = {"finding": "findings.json", "timeline": "timeline.json",
+                 "ioc": "iocs.json"}  # fmt: skip
+EMPTY_FILE = "is empty, not a list of records"
+NOT_A_RECORD = "holds a list with an entry that isn't a record"
+_HOLDS_KIND = {dict: "an object", str: "a string", bool: "a boolean", int: "a number",
+               float: "a number", type(None): "null"}  # fmt: skip
+# a refusal's kind (`refusal_kind`) -> what the reader says it is
+_COULDNT = {
+    "not a regular file": "it isn't a regular file",
+    "a folder": "it is a folder",
+    "a symbolic link": "it is a symbolic link",
+    "another name links to it": "another name links to it",
+    "too large": f"larger than the {DOC_CAP >> 20} MiB case document limit",
+    "permission denied": "permission denied",
+    "not text": "not UTF-8 text",
+    "not json": "not valid JSON",
+    "too deep": "nested too deeply",
+}
+
+
+def refusal_kind(e: BaseException) -> str:
+    """Why a case document couldn't be read, as data (a `_COULDNT` key, or
+    the OS's own words for any other error): never parsed from its text."""
+    if isinstance(e, CaseFileNotRegular):
+        return e.why
+    if isinstance(e, CaseFileTooLarge):
+        return "too large"
+    if isinstance(e, PermissionError):
+        return "permission denied"
+    if isinstance(e, UnicodeDecodeError):
+        return "not text"
+    if isinstance(e, RecursionError):
+        return "too deep"
+    if isinstance(e, ValueError):
+        return "not json"
+    return str(getattr(e, "strerror", None) or type(e).__name__).lower()
+
+
+class RecordFile:
+    """One record file as a report reads it: absent (no records), readable
+    (`records`, every entry a dict) or unreadable (`why`, its fixed phrase,
+    and no records)."""
+
+    def __init__(self, path, records=(), why: str = "", absent: bool = False):
+        self.path, self.records, self.why = Path(path), list(records), why
+        self.absent = absent
+
+
+def read_record_file(path) -> RecordFile:
+    """A record file (findings, timeline, iocs or todos.json) read through
+    `read_case_document`, as verify reads it, then parsed whole. It is absent
+    when nothing is at its name (a dangling symlink is there: a symbolic
+    link); otherwise it must be a list of records, or `why` says what it is."""
+    path = Path(path)
+    if not os.path.lexists(path):
+        return RecordFile(path, absent=True)
+    try:
+        text = read_case_document(path).decode("utf-8")
+        data = json.loads(text) if text.strip() else None
+    except FileNotFoundError:  # gone since lexists: absent
+        return RecordFile(path, absent=True)
+    except (OSError, ValueError, RecursionError) as e:
+        return RecordFile(
+            path, why=f"couldn't be read ({_COULDNT.get(k := refusal_kind(e), k)})"
+        )
+    if not text.strip():
+        return RecordFile(path, why=EMPTY_FILE)
+    if not isinstance(data, list):
+        return RecordFile(
+            path, why=f"holds {_HOLDS_KIND[type(data)]}, not a list of records"
+        )
+    if not all(isinstance(i, dict) for i in data):
+        return RecordFile(path, why=NOT_A_RECORD)
+    return RecordFile(path, data)
+
+
+def read_record_files(case_dir, names=RECORD_FILES) -> dict[str, RecordFile]:
+    """Each named record file of the case, read by `read_record_file`, in
+    `RECORD_FILES` order."""
+    return {n: read_record_file(Path(case_dir) / n) for n in RECORD_FILES if n in names}
+
+
+def unreadable_of(files: dict[str, RecordFile]) -> list[tuple[Path, str]]:
+    """(path, why) of each unreadable file, in order."""
+    return [(f.path, f.why) for f in files.values() if f.why]
+
+
+RESTORE = "restore the case from a backup (`vhir restore`)"
+
+
+def remediation_line(name: str, why: str, result) -> str:
+    """What to do about one unreadable record file (`name`, a basename),
+    from what verify (`result`) reports: the item ids it reports missing, by
+    `id_kind`, and its failures naming the file. Never to empty or replace a
+    file that holds anything but whitespace."""
+    if why == EMPTY_FILE:
+        missing = getattr(result, "missing_items", None) or []
+        if any(_FILE_OF_KIND.get(id_kind(i)) == name for i in missing):
+            return (f"{name} is empty, but the case's approval records show it held"
+                    f" approved items. {RESTORE[0].upper()}{RESTORE[1:]}.")  # fmt: skip
+        return (f"{name} holds no records. If the case never held any, write [] to"
+                f" it; otherwise {RESTORE}.")  # fmt: skip
+    failures = getattr(result, "failures", None) or []
+    if any(code in ("CASE_FILE_UNREADABLE", "MALFORMED_RECORD")
+           and msg.startswith(f"{name} ") for code, msg in failures):  # fmt: skip
+        return ("Run `vhir review --findings --verify` to see the file's state;"
+                f" repair it, or {RESTORE}.")  # fmt: skip
+    return f"Repair {name}, or {RESTORE}."
+
+
+def unreadable_lines(unreadable, result) -> list[str]:
+    """The header (one line per unreadable file, `<file> <why>`), then one
+    remediation line per file."""
+    return [f"{Path(p).name} {why}" for p, why in unreadable] + [
+        remediation_line(Path(p).name, why, result) for p, why in unreadable
+    ]
+
+
+def not_saved_line(paths) -> str:
+    """`Report not saved: <files> can't be read.`, the files by basename."""
+    names = [Path(p).name for p in paths]
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return f"Report not saved: {listed} can't be read."
+
+
 def _capped_lines(f, path):
     with f:
         n = total = 0

@@ -18,7 +18,7 @@ import yaml
 from vhir_cli.case_io import compute_content_hash
 from vhir_cli.commands.report import cmd_report
 from vhir_cli.commands.review import cmd_review
-from vhir_cli.ledger_verify import approved_view
+from vhir_cli.ledger_verify import Result, approved_view
 from vhir_cli.provenance_view import finding_lines, grade_label, provenance_block
 
 from .signing import sign_approved
@@ -287,6 +287,23 @@ def test_the_block_shows_every_grade_reason_method_and_hash():
 
 def test_with_no_approved_findings_the_block_says_so():
     assert provenance_block({"findings": []})[-1] == "No approved, verified findings."
+    passed = Result("C-1", "case")
+    assert (
+        provenance_block({"findings": [], "result": passed})[-1]
+        == "No approved, verified findings."
+    )
+
+
+def test_with_none_because_the_view_is_blanked_or_findings_unreadable_it_says_why():
+    """0.6.6.1: a blanked view (case-level failures) is "withheld", and an
+    unreadable findings.json is "unreadable", which wins; never "none"."""
+    failed = Result("C-1", "case", failures=[("ITEM_MISSING", "F-steve-001 ...")])
+    withheld = "Approved findings: withheld: the case fails verification (see below)"
+    unreadable = "Approved findings: unreadable (see above)"
+    assert provenance_block({"findings": [], "result": failed})[-1] == withheld
+    for result in (None, Result("C-1", "case"), failed):
+        view = {"findings": [], "result": result}
+        assert provenance_block(view, findings_unreadable=True)[-1] == unreadable
 
 
 def test_a_root_s_label_comes_from_how_it_was_registered():

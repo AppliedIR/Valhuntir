@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 
 from vhir_cli import ioc_types
-from vhir_cli.defang import refang
+from vhir_cli.defang import refang, structured_iocs
 
 # The values the findings name that no IOC record of the case holds
 TEXT_ONLY = "Found in text, not recorded"
@@ -69,23 +69,6 @@ def text_iocs(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def _items(iocs):
-    """(type, value) for each value a finding's iocs field holds: a list of
-    strings and {"value", "type"} dicts, or a {type: values} dict. A value
-    under a {type: values} key has no type: forensic-mcp flattens that form
-    to plain values before it keys them."""
-    if isinstance(iocs, dict):
-        for values in iocs.values():
-            for v in values if isinstance(values, list) else [values]:
-                yield None, v
-    elif isinstance(iocs, list):
-        for i in iocs:
-            if isinstance(i, str):
-                yield None, i
-            elif isinstance(i, dict):
-                yield i.get("type"), i.get("value")
-
-
 def _value(v) -> str | None:
     """A stored value as text; None when there is none to list."""
     if v is None:
@@ -129,7 +112,10 @@ def not_recorded(findings: list, all_records: list) -> list[str]:
         if not isinstance(f, dict):
             continue
         text = f"{f.get('observation', '')} {f.get('interpretation', '')}"
-        named = [*_items(f.get("iocs")), *((None, v) for _, v in text_iocs(text))]
+        # each value in its iocs field as defang.structured_iocs walks it,
+        # with the type forensic-mcp keys it under (its own, else none)
+        walked = ((own, v) for v, _, own in structured_iocs([f]))
+        named = [*walked, *((None, v) for _, v in text_iocs(text))]
         for t, value in named:
             if (value := _value(value)) is None or not ioc_types.ck(value, t):
                 continue
