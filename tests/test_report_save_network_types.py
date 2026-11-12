@@ -10,8 +10,11 @@ in its {type: [values]} form, or in an IOC record in iocs.json.
   upper-case, `-`->`_`, `-`->space and padded forms, is defanged.
 - The type rule and the selector are each looked up through vhir_cli.defang:
   patched, every route's saved output flips.
-- A value typed file:name, named-pipe or hostname stays live, even where
+- A name typed file:name, named-pipe or hostname stays live, even where
   another finding or record types the same string under a network key.
+- A URL or an IPv4 address (a range: its base) is defanged whatever type it
+  folds to, under a network key too, as 0.6.6 saved it; a name of that type
+  in the same case stays live.
 - Free-text types holding a network word, and every url:path spelling, are
   defanged; IPv4-of-C2 with a port is kept live, as before.
 - Nested values are walked to the display's depth limit (8) through either
@@ -278,6 +281,59 @@ def test_ipv4_of_c2_with_a_port_is_kept_live(tmp_path, monkeypatch, capsys, rout
     body = _saved(tmp_path, monkeypatch, capsys, f"Seen: {v} .", iocs, recs)
     assert v in body, "the address isn't live in the saved report"
     assert fanged(IP) not in body, "the address is defanged in the saved report"
+
+
+# -- a URL or an IPv4 address, whatever type it folds to ---------------------------
+
+ADDR, LINK = "10.9.8.7", "http://evil.example.com/x"
+# (type, value): a URL- or IPv4-shaped value under a type that folds to a
+# non-network table id, and a range under one
+SHAPED = (("hostname", ADDR), ("hostname", LINK), ("user-account", ADDR),
+          ("file:path", LINK), ("process:command-line", LINK), ("file:name", ADDR),
+          ("hostname", "10.9.8.0/24"))  # fmt: skip
+NAMED = (("hostname", "ws01.corp.example"), ("user-account", "svc.backup"),
+         ("file:name", "a.ps1"), ("process:command-line", "rundll32.exe"),
+         ("named-pipe", "svc.pipe.example"))  # fmt: skip
+
+
+def _under_key(route, t, v) -> tuple:
+    """`v` typed `t`, held under a network key on one route."""
+    inner = [{"value": v, "type": t}]
+    return {"dict": ({"domain": inner}, []), "list": ([{"url": inner}], []),
+            "record": ([], [_record("url", inner)])}[route]  # fmt: skip
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_an_ipv4_typed_address_is_defanged(tmp_path, monkeypatch, capsys, route):
+    iocs, recs = _route(route, "ipv4-addr", ADDR)
+    body = _saved(tmp_path, monkeypatch, capsys, f"Seen: {ADDR} .", iocs, recs)
+    _defanged(body, ADDR)
+
+
+@pytest.mark.parametrize("held", ["own", "under-key"])
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("t,v", SHAPED)
+def test_a_url_or_ipv4_value_is_defanged_whatever_its_type(
+    tmp_path, monkeypatch, capsys, t, v, route, held
+):
+    iocs, recs = (_route if held == "own" else _under_key)(route, t, v)
+    _defanged(_saved(tmp_path, monkeypatch, capsys, f"Seen: {v} .", iocs, recs), v)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("t,name", NAMED)
+def test_a_name_stays_live_beside_an_address_of_its_type(
+    tmp_path, monkeypatch, capsys, t, name, route
+):
+    """A name and an IPv4 address under the same non-network type, in one
+    case: the address is defanged and the name stays live."""
+    iocs = {"list": [{"value": name, "type": t}, {"value": ADDR, "type": t}],
+            "dict": {t: [name, ADDR]}, "record": []}[route]  # fmt: skip
+    recs = [_record(t, name), _record(t, ADDR, rid=IOC2)] if route == "record" else []
+    obs = f"Seen: {name} and {ADDR} ."
+    body = _saved(tmp_path, monkeypatch, capsys, obs, iocs, recs)
+    _live(body, name)
+    _defanged(body, ADDR)
 
 
 # -- nesting and records ---------------------------------------------------------
