@@ -164,7 +164,7 @@ Or ask the LLM to ingest evidence — it uses the ingest tools on opensearch-mcp
 
 | Parser | Artifacts | Source |
 |--------|-----------|--------|
-| evtx | Windows Event Logs | pyevtx-rs (ECS-normalized) |
+| evtx | Windows Event Logs | pyevtx-rs (ECS-aligned) |
 | EZ Tools | Shimcache, Amcache, MFT, USN, Registry, Shellbags, Jumplists, LNK, Recyclebin, Timeline | Eric Zimmerman tools via wintools-mcp |
 | Volatility 3 | Memory forensics (26 plugins, 3 tiers) | vol3 subprocess |
 | JSON/JSONL | Suricata EVE, tshark, Velociraptor, any JSON | Auto-detect format |
@@ -179,6 +179,8 @@ Or ask the LLM to ingest evidence — it uses the ingest tools on opensearch-mcp
 | Prefetch/SRUM | Execution + network usage | Plaso or wintools |
 
 Every parser produces deterministic content-based document IDs (re-ingest = zero duplicates), full provenance (`host.name`, `vhir.source_file`, `vhir.ingest_audit_id`, `vhir.parse_method`, `pipeline_version`), and proper `@timestamp` with timezone handling.
+
+Evtx records are ECS-aligned: the record header gives `event.provider`, `event.action`, `event.outcome` and `log.level`. In Security records, `user.*` is the account that acted and `user.target.*` the account acted on. `process.name` is a file name (`cmd.exe`); its path is in `process.executable`. Records ingested before 0.6.6.2 keep their older meanings. To tell them apart, list the `pipeline_version` values with a terms aggregation and filter on exact values. It is a keyword, so never use a range on it.
 
 ### Hayabusa Auto-Detection
 
