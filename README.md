@@ -323,6 +323,8 @@ curl -fsSL https://raw.githubusercontent.com/AppliedIR/sift-mcp/main/quickstart.
 ```
 git clone https://github.com/AppliedIR/sift-mcp.git && cd sift-mcp
 ./setup-sift.sh
+# For remote access with TLS (as a Windows forensic workstation join needs), run instead:
+# ./setup-sift.sh --remote
 ```
 
 ### Windows Forensic Workstation (optional)
