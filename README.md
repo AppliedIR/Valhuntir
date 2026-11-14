@@ -64,7 +64,7 @@ The examiner interacts with Valhuntir through three interfaces: the **LLM client
 
 ### Deployment Overview
 
-The typical deployment runs three VMs on a single host: SIFT (primary workstation), REMnux (malware analysis), and Windows (forensic tool execution). The examiner works on the SIFT VM — running the LLM client, the Examiner Portal in a browser, and the vhir CLI. REMnux and Windows are headless worker VMs. All three communicate over a VM-local network. Internet access is through NAT for external MCP services.
+The typical deployment runs three VMs on a single host: SIFT (primary workstation), REMnux (malware analysis), and Windows (forensic tool execution). The examiner works on the SIFT VM — running the LLM client, the Examiner Portal in a browser, and the vhir CLI. REMnux and Windows are headless worker VMs. All three communicate over a VM-local network. REMnux sits on a host-only network with the SIFT only: no NAT adapter, no internet, and no shared folders, clipboard or drag-and-drop. The SIFT keeps its own internet access for the AI model and the external MCP services.
 
 ```mermaid
 graph TB
