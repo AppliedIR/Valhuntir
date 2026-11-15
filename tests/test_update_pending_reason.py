@@ -179,14 +179,16 @@ def test_a_recorded_fix_that_doesn_t_name_vhir_update_keeps_the_run_line(
 
 
 def test_a_refresh_skip_s_banner_names_vhir_update_once(box, capsys):
-    from tests.test_update_claude_refresh import _entry, _ok, _refresh
+    from tests.health_stand_in import body
+    from tests.test_update_claude_refresh import _entry, _refresh
 
+    # the refresh's one pending skip: the gateway answers but lists no backends
     with patch("importlib.metadata.version", side_effect=_installed):
         run = _refresh(
             box,
             capsys,
             servers={"forensic-mcp": _entry("forensic-mcp")},
-            health=_ok("forensic-mcp", jdoe_os="stopped"),
+            health=(200, body("ok", {})),
         )
     assert run.state.get("fix") == "vhir update", run.state
     out, err = _vhir(box, capsys, "portal")
