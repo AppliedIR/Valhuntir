@@ -8,9 +8,10 @@ port) with the path /mcp/<name> or /mcp. Each listed backend without an entry
 is added, Valhuntir's entries for backends no longer listed are removed, and
 every other entry and key keeps its value. The write asks first (the
 `_write_user_file` consent, with its backup) and, after the Yes, applies the
-shown changes to the file as it is then. A backend that isn't up when the
-time is spent, or a gateway that lists none, leaves the file alone and the
-update pending, fix "vhir update".
+shown changes to the file as it is then. A gateway that lists no backends
+leaves the file alone and the update pending, fix "vhir update". A listed
+backend that isn't up keeps the entry it has and gets none if it has none;
+the update completes at once and names it, with its error.
 
 /health is the stand-in from tests/health_stand_in.py. The texts are literals,
 so a tree without the refresh fails on the asserts. Values are synthetic.
@@ -353,39 +354,78 @@ def test_a_file_that_stops_being_json_before_the_yes_is_not_written(box, capsys)
     assert any("vhir setup client" in line for line in run.block), run.block
 
 
-# --- backends not up -------------------------------------------------------------
+# --- a backend not up ------------------------------------------------------------
+
+TRIAGE = "windows-triage-mcp"
+CLOSED = {"status": "error", "error": "Connection closed"}
+NOT_OK = "These backends aren't ok: "
+NOT_ADDED = (
+    " Check: vhir service status. A backend that isn't running isn't added to"
+    " Claude Code; run `vhir update` again once it is."
+)
 
 
-def test_a_joined_backend_that_failed_to_load_leaves_it_pending(box, capsys):
-    servers = {"forensic-mcp": _entry("forensic-mcp"), "jdoe-wt": _entry("jdoe-wt")}
-    run = _refresh(
-        box, capsys, servers=servers, health=_ok("forensic-mcp", jdoe_wt="error")
-    )
-    assert run.state.get("status") == "pending", run.state
-    assert run.state.get("reason") == f"{NOT_REFRESHED}jdoe-wt not up", run.state
-    assert run.state.get("fix") == "vhir update", run.state
-    assert run.after == run.before and run.asked == []
-    assert any("jdoe-wt" in line for line in run.block), run.block
-    assert run.rc == 1
+def _down(entry):
+    """/health: forensic-mcp ok, the triage backend as `entry`."""
+    return (200, body("ok", {"forensic-mcp": {"status": "ok"}, TRIAGE: entry}))
 
 
-def test_a_stopped_backend_waits_on_the_one_budget_then_is_pending(box, capsys):
+@pytest.mark.parametrize(
+    "entry, has_entry, named, then_up",
+    [
+        pytest.param(CLOSED, True, f"{TRIAGE} (Connection closed).", False, id="error"),
+        pytest.param({"status": "stopped"}, True, f"{TRIAGE}.", False, id="stopped"),
+        pytest.param(
+            CLOSED, False, f"{TRIAGE} (Connection closed).", False, id="absent"
+        ),
+        pytest.param(
+            CLOSED, False, f"{TRIAGE} (Connection closed).", True, id="then-up"
+        ),
+    ],
+)
+def test_a_backend_not_up_completes_at_once_and_its_entry_is_left_as_it_is(
+    box, capsys, entry, has_entry, named, then_up
+):
     servers = {"forensic-mcp": _entry("forensic-mcp")}
+    if has_entry:
+        servers[TRIAGE] = _entry(TRIAGE)
+    run = _refresh(box, capsys, servers=servers, health=_down(entry))
+    assert run.state.get("status") == "complete", run.state
+    assert run.rc == 0
+    assert run.after == run.before and run.asked == []  # kept, and none added
+    assert f"{NOT_OK}{named}{NOT_ADDED}" in run.block, run.block
+    assert not any("Update pending" in line for line in run.block), run.block
+    # no wait for the backend: Step 8's pass and the refresh's, no sleep
+    from vhir_cli import gateway
+
+    assert run.health.waited() < gateway.POLL, run.health.slept
+    assert "waiting for the gateway" not in run.out
+    if not then_up:
+        return
+    # the next update, with the backend up: its entry is added, nothing named
     run = _refresh(
-        box, capsys, servers=servers, health=_ok("forensic-mcp", jdoe_os="stopped")
+        box, capsys, servers=None, health=_ok("forensic-mcp", TRIAGE), answers=("y",)
     )
-    assert run.state.get("reason") == f"{NOT_REFRESHED}jdoe-os not up", run.state
-    assert run.state.get("fix") == "vhir update", run.state
-    assert run.rc == 1
-    assert run.after == run.before and run.asked == []
-    # wait_for_health's own loop on one 240 s budget: its waiting lines only
-    waits = [ln for ln in run.out.splitlines() if "waiting for the gateway" in ln]
-    assert waits and all(w.endswith(" of 240 s)") for w in waits), waits
-    assert len(run.health.calls) > 2
-    assert all(at < T0 + 240 for _, _, at in run.health.calls)
-    assert 230 <= run.health.waited() <= 240
-    assert sum(run.health.slept) == run.health.waited()
-    assert "\n".join(run.block).count("jdoe-os") == 1, run.block
+    assert _servers(run).get(TRIAGE) == _entry(TRIAGE), _servers(run)
+    assert _servers(run)["forensic-mcp"] == _entry("forensic-mcp")
+    assert len(run.asked) == 1
+    assert not any(NOT_OK in line for line in run.block), run.block
+    assert run.state.get("status") == "complete", run.state
+    assert run.rc == 0
+
+
+def test_without_the_claude_code_refresh_a_backend_not_up_is_only_named(box, capsys):
+    run = _refresh(
+        box,
+        capsys,
+        servers={"forensic-mcp": _entry("forensic-mcp")},
+        health=_down(CLOSED),
+        clients=("codex",),
+    )
+    want = f"{NOT_OK}{TRIAGE} (Connection closed). Check: vhir service status"
+    assert want in run.block, run.block
+    assert run.state.get("status") == "complete", run.state
+    assert run.after == run.before
 
 
 @pytest.mark.parametrize("backends", ["empty", "missing"])
@@ -423,15 +463,26 @@ def test_step_8_pending_skips_the_refresh(box, capsys):
 # --- one state write ---------------------------------------------------------------
 
 
-def test_a_refresh_skip_is_the_one_pending_write(box, capsys):
+def test_a_refresh_with_no_backends_is_the_one_pending_write(box, capsys):
+    run = _refresh(
+        box,
+        capsys,
+        servers={"forensic-mcp": _entry("forensic-mcp")},
+        health=(200, body("ok", {})),
+    )
+    assert [c.kwargs.get("status") for c in run.writes] == ["pending"], run.writes
+    assert run.rc == 1
+
+
+def test_a_refresh_with_a_backend_not_up_is_the_one_complete_write(box, capsys):
     run = _refresh(
         box,
         capsys,
         servers={"forensic-mcp": _entry("forensic-mcp")},
         health=_ok("forensic-mcp", jdoe_os="stopped"),
     )
-    assert [c.kwargs.get("status") for c in run.writes] == ["pending"], run.writes
-    assert run.rc == 1
+    assert [c.kwargs.get("status") for c in run.writes] == ["complete"], run.writes
+    assert run.rc == 0
 
 
 def test_a_refresh_with_nothing_to_change_is_the_one_complete_write(box, capsys):

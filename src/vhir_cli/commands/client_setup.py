@@ -745,33 +745,35 @@ def _backend_entry(url: str, name: str, token, kind="streamable-http") -> dict:
     return entry
 
 
+def claude_code_refreshes(clients) -> bool:
+    """Whether `vhir update` refreshes Claude Code's server list."""
+    return "claude-code" in clients and (Path.home() / ".claude.json").is_file()
+
+
 def refresh_claude_code(budget, clients) -> tuple[str, str] | None:
     """`vhir update`: bring Claude Code's entries for the local gateway in line
     with the backends /health lists, on the update's budget. Valhuntir's entries
-    are told by URL alone: the local gateway's /mcp or /mcp/<name>. Returns
-    None, or a pending (reason, fix) when a backend isn't up."""
+    are told by URL alone: the local gateway's /mcp or /mcp/<name>. A backend
+    that isn't up keeps the entry it has and gets none if it has none. Returns
+    None, or a pending (reason, fix) when the gateway lists no backends."""
     from urllib.parse import urlsplit
 
     from vhir_cli import gateway
 
     path = Path.home() / ".claude.json"
-    if "claude-code" not in clients or not path.is_file():
+    if not claude_code_refreshes(clients):
         return None
 
     def fine(v) -> bool:  # busy: alive, answering a call
         return isinstance(v, dict) and v.get("status") in ("ok", "busy")
 
-    def up(b):
-        if not isinstance(b, dict) or not b:
-            return False
-        return True if all(map(fine, b.values())) else None
+    def up(b) -> bool:  # listed: no wait for a backend that isn't up
+        return isinstance(b, dict) and bool(b)
 
     answer = gateway.wait_for_health(budget, until=up)
     b = answer.backends if answer.ok else None
-    if up(b) is not True:
+    if not up(b):
         why = answer.reason or "the gateway listed no backends"
-        if b:
-            why = ", ".join(n for n in sorted(b) if not fine(b[n])) + " not up"
         return f"the AI client's server list was not refreshed: {why}", "vhir update"
     kept = (
         "  To refresh the AI client's server list, run `vhir setup client` in a"
@@ -807,7 +809,11 @@ def refresh_claude_code(budget, clients) -> tuple[str, str] | None:
     gone = [n for n, e in servers.items() if ours(e) and n not in b]
     token = _read_local_token()
     # a name that holds someone else's entry keeps it (a direct wintools-mcp)
-    add = {n: _backend_entry(url, n, token, "http") for n in b if n not in servers}
+    add = {
+        n: _backend_entry(url, n, token, "http")
+        for n in b
+        if n not in servers and fine(b[n])
+    }
 
     def apply():  # the shown changes, on the file as it is now
         try:

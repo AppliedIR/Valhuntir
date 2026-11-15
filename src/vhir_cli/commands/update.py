@@ -1550,17 +1550,27 @@ def _finish_update(
         human_steps.add(f"  Update pending: {reason}\n  Run: {fix}")
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
-    if done:  # a skip's pending line already names the backends not up
+    if done:  # each backend not ok, with its error; the refresh didn't add it
         b = health.backends or {}
+
+        def named(n):
+            e = b[n].get("error") if isinstance(b[n], dict) else None
+            e = " ".join(e.split()) if isinstance(e, str) else ""
+            return f"{n} ({e})" if e else n
+
         if down := [
-            n
+            named(n)
             for n in sorted(b)
             if not isinstance(b[n], dict) or b[n].get("status") != "ok"
         ]:
-            human_steps.add(
-                f"  These backends aren't ok: {', '.join(down)}."
-                " Check: vhir service status"
-            )
+            line = f"  These backends aren't ok: {', '.join(down)}."
+            line += " Check: vhir service status"
+            if client_setup.claude_code_refreshes(clients):
+                line += (
+                    ". A backend that isn't running isn't added to Claude Code;"
+                    " run `vhir update` again once it is."
+                )
+            human_steps.add(line)
         if restarted is None and _RESTART_OWED:
             human_steps.add(
                 "  This run checked that the gateway answers, but it can't tell that"
