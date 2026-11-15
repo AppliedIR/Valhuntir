@@ -814,6 +814,8 @@ def refresh_claude_code(budget, clients) -> tuple[str, str] | None:
         for n in b
         if n not in servers and fine(b[n])
     }
+    if not add and len(gone) == sum(map(ours, servers.values())):
+        gone = []  # never leave this gateway with no entry
 
     def apply():  # the shown changes, on the file as it is now
         try:

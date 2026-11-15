@@ -476,6 +476,17 @@ def test_a_joined_backend_that_failed_to_load_is_named_and_not_added(box, capsys
     assert run.rc == 0
 
 
+def test_the_aggregate_entry_is_kept_when_every_backend_is_down(box, capsys):
+    servers = {"vhir": {**_entry("x"), "url": f"{LOCAL}/mcp"}, **FOREIGN_SERVERS}
+    health = (200, body("ok", {"case-mcp": CLOSED, "forensic-mcp": CLOSED}))
+    run = _refresh(box, capsys, servers=servers, health=health)
+    assert run.after == run.before and run.asked == []  # nothing to add: none removed
+    named = "case-mcp (Connection closed), forensic-mcp (Connection closed)."
+    assert f"{NOT_OK}{named}{NOT_ADDED}" in run.block, run.block
+    assert run.state.get("status") == "complete", run.state
+    assert run.rc == 0
+
+
 @pytest.mark.parametrize("backends", ["empty", "missing"])
 def test_no_backends_listed_leaves_it_pending(box, capsys, backends):
     answer = (
