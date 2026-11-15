@@ -1556,6 +1556,8 @@ def _finish_update(
         def named(n):
             e = b[n].get("error") if isinstance(b[n], dict) else None
             e = " ".join(e.split()) if isinstance(e, str) else ""
+            if isinstance(b[n], dict) and b[n].get("status") == "busy":  # it's running
+                e = f"busy: {e}" if e else "busy"
             return f"{n} ({e})" if e else n
 
         if down := [

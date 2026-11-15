@@ -428,6 +428,54 @@ def test_without_the_claude_code_refresh_a_backend_not_up_is_only_named(box, cap
     assert run.after == run.before
 
 
+BUSY = {"status": "busy", "type": "stdio", "error": "no answer to a ping within 5 s"}
+
+
+@pytest.mark.parametrize(
+    "entry, named",
+    [
+        pytest.param(
+            BUSY, f"{TRIAGE} (busy: no answer to a ping within 5 s).", id="ping"
+        ),
+        pytest.param({"status": "busy"}, f"{TRIAGE} (busy).", id="no-text"),
+    ],
+)
+def test_a_busy_backend_with_no_entry_is_added_and_named_busy(
+    box, capsys, entry, named
+):
+    run = _refresh(
+        box,
+        capsys,
+        servers={"forensic-mcp": _entry("forensic-mcp")},
+        health=_down(entry),
+    )
+    assert _servers(run).get(TRIAGE) == _entry(TRIAGE), _servers(run)
+    assert len(run.asked) == 1
+    assert f"{NOT_OK}{named}{NOT_ADDED}" in run.block, run.block
+    assert run.state.get("status") == "complete", run.state
+    assert run.rc == 0
+
+
+JOINED = {
+    "status": "error",
+    "error": (
+        "jdoe-wt is joined but not loaded: Connection refused (it is kept until"
+        " the gateway restarts; after a restart, join again with a new join code)"
+    ),
+}
+
+
+def test_a_joined_backend_that_failed_to_load_is_named_and_not_added(box, capsys):
+    health = (200, body("ok", {"forensic-mcp": {"status": "ok"}, "jdoe-wt": JOINED}))
+    run = _refresh(
+        box, capsys, servers={"forensic-mcp": _entry("forensic-mcp")}, health=health
+    )
+    assert run.after == run.before and run.asked == []
+    assert f"{NOT_OK}jdoe-wt ({JOINED['error']}).{NOT_ADDED}" in run.block, run.block
+    assert run.state.get("status") == "complete", run.state
+    assert run.rc == 0
+
+
 @pytest.mark.parametrize("backends", ["empty", "missing"])
 def test_no_backends_listed_leaves_it_pending(box, capsys, backends):
     answer = (
