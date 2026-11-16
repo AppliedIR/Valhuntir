@@ -11,6 +11,8 @@ import pytest
 
 from vhir_cli.case_io import KEPT, REPORT
 
+# the child's last line when cmd_exec re-raises an interrupt
+INTERRUPTED = "the interrupt was raised on"
 # cmd_exec in a child: confirmed at a fake terminal, _run_capture faked (it
 # only leaves a marker), so no command runs and rlimits stay in the child
 CHILD = r"""
@@ -23,14 +25,19 @@ from vhir_cli.commands import execute
 tty = MagicMock(); tty.readline.return_value = "y\n"
 def run(cmd, case_dir):
     Path(sys.argv[2]).write_text("ran")
+    if os.environ.get("INTERRUPT"):  # Ctrl-C mid-run
+        raise KeyboardInterrupt
     size = os.environ.get("STDOUT_SIZE")  # with a closed stdout: past the buffer, short or none
     out = {"big": "r/r 5-128-1:\tfile-one.txt\n" * 1000, "short": "x" * 30, "empty": ""}.get(
         size, "r/r 5-128-1:\tfile-one.txt\n")
     return 0, out[:execute._STDOUT_HEAD_CHARS], len(out.splitlines()), ""
 class A: cmd = ["fakefls", "-r", "image.dd"]; purpose = "triage"; case = None
 with patch("vhir_cli.approval_auth.open", return_value=tty), patch.object(execute, "_run_capture", run):
-    execute.cmd_exec(A(), {"examiner": "tester"})
-"""
+    try:
+        execute.cmd_exec(A(), {"examiner": "tester"})
+    except KeyboardInterrupt:
+        sys.exit(INTERRUPTED)
+""".replace("INTERRUPTED", repr(INTERRUPTED))
 PRIOR = '{"audit_id": "cliexec-tester-20000101-001", "tool": "exec"}\n'
 NOT_RUN = "Not run: vhir exec can't write this command's audit entry ({}: {}). {}"
 WRITABLE = (
@@ -47,7 +54,7 @@ ADVICE = {  # the log's shape -> the step the refusal gives for it: never to cha
 RAN = "WARNING: the command ran, but its audit entry couldn't be written ({}: {}), so it is not in the case's audit trail."
 
 
-def _exec(case, fsize=None, stdout_closed=""):
+def _exec(case, fsize=None, stdout_closed="", interrupt=False, tail=1):
     mark = case.parent / "ran"
     mark.unlink(missing_ok=True)
 
@@ -59,10 +66,13 @@ def _exec(case, fsize=None, stdout_closed=""):
     env = {**os.environ, "VHIR_CASE_DIR": str(case), "PYTHONDONTWRITEBYTECODE": "1"}
     if stdout_closed:
         env["STDOUT_CLOSED"], env["STDOUT_SIZE"] = "1", stdout_closed
+    if interrupt:
+        env["INTERRUPT"] = "1"
     p = subprocess.run([sys.executable, "-c", CHILD, "-", str(mark)], env=env, timeout=20,
                        capture_output=True, text=True, preexec_fn=limits)  # fmt: skip
     # the prompt has no newline
-    last = p.stderr.strip().splitlines()[-1].removeprefix("Execute? [y/N]: ")
+    last = "\n".join(p.stderr.strip().splitlines()[-tail:])
+    last = last.removeprefix("Execute? [y/N]: ")
     return p.returncode, p.stdout, last, mark.exists()
 
 
@@ -137,6 +147,16 @@ def test_a_failed_write_after_the_run_is_loud_and_leaves_the_log_as_it_was(case,
     ids = [json.loads(line)["audit_id"] for line in _log(case).read_text().splitlines()]
     assert rc == 0 and len(ids) == len(set(ids)) == 2
     assert out.strip().splitlines()[-1] == f"Audit ID: {ids[-1]}"
+
+
+@pytest.mark.parametrize("room", [0, 20])  # refused outright, or a short write
+def test_an_interrupted_run_is_loud_when_its_write_fails(case, room):
+    _prior(case)
+    rc, out, err, ran = _exec(case, fsize=len(PRIOR) + room, interrupt=True, tail=2)
+    assert (rc, ran) == (1, True)
+    assert err == RAN.format(_log(case), "File too large") + "\n" + INTERRUPTED
+    assert "Audit ID" not in out
+    assert _log(case).read_text() == PRIOR
 
 
 def test_an_audit_folder_that_links_to_another_case_refuses_the_run(case):
