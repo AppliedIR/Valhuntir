@@ -986,7 +986,7 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
             )
         except (subprocess.TimeoutExpired, OSError) as e:  # uv's host slow or away
             print(
-                f"  Warning: uv self update skipped, uv stays as it is: {e}",
+                f"  Warning: uv self update did not finish, so uv may not be current: {e}",
                 file=sys.stderr,
             )
 

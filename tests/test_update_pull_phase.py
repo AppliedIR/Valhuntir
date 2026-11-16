@@ -226,7 +226,7 @@ def test_a_uv_self_update_that_hangs_or_cannot_start_still_updates(
     err = capsys.readouterr().err
     assert code is None and PART_WAY not in err
     assert set(heads.values()) == {"sift-mcp-new", "vhir-new", "opensearch-mcp-new"}
-    assert "uv self update" in err
+    assert "uv self update did not finish, so uv may not be current" in err
 
 
 def test_anchor_a_clean_update_has_no_block(world, capsys):
