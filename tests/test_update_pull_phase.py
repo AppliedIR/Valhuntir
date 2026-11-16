@@ -57,13 +57,16 @@ def world(tmp_path):
     return _build_world(tmp_path)
 
 
-def _run(world, *, fetch_err="", installed_timeout=False):
-    """Run cmd_update; returns (exit code or None, stderr+stdout, the heads)."""
+def _run(world, *, fetch_err="", installed_timeout=False, uv_self=None):
+    """Run cmd_update; returns (exit code or None, stderr+stdout, the heads).
+    `uv_self` is what `uv self update` raises, when set."""
 
     def run(cmd, **kw):
         cmd = [str(c) for c in cmd]
         r = MagicMock(returncode=0, stdout="", stderr="")
         repo = world.repos.get(cmd[2]) if cmd[:2] == ["git", "-C"] else None
+        if cmd[:3] == ["uv", "self", "update"] and uv_self is not None:
+            raise uv_self
         if cmd[:2] == ["uv", "--version"]:
             r.stdout = "uv 0.12.20"
         elif repo and cmd[3] == "fetch" and fetch_err:
@@ -204,6 +207,26 @@ def test_anchor_an_up_to_date_first_repo_then_a_failure_is_no_block(world, capsy
     code, _ = _run(world)
     err = capsys.readouterr().err
     assert code == 1 and "Failed to pull vhir" in err and PART_WAY not in err
+
+
+@pytest.mark.parametrize(
+    "fails",
+    [
+        subprocess.TimeoutExpired(["uv", "self", "update", "--quiet"], 60),
+        FileNotFoundError(2, "No such file or directory", "uv"),
+    ],
+    ids=["hangs", "cannot_start"],
+)
+def test_a_uv_self_update_that_hangs_or_cannot_start_still_updates(
+    world, capsys, fails
+):
+    # Keeping uv current is a courtesy: uv's release host being slow or
+    # unreachable must not stop the update before any repo is pulled.
+    code, heads = _run(world, uv_self=fails)
+    err = capsys.readouterr().err
+    assert code is None and PART_WAY not in err
+    assert set(heads.values()) == {"sift-mcp-new", "vhir-new", "opensearch-mcp-new"}
+    assert "uv self update" in err
 
 
 def test_anchor_a_clean_update_has_no_block(world, capsys):

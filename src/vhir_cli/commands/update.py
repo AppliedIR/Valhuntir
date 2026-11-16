@@ -980,9 +980,15 @@ def _update(args, identity: dict, after_pull: str | None) -> None:
 
     # Keep uv current (handles stale installs and pre-existing user installs)
     if after_pull is None:
-        subprocess.run(
-            ["uv", "self", "update", "--quiet"], capture_output=True, timeout=60
-        )
+        try:
+            subprocess.run(
+                ["uv", "self", "update", "--quiet"], capture_output=True, timeout=60
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:  # uv's host slow or away
+            print(
+                f"  Warning: uv self update skipped, uv stays as it is: {e}",
+                file=sys.stderr,
+            )
 
     repos = [("sift-mcp", source), ("vhir", vhir_dir)]
 
