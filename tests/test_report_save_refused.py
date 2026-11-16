@@ -2,8 +2,8 @@
 findings.json and iocs.json, is absent or parses to a list of records. Any
 other file there (empty or blank, not UTF-8, one that won't parse, null, a
 number, a boolean, a list holding something other than records, a directory,
-a dangling symlink, a symlink to a valid file, one past the 16 MiB case
-document limit) means the report isn't saved: the header names the file and
+a dangling symlink, a symlink to a valid file) means the report isn't
+saved: the header names the file and
 why, the remediation line follows it, stderr says `Report not saved:`, and
 there's no traceback. A report already saved under that name
 is left byte-identical; with none there, none is created. A file that is an
@@ -217,18 +217,14 @@ def test_an_absent_iocs_json_saves(tmp_path, monkeypatch, route):
 
 
 @pytest.mark.parametrize("route", ("ioc", "findings"))
-def test_an_iocs_json_past_the_verify_cap_refuses_the_save(
-    tmp_path, monkeypatch, route
-):
-    """Refused, as verify refuses it: both read the file with the one reader."""
+def test_an_iocs_json_over_16_mib_saves(tmp_path, monkeypatch, route):
+    """Read whole, as verify reads it: both read the file with the one reader."""
     case = _case(tmp_path, monkeypatch)  # VALUE only in the IOC record
     path = case / "iocs.json"
     path.write_text(path.read_text() + " " * (17 << 20))
-    ended, saved, err, out = _save_out(case, route)
-    assert ended == "SystemExit(1)" and saved is None, (ended, err)
-    why = "couldn't be read (larger than the 16 MiB case document limit)"
-    assert f"iocs.json {why}" in out.splitlines(), out
-    assert "Report not saved: iocs.json can't be read." in err, err
+    ended, saved, err = _save(case, route)
+    assert "not saved" not in err.lower() and "Traceback" not in err, err
+    assert ended == "returned" and saved is not None, (ended, err)
 
 
 @pytest.mark.parametrize("route", ("ioc", "findings", "timeline"))

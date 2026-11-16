@@ -25,10 +25,9 @@ import time
 from pathlib import Path
 
 from vhir_cli.case_io import (
-    LINE_CAP,
     CaseError,
     CaseFileNotRegular,
-    open_log_unbudgeted,
+    open_log,
 )
 from vhir_cli.display import one_line
 from vhir_cli.provenance_view import roots_of
@@ -41,6 +40,9 @@ DOC_TIMEOUT = 5
 UNREACHABLE = "couldn't verify: OpenSearch unreachable"
 NOT_YET_VERIFIED = "not yet verified (hashing)"
 HASH_FAILED = "not verified: hashing failed: "
+# An audit line longer than this is skimmed (`_Skim`), not parsed whole: a
+# parse costs up to about 34 times the line. How a line is read, not a limit.
+SKIM_FROM = 16 << 20
 # How long a failed background hash is reported (as long as a portal
 # plan's challenge lives, so its commit sees the same result) before the
 # next approval asks for the hash again
@@ -151,7 +153,7 @@ class PlanTrail:
     that needs it reads it for the ids all of `items` ((item, kind) pairs)
     chain, and each later one uses that read. Lines are counted per id as a
     read for that item alone counts them, with one difference: a line over
-    LINE_CAP has its values read as far as the plan's longest id needs, so
+    SKIM_FROM has its values read as far as the plan's longest id needs, so
     one invalid only past the item's own limit is skipped, as json.loads
     skips it. An item whose ids weren't among them (it was edited since)
     gets a read of its own; one with no ids never reads the trail, as
@@ -389,7 +391,7 @@ def audit_lines(case_dir, wanted=None) -> dict[str, tuple[str, int]]:
     with the SHA-256 of the first line that carries it, as written, without
     its newline, and how many lines carry it: an id on a million lines holds
     one hash and a count, not a million hashes. Lines are counted as json.loads counts them, line by line; a line
-    longer than LINE_CAP is never held, and is read by `_Skim` instead. A
+    longer than SKIM_FROM is never held, and is read by `_Skim` instead. A
     folder that can't be listed, or a log that can't be read as a regular
     file, raises AuditUnreadable naming each one; a missing folder is an empty
     trail. A log's size is not capped: memory doesn't grow with it."""
@@ -403,11 +405,11 @@ def audit_lines(case_dir, wanted=None) -> dict[str, tuple[str, int]]:
         names, unread = [], [f"audit/ ({e.strerror or type(e).__name__})"]
     # the longest an id's string can be as written: a character escaped as a
     # surrogate pair (😀) is 12
-    cap = 12 * max(map(len, wanted), default=0) if wanted is not None else LINE_CAP
+    cap = 12 * max(map(len, wanted), default=0) if wanted is not None else SKIM_FROM
     by_id: dict[str, tuple[str, int]] = {}
     for name in names:
         try:
-            with open_log_unbudgeted(audit / name) as f:
+            with open_log(audit / name) as f:
                 for audit_id, sha in _scan(f, cap):
                     if wanted is None or audit_id in wanted:
                         first, n = by_id.get(audit_id, (sha, 0))
@@ -428,7 +430,7 @@ _SEP = re.compile(rb"\r\n|\r|\n")  # where bytes.splitlines() splits
 def _scan(f, cap: int):
     """(audit_id, SHA-256) of each line of `f` that json.loads reads as an
     object whose audit_id is a string, the lines split as bytes.splitlines()
-    splits the whole file. A line within LINE_CAP is parsed whole; a longer
+    splits the whole file. A line within SKIM_FROM is parsed whole; a longer
     one is fed to `_Skim` as it is read."""
     part = bytearray()
     skim: _Skim | None = None
@@ -456,13 +458,13 @@ def _scan(f, cap: int):
 
 def _add(part: bytearray, skim, piece: bytes, cap: int):
     """`piece` added to the line being read: held while the line is within
-    LINE_CAP, else fed to its `_Skim` (made, from what was held, when the line
-    passes the cap)."""
+    SKIM_FROM, else fed to its `_Skim` (made, from what was held, when the line
+    grows past it)."""
     if skim is not None:
         skim.feed(piece)
         return skim
     part += piece
-    if len(part) <= LINE_CAP:
+    if len(part) <= SKIM_FROM:
         return None
     skim = _Skim(cap)
     for i in range(0, len(part), _CHUNK):

@@ -1,9 +1,8 @@
 """The case logs that feed an action are read through one reader: a regular
-file only, under its own name, line by line, each line and the whole file
-capped. A FIFO no one writes to, a device, a folder, a symbolic or second
-name, an over-long line and an over-large file are each refused by name, in
-bounded memory and time, with the one class's text; lines split as text mode
-splits them, so every reader sees the same records."""
+file only, under its own name, line by line, a line of any length read whole.
+A FIFO no one writes to, a device, a folder and a symbolic or second name are
+each refused by name, in bounded time, with the one class's text; lines split
+as text mode splits them, so every reader sees the same records."""
 
 from __future__ import annotations
 
@@ -11,19 +10,13 @@ import contextlib
 import io
 import json
 import os
-import resource
 from datetime import datetime, timezone
 
 import pytest
 
 import vhir_cli.case_io as case_io
 from vhir_cli import approval_checks
-from vhir_cli.case_io import (
-    FILE_BUDGET,
-    LINE_CAP,
-    CaseFileNotRegular,
-    CaseFileTooLarge,
-)
+from vhir_cli.case_io import CaseFileNotRegular
 from vhir_cli.commands import audit_cmd, evidence, execute
 
 from .test_approval_checks import _within
@@ -31,16 +24,11 @@ from .test_approval_checks import _within
 POSIX = pytest.mark.skipif(
     not hasattr(os, "mkfifo") or os.geteuid() == 0, reason="posix"
 )
+MIB_16 = 16 << 20  # the longest line a case log could once hold
 BACK = "{back}"  # an audit log is left as it is; other case files are put back
-KEEP = "{keep}"
 BACKS = {
     "approval records": "Put the case's own file back, then try again.",
     "audit entries": f"{case_io.KEPT} {case_io.REPORT}",
-}
-KEEPS = {
-    "approval records": "It holds the case's approval records: keep a copy of it "
-    "before you move it out of the case, then try again.",
-    "audit entries": "It holds the case's audit entries. " + case_io.KEPT,
 }
 TEXT = {  # input -> (why, the refusal's text)
     "fifo": ("not a regular file",
@@ -52,10 +40,6 @@ TEXT = {  # input -> (why, the refusal's text)
                 "log is read only under its own name. " + BACK),
     "hardlink": ("another name links to it",
                  "{p} has another name linking to it, so it wasn't read. " + BACK),
-    "over": ("line 1 is longer than 16 MiB",
-             "{p} line 1 is longer than 16 MiB, so the file wasn't read past it. " + KEEP),
-    "budget": ("larger than 256 MiB",
-               "{p} is larger than 256 MiB, so it wasn't read. " + KEEP),
 }  # fmt: skip
 TODAY = datetime.now(timezone.utc).strftime("%Y%m%d")
 
@@ -112,11 +96,6 @@ def _plant(case, path, bad):
         path.symlink_to(case.parent / "other" / "audit" / "wintools-mcp.jsonl")
     elif bad == "hardlink":  # the registered evidence
         os.link(case / "evidence" / "disk.txt", path)
-    elif bad == "over":
-        path.write_bytes(b'{"pad": "' + b"A" * (LINE_CAP + 64) + b'"}\n')
-    elif bad == "budget":  # sparse: refused by its size before any read
-        with open(path, "wb") as f:
-            f.truncate(FILE_BUDGET + 1)
 
 
 @POSIX
@@ -130,12 +109,9 @@ def test_each_reader_refuses_by_name_with_the_one_class(case, reader, bad):
     assert status == "ok"
     held = "approval records" if path.name == "approvals.jsonl" else "audit entries"
     why = TEXT[bad][0]
-    text = TEXT[bad][1].format(p=path, back=BACKS[held], keep=KEEPS[held])
-    cls = CaseFileTooLarge if bad in ("over", "budget") else CaseFileNotRegular
+    text = TEXT[bad][1].format(p=path, back=BACKS[held])
     if reader in ("vhir exec", "load_approval_log"):
-        assert got == f"raised {cls.__name__}: {text}"
-    elif reader == "approval checks" and bad in ("over", "budget"):
-        assert got == ["sift-tester-001"]  # a long line is read, not refused
+        assert got == f"raised CaseFileNotRegular: {text}"
     elif reader == "approval checks":
         assert got.startswith(
             f"raised AuditUnreadable: The approval checks couldn't read {rel} ({why})"
@@ -216,24 +192,6 @@ def test_verify_never_waits_on_a_case_file(case, name, swap, monkeypatch):
 
 
 @POSIX
-@pytest.mark.parametrize("reader", sorted(READERS))
-def test_a_long_line_is_never_held_whole(case, reader):
-    """A 64 MiB line costs at most the cap twice over, not the line."""
-    rel, call = READERS[reader]
-    path = case / rel
-    with open(path, "wb") as f:
-        f.write(b'{"audit_id": "x", "pad": "' + b"A" * (64 << 20) + b'"}\n')
-
-    def run():
-        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        _quiet(lambda: call(case))
-        return (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) // 1024
-
-    status, grew_mib = _within(run, timeout=20.0)
-    assert status == "ok" and grew_mib <= 2 * (LINE_CAP >> 20) + 8, grew_mib
-
-
-@POSIX
 def test_lines_split_alike_in_every_reader(case):
     """A log whose lines end in a lone CR is three records to every reader,
     and vhir exec's next id follows them."""
@@ -261,38 +219,22 @@ def test_lines_split_alike_in_every_reader(case):
     assert next_id == f"cliexec-tester-{TODAY}-004"
 
 
-def test_a_line_at_the_cap_is_read_and_one_over_is_refused(tmp_path):
+def test_a_line_over_16_mib_is_read_whole(tmp_path):
     at = tmp_path / "at.jsonl"
-    at.write_bytes(b"A" * LINE_CAP + b"\n" + b"{}\n")
-    assert [len(x) for x in case_io.case_lines(at)] == [LINE_CAP + 1, 3]
+    at.write_bytes(b"A" * MIB_16 + b"\n" + b"{}\n")
+    assert [len(x) for x in case_io.case_lines(at)] == [MIB_16 + 1, 3]
     over = tmp_path / "over.jsonl"
-    over.write_bytes(b"{}\n" + b"A" * (LINE_CAP + 1))  # the last line, no newline
-    lines = case_io.case_lines(over)
-    assert next(lines) == b"{}\n"
-    with pytest.raises(CaseFileTooLarge) as e:
-        next(lines)
-    assert e.value.line == 2  # never split into records
-
-
-def test_a_file_that_grows_past_the_budget_while_read_is_refused(tmp_path, monkeypatch):
-    log = tmp_path / "grown.jsonl"
-    log.write_bytes(b"{}\n" * 10)
-    lines = case_io._capped_lines(open(log, "rb"), log)  # opened while it was small
-    monkeypatch.setattr(case_io, "FILE_BUDGET", 12)
-    with pytest.raises(CaseFileTooLarge) as e:
-        list(lines)
-    assert e.value.line is None
+    over.write_bytes(b"{}\n" + b"A" * (MIB_16 + 1))  # the last line, no newline
+    assert [len(x) for x in case_io.case_lines(over)] == [3, MIB_16 + 1]
 
 
 def test_one_class_for_a_case_file_that_isnt_regular():
     assert not hasattr(case_io, "NotRegularFile")
     assert issubclass(CaseFileNotRegular, OSError)
     assert issubclass(CaseFileNotRegular, case_io.CaseError)
-    assert issubclass(CaseFileTooLarge, OSError)
-    assert issubclass(CaseFileTooLarge, case_io.CaseError)
 
 
-# --- case documents: read whole, within DOC_CAP ------------------------------
+# --- case documents: read whole ---------------------------------------------
 
 _ITEMS_IN_256MIB = """
 import resource, sys
@@ -318,25 +260,16 @@ def test_a_document_padded_with_newlines_is_read_as_one_document(case):
     assert p.returncode == 0 and p.stdout.strip() == "[]", (p.stdout, p.stderr[-500:])
 
 
-def test_a_document_over_the_cap_is_refused_by_name(case):
-    """A document is refused by its size, with the document's text, not as a
-    long line of a log."""
+def test_a_document_over_16_mib_is_read(case):
+    """A document over 16 MiB is read whole, never refused by its size."""
     from vhir_cli import ledger_verify
 
     path = case / "findings.json"
     path.write_bytes(b"[" + b" " * ((16 << 20) - 1) + b"]")  # 16 MiB + 1 bytes
-    text = (
-        f"{path} is larger than 16 MiB, so it wasn't read. It holds the case's findings: "
-        "keep a copy of it before you move it out of the case, then try again."
-    )
     result = ledger_verify.Result(case_id="c", case_id_source="test")
     ledger_verify._items(case, result)
-    assert result.failures == [
-        ("CASE_FILE_UNREADABLE", f"findings.json couldn't be read ({text})")
-    ]
-    with pytest.raises(CaseFileTooLarge) as e:
-        case_io.read_case_document(path)
-    assert str(e.value) == text
+    assert result.failures == []
+    assert len(case_io.read_case_document(path)) == (16 << 20) + 1
 
 
 def test_a_large_real_shaped_document_is_read(case):
@@ -348,24 +281,17 @@ def test_a_large_real_shaped_document_is_read(case):
            "artifacts": [{"source": "s" * 80, "content": "c" * 1200}]}  # fmt: skip
     findings = [{**one, "id": one["id"].format(n=n)} for n in range(1, 1400)]
     data = json.dumps(findings, indent=2).encode()
-    assert (
-        5 << 20 < len(data) < 16 << 20
-    )  # under the cap: a control, the same before the cap
+    assert 5 << 20 < len(data) < 16 << 20  # under 16 MiB: read before the change too
     (case / "findings.json").write_bytes(data)
     result = ledger_verify.Result(case_id="c", case_id_source="test")
     items = ledger_verify._items(case, result)
     assert not result.failures and len(items) == 1399
 
 
-def test_the_cap_counts_a_lines_content_not_its_crlf(tmp_path):
+def test_a_long_crlf_line_is_read_whole(tmp_path):
     at = tmp_path / "crlf.jsonl"
-    at.write_bytes(b"A" * LINE_CAP + b"\r\n" + b"{}\r\n")
-    assert [len(x) for x in case_io.case_lines(at)] == [LINE_CAP + 2, 4]
-    over = tmp_path / "over.jsonl"
-    over.write_bytes(b"A" * (LINE_CAP + 1) + b"\r\n")
-    with pytest.raises(CaseFileTooLarge) as e:
-        list(case_io.case_lines(over))
-    assert e.value.line == 1
+    at.write_bytes(b"A" * (MIB_16 + 1) + b"\r\n" + b"{}\r\n")
+    assert [len(x) for x in case_io.case_lines(at)] == [MIB_16 + 3, 4]
 
 
 @POSIX
@@ -374,8 +300,8 @@ def test_a_wintools_log_of_crlf_lines_reads_as_its_lf_twin(tmp_path):
     end in CRLF. Short lines and one entry of exactly 16 MiB read as the same
     log with LF endings does, in the readers that read it."""
     head = b'{"audit_id": "wintools-tester-20261012-001", "tool": "run_windows_command", "pad": "'
-    big = head + b"A" * (LINE_CAP - len(head) - 2) + b'"}'
-    assert len(big) == LINE_CAP
+    big = head + b"A" * (MIB_16 - len(head) - 2) + b'"}'
+    assert len(big) == MIB_16
     lines = [json.dumps({"audit_id": f"wintools-tester-20261012-{n:03d}", "ts": "2026-10-12"}).encode()
              for n in range(2, 200)] + [big]  # fmt: skip
     read = {}
@@ -399,7 +325,7 @@ def test_a_wintools_log_of_crlf_lines_reads_as_its_lf_twin(tmp_path):
     )
 
 
-# --- the 0.6 sources: read whole within the budget, never joined line by line -
+# --- the 0.6 sources: read whole, never joined line by line -----------------
 
 _LEGACY_PEAK = """
 import json, sys

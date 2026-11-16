@@ -1,7 +1,7 @@
 """A page of the audit trail (`vhir audit log`, `vhir review --audit`) read
 from each log's tail is read as the full reader reads the whole log: opened
 only as a regular file under its own name, split at \\n, \\r\\n and a lone \\r,
-each line within LINE_CAP. What the tail can't read that way is read whole by
+each line of any length. What the tail can't read that way is read whole by
 the full reader, so a page is refused, or shown, exactly as a full read is."""
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from argparse import Namespace
 
 import pytest
 
-from vhir_cli.case_io import LINE_CAP
 from vhir_cli.commands import audit_cmd
 from vhir_cli.commands.review import cmd_review
 
 from .test_approval_checks import _within
 
+MIB_16 = 16 << 20  # the longest line a case log could once hold
 POSIX = pytest.mark.skipif(
     not hasattr(os, "mkfifo") or os.geteuid() == 0, reason="posix"
 )
@@ -84,19 +84,16 @@ def _read_measured(case, limit):
 @POSIX
 @pytest.mark.parametrize("over", [0, 1])
 def test_a_long_line_without_a_newline_reads_on_a_page_as_in_a_full_read(case, over):
-    """The log's last line has no \\n and is LINE_CAP bytes long, or one more:
-    at the cap it's read (a corrupt line), past it the log is refused at that
-    line, by name, on a page as in a full read, and a page costs no more."""
+    """The log's last line has no \\n and is 16 MiB long, or one more: either
+    way it's read (a corrupt line), never refused, on a page as in a full
+    read, and a page costs no more."""
     with open(case / "audit" / "sift-mcp.jsonl", "ab") as f:
-        f.write(b"x" * (LINE_CAP + over))
+        f.write(b"x" * (MIB_16 + over))
     page, page_mib = _read_measured(case, 20)
     full, full_mib = _read_measured(case, None)
     assert page == full
-    if over:
-        assert page[2] == ["audit/sift-mcp.jsonl (line 3001 is longer than 16 MiB)"]
-        assert page[0][-1] == "sift-tester-002999"  # read before the line
-    else:
-        assert page[2] == [] and "1 corrupt JSONL line(s) skipped" in page[1]
+    assert page[2] == [] and "1 corrupt JSONL line(s) skipped" in page[1]
+    assert page[0][-1] == "sift-tester-002999"
     assert page_mib <= full_mib + 8, (page_mib, full_mib)
 
 
@@ -175,14 +172,12 @@ def test_a_line_that_isnt_an_object_ends_a_page_as_it_ends_a_full_read(case, lin
 
 
 @POSIX
-def test_review_audit_shows_the_entries_before_an_over_cap_line_and_warns(
-    case, monkeypatch
-):
-    """A line over LINE_CAP in a log's tail: `vhir review --audit` shows the
-    entries read before it and names the log, as `vhir audit log` does."""
+def test_review_audit_reads_a_line_over_16_mib_and_refuses_nothing(case, monkeypatch):
+    """A line over 16 MiB in a log's tail: `vhir review --audit` shows the
+    entries and names no log, as `vhir audit log` does."""
     monkeypatch.setattr("vhir_cli.commands.review.get_case_dir", lambda *a: case)
     with open(case / "audit" / "sift-mcp.jsonl", "ab") as f:
-        f.write(b"x" * (LINE_CAP + 1) + b"\n")
+        f.write(b"x" * (MIB_16 + 1) + b"\n")
 
     def run():
         err, out = io.StringIO(), io.StringIO()
@@ -191,7 +186,7 @@ def test_review_audit_shows_the_entries_before_an_over_cap_line_and_warns(
         return ("sift-tester-002999" in out.getvalue(), "No audit entries" in out.getvalue(),
                 "line 3001 is longer than 16 MiB" in err.getvalue())  # fmt: skip
 
-    assert _within(run, timeout=60.0) == ("ok", (True, False, True))
+    assert _within(run, timeout=60.0) == ("ok", (True, False, False))
 
 
 def test_a_filtered_page_stops_at_a_ts_that_isnt_text_as_a_full_read_does(case):

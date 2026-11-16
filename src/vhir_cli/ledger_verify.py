@@ -365,7 +365,7 @@ def _items(case_dir: Path, result: Result) -> dict[str, tuple[str, dict]]:
         path = case_dir / name
         if not path.exists():
             continue
-        try:  # a regular file only, read whole as one document, within DOC_CAP
+        try:  # a regular file only, read whole as one document
             text = read_case_document(path).decode("utf-8")
             data = json.loads(text) if text.strip() else []  # as signing reads it
             if not isinstance(data, list):
@@ -646,8 +646,8 @@ def _legacy(
     ]
     from vhir_cli.case_io import read_case_log_whole
 
-    # Each source whole (within FILE_BUDGET), so a frozen prefix is selected as
-    # bytes first and only its own lines are parsed, never lines past its end
+    # Each source whole, so a frozen prefix is selected as bytes first and only
+    # its own lines are parsed, never lines past its end
     sources: list[bytes] = []
     for label, path in paths:
         try:  # byte for byte, as read_bytes gave it; a FIFO is never waited on

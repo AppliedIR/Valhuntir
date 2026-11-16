@@ -1,8 +1,8 @@
 """The approval checks' read of the audit trail: each line is counted as
-json.loads counts it, and a line longer than LINE_CAP is read in pieces,
+json.loads counts it, and a line longer than SKIM_FROM is read in pieces,
 never held, never refused. A log's size is not capped for this read.
 
-Each case holds a log with one line past the cap, as a large hash job's
+Each case holds a log with one line past SKIM_FROM, as a large hash job's
 file-identity entry was written: the shape that refused an approval.
 """
 
@@ -19,11 +19,12 @@ from pathlib import Path
 import pytest
 
 from vhir_cli import approval_checks, case_io
-from vhir_cli.case_io import FILE_BUDGET, LINE_CAP, CaseFileTooLarge
+from vhir_cli.approval_checks import SKIM_FROM
 from vhir_cli.commands import execute
 
 CHUNK = 1 << 20  # the scan reads this much at a time
-PAD = LINE_CAP + 3 * CHUNK + 12345  # past the cap, off the chunk boundaries
+OVER_256_MIB = (256 << 20) + 1  # past the most a case log could once hold
+PAD = SKIM_FROM + 3 * CHUNK + 12345  # past SKIM_FROM, off the chunk boundaries
 A_ID, B_ID = "sift-analyst1-001", "sift-analyst1-002"
 G_ID = "fileidentity-analyst1-20261015-001"
 
@@ -41,7 +42,7 @@ A, B = line(A_ID), line(B_ID)
 
 def giant(head: bytes = b'{"audit_id": "' + G_ID.encode() + b'", ', pad: int = PAD,
           tail: bytes = b"}") -> bytes:  # fmt: skip
-    """`head`, a "pad" string past the cap, then `tail`."""
+    """`head`, a "pad" string past SKIM_FROM, then `tail`."""
     return head + b'"pad": "' + b"A" * pad + b'"' + tail
 
 
@@ -95,7 +96,7 @@ def test_the_portals_signing_checks_read_past_a_giant_line(case):
 def test_the_giant_line_itself_can_be_chained_and_a_change_is_seen(case):
     assert check(case, (G_ID, giant())) == ok(G_ID)
     changed = bytearray(giant())
-    changed[LINE_CAP + 5] = ord("B")  # one byte, past the cap
+    changed[SKIM_FROM + 5] = ord("B")  # one byte, past SKIM_FROM
     fi(case, bytes(changed) + b"\n")
     assert check(case, (G_ID, giant())) == [
         ("failed", G_ID, "the audit line changed since the chain was resolved")
@@ -107,7 +108,7 @@ def test_a_duplicate_planted_in_a_giant_line_is_counted(case):
     assert check(case, (A_ID, A)) == DUP_A
 
 
-@pytest.mark.parametrize("n", [LINE_CAP - 1, LINE_CAP, LINE_CAP + 1])
+@pytest.mark.parametrize("n", [SKIM_FROM - 1, SKIM_FROM, SKIM_FROM + 1])
 def test_lines_either_side_of_the_cap_read_alike(case, n):
     head = b'{"audit_id": "' + G_ID.encode() + b'", '
     g = giant(head, pad=n - len(giant(head, pad=0)))
@@ -299,7 +300,7 @@ def test_a_giant_line_json_loads_refuses_is_skipped(case, shape):
 
 
 def test_an_oom_cut_line_with_its_own_id_and_a_chain_citing_another_log(case):
-    fi(case, giant()[: LINE_CAP + 777])  # the writer died mid-line
+    fi(case, giant()[: SKIM_FROM + 777])  # the writer died mid-line
     assert check(case, (B_ID, B)) == ok(B_ID)
 
 
@@ -307,7 +308,7 @@ VALID = {
     "whitespace around it": b" \t" + giant(b'{ "audit_id" : "' + A_ID.encode() + b'" , ') + b" \t",
     "a UTF-8 BOM": b"\xef\xbb\xbf" + giant(b'{"audit_id": "' + A_ID.encode() + b'", '),
     "UTF-16-LE": giant(b'{"audit_id": "' + A_ID.encode() + b'", ').decode().encode("utf-16-le"),
-    "UTF-32-BE": giant(b'{"audit_id": "' + A_ID.encode() + b'", ', pad=LINE_CAP // 4).decode().encode("utf-32-be"),
+    "UTF-32-BE": giant(b'{"audit_id": "' + A_ID.encode() + b'", ', pad=SKIM_FROM // 4).decode().encode("utf-32-be"),
     "deep nesting before it": giant(b'{"x": ' + b"[" * 200_000 + b"]" * 200_000 + b', "audit_id": "' + A_ID.encode() + b'", '),
     "a pad of escapes": b'{"audit_id": "' + A_ID.encode() + b'", "pad": "' + b'\\"\\\\' * (PAD // 4) + b'"}',
 }  # fmt: skip
@@ -332,7 +333,7 @@ def test_a_short_line_too_deep_for_json_loads_is_counted_on_every_version(case):
         + A_ID.encode()
         + b'"}'
     )
-    assert len(deep) < LINE_CAP
+    assert len(deep) < SKIM_FROM
     with pytest.raises(RecursionError):
         json.loads(deep)
     fi(case, deep + b"\n")
@@ -419,7 +420,7 @@ def test_strings_below_the_top_level_are_stepped_over_in_a_giant_line(case):
     """Brackets, quotes and audit_id keys inside nested values don't count."""
     g = (b'{"files": [' + UNIT * (PAD // len(UNIT) + 1) + b'{}], "audit_id": "'
          + A_ID.encode() + b'"}')  # fmt: skip
-    assert len(g) > LINE_CAP and json.loads(g)["audit_id"] == A_ID
+    assert len(g) > SKIM_FROM and json.loads(g)["audit_id"] == A_ID
     fi(case, g + b"\n")
     assert check(case, (A_ID, A), (B_ID, B)) == DUP_A + ok(B_ID)
 
@@ -449,15 +450,15 @@ def _peak(case, chain):
 
 
 @pytest.mark.skipif(not Path("/proc/self/status").exists(), reason="VmHWM")
-def test_a_log_over_the_file_budget_is_read_in_bounded_memory(case, tmp_path):
+def test_a_log_over_256_mib_is_read_in_bounded_memory(case, tmp_path):
     """A 257 MiB log of one line, chained: ok, within 100 MiB of a small case."""
     small = tmp_path / "small"
     (small / "audit").mkdir(parents=True)
     (small / "audit" / "sift-mcp.jsonl").write_bytes(A + b"\n" + B + b"\n")
     head = b'{"audit_id": "' + G_ID.encode() + b'", '
-    g = giant(head, pad=FILE_BUDGET + CHUNK)
+    g = giant(head, pad=OVER_256_MIB + CHUNK)
     fi(case, g + b"\n")
-    assert (case / "audit" / "file-identity.jsonl").stat().st_size > FILE_BUDGET
+    assert (case / "audit" / "file-identity.jsonl").stat().st_size >= OVER_256_MIB
     chain = [
         {"audit_id": G_ID, "entry_sha256": sha(g)},
         {"audit_id": A_ID, "entry_sha256": sha(A)},
@@ -489,12 +490,14 @@ def test_one_id_on_many_lines_is_counted_in_flat_memory(tmp_path):
     assert hwms[1] - hwms[0] < 16 << 10, hwms  # KiB
 
 
-def test_other_readers_keep_the_file_budget(case):
+def test_other_readers_open_a_log_over_256_mib(case):
+    """The log open the other readers share refuses no size: it is opened and
+    read, not refused (the checks' scan opens it the same way)."""
     (case / "audit" / "file-identity.jsonl").unlink()
     with open(case / "audit" / "file-identity.jsonl", "wb") as f:
-        f.truncate(FILE_BUDGET + 1)
-    with pytest.raises(CaseFileTooLarge):
-        list(case_io.case_lines(case / "audit" / "file-identity.jsonl"))
+        f.truncate(OVER_256_MIB)
+    with case_io.open_log(case / "audit" / "file-identity.jsonl") as f:
+        assert f.read(4) == b"\0" * 4
     assert check(case, (A_ID, A)) == ok(A_ID)
 
 
@@ -512,15 +515,12 @@ def _audit_refusals(case) -> dict[str, str]:
         f"not regular: {w}": str(case_io._not_regular(log, w))
         for w in case_io._NOT_REGULAR
     }
-    out["too large: line"] = str(CaseFileTooLarge(log, line=3))
-    out["too large: file"] = str(CaseFileTooLarge(log))
     out["approval: not regular"] = str(approval_checks.AuditUnreadable(
         ["audit/x.jsonl (not a regular file)", "audit/y.jsonl (a symbolic link)"]))  # fmt: skip
     out["approval: permissions"] = str(approval_checks.AuditUnreadable(
         ["audit/x.jsonl (Permission denied)", "audit/ (Permission denied)"]))  # fmt: skip
     for w in case_io._NOT_REGULAR:
         out[f"exec: {w}"] = execute._advice(case_io._not_regular(log, w))
-    out["exec: too large"] = execute._advice(CaseFileTooLarge(log, line=3))
     out["exec: link"] = execute._advice(OSError(errno.ELOOP, "Too many levels"))
     out["exec: second name"] = execute._advice(OSError(errno.EMLINK, "Too many links"))
     out["exec: permissions"] = execute._advice(
@@ -531,7 +531,7 @@ def _audit_refusals(case) -> dict[str, str]:
 
 def test_no_refusal_over_an_audit_log_says_to_change_it(case):
     got = _audit_refusals(case)
-    assert len(got) == 2 * len(case_io._NOT_REGULAR) + 8
+    assert len(got) == 2 * len(case_io._NOT_REGULAR) + 5
     said = {k: _TAMPER.findall(v) for k, v in got.items()}
     assert {k: v for k, v in said.items() if v} == {}, got
     for k, text in got.items():
@@ -558,6 +558,3 @@ def test_other_case_files_keep_their_advice(case):
         assert str(case_io._not_regular(case / name)).endswith(
             "Put the case's own file back, then try again."
         )
-    assert "keep a copy of it before you move it out of the case" in str(
-        CaseFileTooLarge(case / "findings.json")
-    )

@@ -92,53 +92,11 @@ def case_file_there(path: Path) -> bool:
     return True
 
 
-# The longest line, and the most bytes, one case log may hold. A line is
-# parsed whole, and a parse costs up to about 34 times the line.
-LINE_CAP = 16 << 20
-FILE_BUDGET = 256 << 20
-DOC_CAP = 16 << 20  # a case document (findings.json, keys.json, ...), read whole
-_HOLDS = {  # a case file's name -> what it holds, as the refusal names it
-    "approvals.jsonl": "approval records",
-    "findings.json": "findings",
-    "timeline.json": "timeline events",
-    "iocs.json": "IOCs",
-    "keys.json": "signing-key records",
-    "verification.jsonl": "0.6 approval records",
-}
-
-
-def holds(path) -> str:
-    """What a case file holds, in words: an audit/ log holds audit entries."""
-    p = Path(path)
-    if p.name in _HOLDS:
-        return _HOLDS[p.name]
-    return "audit entries" if p.parent.name == "audit" else "case records"
-
-
-class CaseFileTooLarge(CaseError, OSError):
-    """A case log with a line longer than LINE_CAP, or more than FILE_BUDGET
-    bytes: refused by name, never held whole. `why` says which; `line` is
-    the line's number, or None for the whole file."""
-
-    def __init__(self, path, line: int | None = None, limit: int | None = None):
-        limit = FILE_BUDGET if limit is None else limit
-        self.why = (f"line {line} is longer than {LINE_CAP >> 20} MiB" if line
-                    else f"larger than {limit >> 20} MiB")  # fmt: skip
-        what = (f"{path} line {line} is longer than {LINE_CAP >> 20} MiB, so the file "
-                "wasn't read past it." if line else
-                f"{path} is larger than {limit >> 20} MiB, so it wasn't read.")  # fmt: skip
-        step = (f"It holds the case's audit entries. {KEPT}" if is_audit_log(path) else
-                f"It holds the case's {holds(path)}: keep a copy of it before you move "
-                "it out of the case, then try again.")  # fmt: skip
-        super().__init__(f"{what} {step}")
-        self.line = line
-
-
-def _open_regular_fd(path, log: bool = False, budget: int | None = None) -> int:
+def _open_regular_fd(path, log: bool = False) -> int:
     """Opened non-blocking and checked on the open descriptor before any read,
     so a FIFO (or a link to one) never blocks and a device is never read. A
     log (`log`) is also opened only under its own name (no symbolic link, no
-    second name) and only while it is within FILE_BUDGET."""
+    second name)."""
     flags = os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if log else 0)
     try:
         fd = os.open(os.fspath(path), flags)
@@ -154,9 +112,6 @@ def _open_regular_fd(path, log: bool = False, budget: int | None = None) -> int:
             raise _not_regular(path)
         if log and st.st_nlink != 1:
             raise _not_regular(path, "another name links to it")
-        budget = FILE_BUDGET if budget is None else budget
-        if log and st.st_size > budget:
-            raise CaseFileTooLarge(path, limit=budget)
     except BaseException:
         os.close(fd)
         raise
@@ -169,43 +124,39 @@ def read_regular(path) -> bytes:
         return f.read()
 
 
-def open_log_unbudgeted(path):
+def open_log(path):
     """A case log opened as `case_lines` opens it (a regular file, under its
-    own name, with no second name), but with no FILE_BUDGET: only for a reader
-    whose memory doesn't grow with the log (the approval checks' scan)."""
-    return os.fdopen(_open_regular_fd(path, log=True, budget=sys.maxsize), "rb")
+    own name, with no second name), for a reader that reads it its own way
+    (the approval checks' scan)."""
+    return os.fdopen(_open_regular_fd(path, log=True), "rb")
 
 
 def case_lines(path):
     """Each line of a case log, as bytes with its newline; the file is checked
-    now (`_open_regular_fd`). A line longer than LINE_CAP, or more than
-    FILE_BUDGET bytes in all, raises CaseFileTooLarge naming it: a line is
-    never held whole, and never split into records."""
-    return _capped_lines(os.fdopen(_open_regular_fd(path, log=True), "rb"), path)
+    now (`_open_regular_fd`). A line of any length is read whole, never split
+    into records."""
+    return _lines(open_log(path))
 
 
-def _read_whole(path, limit: int) -> bytes:
-    """A case file's bytes, checked as a log is and read in one read, up to
-    `limit` by its size when opened and as it is read; never split into lines."""
-    with os.fdopen(_open_regular_fd(path, log=True, budget=limit), "rb") as f:
-        data = f.read(limit + 1)
-    if len(data) > limit:  # it grew while read
-        raise CaseFileTooLarge(path, limit=limit)
-    return data
+def _read_whole(path) -> bytes:
+    """A case file's bytes, checked as a log is and read whole in one read
+    whatever its size; never split into lines."""
+    with open_log(path) as f:
+        return f.read()
 
 
 def read_case_document(path) -> bytes:
     """A case document's bytes (findings.json, timeline.json, iocs.json,
-    keys.json), read whole up to DOC_CAP."""
-    return _read_whole(path, DOC_CAP)
+    keys.json), read whole."""
+    return _read_whole(path)
 
 
 def read_case_log_whole(path) -> bytes:
-    """A case log's bytes, read whole up to FILE_BUDGET: only for a reader that
-    must select a prefix of the bytes before it splits them into lines (the
-    0.6 approval sources, whose prefix a genesis froze). Any other log is read
-    with `case_lines`, a line at a time."""
-    return _read_whole(path, FILE_BUDGET)
+    """A case log's bytes, read whole: only for a reader that must select a
+    prefix of the bytes before it splits them into lines (the 0.6 approval
+    sources, whose prefix a genesis froze). Any other log is read with
+    `case_lines`, a line at a time."""
+    return _read_whole(path)
 
 
 # The record files a report reads, in the order its header names them, and
@@ -223,7 +174,6 @@ _COULDNT = {
     "a folder": "it is a folder",
     "a symbolic link": "it is a symbolic link",
     "another name links to it": "another name links to it",
-    "too large": f"larger than the {DOC_CAP >> 20} MiB case document limit",
     "permission denied": "permission denied",
     "not text": "not UTF-8 text",
     "not json": "not valid JSON",
@@ -236,8 +186,6 @@ def refusal_kind(e: BaseException) -> str:
     the OS's own words for any other error): never parsed from its text."""
     if isinstance(e, CaseFileNotRegular):
         return e.why
-    if isinstance(e, CaseFileTooLarge):
-        return "too large"
     if isinstance(e, PermissionError):
         return "permission denied"
     if isinstance(e, UnicodeDecodeError):
@@ -336,19 +284,9 @@ def not_saved_line(paths) -> str:
     return f"Report not saved: {listed} can't be read."
 
 
-def _capped_lines(f, path):
+def _lines(f):
     with f:
-        n = total = 0
-        while raw := f.readline(LINE_CAP + 2):
-            n += 1
-            total += len(raw)
-            # the cap counts a line's content, not its \n or \r\n
-            end = 2 if raw.endswith(b"\r\n") else 1 if raw.endswith(b"\n") else 0
-            if len(raw) - end > LINE_CAP:
-                raise CaseFileTooLarge(path, n)
-            if total > FILE_BUDGET:  # it grew while read
-                raise CaseFileTooLarge(path)
-            yield raw
+        yield from f
 
 
 class open_regular:  # noqa: N801 - used as open() is
@@ -1186,7 +1124,7 @@ def load_audit_index(case_dir: Path, wanted: set[str] | None = None) -> dict[str
                             index[eid] = entry
                     except json.JSONDecodeError:
                         continue
-        except (CaseFileNotRegular, CaseFileTooLarge) as e:
+        except CaseFileNotRegular as e:
             from vhir_cli.display import one_line  # a file name is the case's data
 
             print(
@@ -1216,13 +1154,11 @@ class _ReadWhole(Exception):
 
 def _iter_lines_reversed(fh, block: int = _TAIL_BLOCK):
     """Yield the raw lines of an open binary file from last to first, split at
-    \\n as `case_lines` splits them (without the \\n). A line longer than
-    LINE_CAP raises _ReadWhole once its length is past the cap, so a line with
-    no \\n is never held whole; its pieces are joined once, when it ends."""
+    \\n as `case_lines` splits them (without the \\n). A line's pieces are
+    joined once, when it ends."""
     fd = fh.fileno()
     pos = os.fstat(fd).st_size
     pieces: list[bytes] = []  # the line being read, its last piece first
-    held = 0
     while pos > 0:
         step = min(block, pos)
         pos -= step
@@ -1231,14 +1167,10 @@ def _iter_lines_reversed(fh, block: int = _TAIL_BLOCK):
             raise _ReadWhole
         parts = chunk.split(b"\n")
         pieces.append(parts[-1])
-        held += len(parts[-1])
         if len(parts) > 1:
             yield _whole(pieces)  # emptied, so the line isn't held twice
-            yield from (_capped(p) for p in reversed(parts[1:-1]))
+            yield from reversed(parts[1:-1])
             pieces.append(parts[0])
-            held = len(parts[0])
-        if held > LINE_CAP + 1:  # past the cap even counting a \r before its \n
-            raise _ReadWhole
     if pieces:
         yield _whole(pieces)
 
@@ -1247,14 +1179,6 @@ def _whole(pieces: list[bytes]) -> bytes:
     """The line held in `pieces` (its last piece first), which are cleared."""
     line = b"".join(reversed(pieces))
     pieces.clear()
-    return _capped(line)
-
-
-def _capped(line: bytes) -> bytes:
-    """`line`, unless it is longer than LINE_CAP not counting a \\r that ends
-    it (the full reader refuses it, naming its number)."""
-    if len(line) - line.endswith(b"\r") > LINE_CAP:
-        raise _ReadWhole
     return line
 
 
@@ -1314,11 +1238,11 @@ def tail_jsonl_entries(
     which aggregates every line anyway).
 
     The file is opened and checked as `case_lines` opens a case log (only under
-    its own name, a regular file within FILE_BUDGET), and its lines are split
-    and capped as `open_regular` reads them. Whatever the tail can't read as
-    that full reader would (a line over LINE_CAP, one that isn't UTF-8 or
-    isn't an object, a ts that isn't text, or disorder) is read by it instead,
-    so the file is refused or read exactly as a full read would.
+    its own name, a regular file), and its lines are split as `open_regular`
+    reads them. Whatever the tail can't read as that full reader would (a line
+    that isn't UTF-8 or isn't an object, a ts that isn't text, or disorder) is
+    read by it instead, so the file is refused or read exactly as a full read
+    would.
 
     Returns (entries in file order, count of corrupt lines in the region read).
     """

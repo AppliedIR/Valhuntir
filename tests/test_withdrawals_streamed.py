@@ -103,15 +103,15 @@ def test_a_log_named_with_terminal_controls_is_named_with_them_shown(case, reade
     assert f"could not read {case}/audit/wintools-?[2J?[H.jsonl: " in err
 
 
-def _over_cap_line(case):
+def _long_line(case):
     """forensic-mcp.jsonl, where withdrawals are written, with one line over
-    the cap after a withdrawal: the log isn't read past it."""
+    16 MiB after a withdrawal: read whole, like any line."""
     with open(case / "audit" / "forensic-mcp.jsonl", "ab") as f:
         f.write(b'{"pad": "' + b"x" * (16 << 20) + b'"}\n')
 
 
-def test_the_withdrawn_view_names_an_unread_log_and_exits_1_never_none(case):
-    _over_cap_line(case)
+def test_the_withdrawn_view_reads_a_log_with_a_line_over_16_mib(case):
+    _long_line(case)
 
     def run():
         out = io.StringIO()
@@ -123,21 +123,17 @@ def test_the_withdrawn_view_names_an_unread_log_and_exits_1_never_none(case):
         return None, out.getvalue()
 
     status, (code, out) = _within(run)
-    assert (status, code) == ("ok", 1)
-    assert "No candidate findings withdrawn" not in out
-    assert "1 candidate finding(s) withdrawn after challenge" in out  # read before it
-    assert (
-        "Couldn't read audit/forensic-mcp.jsonl (line 2 is longer than 16 MiB): "
-        "a candidate withdrawn there isn't shown." in out
-    )
+    assert (status, code) == ("ok", None)
+    assert "1 candidate finding(s) withdrawn after challenge" in out
+    assert "Couldn't read" not in out
 
 
-def test_approves_count_says_a_log_went_unread(case, monkeypatch, capsys):
+def test_approves_count_reads_a_log_with_a_line_over_16_mib(case, monkeypatch, capsys):
     from argparse import Namespace
 
     import vhir_cli.commands.approve as approve_mod
 
-    _over_cap_line(case)
+    _long_line(case)
     monkeypatch.setattr(approve_mod, "_preflight", lambda *a: True, raising=False)
     monkeypatch.setattr(
         approve_mod,
@@ -148,8 +144,9 @@ def test_approves_count_says_a_log_went_unread(case, monkeypatch, capsys):
     approve_mod.cmd_approve(
         Namespace(case=None, ids=[], review=False), {"examiner": "tester"}
     )
+    out = capsys.readouterr().out
     assert (
-        "1 candidate finding(s) withdrawn after challenge counted; audit/forensic-mcp.jsonl "
-        "(line 2 is longer than 16 MiB) couldn't be read, so there may be more — "
-        "`vhir review --withdrawn`" in capsys.readouterr().out
+        "  1 candidate finding(s) withdrawn after challenge — `vhir review --withdrawn`"
+        in out
     )
+    assert "couldn't be read" not in out

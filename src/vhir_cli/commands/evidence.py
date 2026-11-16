@@ -431,7 +431,7 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
         logs, unread = [], [f"audit/ can't be listed ({type(e).__name__})"]
     for log in logs:
         got = []  # a log read in part counts as unread, as before
-        try:  # line by line, each line capped: never the whole log at once
+        try:  # line by line: never the whole log at once
             for raw in case_lines(log):
                 for line in raw.decode("utf-8", errors="replace").splitlines():
                     try:
@@ -440,7 +440,7 @@ def _recorded_outputs(case_dir: Path) -> tuple[dict, list[str], dict]:
                         continue
                     if isinstance(entry, dict):
                         got.append(entry)
-        except CaseError as e:  # not a regular file, or a line over the cap: what it is
+        except CaseError as e:  # not a regular file: what it is
             why = getattr(e, "why", type(e).__name__)  # stored: no path, no advice
             unread.append(f"audit/{log.name} can't be read ({why})")
             continue

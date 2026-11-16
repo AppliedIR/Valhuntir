@@ -804,26 +804,21 @@ def test_a_folder_registered_while_a_log_cant_be_read_says_derivation_unchecked(
 @pytest.mark.parametrize(
     "what, why",
     [("fifo", "not a regular file"), ("folder", "a folder"),
-     ("link", "a symbolic link"), ("long line", "line 1 is longer than 0 MiB")],
+     ("link", "a symbolic link")],
 )  # fmt: skip
 def test_a_stored_derivation_note_says_what_the_log_is_without_path_or_advice(
-    case, monkeypatch, what, why
+    case, what, why
 ):
     """The note is stored, printed and shown in the portal: the log's case-relative
     name and what's wrong with it, never its absolute path or advice to act on."""
-    from vhir_cli import case_io
-
     log = case / "audit" / "sift-mcp.jsonl"
     if what == "fifo":
         os.mkfifo(log)
     elif what == "folder":
         log.mkdir()
-    elif what == "link":
+    else:
         (case / "elsewhere.jsonl").write_text("{}\n")
         log.symlink_to(case / "elsewhere.jsonl")
-    else:  # a line over the cap, the cap made small
-        monkeypatch.setattr(case_io, "LINE_CAP", 8)
-        log.write_text('{"a": "0123456789"}\n')
     p = case / "evidence" / "mem.raw"
     p.write_bytes(b"M" * 100)
     r = register_evidence_data(case, str(p), "tester")

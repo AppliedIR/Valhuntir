@@ -19,7 +19,6 @@ from pathlib import Path
 from vhir_cli.approval_auth import require_tty_confirmation
 from vhir_cli.case_io import (
     CaseFileNotRegular,
-    CaseFileTooLarge,
     get_case_dir,
     kept,
     open_regular,
@@ -256,19 +255,19 @@ _LOG_SHAPES = (
 
 
 def _advice(e: OSError) -> str:
-    """For a log too large, or one that isn't the case's own regular file: it
-    was left as it is (an audit log is evidence); for anything else (a
-    permission, a full disk), check the folder."""
+    """For a log that isn't the case's own regular file: it was left as it is
+    (an audit log is evidence); for anything else (a permission, a full disk),
+    check the folder."""
     why = e.why if isinstance(e, CaseFileNotRegular) else (
         "a symbolic link" if e.errno == errno.ELOOP else
         "another name links to it" if e.errno == errno.EMLINK else "")  # fmt: skip
-    if isinstance(e, CaseFileTooLarge) or why in _LOG_SHAPES:
+    if why in _LOG_SHAPES:
         return kept(why)
     return _WRITABLE
 
 
 def _why(log_file: Path, e: OSError) -> str:
-    why = (e.why if isinstance(e, (CaseFileNotRegular, CaseFileTooLarge)) else
+    why = (e.why if isinstance(e, CaseFileNotRegular) else
            "a symbolic link" if e.errno == errno.ELOOP else e.strerror)  # fmt: skip
     return one_line(f"{log_file}: {why or type(e).__name__}")
 
@@ -286,8 +285,7 @@ def _next_audit_id(case_dir: Path, examiner: str) -> str:
     max_seq = 0
     if log_file.exists():
         pattern = f"{_EVIDENCE_PREFIX}-{examiner}-{today}-"
-        # a regular file only, line by line with each line capped; any read
-        # error refuses the run
+        # a regular file only, line by line; any read error refuses the run
         with open_regular(log_file) as f:
             for line in f:
                 line = line.strip()
