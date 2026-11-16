@@ -38,7 +38,7 @@ KINDS = ("draft", "signed")
 # for a dangling link, skips it as absent, so those cells name nothing to agree on
 VERIFY_UNREADABLE = {
     "null", "number", "boolean", "string", "dict", "not-utf8", "unparseable",
-    "nested", "directory", "fifo", "symlink-valid", "hard-link", "over-cap",
+    "nested", "directory", "fifo", "symlink-valid", "hard-link",
     "permission-denied",
 }  # fmt: skip
 
