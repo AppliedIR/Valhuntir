@@ -57,7 +57,7 @@ def _data(index=5, triage=True, fails=()):
             return MagicMock(returncode=0 if triage else 1, stdout="", stderr="")
         if cmd[1:3] == ["-I", "-m"] and cmd[3] in (INDEX, TRIAGE):
             return MagicMock(
-                returncode=1 if cmd[2] in fails else 0, stdout="", stderr=""
+                returncode=1 if cmd[3] in fails else 0, stdout="", stderr=""
             )
         return None
 
