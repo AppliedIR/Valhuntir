@@ -792,7 +792,7 @@ def _check_opensearch_version(source: Path) -> bool | None:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        if isinstance(e, OSError) and not _opensearch_set_up():  # no docker, say
+        if not _opensearch_set_up():  # no docker, or one that hangs, say
             return install()
         return _cant_check_snapshots(f"docker: {e}")
     if result.returncode != 0:

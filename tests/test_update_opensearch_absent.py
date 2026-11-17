@@ -8,6 +8,7 @@ Each state runs through cmd_update with the stand-ins of test_update_lock."""
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -137,6 +138,9 @@ INSPECT = {
     ),
     "no such object": "absent",
     "other": (1, "Error response from daemon: internal error\n"),
+    "timeout": subprocess.TimeoutExpired(
+        ["docker", "inspect", "--format", "{{.Config.Image}}", "vhir-opensearch"], 10
+    ),
 }
 CANT = "Couldn't check whether OpenSearch is set up for snapshots"
 
@@ -179,7 +183,9 @@ def test_a_failed_inspect_offers_the_install_unless_opensearch_was_set_up(
     assert not any(c[:1] == ["bash"] for c in calls)  # a No runs nothing
 
 
-@pytest.mark.parametrize("kind", ["no docker", "permission denied", "daemon down"])
+@pytest.mark.parametrize(
+    "kind", ["no docker", "permission denied", "daemon down", "timeout"]
+)
 def test_a_yes_after_a_failed_inspect_is_the_install_of_no_such_object(
     box, capsys, kind
 ):
