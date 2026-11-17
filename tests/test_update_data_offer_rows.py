@@ -73,8 +73,9 @@ def _reply(x):
     return x
 
 
-def _answers(index=CURRENT, triage=TCURRENT, fails=()):
-    """index and triage: a --check state (st), a reply, or an exception to raise."""
+def _answers(index=CURRENT, triage=TCURRENT, fails=(), raises=None):
+    """index and triage: a --check state (st), a reply, or an exception to raise;
+    `raises`: what every download raises."""
 
     def absent(x):
         return isinstance(x, dict) and x.get("absent")
@@ -85,6 +86,8 @@ def _answers(index=CURRENT, triage=TCURRENT, fails=()):
         if cmd[1:3] == ["-I", "-m"] and cmd[3:] == [TRIAGE, "--check"]:
             return _reply(triage)
         if cmd[1:3] == ["-I", "-m"] and cmd[3] in (INDEX, TRIAGE):
+            if raises is not None:
+                raise raises
             return MagicMock(
                 returncode=1 if cmd[3] in fails else 0, stdout="", stderr=""
             )
@@ -192,8 +195,9 @@ def _failed(what, reason):
             subprocess.TimeoutExpired(["python"], 120),
             "no reply in 120 s",
         ),
+        (OSError("x"), OSError("x"), "x"),
     ],
-    ids=["offline", "rate-limited", "timeout"],
+    ids=["offline", "rate-limited", "timeout", "oserror"],
 )
 def test_d3_a_failed_check_is_one_line_per_kind_and_the_update_goes_on(
     box, capsys, index, triage, reason
@@ -367,6 +371,25 @@ def test_y4_an_empty_answer_downloads_absent_data(box, capsys):
     ]
     assert _downloads(run) == [[_python(box), "-I", "-m", INDEX, "--tag", NEW]]
     assert INDEX_OFFER not in _declined(box)
+
+
+@pytest.mark.parametrize(
+    "error", [OSError("x"), subprocess.SubprocessError("x")], ids=["os", "subprocess"]
+)
+def test_y4_a_download_that_raises_is_the_failed_line_and_owes_no_restart(
+    box, capsys, error
+):
+    run = _run(
+        box, capsys, tty=True, no_restart=True, answers=[""],
+        data=_answers(ABSENT, raises=error),
+    )  # fmt: skip
+    cmd = [_python(box), "-I", "-m", INDEX, "--tag", NEW]
+    assert _downloads(run) == [cmd]
+    assert [ln for ln in _block(run) if "GITHUB_TOKEN" in ln] == [
+        "Download failed. Set GITHUB_TOKEN (GitHub can refuse unauthenticated"
+        f" downloads) and run: {' '.join(cmd)}, then restart the gateway."
+    ]
+    assert run.state.get("status") == "complete", run.state
 
 
 @pytest.mark.parametrize("reply", ["n", "x", EOFError], ids=["n", "x", "eof"])
