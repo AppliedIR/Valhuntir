@@ -6,6 +6,8 @@ Each state runs through cmd_update with the stand-ins of test_update_lock."""
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from tests import test_update_lock as lock
@@ -38,6 +40,15 @@ def _has(block, lines):
     return any(block[i : i + n] == lines for i in range(len(block) - n + 1))
 
 
+def _clone(box):
+    repo = box.home / "opensearch-mcp"
+    (repo / "docker").mkdir(parents=True)
+    (repo / "docker" / "docker-compose.yml").write_text(COMPOSE)
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "setup-opensearch.sh").write_text("#!/bin/sh\n")
+    return repo
+
+
 # state: (repo cloned, package installed, container)
 STATES = {
     "i no package, no repo": (False, False, None),
@@ -50,12 +61,7 @@ STATES = {
 @pytest.mark.parametrize("state", list(STATES))
 def test_each_opensearch_state_through_update(box, capsys, state):
     cloned, installed, container = STATES[state]
-    repo = box.home / "opensearch-mcp"
-    if cloned:
-        (repo / "docker").mkdir(parents=True)
-        (repo / "docker" / "docker-compose.yml").write_text(COMPOSE)
-        (repo / "scripts").mkdir()
-        (repo / "scripts" / "setup-opensearch.sh").write_text("#!/bin/sh\n")
+    repo = _clone(box) if cloned else box.home / "opensearch-mcp"
     calls, exited = _update(
         box, opensearch=installed, os_clone=cloned, os_container=container,
         tty=True, answers=["n"] * 8,
@@ -83,3 +89,31 @@ def test_each_opensearch_state_through_update(box, capsys, state):
         assert calls.index(locked) < first_offer
     else:  # (iv): installed and running the pin: nothing to offer
         assert OFFER not in asked and "isn't installed" not in out + err
+
+
+# clients, the install offer's answer, whether the line for Codex is said
+CODEX_ROWS = {
+    "codex, Yes": (["codex"], "y", True),
+    "claude-code and codex, Yes": (["claude-code", "codex"], "y", True),
+    "claude-code, Yes": (["claude-code"], "y", False),
+    "codex, No": (["codex"], "n", False),
+}
+CODEX_LINE = "Run `vhir update` once more so Codex lists OpenSearch's tools."
+
+
+@pytest.mark.parametrize("row", list(CODEX_ROWS))
+def test_a_yes_in_state_ii_tells_a_codex_box_to_update_once_more(box, capsys, row):
+    """Step 5 sets Codex's servers before the offer installs OpenSearch (the
+    package this run installed isn't seen until a new process), and only
+    Claude Code's are refreshed after it."""
+    clients, answer, said = CODEX_ROWS[row]
+    script = _clone(box) / "scripts" / "setup-opensearch.sh"
+    with patch("vhir_cli.commands.update._redeploy_clients", return_value=clients):
+        calls, exited = _update(
+            box, opensearch=False, os_clone=True, os_container="absent", tty=True,
+            answers=[lambda p: answer if p == OFFER else "n"] * 8,
+        )  # fmt: skip
+    assert exited is None
+    block = steps_block(capsys.readouterr().err)
+    assert (["bash", str(script)] in calls) == (answer == "y")
+    assert (CODEX_LINE in block) == said, block

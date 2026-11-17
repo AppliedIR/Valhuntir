@@ -746,7 +746,7 @@ def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
 _OPENSEARCH_MCP_GIT = "https://github.com/AppliedIR/opensearch-mcp.git"
 
 
-def _check_opensearch_version(source: Path) -> None:
+def _check_opensearch_version(source: Path) -> bool | None:
     """Warn if running OpenSearch container doesn't match pinned version."""
     import re
 
@@ -837,9 +837,10 @@ def _opensearch_cost(compose: str) -> str:
 def _offer_opensearch(
     offer: str, subject: list[str], shown: str, taken: str, compose: str,
     setup_script: Path, intro: str,
-) -> None:  # fmt: skip
+) -> bool | None:  # fmt: skip
     """The OpenSearch install or upgrade: asked on a terminal, with its
-    cost; the default is No. Nothing here stops the update."""
+    cost; the default is No. Nothing here stops the update.
+    True when it installed OpenSearch."""
     print(intro)
     if not _may_ask(offer, subject, shown, taken):
         return
@@ -870,6 +871,7 @@ def _offer_opensearch(
     elif result.returncode != 0:
         human_steps.add(f"  OpenSearch {verb.lower()} failed.")
     print()
+    return verb == "Install" and result.returncode in (0, 3)
 
 
 _SNAPSHOT_REPO = "/usr/share/opensearch/snapshots"
@@ -1616,7 +1618,7 @@ def _finish_update(
         print("done" if restart_ok else f"failed ({failure})")
 
     # Step 7b: Check OpenSearch version mismatch
-    _check_opensearch_version(source)
+    os_added = _check_opensearch_version(source)
 
     # Step 8: the gateway answers /health (one 240 s budget, made after 7b)
     from vhir_cli import gateway
@@ -1661,6 +1663,10 @@ def _finish_update(
         human_steps.add(f"  Update pending: {reason}\n  Run: {fix}")
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
+    if os_added and "codex" in clients:  # Step 5 set Codex's servers before the install
+        human_steps.add(
+            "  Run `vhir update` once more so Codex lists OpenSearch's tools."
+        )
     if done:  # each backend not ok, with its error; the refresh didn't add it
         b = health.backends or {}
 
