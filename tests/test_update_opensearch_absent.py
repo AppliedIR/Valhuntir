@@ -91,12 +91,13 @@ def test_each_opensearch_state_through_update(box, capsys, state):
         assert OFFER not in asked and "isn't installed" not in out + err
 
 
-# clients, the install offer's answer, whether the line for Codex is said
+# clients, the install offer's answer, package installed before the run, whether the line for Codex is said
 CODEX_ROWS = {
-    "codex, Yes": (["codex"], "y", True),
-    "claude-code and codex, Yes": (["claude-code", "codex"], "y", True),
-    "claude-code, Yes": (["claude-code"], "y", False),
-    "codex, No": (["codex"], "n", False),
+    "codex, Yes": (["codex"], "y", False, True),
+    "claude-code and codex, Yes": (["claude-code", "codex"], "y", False, True),
+    "claude-code, Yes": (["claude-code"], "y", False, False),
+    "codex, No": (["codex"], "n", False, False),
+    "iii package installed, codex, Yes": (["codex"], "y", True, False),
 }
 CODEX_LINE = "Run `vhir update` once more so Codex lists OpenSearch's tools."
 
@@ -105,12 +106,12 @@ CODEX_LINE = "Run `vhir update` once more so Codex lists OpenSearch's tools."
 def test_a_yes_in_state_ii_tells_a_codex_box_to_update_once_more(box, capsys, row):
     """Step 5 sets Codex's servers before the offer installs OpenSearch (the
     package this run installed isn't seen until a new process), and only
-    Claude Code's are refreshed after it."""
-    clients, answer, said = CODEX_ROWS[row]
+    Claude Code's are refreshed after it. In (iii) Step 5 saw the package."""
+    clients, answer, installed, said = CODEX_ROWS[row]
     script = _clone(box) / "scripts" / "setup-opensearch.sh"
     with patch("vhir_cli.commands.update._redeploy_clients", return_value=clients):
         calls, exited = _update(
-            box, opensearch=False, os_clone=True, os_container="absent", tty=True,
+            box, opensearch=installed, os_clone=True, os_container="absent", tty=True,
             answers=[lambda p: answer if p == OFFER else "n"] * 8,
         )  # fmt: skip
     assert exited is None

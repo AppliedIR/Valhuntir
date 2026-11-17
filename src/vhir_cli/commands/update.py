@@ -1663,7 +1663,8 @@ def _finish_update(
         human_steps.add(f"  Update pending: {reason}\n  Run: {fix}")
     if "claude-code" in clients or "codex" in clients:
         human_steps.add("  Restart your LLM client to pick up new rules.")
-    if os_added and "codex" in clients:  # Step 5 set Codex's servers before the install
+    # The package this run installed: Step 5's find_spec didn't see it for Codex.
+    if os_added and "codex" in clients and not _module_installed("opensearch_mcp"):
         human_steps.add(
             "  Run `vhir update` once more so Codex lists OpenSearch's tools."
         )
