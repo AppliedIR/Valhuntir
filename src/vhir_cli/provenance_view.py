@@ -183,10 +183,12 @@ def _once(links: list[dict]) -> list[dict]:
 
 def _grouped_links(links: list[dict]) -> list[dict]:
     """The stored chain regrouped so each distinct ingest chain shows once,
-    followed by the records that resolved through it. ``_follow`` stores, per
-    returned record, that record's ingest chain and then the record's own
-    link, so N records from one ingest repeat the chain N times. Grouping by
-    the chain keeps each record under its own ingest even when a query returns
+    followed by the records that resolved through it. ``_follow`` stores each
+    ingest's chain once, then the record links of every record that resolved
+    through it; before 0.6.6.2 it stored each record's ingest chain before
+    that record's link, so N records from one ingest repeat the chain N times.
+    A record link right after a record link joins its group. Grouping by the
+    chain keeps each record under its own ingest even when a query returns
     records from two ingests interleaved; order follows each chain's first
     appearance. Within a group's chain, and within the tail of links no
     record follows, each step shows once; a step two groups share shows in
@@ -194,14 +196,16 @@ def _grouped_links(links: list[dict]) -> list[dict]:
     groups: list[dict] = []
     by_chain: dict[str, dict] = {}
     pending: list[dict] = []
+    grp: dict | None = None
     for link in links:
         if _is_record(link):
-            key = json.dumps(pending, sort_keys=True, default=str)
-            grp = by_chain.get(key)
-            if grp is None:
-                grp = {"chain": _once(pending), "records": [], "seen": set()}
-                by_chain[key] = grp
-                groups.append(grp)
+            if pending or grp is None:
+                key = json.dumps(pending, sort_keys=True, default=str)
+                grp = by_chain.get(key)
+                if grp is None:
+                    grp = {"chain": _once(pending), "records": [], "seen": set()}
+                    by_chain[key] = grp
+                    groups.append(grp)
             rkey = json.dumps(link, sort_keys=True, default=str)
             if rkey not in grp["seen"]:  # an identical record link shows once
                 grp["seen"].add(rkey)

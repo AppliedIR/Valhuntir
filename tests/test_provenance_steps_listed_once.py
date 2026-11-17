@@ -238,3 +238,66 @@ def test_the_report_lists_each_fan_in_step_once(case, capsys):
     chain = _fan_in()["artifacts"][0]["provenance_chain"]
     assert len(steps) == 364
     assert steps.count(link_line(chain[0])) == 1
+
+
+# --- each stored shape, through review --detail and the report -------------------
+
+RUN = _link("recorded-id", "sift-x-005", "/mnt/x/a.evtx", "/x/out.txt")
+REF = _link("reference", "opensearch-x-050", "", "",
+            reference={"source": "windows-triage", "source_version": "2026.10"})  # fmt: skip
+R = {n: _record(f"r{n}") for n in range(1, 18)}
+SEVENTEEN = [R[n] for n in range(1, 18)]
+# as record_finding stores a chain from 0.6.6.2: each ingest's steps once, then
+# the records that resolved through it; before, each record after its ingest's steps
+SHAPES = [
+    pytest.param([ROOT, MOUNT, A, *SEVENTEEN], None, "FULL", id="one_ingest_17_records"),
+    pytest.param([ROOT, A, R[1], R[2], ROOT, B, R[3], R[4]], None, "FULL",
+                 id="two_ingests_two_records_each_apart"),
+    pytest.param([ROOT, A, R[1], R[3], ROOT, B, R[2], R[4]], None, "FULL",
+                 id="two_ingests_two_records_each_interleaved"),
+    pytest.param([ROOT, MOUNT, A, B, RUN], None, "FULL", id="fan_in_two_inputs_one_mount"),
+    pytest.param([ROOT, A, R[1], R[2]], None, "BROKEN", id="a_stamp_mismatch_beside_a_match"),
+    pytest.param([ROOT, A, R[1], R[2], REF], None, "FULL",
+                 id="a_trailing_step_two_records_share"),
+    pytest.param([ROOT, A, R[1], ROOT, B, R[2], ROOT, A, R[3]],
+                 [ROOT, A, R[1], R[3], ROOT, B, R[2]], "FULL",
+                 id="two_ingests_interleaved_stored_before_0_6_6_2"),
+    pytest.param([x for n in range(1, 18) for x in (ROOT, MOUNT, A, R[n])],
+                 [ROOT, MOUNT, A, *SEVENTEEN], "FULL",
+                 id="one_ingest_17_records_stored_before_0_6_6_2"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("chain", "listed", "grade"), SHAPES)
+def test_each_stored_shape_lists_each_ingest_s_steps_then_its_records(
+    case, capsys, chain, listed, grade
+):
+    """review --detail and the report list each ingest's steps once, then its
+    records, in stored order: a chain stored from 0.6.6.2 as stored, one stored
+    before it the same way. The grade shown is the stored one."""
+    want = [link_line(x) for x in listed or chain]
+    f = _fan_in()
+    f["provenance_grade"] = grade
+    f["artifacts"] = [
+        {**f["artifacts"][0], "provenance_grade": grade, "provenance_chain": chain}
+    ]
+    before = copy.deepcopy(f)
+    lines = finding_lines(f)
+    assert f == before and grade in lines[0] and grade in lines[1], lines[:2]
+    assert _steps(lines) == want
+    f["status"] = "DRAFT"
+    _save(case, f)
+    args = dict(case=None, findings=True, detail=True, verify=False, iocs=False,
+                timeline=False, audit=False, evidence=False, limit=50, todos=False,
+                open=False)  # fmt: skip
+    cmd_review(Namespace(**args), {})
+    assert _steps(capsys.readouterr().out.split("\n")) == want
+    f["status"] = "APPROVED"
+    _save(case, f)
+    sign_approved(case, "examiner")
+    args = {"case": None, "full": False, "executive_summary": False,
+            "report_timeline": False, "from_date": None, "to_date": None, "ioc": False,
+            "report_findings": f["id"], "status_brief": False, "save": None}  # fmt: skip
+    cmd_report(Namespace(**args), {"examiner": "examiner"})
+    out = capsys.readouterr().out
+    assert _steps(out[out.index("PROVENANCE") :].split("\n")) == want
