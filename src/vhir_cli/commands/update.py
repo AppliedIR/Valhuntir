@@ -746,6 +746,12 @@ def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
 _OPENSEARCH_MCP_GIT = "https://github.com/AppliedIR/opensearch-mcp.git"
 
 
+def _opensearch_set_up() -> bool:
+    """Whether setup-opensearch.sh has set OpenSearch up here: the record it
+    writes after its docker steps exists. Only tested for, never opened."""
+    return os.path.exists(Path.home() / ".vhir" / "opensearch.yaml")
+
+
 def _check_opensearch_version(source: Path) -> bool | None:
     """Warn if running OpenSearch container doesn't match pinned version."""
     import re
@@ -771,6 +777,12 @@ def _check_opensearch_version(source: Path) -> bool | None:
         return _cant_check_snapshots(f"{os_path} names no opensearch image")
     pinned = m.group(1)
 
+    def install():  # the install offer
+        return _offer_opensearch(
+            "OpenSearch install", [pinned, "absent"], pinned, "", text,
+            setup_script, f"\n  OpenSearch {pinned} isn't installed on this box.",
+        )  # fmt: skip
+
     # Check running container version
     try:
         result = subprocess.run(
@@ -780,13 +792,13 @@ def _check_opensearch_version(source: Path) -> bool | None:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as e:
+        if isinstance(e, OSError) and not _opensearch_set_up():  # no docker, say
+            return install()
         return _cant_check_snapshots(f"docker: {e}")
     if result.returncode != 0:
-        if "no such object" in result.stderr.lower():  # no container: the install offer
-            return _offer_opensearch(
-                "OpenSearch install", [pinned, "absent"], pinned, "", text,
-                setup_script, f"\n  OpenSearch {pinned} isn't installed on this box.",
-            )  # fmt: skip
+        # no container, or a docker this user can't reach on a box never set up
+        if "no such object" in result.stderr.lower() or not _opensearch_set_up():
+            return install()
         return _cant_check_snapshots(
             "docker inspect vhir-opensearch: "
             + (result.stderr.strip().splitlines() or ["failed"])[0]

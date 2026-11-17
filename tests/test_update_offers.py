@@ -278,6 +278,7 @@ def test_no_checkout_means_no_offer(osb, capsys, monkeypatch):
 
 
 def test_a_daemon_that_does_not_answer_makes_no_offer(osb, capsys, monkeypatch):
+    (osb.home / ".vhir" / "opensearch.yaml").write_text("")  # a box set up earlier
     r = _os(osb, capsys, monkeypatch, running="down", answers=["y"])
     assert r.reads == 0
     assert "Couldn't check whether OpenSearch is set up for snapshots" in r.out

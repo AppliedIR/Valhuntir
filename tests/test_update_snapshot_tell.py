@@ -152,6 +152,7 @@ def test_a_box_set_up_hears_nothing(box, capsys, repo):
 def test_a_check_that_cant_run_says_so_once(box, capsys, monkeypatch, case):
     box.mount, box.nodes = GOOD, _nodes([REPO])
     if case == "docker denied":
+        (update.Path.home() / ".vhir" / "opensearch.yaml").write_text("")  # set up
         box.docker_rc = 1
     elif case == "image unknown":
         box.image = "registry.local/search:1"

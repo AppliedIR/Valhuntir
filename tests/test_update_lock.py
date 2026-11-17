@@ -170,6 +170,10 @@ def _update(
             if os_container == "absent":
                 result.returncode = 1
                 result.stderr = "error: no such object: vhir-opensearch\n"
+            elif isinstance(os_container, BaseException):  # docker can't be run
+                raise os_container
+            elif isinstance(os_container, tuple):  # (rc, stderr): a failed inspect
+                result.returncode, result.stderr = os_container
             else:
                 result.stdout = f"opensearchproject/opensearch:{os_container}\n"
             return result

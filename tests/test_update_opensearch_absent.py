@@ -2,6 +2,8 @@
 opensearch-mcp repo and no package, the steps block gives the clone, then
 `vhir update`; a cloned repo is installed with the other packages before the
 install offer; with the package installed the offer, or nothing, is as before.
+A docker inspect that fails, on a box OpenSearch was never set up on, is the
+install offer too.
 Each state runs through cmd_update with the stand-ins of test_update_lock."""
 
 from __future__ import annotations
@@ -118,3 +120,77 @@ def test_a_yes_in_state_ii_tells_a_codex_box_to_update_once_more(box, capsys, ro
     block = steps_block(capsys.readouterr().err)
     assert (["bash", str(script)] in calls) == (answer == "y")
     assert (CODEX_LINE in block) == said, block
+
+
+# What `docker inspect vhir-opensearch` gives: an exception it raises, or (rc, stderr)
+INSPECT = {
+    "no docker": FileNotFoundError(2, "No such file or directory", "docker"),
+    "permission denied": (
+        1,
+        "permission denied while trying to connect to the docker API at"
+        " unix:///var/run/docker.sock\n",
+    ),
+    "daemon down": (
+        1,
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."
+        " Is the docker daemon running?\n",
+    ),
+    "no such object": "absent",
+    "other": (1, "Error response from daemon: internal error\n"),
+}
+CANT = "Couldn't check whether OpenSearch is set up for snapshots"
+
+
+def _cant(inspect):
+    """Today's line for a failed check, unchanged."""
+    if isinstance(inspect, BaseException):
+        return f"  {CANT} (docker: {inspect})."
+    return f"  {CANT} (docker inspect vhir-opensearch: {inspect[1].strip()})."
+
+
+@pytest.mark.parametrize("record", ["absent", "present", "present, mode 0000"])
+@pytest.mark.parametrize("kind", list(INSPECT))
+def test_a_failed_inspect_offers_the_install_unless_opensearch_was_set_up(
+    box, capsys, kind, record
+):
+    """OpenSearch is set up when the record setup-opensearch.sh writes after its
+    docker steps exists. With none, docker this user can't run or reach means an
+    absent OpenSearch; with one, only "no such object" does. The record is tested
+    for, never read: a 0000 record changes nothing."""
+    inspect = INSPECT[kind]
+    _clone(box)
+    path = box.home / ".vhir" / "opensearch.yaml"
+    if record != "absent":
+        path.write_text("host: https://localhost:9200\n")
+        if record.endswith("0000"):
+            path.chmod(0)
+    calls, exited = _update(
+        box, os_clone=True, os_container=inspect, tty=True, answers=["n"] * 8
+    )
+    assert exited is None
+    out, err = capsys.readouterr()
+    offered = kind == "no such object" or record == "absent"
+    assert _asked(calls).count(OFFER) == int(offered)
+    assert (f"OpenSearch {PIN} isn't installed on this box." in out) == offered
+    if offered:
+        assert CANT not in out + err
+    else:  # SPEC-2: today's line
+        assert _cant(inspect) in out.splitlines(), out
+    assert not any(c[:1] == ["bash"] for c in calls)  # a No runs nothing
+
+
+@pytest.mark.parametrize("kind", ["no docker", "permission denied", "daemon down"])
+def test_a_yes_after_a_failed_inspect_is_the_install_of_no_such_object(
+    box, capsys, kind
+):
+    """The same success path, the Codex line included, as test_a_yes_in_state_ii."""
+    script = _clone(box) / "scripts" / "setup-opensearch.sh"
+    with patch("vhir_cli.commands.update._redeploy_clients", return_value=["codex"]):
+        calls, exited = _update(
+            box, os_clone=True, os_container=INSPECT[kind], tty=True,
+            answers=[lambda p: "y" if p == OFFER else "n"] * 8,
+        )  # fmt: skip
+    assert exited is None
+    block = steps_block(capsys.readouterr().err)
+    assert ["bash", str(script)] in calls
+    assert CODEX_LINE in block, block
