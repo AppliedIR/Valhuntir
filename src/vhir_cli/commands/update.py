@@ -579,7 +579,7 @@ def _data_check(venv_python: str, module: str, what: str) -> dict | None:
         if isinstance(state, dict):
             return state
     except subprocess.TimeoutExpired:
-        reason = "no reply in 120 s"
+        reason = "no reply in 120 s"  # the timeout above
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         reason = str(e)
     print(f"  Couldn't check for newer {what} ({reason}); nothing was changed.")
@@ -1555,7 +1555,7 @@ def _finish_update(
             "  The updated launch line takes effect at the next gateway restart."
         )
 
-    # Step 6.6 (A3): absent data, downloaded before the restart that loads it
+    # Step 6.6 (A3): absent data or another release, before the restart that loads it
     downloaded = _offer_data(manifest, str(Path(venv) / "bin" / "python"))
 
     # Step 7: Restart gateway
