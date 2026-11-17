@@ -1,18 +1,17 @@
-"""`vhir update` offers the data an installed package needs when it is absent.
+"""`vhir update` offers the newest data release an installed package's downloader names.
 
-Every call runs `<venv python> -I`. The knowledge index is absent when
-`-m rag_mcp.status --json --no-check` gives a document_count of 0, or no JSON; the triage databases are
-absent when the venv's windows_triage.config check says either file isn't a
-non-empty file. Each is considered only when its package is in the
-manifest's packages. On a terminal a Yes runs the package's own downloader,
-with no --dest and no --tag, before the gateway restart; with --no-restart a
-download makes the update the asked pending. A failed download is one block
-line, and the update goes on. Not asked without a terminal; a No is recorded
-and not asked again.
+Every call runs `<venv python> -I`. Each downloader's `--check` prints JSON:
+installed, newest, absent, download_bytes. Each is considered only when its
+package is in the manifest's packages, and offered when the data is absent or
+another release. On a terminal a Yes (or an empty answer) runs the downloader
+with --tag <newest> and no --dest, before the gateway restart; with
+--no-restart a download makes the update the asked pending. A failed download
+is one block line, and the update goes on. Not asked without a terminal; a No
+is recorded for that release and not asked again.
 
 subprocess is the stand-in of tests/test_update_lock.py; `_data` answers the
-status call, the triage check and the downloads. The texts are literals, so
-a tree without the offer fails on the asserts rather than on an import.
+--check calls and the downloads. The texts are literals, so a tree without the
+offer fails on the asserts rather than on an import.
 """
 
 from __future__ import annotations
@@ -38,23 +37,26 @@ def data_installed():
     """Overrides tests/conftest.py's: these rows run the update's own checks."""
 
 
-def _data(index=5, triage=True, fails=()):
-    """`index` is the document_count rag_mcp.status reports (a string: what it
-    prints instead; None: it fails with no output); `triage` is the triage
-    check's answer; the downloaders named in `fails` exit 1."""
+NEW = "rag-index-v2026.11.12"
+
+
+def _state(kind):
+    """current: the newest installed; absent: nothing installed; None: --check fails."""
+    if kind is None:
+        return MagicMock(returncode=1, stdout="", stderr="x: offline")
+    state = {"installed": NEW if kind == "current" else "unknown", "newest": NEW}
+    state.update(absent=kind == "absent", download_bytes=12_000_001)
+    return MagicMock(returncode=0, stdout=json.dumps(state), stderr="")
+
+
+def _data(index="current", triage="current", fails=()):
+    """What each --check answers (_state); the downloaders named in `fails` exit 1."""
 
     def answer(cmd):
-        if cmd[1:4] == ["-I", "-m", "rag_mcp.status"]:
-            if index is None:
-                return MagicMock(returncode=1, stdout="", stderr="Traceback")
-            out = (
-                index
-                if isinstance(index, str)
-                else json.dumps({"document_count": index})
-            )
-            return MagicMock(returncode=0, stdout=out, stderr="")
-        if cmd[1:3] == ["-I", "-c"] and "windows_triage" in cmd[3]:
-            return MagicMock(returncode=0 if triage else 1, stdout="", stderr="")
+        if cmd[1:3] == ["-I", "-m"] and cmd[3:] == [INDEX, "--check"]:
+            return _state(index)
+        if cmd[1:3] == ["-I", "-m"] and cmd[3:] == [TRIAGE, "--check"]:
+            return _state(triage)
         if cmd[1:3] == ["-I", "-m"] and cmd[3] in (INDEX, TRIAGE):
             return MagicMock(
                 returncode=1 if cmd[3] in fails else 0, stdout="", stderr=""
@@ -80,7 +82,9 @@ def _python(box):
 
 def _downloads(run):
     return [
-        c for c in run.calls if c[1:3] == ["-I", "-m"] and c[3:4] in ([INDEX], [TRIAGE])
+        c
+        for c in run.calls
+        if c[1:3] == ["-I", "-m"] and c[3] in (INDEX, TRIAGE) and c[4:] != ["--check"]
     ]
 
 
@@ -89,21 +93,22 @@ def _asked(run):
     return [c[1] for c in run.calls if c[0] == "input" and "Download" in c[1]]
 
 
-@pytest.mark.parametrize("index", [0, "not json"], ids=["count-0", "no-json"])
-def test_an_absent_index_is_downloaded_on_a_yes_before_the_restart(box, capsys, index):
+@pytest.mark.parametrize("answer", ["y", ""], ids=["yes", "empty"])
+def test_an_absent_index_is_downloaded_on_a_yes_before_the_restart(box, capsys, answer):
     run = _run(
-        box, capsys, no_restart=False, tty=True, answers=["y"], data=_data(index)
-    )
-    assert _downloads(run) == [[_python(box), "-I", "-m", INDEX]]
-    at = run.calls.index([_python(box), "-I", "-m", INDEX])
+        box, capsys, no_restart=False, tty=True, answers=[answer],
+        data=_data("absent"),
+    )  # fmt: skip
+    assert _downloads(run) == [[_python(box), "-I", "-m", INDEX, "--tag", NEW]]
+    at = run.calls.index([_python(box), "-I", "-m", INDEX, "--tag", NEW])
     restart = run.calls.index(["systemctl", "--user", "restart", "vhir-gateway"])
     assert at < restart
     assert run.state.get("status") == "complete", run.state
 
 
-def test_a_present_index_is_not_offered(box, capsys):
-    run = _run(box, capsys, no_restart=False, tty=True, data=_data(5))
-    assert any(c[1:4] == ["-I", "-m", "rag_mcp.status"] for c in run.calls)
+def test_the_newest_index_installed_is_not_offered(box, capsys):
+    run = _run(box, capsys, no_restart=False, tty=True, data=_data())
+    assert [_python(box), "-I", "-m", INDEX, "--check"] in run.calls
     assert _downloads(run) == []
     assert _asked(run) == []
 
@@ -115,7 +120,7 @@ def _rag_out_triage_in(m):
 @pytest.mark.parametrize(
     "manifest, gone, checked",
     [
-        (None, "windows_triage", "rag_mcp.status"),
+        (None, "windows_triage", "rag_mcp"),
         (_rag_out_triage_in, "rag_mcp", "windows_triage"),
     ],
     ids=["no-triage-package", "no-rag-package"],
@@ -123,40 +128,42 @@ def _rag_out_triage_in(m):
 def test_data_of_a_package_not_installed_is_neither_checked_nor_offered(
     box, capsys, manifest, gone, checked
 ):
-    run = _run(
-        box, capsys, tty=True, manifest=manifest, data=_data(index=None, triage=False)
-    )
+    run = _run(box, capsys, tty=True, manifest=manifest, data=_data("absent", "absent"))
     assert any(checked in " ".join(c) for c in run.calls), (
         run.calls
     )  # the installed one
     assert not any(gone in " ".join(c) for c in run.calls), run.calls
 
 
-def test_absent_triage_dbs_download_with_no_dest_and_no_tag(box, capsys):
+def test_absent_triage_dbs_download_the_newest_tag_with_no_dest(box, capsys):
     run = _run(
         box, capsys, tty=True, answers=["y", "y"], manifest=_with_triage,
-        data=_data(index=0, triage=False),
+        data=_data("absent", "absent"),
     )  # fmt: skip
     assert sorted(_downloads(run)) == [
-        [_python(box), "-I", "-m", INDEX],
-        [_python(box), "-I", "-m", TRIAGE],
+        [_python(box), "-I", "-m", INDEX, "--tag", NEW],
+        [_python(box), "-I", "-m", TRIAGE, "--tag", NEW],
     ]
 
 
 def test_a_failed_download_is_one_block_line_and_the_update_goes_on(box, capsys):
-    run = _run(box, capsys, tty=True, answers=["y"], data=_data(0, fails=(INDEX,)))
+    run = _run(
+        box, capsys, tty=True, answers=["y"], data=_data("absent", fails=(INDEX,))
+    )
     lines = [line for line in run.block if "GITHUB_TOKEN" in line]
     assert lines == [
         "Download failed. Set GITHUB_TOKEN (GitHub can refuse unauthenticated"
-        f" downloads) and run: {_python(box)} -I -m {INDEX}, then restart the gateway."
+        f" downloads) and run: {_python(box)} -I -m {INDEX} --tag {NEW}, then restart the gateway."
     ]
     assert run.state.get("status") == "complete", run.state
     assert run.rc == 0
 
 
 def test_a_download_with_no_restart_is_the_asked_pending(box, capsys):
-    run = _run(box, capsys, no_restart=True, tty=True, answers=["y"], data=_data(0))
-    assert _downloads(run) == [[_python(box), "-I", "-m", INDEX]]
+    run = _run(
+        box, capsys, no_restart=True, tty=True, answers=["y"], data=_data("absent")
+    )
+    assert _downloads(run) == [[_python(box), "-I", "-m", INDEX, "--tag", NEW]]
     assert run.state.get("status") == "pending", run.state
     assert run.state.get("reason") == RESTART, run.state
     assert run.state.get("fix") == RESTART_FIX, run.state
@@ -164,7 +171,7 @@ def test_a_download_with_no_restart_is_the_asked_pending(box, capsys):
 
 
 def test_no_terminal_is_not_asked(box, capsys):
-    run = _run(box, capsys, tty=False, data=_data(0))
+    run = _run(box, capsys, tty=False, data=_data("absent"))
     assert _downloads(run) == []
     assert _asked(run) == []
     assert (
@@ -174,7 +181,7 @@ def test_no_terminal_is_not_asked(box, capsys):
 
 
 def test_each_no_is_recorded_and_not_asked_again(box, capsys):
-    data = _data(index=0, triage=False)
+    data = _data("absent", "absent")
     first = _run(
         box, capsys, tty=True, answers=["n", "n"], manifest=_with_triage, data=data
     )

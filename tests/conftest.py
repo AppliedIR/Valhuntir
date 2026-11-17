@@ -155,13 +155,14 @@ def _outside_codex_s_sandbox(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def data_installed(monkeypatch):
-    """vhir update offers the knowledge index and the triage databases only
-    when the venv's packages say they are absent; the stand-in subprocess
-    answers elsewhere say nothing about them, so every test finds them
-    present. tests/test_update_data_offer.py overrides this fixture."""
+    """vhir update offers the knowledge index and the triage databases when
+    the downloader's --check says they are absent or another release; the
+    stand-in subprocess answers elsewhere say nothing about them, so every test
+    finds the newest installed. tests/test_update_data_offer.py overrides this."""
     from vhir_cli.commands import update
 
-    monkeypatch.setattr(update, "_data_absent", lambda *a: False, raising=False)
+    current = {"installed": "v1", "newest": "v1", "absent": False, "download_bytes": 1}
+    monkeypatch.setattr(update, "_data_check", lambda *a: current, raising=False)
 
 
 @pytest.fixture(autouse=True)

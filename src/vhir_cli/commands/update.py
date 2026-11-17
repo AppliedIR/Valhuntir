@@ -512,14 +512,19 @@ def _record_decline(offer: str, subject: list[str]) -> None:
         )
 
 
-def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> bool:
+def _may_ask(
+    offer: str, subject: list[str], shown: str, taken: str = "", flag_yes: bool = False
+) -> bool:
     """Ask only on a terminal, and never again after a No for the same
-    subject. When it doesn't ask, the block (human_steps) says why."""
+    subject. When it doesn't ask, the block (human_steps) says why. With
+    flag_yes, VHIR_ASSUME_DEFAULTS=true answers before the terminal check."""
     if _declines().get(offer) == subject:
         human_steps.add(
             f"Declined earlier: {offer} ({shown}). It is asked again when that changes.",
         )
         return False
+    if flag_yes and os.environ.get("VHIR_ASSUME_DEFAULTS") == "true":
+        return True
     if not sys.stdin.isatty():
         human_steps.add(
             f"Not asked (no terminal): {offer}."
@@ -536,10 +541,15 @@ def _may_ask(offer: str, subject: list[str], shown: str, taken: str = "") -> boo
     return True
 
 
-def _confirm(offer: str, subject: list[str], question: str) -> bool:
-    """y or yes is Yes; anything else, or no answer, is No and recorded."""
+def _confirm(
+    offer: str, subject: list[str], question: str, default_yes: bool = False
+) -> bool:
+    """y or yes is Yes (and an empty answer, with default_yes); anything
+    else, or no answer, is No and recorded."""
     try:
-        yes = input(question).strip().lower() in ("y", "yes")
+        yes = input(question).strip().lower() in (
+            ("", "y", "yes") if default_yes else ("y", "yes")
+        )
     except EOFError:
         yes = False
     if not yes:
@@ -547,50 +557,68 @@ def _confirm(offer: str, subject: list[str], question: str) -> bool:
     return yes
 
 
-# A3: (package, offer, what, the venv call that says absent, the downloader)
-_TRIAGE_CHECK = (
-    "import sys; from windows_triage.config import get_config; c = get_config();"
-    " sys.exit(not all(p.is_file() and p.stat().st_size"
-    " for p in (c.known_good_db, c.context_db)))"
-)
+# (package, offer, what, the downloader, what a download replaces)
 _DATA = (
-    ("rag-mcp", "knowledge index download", "The knowledge index",
-     ["-m", "rag_mcp.status", "--json", "--no-check"], "rag_mcp.scripts.download_index"),
-    ("windows-triage-mcp", "triage database download", "The triage databases",
-     ["-c", _TRIAGE_CHECK], "windows_triage.scripts.download_databases"),
+    ("rag-mcp", "knowledge index download", "knowledge index", "rag_mcp.scripts.download_index",
+     "the shipped index; your documents in knowledge/ are kept"),
+    ("windows-triage-mcp", "triage database download", "triage databases",
+     "windows_triage.scripts.download_databases", "known_good.db and context.db"),
 )  # fmt: skip
 
 
-def _data_absent(venv_python: str, check: list[str]) -> bool:
-    """The package's own answer: the status JSON's document_count (as
-    setup-sift.sh reads it), else the check's exit status."""
+def _data_check(venv_python: str, module: str, what: str) -> dict | None:
+    """The downloader's --check; None, after one line saying why, when it fails."""
     try:
         r = subprocess.run(
-            [venv_python, "-I", *check], capture_output=True, text=True, timeout=120
-        )
-        if check[0] == "-c":
-            return r.returncode != 0
-        status = json.loads(r.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return True
-    return not (isinstance(status, dict) and status.get("document_count", 0))
+            [venv_python, "-I", "-m", module, "--check"],
+            capture_output=True, text=True, timeout=120,
+        )  # fmt: skip
+        lines = r.stderr.strip().splitlines()
+        reason = lines[-1].partition(": ")[2] or lines[-1] if lines else "no reply"
+        state = json.loads(r.stdout) if r.returncode == 0 else None
+        if isinstance(state, dict):
+            return state
+    except subprocess.TimeoutExpired:
+        reason = "no reply in 120 s"
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        reason = str(e)
+    print(f"  Couldn't check for newer {what} ({reason}); nothing was changed.")
+    return None
 
 
 def _offer_data(manifest: dict, venv_python: str) -> bool:
-    """A3, before the restart, for installed packages only: True when a
-    download ran. No --tag: each downloader takes its own default release."""
+    """Before the restart, for installed packages only: offer the newest
+    release when the data is absent or another release. True when a download ran."""
     downloaded = False
-    for package, offer, what, check, module in _DATA:
+    for package, offer, what, module, replaces in _DATA:
         if package not in manifest.get("packages", {}):
             continue
-        if not _data_absent(venv_python, check) or not _may_ask(
-            offer, ["absent"], "absent"
-        ):
+        state = _data_check(venv_python, module, what)
+        newest = state and state.get("newest")
+        if not newest or not state.get("absent") and state.get("installed") == newest:
             continue
-        question = f"\n  {what} isn't installed. Download it now? [y/N] "
-        if not _confirm(offer, ["absent"], question):
+        mb = -(-int(state.get("download_bytes") or 0) // 1_000_000)
+        line = f"{what.capitalize()}: {newest}, a {mb} MB download, " + (
+            "not installed."
+            if state.get("absent")
+            else f"yours is {state.get('installed')}. It replaces {replaces}."
+        )
+        cmd = [venv_python, "-I", "-m", module, "--tag", newest]
+        if not _may_ask(offer, [newest], newest, flag_yes=True):
             continue
-        cmd = [venv_python, "-I", "-m", module]
+        if os.environ.get("VHIR_ASSUME_DEFAULTS") != "true":
+            if not _confirm(
+                offer, [newest], f"\n  {line} Download it now? [Y/n] ", True
+            ):
+                continue
+        elif not state.get("absent") and state.get("installed") == "unknown":
+            human_steps.add(
+                f"Not asked (VHIR_ASSUME_DEFAULTS is set): {line}"
+                f" To download it: {shlex.join(cmd)}"
+            )
+            continue
+        else:
+            print(f"  {line} Downloading it (VHIR_ASSUME_DEFAULTS is set).")
         try:
             ok = subprocess.run(cmd, timeout=3600).returncode == 0
         except (OSError, subprocess.SubprocessError):
