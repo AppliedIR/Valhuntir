@@ -271,8 +271,10 @@ def test_no_checkout_means_no_offer(osb, capsys, monkeypatch):
         p.rmdir() if p.is_dir() else p.unlink()
     osb.repo.rmdir()
     r = _os(osb, capsys, monkeypatch, running="absent", answers=["y"])
-    assert r.reads == 0
-    assert "Not asked" not in r.err and "OpenSearch" not in r.out + r.err
+    assert r.reads == 0 and not _setup_ran(osb, r.calls)
+    assert "Not asked" not in r.err and "OpenSearch" not in r.out
+    # the block says how to add it instead (no package either: find_spec None)
+    assert "isn't installed. To add it:" in r.err and "git clone" in r.err
 
 
 def test_a_daemon_that_does_not_answer_makes_no_offer(osb, capsys, monkeypatch):

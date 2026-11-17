@@ -743,13 +743,23 @@ def _opensearch_mcp_installed_but_missing(source: Path) -> bool:
     return _resolve_opensearch_mcp_repo(source) is None
 
 
+_OPENSEARCH_MCP_GIT = "https://github.com/AppliedIR/opensearch-mcp.git"
+
+
 def _check_opensearch_version(source: Path) -> None:
     """Warn if running OpenSearch container doesn't match pinned version."""
     import re
 
     repo = _resolve_opensearch_mcp_repo(source)
-    if repo is None:
-        return  # No opensearch-mcp repo found — opensearch not installed
+    if repo is None:  # an installed package without its repo is warned of earlier
+        if not _module_installed("opensearch_mcp"):
+            clone = shlex.quote(str(source.parent / "opensearch-mcp"))
+            human_steps.add(
+                "  OpenSearch (evidence indexing, runs in Docker) isn't installed."
+                f" To add it:\n    git clone {_OPENSEARCH_MCP_GIT} {clone}\n"
+                "  then `vhir update`, which offers the install with its cost.",
+            )
+        return
 
     os_path = repo / "docker" / "docker-compose.yml"
     setup_script = os_path.parent.parent / "scripts" / "setup-opensearch.sh"
@@ -1287,10 +1297,15 @@ def _install_packages(
     installed = manifest.get("packages", {})
     pkg_paths = []
     for pkg_name in _INSTALL_ORDER:
-        # Installed but not in the manifest still counts (an earlier install).
+        # Installed but not in the manifest still counts (an earlier install),
+        # and so does a found opensearch-mcp repo (cloned, not yet installed).
         unrecorded = {"opensearch-mcp": "opensearch_mcp", "opencti-mcp": "opencti_mcp"}
-        if pkg_name not in installed and not (
-            pkg_name in unrecorded and _module_installed(unrecorded[pkg_name])
+        if (
+            pkg_name not in installed
+            and not (pkg_name in unrecorded and _module_installed(unrecorded[pkg_name]))
+            and not (
+                pkg_name == "opensearch-mcp" and _resolve_opensearch_mcp_repo(source)
+            )
         ):
             continue
         if pkg_name == "vhir-cli":

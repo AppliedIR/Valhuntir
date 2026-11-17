@@ -108,6 +108,8 @@ def _update(
     gateway=None,
     unreadable=None,
     data=None,
+    os_clone=True,
+    os_container=None,
 ):
     """Run cmd_update; returns (commands, SystemExit or None). By default the
     venv has GPU PyTorch (torch 2.14.0) and stdin isn't a terminal; `answers`
@@ -123,7 +125,9 @@ def _update(
     `restart_rc` exception is what the restart raises. `unreadable` is (repo,
     "before" or "after"): its HEAD can't be read before its pull, or after it.
     `data(cmd)` answers a command first when it returns a result
-    (tests.test_update_data_offer)."""
+    (tests.test_update_data_offer).
+    With `os_clone` False there is no opensearch-mcp repo; `os_container` is the
+    image tag `docker inspect vhir-opensearch` reports, "absent" for none."""
     check_rc = check_rc or {}
     calls = []
     if gateway is not None:
@@ -135,8 +139,9 @@ def _update(
         path = box.home / ".vhir" / "manifest.json"
         path.write_text(json.dumps(manifest(json.loads(path.read_text()))))
     os_repo = box.home / "opensearch-mcp"
-    (os_repo / ".git").mkdir(parents=True, exist_ok=True)
-    (os_repo / "src" / "opensearch_mcp").mkdir(parents=True, exist_ok=True)
+    if os_clone:
+        (os_repo / ".git").mkdir(parents=True, exist_ok=True)
+        (os_repo / "src" / "opensearch_mcp").mkdir(parents=True, exist_ok=True)
 
     def find_spec(name, *a, **kw):
         if name == "opensearch_mcp":
@@ -155,6 +160,19 @@ def _update(
         if data and (answered := data([str(c) for c in cmd])):
             return answered
         result = MagicMock(returncode=0, stdout="0", stderr="")
+        if (
+            os_container
+            and cmd[:2] == ["docker", "inspect"]
+            and "vhir-opensearch" in cmd
+        ):
+            if "{{.Config.Image}}" not in cmd:  # the snapshot bind: none
+                return result
+            if os_container == "absent":
+                result.returncode = 1
+                result.stderr = "error: no such object: vhir-opensearch\n"
+            else:
+                result.stdout = f"opensearchproject/opensearch:{os_container}\n"
+            return result
         if cmd[0] == "nvidia-smi" and smi_hangs:
             raise subprocess.TimeoutExpired(cmd, 30)
         if cmd[0] == "nvidia-smi" and gpu_found:
@@ -327,7 +345,7 @@ def test_installed_opensearch_mcp_is_reinstalled_though_not_in_the_manifest(box)
 
 
 def test_opensearch_mcp_not_installed_is_left_alone(box):
-    calls, _ = _update(box, opensearch=False)
+    calls, _ = _update(box, opensearch=False, os_clone=False)  # no repo either
     locked = next(c for kind, c in _steps(calls) if kind == "install")
     assert not any("opensearch-mcp" in a for a in locked)
 
