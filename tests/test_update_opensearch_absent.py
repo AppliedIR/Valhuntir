@@ -29,7 +29,7 @@ OFFER = "\n  Install OpenSearch now? [y/N] "
 
 
 def _line(box):
-    """The SPEC-2 entry, as the block prints it (each line unindented by two)."""
+    """The clone-then-update entry, as the block prints it (lines unindented by two)."""
     clone = box.home / ".vhir" / "src" / "opensearch-mcp"
     return [
         "OpenSearch (evidence indexing, runs in Docker) isn't installed. To add it:",
@@ -178,7 +178,7 @@ def test_a_failed_inspect_offers_the_install_unless_opensearch_was_set_up(
     assert (f"OpenSearch {PIN} isn't installed on this box." in out) == offered
     if offered:
         assert CANT not in out + err
-    else:  # SPEC-2: today's line
+    else:  # a failed check keeps today's line
         assert _cant(inspect) in out.splitlines(), out
     assert not any(c[:1] == ["bash"] for c in calls)  # a No runs nothing
 
